@@ -1,0 +1,1253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Propithub: Complete End-to-End WhatsApp Journey (Owner, Tenant, Manager, Staff)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0B0F19;
+      --card-bg: rgba(22, 30, 49, 0.75);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-main: #F8FAFC;
+      --text-muted: #94A3B8;
+      --wa-green: #25D366;
+      --wa-dark: #128C7E;
+      --wa-bubble-in: #1F2C34;
+      --wa-bubble-out: #005C4B;
+      --accent-blue: #38BDF8;
+      --accent-purple: #A855F7;
+      --accent-amber: #FBBF24;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --radius-xl: 32px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--bg);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 40px 20px 80px;
+      background-image: 
+        radial-gradient(circle at 10% 10%, rgba(37, 211, 102, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 90% 70%, rgba(56, 189, 248, 0.07) 0%, transparent 45%);
+      background-attachment: fixed;
+    }
+
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      background: rgba(37, 211, 102, 0.12);
+      border: 1px solid rgba(37, 211, 102, 0.3);
+      color: #4ADE80;
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 4.5vw, 3.2rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #FFFFFF 40%, #94A3B8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    h1 span.highlight {
+      background: linear-gradient(135deg, #25D366 0%, #38BDF8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      max-width: 840px;
+      margin: 0 auto;
+    }
+
+    /* Persona Switcher Bar */
+    .persona-switch-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+      margin: 30px auto 20px;
+      max-width: 1180px;
+    }
+
+    .persona-btn {
+      background: rgba(22, 30, 49, 0.7);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      text-align: left;
+      color: var(--text-muted);
+      font-family: inherit;
+    }
+
+    .persona-btn:hover {
+      background: rgba(30, 41, 67, 0.9);
+      border-color: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+
+    .persona-btn.active {
+      border: 2px solid var(--wa-green);
+      background: linear-gradient(135deg, rgba(37, 211, 102, 0.15) 0%, rgba(56, 189, 248, 0.1) 100%);
+      color: #fff;
+      box-shadow: 0 8px 30px -10px rgba(37, 211, 102, 0.3);
+    }
+
+    .persona-btn.tenant-active.active {
+      border-color: var(--accent-blue);
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.15) 0%, rgba(168, 85, 247, 0.1) 100%);
+      box-shadow: 0 8px 30px -10px rgba(56, 189, 248, 0.3);
+    }
+
+    .persona-btn.manager-active.active {
+      border-color: var(--accent-amber);
+      background: linear-gradient(135deg, rgba(251, 191, 36, 0.15) 0%, rgba(249, 115, 22, 0.1) 100%);
+      box-shadow: 0 8px 30px -10px rgba(251, 191, 36, 0.3);
+    }
+
+    .persona-btn.staff-active.active {
+      border-color: var(--accent-purple);
+      background: linear-gradient(135deg, rgba(168, 85, 247, 0.15) 0%, rgba(56, 189, 248, 0.1) 100%);
+      box-shadow: 0 8px 30px -10px rgba(168, 85, 247, 0.3);
+    }
+
+    .step-btn.manager-active.active {
+      border-color: var(--accent-amber);
+      background: linear-gradient(135deg, rgba(251, 191, 36, 0.15) 0%, rgba(249, 115, 22, 0.1) 100%);
+      box-shadow: 0 8px 25px -8px rgba(251, 191, 36, 0.25);
+    }
+
+    .step-btn.manager-active.active .step-badge {
+      background: var(--accent-amber);
+      color: #78350F;
+    }
+
+    .step-btn.staff-active.active {
+      border-color: var(--accent-purple);
+      background: linear-gradient(135deg, rgba(168, 85, 247, 0.15) 0%, rgba(56, 189, 248, 0.1) 100%);
+      box-shadow: 0 8px 25px -8px rgba(168, 85, 247, 0.25);
+    }
+
+    .step-btn.staff-active.active .step-badge {
+      background: var(--accent-purple);
+      color: #3B0764;
+    }
+
+    .persona-icon {
+      font-size: 2rem;
+      flex-shrink: 0;
+    }
+
+    .persona-btn strong {
+      display: block;
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: #fff;
+    }
+
+    .persona-btn small {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    /* Architectural Rule Card */
+    .rules-card {
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.08) 0%, rgba(37, 211, 102, 0.08) 100%);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: var(--radius-md);
+      padding: 18px 24px;
+      margin: 10px auto 30px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      text-align: left;
+    }
+
+    .rules-card h4 {
+      font-size: 0.95rem;
+      color: #38BDF8;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .rules-card p {
+      font-size: 0.88rem;
+      color: #CBD5E1;
+      margin: 0;
+    }
+
+    /* Core Journey Layout */
+    .journey-layout {
+      display: grid;
+      grid-template-columns: 340px 1fr 380px;
+      gap: 28px;
+      align-items: flex-start;
+      margin-top: 10px;
+    }
+
+    @media (max-width: 1100px) {
+      .journey-layout {
+        grid-template-columns: 1fr 380px;
+      }
+      .stepper-nav {
+        grid-column: 1 / -1;
+        display: flex !important;
+        flex-direction: row !important;
+        overflow-x: auto;
+        padding-bottom: 12px;
+      }
+      .step-btn {
+        flex-shrink: 0;
+        min-width: 220px;
+      }
+    }
+
+    @media (max-width: 800px) {
+      .journey-layout {
+        grid-template-columns: 1fr;
+      }
+      .phone-mockup {
+        order: -1;
+      }
+    }
+
+    /* Left Stepper Navigation */
+    .stepper-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .step-btn {
+      background: rgba(22, 30, 49, 0.6);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      color: var(--text-muted);
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .step-btn:hover {
+      background: rgba(30, 41, 67, 0.8);
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .step-btn.active {
+      background: linear-gradient(135deg, rgba(37, 211, 102, 0.15) 0%, rgba(56, 189, 248, 0.1) 100%);
+      border: 1.5px solid var(--wa-green);
+      color: #fff;
+      box-shadow: 0 8px 25px -8px rgba(37, 211, 102, 0.25);
+    }
+
+    .step-btn.tenant-active.active {
+      border-color: var(--accent-blue);
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.15) 0%, rgba(168, 85, 247, 0.1) 100%);
+      box-shadow: 0 8px 25px -8px rgba(56, 189, 248, 0.25);
+    }
+
+    .step-badge {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 800;
+      color: var(--accent-blue);
+      flex-shrink: 0;
+    }
+
+    .step-btn.active .step-badge {
+      background: var(--wa-green);
+      color: #064E3B;
+    }
+
+    .step-btn.tenant-active.active .step-badge {
+      background: var(--accent-blue);
+      color: #0F172A;
+    }
+
+    .step-title-wrap h4 {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .step-title-wrap span {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Middle Details Card */
+    .detail-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      backdrop-filter: blur(12px);
+    }
+
+    .detail-tag {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 800;
+      color: var(--accent-blue);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .detail-title {
+      font-size: 1.6rem;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 12px;
+      letter-spacing: -0.01em;
+    }
+
+    .detail-desc {
+      color: var(--text-muted);
+      font-size: 1rem;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+
+    .action-points {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .point-box {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: var(--radius-sm);
+      padding: 14px 18px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .point-icon {
+      font-size: 1.2rem;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .point-body h5 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 3px;
+    }
+
+    .point-body p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin: 0;
+    }
+
+    .db-sync-box {
+      background: rgba(56, 189, 248, 0.06);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      border-radius: var(--radius-sm);
+      padding: 14px 18px;
+      font-size: 0.85rem;
+      color: #CBD5E1;
+    }
+
+    .db-sync-box strong {
+      color: #38BDF8;
+    }
+
+    /* Right Phone Mockup */
+    .phone-mockup {
+      width: 100%;
+      background: #111B21;
+      border-radius: 36px;
+      border: 10px solid #202C33;
+      box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 640px;
+    }
+
+    .phone-header {
+      background: #202C33;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .phone-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: var(--wa-green);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      color: #064E3B;
+      font-size: 1rem;
+    }
+
+    .phone-header-info h5 {
+      color: #E9EDEF;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .phone-header-info span {
+      color: #8696A0;
+      font-size: 0.72rem;
+    }
+
+    .phone-chat-area {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+      background-size: 16px 16px;
+    }
+
+    .chat-bubble {
+      max-width: 88%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 0.86rem;
+      line-height: 1.45;
+      position: relative;
+    }
+
+    .bubble-incoming {
+      background: var(--wa-bubble-in);
+      color: #E9EDEF;
+      align-self: flex-start;
+      border-top-left-radius: 2px;
+    }
+
+    .bubble-outgoing {
+      background: var(--wa-bubble-out);
+      color: #E9EDEF;
+      align-self: flex-end;
+      border-top-right-radius: 2px;
+    }
+
+    .doc-attachment {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0;
+    }
+
+    .doc-icon { font-size: 1.3rem; }
+    .doc-name { font-size: 0.8rem; font-weight: 600; color: #fff; }
+
+    .wa-button {
+      display: block;
+      width: 100%;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #00A884;
+      font-weight: 700;
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-top: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.2s ease;
+    }
+
+    .wa-button:hover { background: rgba(0, 168, 132, 0.2); }
+    .wa-button.primary { background: #00A884; color: #111B21; border: none; }
+
+    .time-stamp {
+      font-size: 0.65rem;
+      color: #8696A0;
+      text-align: right;
+      margin-top: 4px;
+    }
+
+    footer {
+      text-align: center;
+      color: #64748B;
+      font-size: 0.85rem;
+      margin-top: 50px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+
+    <header>
+      <div class="badge">Verified 4-Role Omnichannel Blueprint</div>
+      <h1>Propithub: Complete <span class="highlight">WhatsApp Operations Journey</span></h1>
+      <p class="subtitle">
+        Switch between the Property Owner, Tenant, Delegated Manager, and Field Technician perspectives to see how every role experiences seamless WhatsApp automation.
+      </p>
+
+      <!-- PERSONA TOGGLE SWITCH (4 ROLES) -->
+      <div class="persona-switch-bar">
+        <button class="persona-btn active" id="btn-owner" onclick="switchPersona('owner')">
+          <span class="persona-icon">👔</span>
+          <div>
+            <strong>Property Owner</strong>
+            <small>8 Steps • Setup, Approvals, Gateway Rent</small>
+          </div>
+        </button>
+
+        <button class="persona-btn" id="btn-tenant" onclick="switchPersona('tenant')">
+          <span class="persona-icon">👤</span>
+          <div>
+            <strong>Tenant / Resident</strong>
+            <small>6 Steps • KYC, Lease Sign, Rent, Move-Out</small>
+          </div>
+        </button>
+
+        <button class="persona-btn" id="btn-manager" onclick="switchPersona('manager')">
+          <span class="persona-icon">🛡️</span>
+          <div>
+            <strong>Property Manager</strong>
+            <small>4 Steps • Inspections, Dispatch, Leases</small>
+          </div>
+        </button>
+
+        <button class="persona-btn" id="btn-staff" onclick="switchPersona('staff')">
+          <span class="persona-icon">🔧</span>
+          <div>
+            <strong>Staff / Technician</strong>
+            <small>5 Steps • Job Queue, Status, Fees, Reviews</small>
+          </div>
+        </button>
+      </div>
+    </header>
+
+    <!-- Key Platform Realities Box -->
+    <div class="rules-card">
+      <h4><span>⚡</span> Core Architectural Realities Implemented in this Flow:</h4>
+      <p>
+        <strong>1. Dynamic Owner-Configured Payments:</strong> When a tenant pays rent, the payment link automatically routes through the specific active gateway set by that unit's owner.<br/>
+        <strong>2. Manager Zero Financial Perimeter:</strong> Managers dispatch technicians, log unit inspections, and review leases, but have zero access to owner banking credentials or payout revenue.<br/>
+        <strong>3. Field Staff Mobile First:</strong> Technicians receive dispatches, share live ETAs, upload completion photos, and receive UPI task fees directly on WhatsApp without opening an app.
+      </p>
+    </div>
+
+    <div class="journey-layout">
+      
+      <!-- 1. Left Stepper Navigation -->
+      <div class="stepper-nav" id="stepper-list">
+        <!-- Injected via JS based on active persona -->
+      </div>
+
+      <!-- 2. Middle Details Card -->
+      <div class="detail-card">
+        <span class="detail-tag" id="step-tag">STEP 1 • INITIAL INTAKE</span>
+        <h2 class="detail-title" id="step-title">Initial Role Selection & Qualification</h2>
+        <p class="detail-desc" id="step-desc">
+          When the user taps 'Message on WhatsApp', our AI Agent does not assume their identity. It asks basic questions to distinguish whether they are an Owner/Landlord wanting to manage properties or a Tenant wanting to rent/pay.
+        </p>
+
+        <div class="action-points" id="step-points">
+          <!-- Populated by JS -->
+        </div>
+
+        <div class="db-sync-box" id="step-db">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- 3. Right Interactive Phone Simulator -->
+      <div class="phone-mockup">
+        <div class="phone-header">
+          <div class="phone-avatar" id="avatar-icon">P</div>
+          <div class="phone-header-info">
+            <h5 id="bot-title">Propithub Assistant</h5>
+            <span>Official Business Account</span>
+          </div>
+        </div>
+        <div class="phone-chat-area" id="chat-stream">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+    </div>
+
+    <footer>
+      <p>Propithub_v2 Architecture Blueprint • Confidential & Proprietary</p>
+    </footer>
+
+  </div>
+
+  <script>
+    let currentPersona = 'owner';
+    let currentStepIdx = 0;
+
+    // OWNER STEPS (8 STEPS)
+    const ownerSteps = [
+      {
+        badgeTitle: "Ad Tap & Role Select",
+        badgeSub: "Owner vs. Tenant Question",
+        tag: "STEP 1 OF 8 • OWNER INTAKE & ACCOUNT SETUP",
+        title: "Owner Role Selection & Qualification",
+        desc: "The user taps 'Message on WhatsApp' from an ad or QR code. The AI Agent greets them and asks the basic questions to create the right account type (Property Owner vs. Tenant).",
+        points: [
+          { icon: "❓", title: "Role Decision", text: "Interactive buttons let the user identify as '👔 Property Owner' or '👤 Tenant'." },
+          { icon: "📱", title: "Zero Form Friction", text: "Phone number is pre-verified by WhatsApp; no email verification required." },
+          { icon: "📊", title: "Portfolio Sizing", text: "For owners, the bot asks for their name and portfolio size (1-5, 6-20, 20+ units)." }
+        ],
+        db: "<strong>Firestore Sync:</strong> Creates /users/{phone} and resolves role: 'owner'. Logs marketing source tag: 'TRIAL_INSTA'.",
+        chat: [
+          { type: 'outgoing', text: 'Hi Propithub! (Code: TRIAL_INSTA)' },
+          { type: 'incoming', text: '👋 Welcome to Propithub! To set up your account, are you an Owner or Tenant?', buttons: ['👔 I am an Owner / Landlord', '👤 I am a Tenant'] },
+          { type: 'outgoing', text: '👔 I am an Owner / Landlord' },
+          { type: 'incoming', text: 'Great! What is your full name?' },
+          { type: 'outgoing', text: 'Rajesh Sharma' },
+          { type: 'incoming', text: 'Nice to meet you Rajesh! How many rental units do you manage?', buttons: ['1 – 5 Units', '6 – 20 Units', '20+ Units'] },
+          { type: 'outgoing', text: '6 – 20 Units' }
+        ]
+      },
+      {
+        badgeTitle: "14-Day Trial & Setup",
+        badgeSub: "Auto-provisioning & Demo",
+        tag: "STEP 2 OF 8 • 14-DAY TRIAL PROVISIONING",
+        title: "Instant Free Trial & Day 0 'Aha!' Moment",
+        desc: "Firebase automatically activates a 14-day free trial. To demonstrate instant value, the agent delivers a customized sample lease agreement PDF with their name in seconds.",
+        points: [
+          { icon: "⚡", title: "Auto-Provisioning", text: "Sets planStatus = 'trialing' in Firestore with 14-day expiration without credit card." },
+          { icon: "📄", title: "Instant Value Proof", text: "Generates a real sample lease agreement PDF with the owner's name." },
+          { icon: "🔑", title: "Passwordless Web Access", text: "Provides a 1-click magic login link for when they want to view the web dashboard." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /owners/{uid} created with planStatus: 'trialing', trialEndsAt: (Now + 14 Days).",
+        chat: [
+          { type: 'incoming', text: '🎉 <strong>Your 14-Day Free Trial is Live!</strong><br/>Account created for Rajesh Sharma (6-20 units).<br/><br/>Tap below to test generating a legally binding sample lease in 3 seconds:', buttons: ['📄 Send Sample Lease PDF', '➕ Add My First Property'] },
+          { type: 'outgoing', text: '📄 Send Sample Lease PDF' },
+          { type: 'incoming', isDoc: true, docName: 'Sample_Lease_Rajesh_Sharma.pdf' },
+          { type: 'incoming', text: 'Here is your customized sample contract! Ready to list your first real unit?', buttons: ['➕ Add Property Now', '🔑 Web Dashboard Link'] }
+        ]
+      },
+      {
+        badgeTitle: "Add Property & Unit",
+        badgeSub: "Chat form & Photo upload",
+        tag: "STEP 3 OF 8 • PROPERTY & UNIT CREATION",
+        title: "Adding Property & Units on the Fly",
+        desc: "Instead of opening a laptop to type property details, the owner answers 3 quick conversational prompts and sends photos right in chat.",
+        points: [
+          { icon: "🏢", title: "Property Details", text: "Owner provides Building Name, Unit Number, BHK type, and Monthly Rent." },
+          { icon: "📸", title: "Direct Photo Upload", text: "Owner snaps unit pictures; backend saves them to Firebase Cloud Storage." },
+          { icon: "🟢", title: "Vacant Listing", text: "Unit is immediately created in Firestore with status: 'vacant'." }
+        ],
+        db: "<strong>Firestore Sync:</strong> New document created in /properties and /units with status: 'vacant', rent: 40000, deposit: 80000.",
+        chat: [
+          { type: 'outgoing', text: '➕ Add Property Now' },
+          { type: 'incoming', text: '🏢 What is the Building Name and City?' },
+          { type: 'outgoing', text: 'Sunrise Heights, Mumbai' },
+          { type: 'incoming', text: 'What is the Unit Number, BHK type, and monthly rent?' },
+          { type: 'outgoing', text: 'Flat 302, 2 BHK, ₹40,000/mo' },
+          { type: 'incoming', text: 'What is the Security Deposit?' },
+          { type: 'outgoing', text: '₹80,000' },
+          { type: 'incoming', text: '✅ <strong>Property Added!</strong><br/>Flat 302 at Sunrise Heights is now listed as Vacant.<br/><br/>Would you like to onboard a tenant now?', buttons: ['👤 Onboard Tenant', '📋 View My Properties'] }
+        ]
+      },
+      {
+        badgeTitle: "Onboard Tenant & Lease",
+        badgeSub: "1-Click Owner Approval",
+        tag: "STEP 4 OF 8 • TENANT ONBOARDING & LEASE APPROVAL",
+        title: "Tenant KYC & 1-Click Owner Approval",
+        desc: "The owner provides the tenant's phone number. The bot collects the tenant's ID photo, generates the official lease PDF, and sends it to the owner for 1-click approval.",
+        points: [
+          { icon: "🪪", title: "Automated KYC", text: "Tenant receives WhatsApp prompt, snaps national ID photo, saved to Cloud Storage." },
+          { icon: "📑", title: "PDF Inspection", text: "Owner receives the complete contract PDF directly in chat." },
+          { icon: "✅", title: "1-Click Activation", text: "Owner taps [Approve Lease]; unit flips from 'vacant' to 'occupied' automatically." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /agreements updated to status: 'active'. /units/302 updated to status: 'occupied'.",
+        chat: [
+          { type: 'outgoing', text: 'Onboard tenant for Flat 302: Pavan Kavali, +91 98765 43210' },
+          { type: 'incoming', text: '⏳ Initiated onboarding for Pavan Kavali. Waiting for tenant ID proof...' },
+          { type: 'incoming', text: '📩 <strong>Tenant KYC Received!</strong><br/>Drafting lease contract...' },
+          { type: 'incoming', isDoc: true, docName: 'Lease_Agreement_Flat_302_Pavan.pdf' },
+          { type: 'incoming', text: 'Please review the agreement above for Flat 302 (Rent: ₹40,000):', buttons: ['✅ Approve Lease', '❌ Reject', '✏️ Request Changes'] },
+          { type: 'outgoing', text: '✅ Approve Lease' },
+          { type: 'incoming', text: '🎉 <strong>Lease Activated!</strong><br/>Flat 302 is now marked Occupied. Tenant has received their signed copy and rent schedule.' }
+        ]
+      },
+      {
+        badgeTitle: "Owner Gateway Payment",
+        badgeSub: "Direct UPI/Card & Receipts",
+        tag: "STEP 5 OF 8 • ACTIVE OWNER-GATEWAY PAYMENTS",
+        title: "Rent Invoicing via Owner's Configured Gateway",
+        desc: "Rent payment links automatically route through the specific active gateway set by the owner (Razorpay UPI, Stripe, or Cash Handover). Zero dispute engine: billing questions connect to the property manager.",
+        points: [
+          { icon: "💳", title: "Active Gateway Routing", text: "If the owner enabled Razorpay UPI, the tenant pays directly via UPI; if Stripe, via Card." },
+          { icon: "📄", title: "Instant Tax Receipt", text: "Payment webhook marks invoice as 'paid' and automatically delivers the PDF receipt." },
+          { icon: "👤", title: "No Dispute Engine", text: "Any invoice inquiry connects to the property manager directly without automated dispute buttons." }
+        ],
+        db: "<strong>Firestore Sync:</strong> Invoices resolved via resolveGatewayConfig(ownerId). Invoices marked 'paid' and synced to ledger.",
+        chat: [
+          { type: 'incoming', text: '📅 <strong>Rent Due Notice (Tenant WhatsApp):</strong><br/>Unit: Flat 302 • Sunrise Heights<br/>Amount: ₹40,000 (Due Oct 1st)<br/>Gateway: <strong>Owner\'s Active Razorpay UPI</strong>', buttons: ['💳 Pay ₹40,000 via UPI', '👤 Contact Property Manager'] },
+          { type: 'outgoing', text: '💳 Pay ₹40,000 via UPI' },
+          { type: 'incoming', text: '✅ <strong>Payment Successful!</strong><br/>Transaction ID: #RZP_984129<br/>Status: Settled into Owner Account.' },
+          { type: 'incoming', isDoc: true, docName: 'Official_Tax_Receipt_Flat302_Oct.pdf' }
+        ]
+      },
+      {
+        badgeTitle: "Maintenance Dispatch",
+        badgeSub: "Voice note & Staff dispatch",
+        tag: "STEP 6 OF 8 • MAINTENANCE & STAFF DISPATCH",
+        title: "Voice Note Ticket Creation & Staff Dispatch",
+        desc: "Tenants report issues via voice notes or photos. Gemini AI categorizes the ticket, and the owner dispatches the task to their plumber/electrician on WhatsApp.",
+        points: [
+          { icon: "🎙️", title: "Multimodal AI", text: "Gemini transcribes voice notes in mixed languages (Hindi, English) and detects urgency." },
+          { icon: "🔧", title: "Technician Dispatch", text: "Staff member receives WhatsApp card with unit location and issue details." },
+          { icon: "💰", title: "Payout Approval", text: "Staff uploads repair photo; owner clicks [Approve Payout] to release compensation." }
+        ],
+        db: "<strong>Firestore Sync:</strong> New document created in /tickets. Assigned to staff UID. Payment marked confirmed in ledger.",
+        chat: [
+          { type: 'incoming', text: '🔧 <strong>New Urgent Ticket (Flat 302):</strong><br/>Issue: Washbasin tap leaking heavily.<br/>Category: Plumbing | Urgency: High', buttons: ['Assign Plumber Ramesh', 'Assign Other'] },
+          { type: 'outgoing', text: 'Assign Plumber Ramesh' },
+          { type: 'incoming', text: '📲 Task dispatched to Ramesh on WhatsApp! Awaiting acknowledgment...' },
+          { type: 'incoming', text: '✅ <strong>Task Completed by Ramesh:</strong><br/>Photo of fixed tap received. Cost: ₹800.', buttons: ['Approve ₹800 Payout', 'Request Re-Inspection'] },
+          { type: 'outgoing', text: 'Approve ₹800 Payout' },
+          { type: 'incoming', text: '💰 Payout of ₹800 logged for Ramesh. Ticket closed!' }
+        ]
+      },
+      {
+        badgeTitle: "Move-Out & Inspection",
+        badgeSub: "Deposit deductions & Refund",
+        tag: "STEP 7 OF 8 • MOVE-OUT & DEPOSIT SETTLEMENT",
+        title: "Guided Room-by-Room Inspection & Refund",
+        desc: "When a tenant moves out, the owner conducts the inspection inside WhatsApp by answering guided room prompts and snapping photos, automatically calculating net deposit refunds.",
+        points: [
+          { icon: "🚪", title: "Guided Inspection", text: "Bot prompts: 'Send living room photo', 'Any damage deductions?'" },
+          { icon: "🧮", title: "Automatic Math", text: "System calculates: Deposit ₹80,000 - Damage ₹3,000 = Refund ₹77,000." },
+          { icon: "🔄", title: "Automatic Relisting", text: "1-tap refund approval automatically flips the unit back to 'vacant'." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /moveouts status updated to 'refund_scheduled'. Unit status flipped to 'vacant' and relisted.",
+        chat: [
+          { type: 'incoming', text: '📦 <strong>Move-Out Inspection: Flat 302</strong><br/>Tenant vacating today. Let\'s complete the 6-point check.<br/><br/>Step 1: Any damage to kitchen cabinets or appliances?' },
+          { type: 'outgoing', text: 'Broken cabinet handle, deduction ₹3,000' },
+          { type: 'incoming', text: '📸 Please send a photo of the broken handle:' },
+          { type: 'outgoing', text: '[Photo Attached]' },
+          { type: 'incoming', text: '📋 <strong>Deposit Settlement Summary:</strong><br/>Security Deposit: ₹80,000<br/>Deductions: ₹3,000 (Cabinet)<br/><strong>Net Refund: ₹77,000</strong>', buttons: ['Approve ₹77,000 Refund', 'Edit Deductions'] },
+          { type: 'outgoing', text: 'Approve ₹77,000 Refund' },
+          { type: 'incoming', text: '✅ <strong>Inspection Finalized!</strong><br/>Settlement PDF sent to tenant. Flat 302 is now marked Vacant & ready for rent!' }
+        ]
+      },
+      {
+        badgeTitle: "SaaS Plan Upgrade",
+        badgeSub: "1-Click paid conversion",
+        tag: "STEP 8 OF 8 • 14-DAY TRIAL UPGRADE",
+        title: "1-Click SaaS Plan Conversion",
+        desc: "On Day 13 of the free trial, the bot delivers an upgrade card. The owner taps the button, completes payment via UPI or Card, and the account transitions to paid status without interruption.",
+        points: [
+          { icon: "⏰", title: "Gentle Urgency", text: "Bot alerts owner 24 hours before trial expiration." },
+          { icon: "💳", title: "Instant Checkout", text: "Single-tap checkout via Razorpay/Stripe with pre-filled plan amount (₹999/mo)." },
+          { icon: "📈", title: "Meta CAPI Optimization", text: "Firebase sends offline conversion to Meta, training ads to find more paying landlords." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /owners/{uid} planStatus flips from 'trialing' to 'active'. Platform Invoice PDF generated.",
+        chat: [
+          { type: 'incoming', text: '⏳ <strong>Your 14-Day Free Trial Ends Tomorrow!</strong><br/>You\'ve successfully managed 2 properties, collected rent, and automated leases.<br/><br/>Continue automating your rentals for just <strong>₹999/month</strong> (Growth Plan):', buttons: ['💳 Upgrade to Growth Plan (₹999)', 'View All Plans'] },
+          { type: 'outgoing', text: '💳 Upgrade to Growth Plan (₹999)' },
+          { type: 'incoming', text: '🎉 <strong>Payment Successful!</strong><br/>Transaction ID: #RZP_SUB_98124<br/>Your subscription is active until Nov 14, 2026.' },
+          { type: 'incoming', isDoc: true, docName: 'Propithub_Platform_Invoice_Nov.pdf' }
+        ]
+      }
+    ];
+
+    // TENANT STEPS (6 STEPS)
+    const tenantSteps = [
+      {
+        badgeTitle: "Ad Tap & Role Select",
+        badgeSub: "Tenant Identification",
+        tag: "STEP 1 OF 6 • TENANT INTAKE",
+        title: "Tenant Intake & Profile Setup",
+        desc: "A prospective or existing tenant taps 'Message on WhatsApp'. The bot asks them to identify their role. Tapping 'I am a Tenant' immediately tailors the conversation to renting, payment, or maintenance.",
+        points: [
+          { icon: "👤", title: "Tenant Path", text: "Tenant selects '👤 I am a Tenant' from the greeting menu." },
+          { icon: "🪪", title: "Instant Link", text: "Tenant provides their name and the unit code or landlord phone number provided by their owner." },
+          { icon: "🔒", title: "Verified Identity", text: "Phone number is already verified by WhatsApp; zero passwords needed." }
+        ],
+        db: "<strong>Firestore Sync:</strong> Creates /users/{phone} with role: 'tenant' and links to assigned property/unit in Firestore.",
+        chat: [
+          { type: 'outgoing', text: 'Hi Propithub!' },
+          { type: 'incoming', text: '👋 Welcome to Propithub! Are you a Property Owner or a Tenant?', buttons: ['👔 I am an Owner / Landlord', '👤 I am a Tenant'] },
+          { type: 'outgoing', text: '👤 I am a Tenant' },
+          { type: 'incoming', text: 'Welcome! What is your full name?' },
+          { type: 'outgoing', text: 'Pavan Kavali' },
+          { type: 'incoming', text: 'Nice to meet you Pavan! Please enter your Unit Code or your Landlord\'s Phone Number to link your lease:' },
+          { type: 'outgoing', text: '+91 98765 00000 (Sunrise Heights)' },
+          { type: 'incoming', text: '✅ Found your lease invitation for <strong>Flat 302, Sunrise Heights</strong> (Owner: Rajesh Sharma). Let\'s finalize your lease!' }
+        ]
+      },
+      {
+        badgeTitle: "Submit KYC in Chat",
+        badgeSub: "ID Proof Photo Upload",
+        tag: "STEP 2 OF 6 • TENANT KYC SUBMISSION",
+        title: "Snap & Upload ID Proof via WhatsApp",
+        desc: "Instead of scanning documents and emailing them, the tenant simply snaps a clear photo of their national ID card (Aadhaar, Passport, or Driver's License) directly in chat.",
+        points: [
+          { icon: "📸", title: "Camera Capture", text: "Tenant takes a picture of their ID document and hits send." },
+          { icon: "☁️", title: "Secure Storage", text: "The photo is uploaded directly to Firebase Cloud Storage under the tenant's private folder." },
+          { icon: "⚡", title: "Automated Lease Drafting", text: "Once received, the system drafts the official lease contract automatically." }
+        ],
+        db: "<strong>Firestore Sync:</strong> KYC image URL saved to /tenants/{tenantId}/kycDocuments. Draft agreement prepared in /agreements.",
+        chat: [
+          { type: 'incoming', text: '📄 To complete your tenancy onboarding for Flat 302, please snap and send a photo of your <strong>Aadhaar Card or Passport</strong>:' },
+          { type: 'outgoing', text: '[📷 Aadhaar_Card_Front.jpg Attached]' },
+          { type: 'incoming', text: '✅ <strong>ID Document Received & Verified!</strong><br/>Generating your residential tenancy agreement...' }
+        ]
+      },
+      {
+        badgeTitle: "Review & Sign Lease",
+        badgeSub: "PDF Inspection & 1-Tap Sign",
+        tag: "STEP 3 OF 6 • DIGITAL LEASE SIGNING",
+        title: "Review Lease PDF & Digital Signature",
+        desc: "The tenant receives the official lease agreement PDF directly in WhatsApp. They review the rent terms and tap 'Agree & Digitally Sign'.",
+        points: [
+          { icon: "📑", title: "Full PDF in Chat", text: "Tenant opens and reads the complete multi-page contract on their phone." },
+          { icon: "✍️", title: "1-Click Sign", text: "Tapping [Agree & Sign] records a legal digital signature timestamp and IP address." },
+          { icon: "🔒", title: "Instant Notification", text: "Landlord receives immediate notification that the tenant has signed." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /agreements updated to status: 'signed_by_tenant'. Unit status transitions to 'occupied'.",
+        chat: [
+          { type: 'incoming', isDoc: true, docName: 'Tenancy_Agreement_Flat_302.pdf' },
+          { type: 'incoming', text: 'Here is your official lease agreement for <strong>Flat 302</strong>:<br/>• Monthly Rent: ₹40,000<br/>• Security Deposit: ₹80,000<br/>• Term: 11 Months<br/><br/>Please review and choose an action below:', buttons: ['✅ Agree & Digitally Sign', '👤 Contact Property Manager'] },
+          { type: 'outgoing', text: '✅ Agree & Digitally Sign' },
+          { type: 'incoming', text: '🎉 <strong>Agreement Signed Successfully!</strong><br/>Your signature has been recorded. Your landlord has been notified for final approval.' }
+        ]
+      },
+      {
+        badgeTitle: "Pay via Owner Gateway",
+        badgeSub: "Active Razorpay UPI / Stripe",
+        tag: "STEP 4 OF 6 • RENT PAYMENT VIA OWNER GATEWAY",
+        title: "Paying Rent via Owner's Configured Gateway",
+        desc: "When rent is due, the tenant receives an interactive card with a direct link powered by the specific payment gateway enabled by their landlord (Razorpay UPI, Stripe, or Bank Transfer).",
+        points: [
+          { icon: "💳", title: "Owner Gateway Routing", text: "Payment link points directly to the owner's active account (e.g. Razorpay UPI or Stripe)." },
+          { icon: "🧾", title: "Instant Stamped Receipt", text: "As soon as payment succeeds, the official tax invoice PDF is delivered into chat." },
+          { icon: "🛡️", title: "Zero Dispute Engine", text: "For any billing questions, the tenant clicks 'Contact Property Manager' for human help." }
+        ],
+        db: "<strong>Firestore Sync:</strong> Invoices resolved via resolveGatewayConfig(ownerId). Invoice marked 'paid' and synced to ledger.",
+        chat: [
+          { type: 'incoming', text: '📅 <strong>Rent Due Notice: Flat 302</strong><br/>Hi Pavan, your rent for October is due.<br/>• Amount: <strong>₹40,000</strong><br/>• Due Date: Oct 1st<br/>• Gateway: <strong>Owner\'s Active Razorpay UPI</strong>', buttons: ['💳 Pay ₹40,000 via UPI', '👤 Contact Property Manager'] },
+          { type: 'outgoing', text: '💳 Pay ₹40,000 via UPI' },
+          { type: 'incoming', text: '✅ <strong>Payment Received!</strong><br/>Transaction ID: #RZP_984129<br/>Status: Settled directly to Owner.' },
+          { type: 'incoming', isDoc: true, docName: 'Official_Tax_Receipt_Oct_Flat302.pdf' }
+        ]
+      },
+      {
+        badgeTitle: "Voice Note Maintenance",
+        badgeSub: "Photo & Voice Note Tickets",
+        tag: "STEP 5 OF 6 • MAINTENANCE REPORTING",
+        title: "Voice Note & Photo Repair Requests",
+        desc: "Instead of filling out confusing online tickets, the tenant records a voice note or snaps a picture of the broken item. Gemini AI converts it into an active ticket.",
+        points: [
+          { icon: "🎙️", title: "Speak Naturally", text: "Tenant records audio in any language (e.g. 'Washbasin tap is leaking heavily')." },
+          { icon: "🧠", title: "AI Classification", text: "Gemini AI transcribes speech, categorizes issue as 'Plumbing', and flags priority as 'High'." },
+          { icon: "📲", title: "Live Progress Alert", text: "Tenant gets notified as soon as the owner assigns a technician." }
+        ],
+        db: "<strong>Firestore Sync:</strong> Ticket created in /tickets with category: 'Plumbing', priority: 'High', audio & photo URLs.",
+        chat: [
+          { type: 'outgoing', text: '🎙️ Voice Note (0:12) "Bhaiya kitchen sink tap se paani tapak raha hai subah se."' },
+          { type: 'incoming', text: '🔧 <strong>Maintenance Request Logged!</strong><br/>• Category: Plumbing<br/>• Urgency: High<br/>• Description: Kitchen washbasin tap leaking.<br/><br/>Your property manager has been notified.' },
+          { type: 'incoming', text: '🚗 <strong>Update: Technician Assigned!</strong><br/>Plumber Ramesh (+91 98221 00000) is en route to Flat 302.' }
+        ]
+      },
+      {
+        badgeTitle: "Move-Out & Refund",
+        badgeSub: "Deposit Settlement Statement",
+        tag: "STEP 6 OF 6 • MOVE-OUT & DEPOSIT SETTLEMENT",
+        title: "Move-Out Notice & Deposit Refund Confirmation",
+        desc: "The tenant requests move-out directly in chat. On moving day, they receive the final itemized deposit settlement statement PDF and confirm receipt of their refund.",
+        points: [
+          { icon: "📦", title: "Move-Out Notice", text: "Tenant texts 'I want to move out on Dec 31' to initiate notice sequence." },
+          { icon: "📋", title: "Transparent Math", text: "Inspects itemized deductions in chat: Deposit ₹80k - Deductions ₹3k = Refund ₹77k." },
+          { icon: "💸", title: "Refund Receipt", text: "Receives formal Deposit Settlement PDF and confirms payout into bank account." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /moveouts status marked 'refund_completed'. Tenant tenancy record archived.",
+        chat: [
+          { type: 'outgoing', text: 'I want to vacate Flat 302 on Dec 31' },
+          { type: 'incoming', text: '📦 Move-out notice registered for Flat 302 on Dec 31. Inspection scheduled for moving day.' },
+          { type: 'incoming', isDoc: true, docName: 'Deposit_Settlement_Statement_Flat302.pdf' },
+          { type: 'incoming', text: '📋 <strong>Inspection Completed:</strong><br/>• Initial Deposit: ₹80,000<br/>• Deductions: ₹3,000 (Cabinet repair)<br/>• <strong>Net Refund Due: ₹77,000</strong><br/><br/>Refund of ₹77,000 has been transferred to your bank account.', buttons: ['✅ Confirm Refund Received', '👤 Contact Property Manager'] },
+          { type: 'outgoing', text: '✅ Confirm Refund Received' },
+          { type: 'incoming', text: '🙏 Thank you for residing at Sunrise Heights! Your tenancy has been smoothly concluded.' }
+        ]
+      }
+    ];
+
+    // PROPERTY MANAGER STEPS (4 STEPS)
+    const managerSteps = [
+      {
+        badgeTitle: "Morning Briefing",
+        badgeSub: "Portfolio Health Digest",
+        tag: "STEP 1 OF 4 • MANAGER OPERATIONAL OVERSIGHT",
+        title: "Automated Daily Morning Operations Digest",
+        desc: "At 8:00 AM every morning, WhatsApp sends the delegated property manager an operational snapshot: active occupancy %, open urgent work orders, and expiring leases. Strict perimeter: Zero financial banking credentials or owner payout revenue shown.",
+        points: [
+          { icon: "📊", title: "Occupancy Snapshot", text: "Sunrise Heights: 92% Occ (23/25 units). Vacant units listed on public directory." },
+          { icon: "🚨", title: "Urgent Repair Queue", text: "2 high-priority tickets pending technician dispatch." },
+          { icon: "🔒", title: "Zero Financial Access", text: "Bank routing, gateway API keys, and MRR remain exclusively visible to the owner." }
+        ],
+        db: "<strong>Firestore Sync:</strong> Read-only aggregation from /properties, /units, and /tickets where assignedManagerId == manager.uid.",
+        chat: [
+          { type: 'outgoing', text: 'Hi Propithub, send today\'s morning briefing.' },
+          { type: 'incoming', text: '🏢 <strong>Good morning, Manager Rajesh!</strong><br/><br/><strong>Portfolio: Sunrise Heights (25 Units)</strong><br/>• Occupancy: 92% (23 Occupied, 2 Vacant)<br/>• Active Repair Tickets: 2 High Priority<br/>• Leases Expiring (30 Days): 1 (Flat 204)<br/><br/>What would you like to action first?', buttons: ['🔧 Dispatch Repairs', '📋 View Units & Inspection', '📄 Review Leases'] }
+        ]
+      },
+      {
+        badgeTitle: "Work Order Dispatch",
+        badgeSub: "Tech & Payer Assignment",
+        tag: "STEP 2 OF 4 • REPAIR DISPATCH & COST ALLOCATION",
+        title: "1-Tap Technician Dispatch & Cost Allocation via WhatsApp",
+        desc: "When a resident submits a maintenance ticket, the manager receives an alert on WhatsApp. The manager selects an on-site technician, designates who pays (Owner vs Tenant), and assigns the authorized task budget with 1 tap.",
+        points: [
+          { icon: "⚡", title: "Rapid Dispatch", text: "Manager chooses from active technicians roster directly in chat." },
+          { icon: "💳", title: "Payer Designation", text: "Designates whether Owner or Tenant covers the repair cost." },
+          { icon: "🔄", title: "Dual Dispatch Broadcast", text: "Technician gets the job assignment; resident gets live technician contact info." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /tickets/{id} status updated to 'assigned', assignedStaffId: 'staff-456', payer: 'owner', amount: 500.",
+        chat: [
+          { type: 'incoming', text: '🚨 <strong>New Maintenance Request: Flat 302</strong><br/>• Resident: Rahul Sharma<br/>• Issue: Kitchen sink tap leaking heavily<br/>• Priority: High (Audio verified)<br/><br/>Please assign a technician.', buttons: ['👨‍🔧 Ramesh (Plumber)', '⚡ Suresh (Electrician)', '🔨 Ankit (Carpentry)'] },
+          { type: 'outgoing', text: '👨‍🔧 Ramesh (Plumber)' },
+          { type: 'incoming', text: 'Who should cover the repair cost?', buttons: ['🏢 Owner Paid (₹500)', '👤 Tenant Paid (₹500)'] },
+          { type: 'outgoing', text: '🏢 Owner Paid (₹500)' },
+          { type: 'incoming', text: '✅ <strong>Dispatch Confirmed!</strong><br/>• Work order #TKT-882 assigned to Ramesh.<br/>• Payer: Owner (Budget: ₹500).<br/>• Resident Rahul notified with technician contact.' }
+        ]
+      },
+      {
+        badgeTitle: "Room Inspection",
+        badgeSub: "Move-In / Vacancy Log",
+        tag: "STEP 3 OF 4 • PHYSICAL ASSET AUDIT",
+        title: "Voice & Photo Unit Inspection Logging",
+        desc: "During physical walk-throughs of vacant or turnover units, the manager takes room photos and voice notes condition. WhatsApp automatically creates a verified audit record in /propertyInspections without opening a laptop.",
+        points: [
+          { icon: "📸", title: "Direct Photo Upload", text: "Snap photos of bedroom, kitchen, and bathroom fixtures directly in chat." },
+          { icon: "📝", title: "Condition Grading", text: "Classifies condition as 'Excellent', 'Good', 'Fair', or 'Needs Repair'." },
+          { icon: "🛡️", title: "Permanent Audit Trail", text: "Inspection logs are time-stamped and linked to the unit's lifecycle." }
+        ],
+        db: "<strong>Firestore Sync:</strong> New document written to /propertyInspections with unitId, inspector, condition: 'good', notes, and photo URLs.",
+        chat: [
+          { type: 'outgoing', text: 'Inspection log Unit 401: Routine move-in check. All wall paints fresh, AC compressor serviced, minor faucet drip resolved. Overall condition Good.' },
+          { type: 'incoming', text: '📸 Please upload 1-3 inspection photos for Unit 401.' },
+          { type: 'outgoing', text: '🖼️ [Uploaded 2 Photos: Master Bedroom & Kitchen]' },
+          { type: 'incoming', text: '✅ <strong>Inspection Logged Successfully!</strong><br/>• Unit: 401 (Sunrise Heights)<br/>• Inspector: Rajesh (Property Manager)<br/>• Condition: Good<br/>• Photos: 2 Attached<br/>• Record ID: INSP-2026-401<br/><br/>Audit trail saved to cloud portfolio.' }
+        ]
+      },
+      {
+        badgeTitle: "Lease Oversight",
+        badgeSub: "Agreement Verification",
+        tag: "STEP 4 OF 4 • LEASE DOCUMENT MANAGEMENT",
+        title: "Lease Document Tracking & Renewal Alerts",
+        desc: "When a tenant digitally signs their lease, the manager receives the complete executed document. The manager can trigger renewal offers or inspect terms on the go.",
+        points: [
+          { icon: "📄", title: "Instant PDF Inspection", text: "Manager receives executed agreement PDF directly inside WhatsApp." },
+          { icon: "⏱️", title: "Expiry Countdown", text: "WhatsApp reminds manager 30 days prior to lease end date." },
+          { icon: "🔄", title: "1-Tap Auto-Renew", text: "Prompt tenant with 1-tap renewal or flag unit for upcoming vacancy." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /agreements/{id} status synced. Manager action logged in audit log.",
+        chat: [
+          { type: 'incoming', text: '📄 <strong>Executed Lease Agreement Received:</strong><br/>• Flat: 302<br/>• Resident: Rahul Sharma<br/>• Term: Nov 1, 2026 – Oct 31, 2027<br/>• Monthly Rent: ₹25,000<br/>• Signatures: Both Owner & Tenant Verified' },
+          { type: 'incoming', isDoc: true, docName: 'Executed_Lease_Agreement_Flat302.pdf' },
+          { type: 'incoming', text: 'Would you like to enable auto-renewal reminder for this unit?', buttons: ['✅ Enable Auto-Renew Tracking', '❌ Manual Review Only'] },
+          { type: 'outgoing', text: '✅ Enable Auto-Renew Tracking' },
+          { type: 'incoming', text: '👍 Auto-renew tracking enabled. You will receive renewal alerts 30 days before expiration.' }
+        ]
+      }
+    ];
+
+    // STAFF / TECHNICIAN STEPS (5 STEPS)
+    const staffSteps = [
+      {
+        badgeTitle: "Job Dispatch Alert",
+        badgeSub: "New Work Order Notification",
+        tag: "STEP 1 OF 5 • FIELD JOB DISPATCH",
+        title: "Instant Work Order Dispatch with Unit & Contact Details",
+        desc: "The moment a manager dispatches a repair, the technician receives an instant WhatsApp message with the exact unit number, issue description, resident contact, and authorized payout fee.",
+        points: [
+          { icon: "📲", title: "Instant Alert", text: "No need to log in to an app; job arrives on WhatsApp with audible ping." },
+          { icon: "📞", title: "1-Tap Resident Call", text: "Direct click-to-call link to coordinate entry time with the tenant." },
+          { icon: "💰", title: "Guaranteed Fee", text: "Shows exact approved technician task payment (e.g. ₹500)." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /tickets/{id} synced. Technician assignedStaffId confirmed.",
+        chat: [
+          { type: 'incoming', text: '🚨 <strong>New Job Assigned to You:</strong><br/>• Ticket: #TKT-882<br/>• Property: Sunrise Heights, Flat 302<br/>• Issue: Kitchen sink tap leaking heavily<br/>• Resident: Rahul Sharma (+91 98765 43210)<br/>• Authorized Fee: ₹500 (Owner Paid)<br/><br/>Please confirm your availability:', buttons: ['✅ Accept & Start En Route', '⏱️ Accept for 2:00 PM', '❌ Decline Job'] },
+          { type: 'outgoing', text: '✅ Accept & Start En Route' },
+          { type: 'incoming', text: '👍 Status updated to "En Route". Resident and property manager have been notified.' }
+        ]
+      },
+      {
+        badgeTitle: "Status Updates",
+        badgeSub: "En Route & In Progress",
+        tag: "STEP 2 OF 5 • REAL-TIME WORK PROGRESS",
+        title: "1-Tap Progress Updates & Live ETA Sharing",
+        desc: "Technician communicates their arrival time and switches status to 'In Progress' with simple button taps or quick voice notes, keeping everyone synchronized.",
+        points: [
+          { icon: "⏱️", title: "ETA Notification", text: "Tells tenant 'Arriving in 15 mins' without dialing numbers." },
+          { icon: "🛠️", title: "Live Job Clock", text: "Records when work begins at the unit for accurate turnaround time tracking." },
+          { icon: "🗣️", title: "Multilingual Voice Notes", text: "Technicians can speak in Hindi, Tamil, Telugu, etc., transcribed seamlessly by Gemini AI." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /tickets/{id} status updated to 'in_progress', timestamp logged.",
+        chat: [
+          { type: 'outgoing', text: 'Reaching Flat 302 in 10 minutes.' },
+          { type: 'incoming', text: 'Tenant notified of your 10-minute ETA.' },
+          { type: 'outgoing', text: '▶️ Mark In Progress (At Flat 302)' },
+          { type: 'incoming', text: '🛠️ <strong>Work Order #TKT-882 is now IN PROGRESS.</strong><br/>Take photos of the repair upon completion to trigger your fee payout.' }
+        ]
+      },
+      {
+        badgeTitle: "Completion Proof",
+        badgeSub: "Photo & Voice Verification",
+        tag: "STEP 3 OF 5 • REPAIR VERIFICATION & NOTES",
+        title: "Submitting Repair Proof Photos & Completion Notes",
+        desc: "When the fix is complete, the technician sends a photo of the repaired fixture and a voice note describing what was fixed. Gemini AI logs the parts replaced and marks the ticket resolved.",
+        points: [
+          { icon: "📸", title: "Photo Evidence", text: "Snaps the repaired pipe/valve to avoid false claims or disputes." },
+          { icon: "🎙️", title: "Voice Summary", text: "'Replaced ceramic washer and tightened inlet valve. Flow tested.'" },
+          { icon: "🏁", title: "Instant Resolution", text: "Ticket auto-resolves in Firestore and technician completed jobs counter increments." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /tickets/{id} status: 'resolved', completionNotes, staff.completed counter incremented.",
+        chat: [
+          { type: 'outgoing', text: '🎙️ Voice Note (0:09) "Kaam ho gaya hai, naya washer daal diya aur pipe leak band ho gaya."' },
+          { type: 'outgoing', text: '🖼️ [Uploaded Photo: Fixed Sink Tap with Water Running Smoothly]' },
+          { type: 'incoming', text: '✅ <strong>Completion Proof Received!</strong><br/>• Notes: Replaced faulty washer and sealed pipe leak.<br/>• Photo: Stored in ticket record.<br/>• Status: RESOLVED.<br/><br/>Tenant and manager notified for sign-off.', buttons: ['📋 View Next Job in Queue'] }
+        ]
+      },
+      {
+        badgeTitle: "Instant Fee Payout",
+        badgeSub: "UPI / Bank Credit",
+        tag: "STEP 4 OF 5 • TECHNICIAN SETTLEMENT",
+        title: "Automatic Task Fee Credit & WhatsApp Payment Receipt",
+        desc: "Once the repair is verified, the authorized ₹500 fee is released directly to the technician's UPI ID or bank account. The technician receives an official digital voucher on WhatsApp.",
+        points: [
+          { icon: "💸", title: "Immediate Credit", text: "Zero delays — payout credited to technician's registered UPI ID." },
+          { icon: "🧾", title: "Official Voucher", text: "WhatsApp sends itemized payout receipt with transaction reference." },
+          { icon: "📈", title: "Transparent Ledger", text: "Shows month-to-date earnings and confirmed payout balance." }
+        ],
+        db: "<strong>Firestore Sync:</strong> /tickets/{id} payment.status updated to 'confirmed'. Payout record created.",
+        chat: [
+          { type: 'incoming', text: '🎉 <strong>Payout Credit Confirmed!</strong><br/>• Task: Kitchen Sink Repair (#TKT-882)<br/>• Amount: ₹500<br/>• Mode: UPI (ramesh@upi)<br/>• Reference: UPI-773920194<br/><br/>Total Earnings This Month: <strong>₹8,500</strong> (17 jobs completed).', buttons: ['💳 View Payout Summary', '⭐ View My Ratings'] }
+        ]
+      },
+      {
+        badgeTitle: "Ratings & Schedule",
+        badgeSub: "5-Star Reviews & Daily Agenda",
+        tag: "STEP 5 OF 5 • REPUTATION & DAILY AGENDA",
+        title: "Verified Resident Reviews & WhatsApp Daily Schedule",
+        desc: "The technician views verified 5-star ratings and feedback left by residents, along with their upcoming day's schedule of scheduled maintenance visits.",
+        points: [
+          { icon: "⭐", title: "Genuine Feedback", text: "Resident Rahul rated: ★★★★★ (5.0) 'Very polite, fixed the leak in 15 mins!'" },
+          { icon: "🏅", title: "Reputation Badge", text: "Technician achieves '✓ Top Rated Technician' status." },
+          { icon: "📅", title: "Morning Agenda", text: "Daily morning WhatsApp ping with scheduled appointments." }
+        ],
+        db: "<strong>Firestore Sync:</strong> Staff rating recalculated in /staff/{id}, updated to 4.9.",
+        chat: [
+          { type: 'incoming', text: '⭐ <strong>New Resident Review Received!</strong><br/>Rahul Sharma (Flat 302):<br/>★★★★★ 5.0 / 5.0<br/><em>"Ramesh was very polite, reached on time, and fixed the leak in 15 minutes!"</em><br/><br/>Your overall rating: <strong>4.9 ★ (42 reviews)</strong><br/>🏆 Badge Earned: Top Rated Technician', buttons: ['📅 View Tomorrow\'s Schedule'] },
+          { type: 'outgoing', text: '📅 View Tomorrow\'s Schedule' },
+          { type: 'incoming', text: '📅 <strong>Tomorrow\'s Schedule:</strong><br/>1. 10:00 AM • Flat 104 (AC filter servicing)<br/>2. 02:30 PM • Flat 501 (Geyser check)<br/><br/>Have a great evening, Ramesh!' }
+        ]
+      }
+    ];
+
+    function getStepsForPersona(persona) {
+      switch (persona) {
+        case 'owner': return ownerSteps;
+        case 'tenant': return tenantSteps;
+        case 'manager': return managerSteps;
+        case 'staff': return staffSteps;
+        default: return ownerSteps;
+      }
+    }
+
+    function switchPersona(persona) {
+      currentPersona = persona;
+      currentStepIdx = 0;
+
+      // Update persona buttons
+      const btnOwner = document.getElementById('btn-owner');
+      const btnTenant = document.getElementById('btn-tenant');
+      const btnManager = document.getElementById('btn-manager');
+      const btnStaff = document.getElementById('btn-staff');
+
+      btnOwner.className = 'persona-btn' + (persona === 'owner' ? ' active' : '');
+      btnTenant.className = 'persona-btn' + (persona === 'tenant' ? ' tenant-active active' : '');
+      btnManager.className = 'persona-btn' + (persona === 'manager' ? ' manager-active active' : '');
+      btnStaff.className = 'persona-btn' + (persona === 'staff' ? ' staff-active active' : '');
+
+      const avatarEl = document.getElementById('avatar-icon');
+      const titleEl = document.getElementById('bot-title');
+
+      if (persona === 'owner') {
+        avatarEl.innerText = 'P';
+        titleEl.innerText = 'Propithub Assistant';
+      } else if (persona === 'tenant') {
+        avatarEl.innerText = 'P';
+        titleEl.innerText = 'Propithub Resident Care';
+      } else if (persona === 'manager') {
+        avatarEl.innerText = 'M';
+        titleEl.innerText = 'Propithub Operations Hub';
+      } else if (persona === 'staff') {
+        avatarEl.innerText = 'S';
+        titleEl.innerText = 'Propithub Tech Dispatch';
+      }
+
+      renderStepper();
+      loadStep(0);
+    }
+
+    function renderStepper() {
+      const stepperEl = document.getElementById('stepper-list');
+      stepperEl.innerHTML = '';
+      const list = getStepsForPersona(currentPersona);
+
+      list.forEach((step, idx) => {
+        const btn = document.createElement('button');
+        let activeClass = '';
+        if (currentPersona === 'tenant') activeClass = 'tenant-active';
+        else if (currentPersona === 'manager') activeClass = 'manager-active';
+        else if (currentPersona === 'staff') activeClass = 'staff-active';
+
+        btn.className = `step-btn ${activeClass} ${idx === currentStepIdx ? 'active' : ''}`;
+        btn.onclick = () => loadStep(idx);
+        btn.innerHTML = `
+          <div class="step-badge">${idx + 1}</div>
+          <div class="step-title-wrap">
+            <h4>${step.badgeTitle}</h4>
+            <span>${step.badgeSub}</span>
+          </div>
+        `;
+        stepperEl.appendChild(btn);
+      });
+    }
+
+    function loadStep(index) {
+      currentStepIdx = index;
+      const list = getStepsForPersona(currentPersona);
+      const data = list[index];
+
+      // Update button active state
+      document.querySelectorAll('.step-btn').forEach((btn, idx) => {
+        if (idx === index) btn.classList.add('active');
+        else btn.classList.remove('active');
+      });
+
+      // Update Details
+      document.getElementById('step-tag').innerText = data.tag;
+      document.getElementById('step-title').innerText = data.title;
+      document.getElementById('step-desc').innerText = data.desc;
+      document.getElementById('step-db').innerHTML = data.db;
+
+      // Update Points
+      const pointsEl = document.getElementById('step-points');
+      pointsEl.innerHTML = '';
+      data.points.forEach(p => {
+        pointsEl.innerHTML += `
+          <div class="point-box">
+            <div class="point-icon">${p.icon}</div>
+            <div class="point-body">
+              <h5>${p.title}</h5>
+              <p>${p.text}</p>
+            </div>
+          </div>
+        `;
+      });
+
+      // Update Chat
+      const chatEl = document.getElementById('chat-stream');
+      chatEl.innerHTML = '';
+      data.chat.forEach(msg => {
+        const bubble = document.createElement('div');
+        bubble.className = `chat-bubble ${msg.type === 'incoming' ? 'bubble-incoming' : 'bubble-outgoing'}`;
+        let content = msg.text || '';
+
+        if (msg.isDoc) {
+          content = `
+            <div class="doc-attachment">
+              <span class="doc-icon">📄</span>
+              <span class="doc-name">${msg.docName}</span>
+            </div>
+          `;
+        }
+
+        if (msg.buttons && msg.buttons.length) {
+          content += '<div style="margin-top: 8px;">';
+          msg.buttons.forEach((btn, i) => {
+            content += `<button class="wa-button ${i === 0 ? 'primary' : ''}">${btn}</button>`;
+          });
+          content += '</div>';
+        }
+
+        content += `<div class="time-stamp">11:30 AM</div>`;
+        bubble.innerHTML = content;
+        chatEl.appendChild(bubble);
+      });
+    }
+
+    // Auto-init on load
+    document.addEventListener('DOMContentLoaded', () => {
+      renderStepper();
+      loadStep(0);
+    });
+  </script>
+
+</body>
+</html>

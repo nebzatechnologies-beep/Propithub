@@ -1,0 +1,73 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAuthenticated() { return request.auth != null; }
+    function isImage() { return request.resource.contentType.matches('image/.*'); }
+    function isDocument() { return request.resource.contentType.matches('application/pdf|image/.*'); }
+    function isPrivileged() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'superadmin' ||
+        request.auth.token.role == 'admin' ||
+        request.auth.token.role == 'owner'
+      );
+    }
+
+    // Publicly viewable property photos & gallery (Uploads require authentication)
+    match /properties/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAuthenticated() && isImage() && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // Unit photos (Uploads require authentication)
+    match /units/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAuthenticated() && isImage() && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // Lease Agreements
+    match /agreements/{agreementId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isDocument() && request.resource.size < 20 * 1024 * 1024;
+    }
+
+    // Move-out amenity inspection photos
+    match /moveouts/{moveoutId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isImage() && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // Maintenance ticket proof photos
+    match /tickets/{ticketId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isImage() && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // Scoped User KYC Documents and Private Credentials (User self-read or landlord/admin review)
+    match /users/{userId}/{fileName} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isPrivileged());
+      allow write: if isAuthenticated() && (request.auth.uid == userId || isPrivileged()) && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // Invoice offline payment proofs & receipts
+    match /invoices/{invoiceId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isDocument() && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // Cash Handover claim verification photos
+    match /cashClaims/{claimId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isImage() && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // Deposit settlement refund proof receipts
+    match /settlements/{settlementId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isDocument() && request.resource.size < 15 * 1024 * 1024;
+    }
+    match /depositSettlements/{settlementId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isDocument() && request.resource.size < 15 * 1024 * 1024;
+    }
+  }
+}

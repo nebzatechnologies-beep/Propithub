@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Expo & Build outputs
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# Native project folders (managed CNG workflow)
+/android
+/ios
+
+# Native builds & archives
+*.apk
+*.aab
+*.ipa
+*.bundle
+*.jsbundle
+
+# Certificates, keys, keystores
+*.jks
+*.p8
+*.p12
+*.key
+*.keystore
+*.mobileprovision
+*.orig.*
+
+# Environment & credentials
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS
+.DS_Store
+Thumbs.db

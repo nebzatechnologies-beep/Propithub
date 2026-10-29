@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'superadmin' ||
+        request.auth.token.role == 'admin'
+      );
+    }
+
+    function isOwner() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'owner' ||
+        isSuperAdmin()
+      );
+    }
+
+    function isTenant() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'tenant' ||
+        isSuperAdmin()
+      );
+    }
+
+    function isManager() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'manager' ||
+        isSuperAdmin()
+      );
+    }
+
+    function isStaff() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'staff' ||
+        isSuperAdmin()
+      );
+    }
+
+    function isUser(uid) {
+      return isAuthenticated() && (request.auth.uid == uid || isSuperAdmin());
+    }
+
+    // Public Landing & Configuration
+    match /platformConfig/{configId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    // Subscription Plans (public to view, superadmin to manage)
+    match /plans/{planId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    // Master Users Directory
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isUser(userId) || isOwner() || isSuperAdmin();
+    }
+
+    // Tenants Directory
+    match /tenants/{tenantId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Staff Directory & Schedules
+    match /staff/{staffId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isManager() || isSuperAdmin();
+    }
+    match /staffSchedules/{scheduleId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isManager() || isStaff() || isSuperAdmin();
+    }
+
+    // Property Managers Directory
+    match /propertyManagers/{managerId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isSuperAdmin();
+    }
+
+    // Tenancy Requests
+    match /tenancyRequests/{requestId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Owner Settings & Financial Credentials
+    match /owners/{ownerId} {
+      allow read: if isAuthenticated();
+      allow write: if isUser(ownerId) || isSuperAdmin();
+    }
+
+    // Properties & Units
+    match /properties/{propertyId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isManager() || isSuperAdmin();
+    }
+    match /units/{unitId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isManager() || isSuperAdmin();
+    }
+
+    // Agreements
+    match /agreements/{agreementId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Payments & Invoices
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+    match /invoices/{invoiceId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Maintenance Tickets
+    match /tickets/{ticketId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Move-Outs
+    match /moveouts/{moveoutId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Reviews & Reputation
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // In-App Notifications
+    match /notifications/{notifId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Lease Renewals
+    match /renewals/{renewalId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Manager Compensation & Payouts
+    match /managerPayouts/{payoutId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isSuperAdmin();
+    }
+
+    // Platform Invoices (Superadmin <-> Owner SaaS billing)
+    match /platformInvoices/{invoiceId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    // Tenant Payout Profiles
+    match /payoutProfiles/{profileId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Deposit Settlements
+    match /depositSettlements/{settlementId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Cash Handover Claims
+    match /cashClaims/{claimId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Communication Logs
+    match /communicationLogs/{logId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // System Audit Logs (Tamper-proof: append-only, delete/update restricted to superadmin)
+    match /auditLog/{logId} {
+      allow read: if isSuperAdmin() || isOwner();
+      allow create: if isAuthenticated();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Platform Support Tickets
+    match /platformSupport/{ticketId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Direct Messages & In-App Comms
+    match /messages/{messageId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Announcements & Acknowledgments
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isSuperAdmin();
+    }
+    match /announcementAcknowledgments/{ackId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Agreement Templates
+    match /agreementTemplates/{templateId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner() || isSuperAdmin();
+    }
+  }
+}

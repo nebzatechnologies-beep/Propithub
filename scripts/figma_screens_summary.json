@@ -1,0 +1,780 @@
+[
+  {
+    "index": 1,
+    "id": "3:21",
+    "name": "auth-gateway",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.05882352963089943,
+      "g": 0.09019608050584793,
+      "b": 0.16470588743686676,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub",
+      "Enterprise Property Management Suite",
+      "Email Address",
+      "owner@propithub.com",
+      "Password",
+      "••••••••••••",
+      "SHOW",
+      "Forgot Password?",
+      "Sign In",
+      "New to Propithub?",
+      "Register as Owner",
+      "Register as Tenant"
+    ]
+  },
+  {
+    "index": 2,
+    "id": "3:56",
+    "name": "owner-dashboard",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub",
+      "JD",
+      "Current Property:",
+      "Emerald Heights Apt",
+      "Rent Collected",
+      "₹4,85,000",
+      "Expected Rent Roll",
+      "₹5,20,000",
+      "Occupancy Rate",
+      "94%",
+      "Active Tickets",
+      "3 Pending",
+      "Action Hub & Reminders",
+      "Aditya Sharma"
+    ]
+  },
+  {
+    "index": 3,
+    "id": "3:155",
+    "name": "property-portfolio",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub",
+      "JD",
+      "Properties",
+      "Unit Directory",
+      "Search properties, locations...",
+      "Emerald Heights Apt",
+      "94% OCCUPIED",
+      "Sector 45, Gurugram, India • 24 Units",
+      "UNIT DIRECTORY",
+      "Unit 102 (2 BHK)",
+      "Rent: ₹24,000 • Dep: ₹48,000",
+      "Occupied",
+      "Unit 103 (3 BHK)",
+      "Rent: ₹32,000 • Dep: ₹64,000"
+    ]
+  },
+  {
+    "index": 4,
+    "id": "3:235",
+    "name": "tenant-roster",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub",
+      "JD",
+      "Active Residents",
+      "Invitations",
+      "Search residents...",
+      "AS",
+      "Aditya Sharma",
+      "Unit 402-B • Emerald Heights",
+      "TENANT 360 OVERVIEW",
+      "KYC Status",
+      "Verified Aadhaar",
+      "Monthly Rent",
+      "₹28,000",
+      "Resident Rating"
+    ]
+  },
+  {
+    "index": 5,
+    "id": "3:314",
+    "name": "leasing-hub",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub",
+      "JD",
+      "Active Agreements",
+      "Renewals",
+      "All",
+      "Awaiting Sign",
+      "Active",
+      "AGREEMENT #PH-28490",
+      "ACTIVE",
+      "Emerald Heights Apt • Unit 102",
+      "Tenant: Aditya Sharma",
+      "01 Nov 2023 - 31 Oct 2024",
+      "DIGITAL EXECUTION",
+      "₹24,000/mo"
+    ]
+  },
+  {
+    "index": 6,
+    "id": "3:382",
+    "name": "vacates-moveout",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Inspections & Vacates",
+      "JD",
+      "Unit 304-A • Move Out",
+      "Rohan Gupta • Dep Held: ₹50,000",
+      "INSPECTED",
+      "Step 3 of 5: Inspection Done",
+      "60% Complete",
+      "Deductions & Item Condition",
+      "Walls & Paint",
+      "Good",
+      "Fair",
+      "Damaged",
+      "Electric Fittings",
+      "Good"
+    ]
+  },
+  {
+    "index": 7,
+    "id": "3:466",
+    "name": "financial-ledger",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub",
+      "JD",
+      "Rent Due",
+      "Invoices",
+      "Ledger",
+      "Emerald Heights Apt",
+      "INR (₹)",
+      "INV-2024-001",
+      "Tenant: Aditya Sharma (402-B)",
+      "Due Date: 05 Jan 2024",
+      "₹28,000",
+      "PAID",
+      "INV-2024-002",
+      "Tenant: Rohan Verma (104)"
+    ]
+  },
+  {
+    "index": 8,
+    "id": "3:539",
+    "name": "maintenance-dispatch",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub",
+      "JD",
+      "Work Orders",
+      "Technicians",
+      "ORDER #WO-9034",
+      "HIGH PRIORITY",
+      "Geyser Leakage & Electric Spark",
+      "Unit 402-B • Aditya Sharma",
+      "Assigned Tech",
+      "Rajesh (Plumbing)",
+      "Set Task Fee",
+      "Overview",
+      "Properties",
+      "Leasing"
+    ]
+  },
+  {
+    "index": 9,
+    "id": "3:600",
+    "name": "account-settings",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Account Settings",
+      "JD",
+      "John Doe",
+      "john.doe@propithub.com • +91 98765 43210",
+      "Currently acting as:",
+      "Property Owner Workspace",
+      "Switch Role",
+      "SECURITY",
+      "Change Password",
+      "NOTIFICATION PREFERENCES",
+      "Email Invoices & Receipts",
+      "SMS Payment Reminders",
+      "Maintenance Ticket Alerts",
+      "Propithub for iOS • v2.4.1 (Enterprise)"
+    ]
+  },
+  {
+    "index": 10,
+    "id": "3:946",
+    "name": "tenant-dashboard",
+    "width": 402,
+    "height": 892,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "My Tenancy Hub",
+      "TENANT",
+      "EMERGENCY ANNOUNCEMENT",
+      "Scheduled power maintenance in block B tomorrow from 10:00 AM to 1:00 PM.",
+      "Acknowledge",
+      "Lease Invitation Received",
+      "Proposed Rent: ₹28,000/mo • Deposit: ₹56,000",
+      "Accept Tenancy",
+      "Decline",
+      "Emerald Heights Apt",
+      "ACTIVE",
+      "Unit 402-B • 2 BHK",
+      "Lease Period: 11 May 2025 - 10 Apr 2026",
+      "MONTHLY RENT"
+    ]
+  },
+  {
+    "index": 11,
+    "id": "3:1041",
+    "name": "tenant-lease",
+    "width": 402,
+    "height": 912,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Lease Documents",
+      "AWAITING SIGN",
+      "Active Leases",
+      "Renewals",
+      "Agreement Unit 402-B",
+      "AWAITING SIGNATURE",
+      "Please review and digitally sign the renewal terms proposed by John Doe.",
+      "Download Official Agreement PDF",
+      "Digital Signature Pad",
+      "Draw signature inside the box",
+      "Clear",
+      "Save & Apply",
+      "Upload Physical Document",
+      "Take photos of signed papers"
+    ]
+  },
+  {
+    "index": 12,
+    "id": "3:1131",
+    "name": "tenant-payments",
+    "width": 402,
+    "height": 883,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Payments & Bills",
+      "₹28,000 DUE",
+      "Upcoming Bills",
+      "Invoices",
+      "Ledger",
+      "Deposit",
+      "MAY RENT",
+      "₹28,000",
+      "DUE IN 2 DAYS",
+      "⚠️ Avoid late fee of ₹500 after 15th May.",
+      "Pay Now",
+      "Paid via Net Banking? Upload Proof",
+      "Enter UTR Reference Number",
+      "Attach Payment Receipt Screenshot"
+    ]
+  },
+  {
+    "index": 13,
+    "id": "3:1219",
+    "name": "tenant-maintenance",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Maintenance Center",
+      "1 ACTIVE",
+      "Bathroom Geyser Leakage",
+      "ID: #MNT-2849 • Category: Plumbing",
+      "IN PROGRESS",
+      "Assigned: Ramesh Kumar (Tech)",
+      "Tenant Billable Charge",
+      "Damage classified as tenant-fault",
+      "Pay ₹850",
+      "Rate Completed Job (#MNT-2810)",
+      "Write your feedback here...",
+      "Submit Feedback",
+      "Raise Ticket",
+      "Home"
+    ]
+  },
+  {
+    "index": 14,
+    "id": "3:1298",
+    "name": "manager-operations",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Operations Hub",
+      "MANAGER",
+      "Assigned Portfolio Owner: John Doe Estates",
+      "Active Property:",
+      "Emerald Heights Apt",
+      "Occupancy KPI",
+      "94% Occupied",
+      "22 Active • 2 Vacant",
+      "Active Repairs",
+      "3 Pending Dispatch",
+      "1 Assigned Technician",
+      "Emergency Tickets Feed",
+      "Unit 102-A • Water Flooding",
+      "EMERGENCY"
+    ]
+  },
+  {
+    "index": 15,
+    "id": "3:1373",
+    "name": "manager-repair-dispatch",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Repair Dispatch",
+      "3 DISPATCH INBOX",
+      "Emergency",
+      "High",
+      "Medium",
+      "Unit 402-B • Geyser Leakage",
+      "AWAITING TRIAGE",
+      "Tenant Phone: +91 98765 01020",
+      "Water dripping continuously from ceiling mounting valves.",
+      "TRIAGE & ASSIGNMENT",
+      "Technician: Ramesh Kumar (Plumbing)",
+      "Designate Payer:",
+      "Owner Pays",
+      "Tenant Pays"
+    ]
+  },
+  {
+    "index": 16,
+    "id": "3:1454",
+    "name": "staff-job-queue",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Technician Portal",
+      "ACTIVE JOB",
+      "Active Queue",
+      "Daily Schedule",
+      "Unit 402-B • Plumber Job",
+      "Job Fee: ₹850 (Tenant-Paid)",
+      "HIGH PRIORITY",
+      "Tenant: Aditya Sharma",
+      "Issue: Kitchen pipe leak damaging wooden cabinet base.",
+      "Call Tenant (+91 98765 01020)",
+      "Start Job",
+      "Complete Job",
+      "Job Completion Report",
+      "Resolution notes: Replaced copper connector ring."
+    ]
+  },
+  {
+    "index": 17,
+    "id": "3:1529",
+    "name": "staff-earnings",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Task Earnings",
+      "₹8,400 EARNED",
+      "Technician Ledger Summary",
+      "TOTAL EARNED",
+      "₹8,450",
+      "PENDING PAYOUT",
+      "₹2,100",
+      "Payout Method Configuration",
+      "Bank Account IFSC / Routing",
+      "HDFC0001048",
+      "UPI ID",
+      "ramesh.kumar@okhdfc",
+      "Save Payment Details",
+      "Payout History"
+    ]
+  },
+  {
+    "index": 18,
+    "id": "9:12",
+    "name": "owner-messages",
+    "width": 402,
+    "height": 1034,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub Owner",
+      "Messages & Announcements",
+      "OWNER",
+      "Published",
+      "Scheduled",
+      "Draft",
+      "Archived",
+      "New Broadcast Announcement",
+      "Category",
+      "Emergency Broadcast",
+      "Priority Level",
+      "Normal",
+      "High",
+      "Urgent"
+    ]
+  },
+  {
+    "index": 19,
+    "id": "9:120",
+    "name": "owner-team-managers",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub Owner",
+      "Team & Managers",
+      "OWNER",
+      "Managers Roster",
+      "Manager Payouts",
+      "Assigned Managers (2)",
+      "Add Manager",
+      "KM",
+      "Karan Mehta",
+      "karan@propithub.com",
+      "Active",
+      "ASSIGNED PROPERTIES",
+      "• Emerald Heights Apt (24 units)",
+      "• Sapphire Towers (12 units)"
+    ]
+  },
+  {
+    "index": 20,
+    "id": "9:208",
+    "name": "owner-disputes-reviews",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub Owner",
+      "Disputes & Trust Ratings",
+      "OWNER",
+      "Disputes",
+      "Reviews",
+      "#DISP-2041",
+      "Under Review",
+      "Aditya Sharma",
+      "PAYMENT",
+      "Unit 402-B • Filed 3 days ago",
+      "Tenant claims double transaction error for April rent cycle. Attached Bank receipt proof.",
+      "View Evidence",
+      "Resolve Ticket",
+      "Verified Tenant Reviews"
+    ]
+  },
+  {
+    "index": 21,
+    "id": "9:309",
+    "name": "owner-helpdesk",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub Owner",
+      "Helpdesk & Support",
+      "OWNER",
+      "Encountered an issue?",
+      "Our support desk resolves premium platform issues within 24 hours.",
+      "+ Raise Platform Ticket",
+      "Your Platform Tickets (2)",
+      "TKT-88402",
+      "IN PROGRESS",
+      "Razorpay settlement delay issue",
+      "BILLING",
+      "HIGH",
+      "Created 12 May 2025",
+      "Open Conversation →"
+    ]
+  },
+  {
+    "index": 22,
+    "id": "9:384",
+    "name": "owner-plan-subscription",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Propithub Owner",
+      "Plan & Billing",
+      "OWNER",
+      "CURRENT SUBSCRIPTION",
+      "Professional Plan",
+      "₹2,499/mo",
+      "Properties Used",
+      "3 / 5",
+      "Units Listed",
+      "17 / 25",
+      "Assigned Managers",
+      "2 / 3",
+      "Configured Payment Gateways",
+      "💳"
+    ]
+  },
+  {
+    "index": 23,
+    "id": "9:483",
+    "name": "tenant-landlord-reviews",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "My Tenancy",
+      "Landlord Directory & Trust",
+      "TENANT",
+      "Search verified landlord by name...",
+      "Verified Profile Card",
+      "JD",
+      "John Doe Estates",
+      "5 Active properties • Verified Owner",
+      "TRUST SCORE",
+      "4.9 / 5.0",
+      "+ Write Verified Review",
+      "Your Submitted Reviews",
+      "John Doe Estates",
+      "May 2025"
+    ]
+  },
+  {
+    "index": 24,
+    "id": "9:579",
+    "name": "manager-properties",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Operations Hub",
+      "Managed Portfolios",
+      "MANAGER",
+      "🏙️ Emerald Heights Building Photo",
+      "Emerald Heights Apartment",
+      "Sector 62, Noida, UP • 24 Units",
+      "OCCUPANCY ROSTER",
+      "Unit 402-B",
+      "Aditya Sharma",
+      "Occupied",
+      "Unit 104-A",
+      "Available for Lease",
+      "Vacant",
+      "VERIFIED AMENITIES"
+    ]
+  },
+  {
+    "index": 25,
+    "id": "9:661",
+    "name": "manager-lease-documents",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Operations Hub",
+      "Lease Repository",
+      "MANAGER",
+      "Search by tenant...",
+      "Lease Agreements (3)",
+      "Aditya Sharma",
+      "Active",
+      "Building Location: Emerald Heights Apt",
+      "Unit Code: Unit 402-B",
+      "Validity: 11 May 2025 - 10 Apr 2026",
+      "Ref: PRHP-LE-1000",
+      "Download PDF",
+      "Rohan Verma",
+      "Active"
+    ]
+  },
+  {
+    "index": 26,
+    "id": "9:759",
+    "name": "staff-ratings",
+    "width": 402,
+    "height": 874,
+    "backgroundColor": {
+      "r": 0.9725490212440491,
+      "g": 0.9803921580314636,
+      "b": 0.9882352948188782,
+      "a": 1
+    },
+    "texts": [
+      "9:41",
+      "Technician Portal",
+      "Ratings & Feedback Summary",
+      "ACTIVE STAFF",
+      "PERFORMANCE METRIC",
+      "4.2 / 5.0",
+      "JOBS COMPLETED",
+      "48 Clean Tasks",
+      "RATING DISTRIBUTION",
+      "5 Star",
+      "34",
+      "4 Star",
+      "10",
+      "3 Star",
+      "3"
+    ]
+  }
+]

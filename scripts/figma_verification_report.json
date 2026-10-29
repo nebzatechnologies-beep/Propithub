@@ -1,0 +1,393 @@
+[
+  {
+    "index": 1,
+    "id": "3:21",
+    "name": "auth-gateway",
+    "file": "AuthGatewayScreen.tsx",
+    "totalCount": 12,
+    "foundCount": 12,
+    "missingCount": 0,
+    "percent": 100,
+    "missing": []
+  },
+  {
+    "index": 2,
+    "id": "3:56",
+    "name": "owner-dashboard",
+    "file": "OwnerDashboardScreen.tsx",
+    "totalCount": 32,
+    "foundCount": 28,
+    "missingCount": 4,
+    "percent": 88,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 3,
+    "id": "3:155",
+    "name": "property-portfolio",
+    "file": "PropertyPortfolioScreen.tsx",
+    "totalCount": 23,
+    "foundCount": 20,
+    "missingCount": 3,
+    "percent": 87,
+    "missing": [
+      "Overview",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 4,
+    "id": "3:235",
+    "name": "tenant-roster",
+    "file": "TenantRosterScreen.tsx",
+    "totalCount": 20,
+    "foundCount": 17,
+    "missingCount": 3,
+    "percent": 85,
+    "missing": [
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 5,
+    "id": "3:314",
+    "name": "leasing-hub",
+    "file": "LeasingHubScreen.tsx",
+    "totalCount": 19,
+    "foundCount": 16,
+    "missingCount": 3,
+    "percent": 84,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Finance"
+    ]
+  },
+  {
+    "index": 6,
+    "id": "3:382",
+    "name": "vacates-moveout",
+    "file": "VacatesMoveoutScreen.tsx",
+    "totalCount": 27,
+    "foundCount": 23,
+    "missingCount": 4,
+    "percent": 85,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 7,
+    "id": "3:466",
+    "name": "financial-ledger",
+    "file": "FinancialLedgerScreen.tsx",
+    "totalCount": 22,
+    "foundCount": 18,
+    "missingCount": 4,
+    "percent": 82,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 8,
+    "id": "3:539",
+    "name": "maintenance-dispatch",
+    "file": "OwnerMaintenanceDispatchScreen.tsx",
+    "totalCount": 15,
+    "foundCount": 11,
+    "missingCount": 4,
+    "percent": 73,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 9,
+    "id": "3:600",
+    "name": "account-settings",
+    "file": "AccountSettingsScreen.tsx",
+    "totalCount": 18,
+    "foundCount": 15,
+    "missingCount": 3,
+    "percent": 83,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing"
+    ]
+  },
+  {
+    "index": 10,
+    "id": "3:946",
+    "name": "tenant-dashboard",
+    "file": "TenantDashboardScreen.tsx",
+    "totalCount": 27,
+    "foundCount": 25,
+    "missingCount": 2,
+    "percent": 93,
+    "missing": [
+      "Home",
+      "My Lease"
+    ]
+  },
+  {
+    "index": 11,
+    "id": "3:1041",
+    "name": "tenant-lease",
+    "file": "TenantLeaseScreen.tsx",
+    "totalCount": 24,
+    "foundCount": 20,
+    "missingCount": 4,
+    "percent": 83,
+    "missing": [
+      "Home",
+      "My Lease",
+      "Payments",
+      "Support"
+    ]
+  },
+  {
+    "index": 12,
+    "id": "3:1131",
+    "name": "tenant-payments",
+    "file": "TenantPaymentsScreen.tsx",
+    "totalCount": 28,
+    "foundCount": 25,
+    "missingCount": 3,
+    "percent": 89,
+    "missing": [
+      "Home",
+      "My Lease",
+      "Support"
+    ]
+  },
+  {
+    "index": 13,
+    "id": "3:1219",
+    "name": "tenant-maintenance",
+    "file": "TenantMaintenanceScreen.tsx",
+    "totalCount": 17,
+    "foundCount": 13,
+    "missingCount": 4,
+    "percent": 76,
+    "missing": [
+      "Home",
+      "My Lease",
+      "Payments",
+      "Support"
+    ]
+  },
+  {
+    "index": 14,
+    "id": "3:1298",
+    "name": "manager-operations",
+    "file": "ManagerOperationsScreen.tsx",
+    "totalCount": 24,
+    "foundCount": 22,
+    "missingCount": 2,
+    "percent": 92,
+    "missing": [
+      "Properties",
+      "Documents"
+    ]
+  },
+  {
+    "index": 15,
+    "id": "3:1373",
+    "name": "manager-repair-dispatch",
+    "file": "ManagerRepairDispatchScreen.tsx",
+    "totalCount": 24,
+    "foundCount": 21,
+    "missingCount": 3,
+    "percent": 88,
+    "missing": [
+      "Operations",
+      "Properties",
+      "Documents"
+    ]
+  },
+  {
+    "index": 16,
+    "id": "3:1454",
+    "name": "staff-job-queue",
+    "file": "StaffJobQueueScreen.tsx",
+    "totalCount": 20,
+    "foundCount": 18,
+    "missingCount": 2,
+    "percent": 90,
+    "missing": [
+      "Earnings",
+      "Ratings"
+    ]
+  },
+  {
+    "index": 17,
+    "id": "3:1529",
+    "name": "staff-earnings",
+    "file": "StaffEarningsScreen.tsx",
+    "totalCount": 26,
+    "foundCount": 23,
+    "missingCount": 3,
+    "percent": 88,
+    "missing": [
+      "Queue",
+      "Schedule",
+      "Ratings"
+    ]
+  },
+  {
+    "index": 18,
+    "id": "9:12",
+    "name": "owner-messages",
+    "file": "OwnerMessagesScreen.tsx",
+    "totalCount": 33,
+    "foundCount": 29,
+    "missingCount": 4,
+    "percent": 88,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 19,
+    "id": "9:120",
+    "name": "owner-team-managers",
+    "file": "OwnerTeamManagersScreen.tsx",
+    "totalCount": 27,
+    "foundCount": 24,
+    "missingCount": 3,
+    "percent": 89,
+    "missing": [
+      "Overview",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 20,
+    "id": "9:208",
+    "name": "owner-disputes-reviews",
+    "file": "OwnerDisputesReviewsScreen.tsx",
+    "totalCount": 23,
+    "foundCount": 19,
+    "missingCount": 4,
+    "percent": 83,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 21,
+    "id": "9:309",
+    "name": "owner-helpdesk",
+    "file": "OwnerHelpdeskScreen.tsx",
+    "totalCount": 22,
+    "foundCount": 18,
+    "missingCount": 4,
+    "percent": 82,
+    "missing": [
+      "Overview",
+      "Properties",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 22,
+    "id": "9:384",
+    "name": "owner-plan-subscription",
+    "file": "OwnerPlanSubscriptionScreen.tsx",
+    "totalCount": 32,
+    "foundCount": 29,
+    "missingCount": 3,
+    "percent": 91,
+    "missing": [
+      "Overview",
+      "Leasing",
+      "Finance"
+    ]
+  },
+  {
+    "index": 23,
+    "id": "9:483",
+    "name": "tenant-landlord-reviews",
+    "file": "TenantLandlordReviewsScreen.tsx",
+    "totalCount": 20,
+    "foundCount": 16,
+    "missingCount": 4,
+    "percent": 80,
+    "missing": [
+      "Home",
+      "My Lease",
+      "Payments",
+      "Support"
+    ]
+  },
+  {
+    "index": 24,
+    "id": "9:579",
+    "name": "manager-properties",
+    "file": "ManagerPropertiesScreen.tsx",
+    "totalCount": 25,
+    "foundCount": 23,
+    "missingCount": 2,
+    "percent": 92,
+    "missing": [
+      "Dispatch",
+      "Documents"
+    ]
+  },
+  {
+    "index": 25,
+    "id": "9:661",
+    "name": "manager-lease-documents",
+    "file": "ManagerLeaseDocumentsScreen.tsx",
+    "totalCount": 30,
+    "foundCount": 28,
+    "missingCount": 2,
+    "percent": 93,
+    "missing": [
+      "Properties",
+      "Dispatch"
+    ]
+  },
+  {
+    "index": 26,
+    "id": "9:759",
+    "name": "staff-ratings",
+    "file": "StaffRatingsScreen.tsx",
+    "totalCount": 25,
+    "foundCount": 22,
+    "missingCount": 3,
+    "percent": 88,
+    "missing": [
+      "Queue",
+      "Schedule",
+      "Earnings"
+    ]
+  }
+]

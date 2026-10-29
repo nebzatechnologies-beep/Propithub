@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Propithub: Autopay Gateway Handshakes & Free Trial Lifecycle Architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090D16;
+      --card-bg: rgba(18, 25, 41, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-main: #F8FAFC;
+      --text-muted: #94A3B8;
+      --stripe-purple: #635BFF;
+      --razorpay-blue: #0C2340;
+      --razorpay-teal: #10B981;
+      --easebuzz-blue: #0A58CA;
+      --paypal-gold: #0079C1;
+      --accent-danger: #EF4444;
+      --accent-warning: #F59E0B;
+      --accent-success: #10B981;
+      --code-bg: #030712;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 22px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--bg);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 40px 20px 100px;
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(99, 91, 255, 0.08) 0%, transparent 45%),
+        radial-gradient(circle at 85% 65%, rgba(16, 185, 129, 0.08) 0%, transparent 45%),
+        radial-gradient(circle at 50% 90%, rgba(239, 68, 68, 0.06) 0%, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .badge-top {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 18px;
+      border-radius: 999px;
+      background: rgba(99, 91, 255, 0.15);
+      border: 1px solid rgba(99, 91, 255, 0.35);
+      color: #A5B4FC;
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      font-size: clamp(2.2rem, 5vw, 3.4rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin-bottom: 14px;
+      background: linear-gradient(135deg, #FFFFFF 40%, #94A3B8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    h1 span.highlight {
+      background: linear-gradient(135deg, #635BFF 0%, #10B981 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* Nav Switcher */
+    .nav-tabs {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin: 35px 0 25px;
+      flex-wrap: wrap;
+    }
+
+    .nav-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 12px 22px;
+      border-radius: var(--radius-md);
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: all 0.2s ease;
+    }
+
+    .nav-btn:hover {
+      background: rgba(255, 255, 255, 0.09);
+      color: #FFFFFF;
+      transform: translateY(-2px);
+    }
+
+    .nav-btn.active {
+      background: #FFFFFF;
+      color: #090D16;
+      border-color: #FFFFFF;
+      box-shadow: 0 4px 20px rgba(255, 255, 255, 0.25);
+    }
+
+    /* Section Cards */
+    .tab-content {
+      display: none;
+      animation: fadeIn 0.3s ease forwards;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      margin-bottom: 30px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    .card-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 18px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .card-title-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .gw-logo {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.3rem;
+      color: #FFFFFF;
+    }
+
+    .title-text h2 {
+      font-size: 1.5rem;
+      font-weight: 800;
+    }
+
+    .title-text p {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .pill-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 14px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .pill-badge.live {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #34D399;
+    }
+
+    .pill-badge.warning {
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: #FBBF24;
+    }
+
+    .pill-badge.danger {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #F87171;
+    }
+
+    /* Flow Step Pipeline */
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin: 25px 0;
+      position: relative;
+    }
+
+    .pipe-step {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-md);
+      padding: 20px 18px;
+      position: relative;
+    }
+
+    .step-num {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 800;
+      margin-bottom: 12px;
+      color: #FFFFFF;
+    }
+
+    .pipe-step h4 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #F8FAFC;
+    }
+
+    .pipe-step p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+
+    .pipe-step .tech-tag {
+      display: inline-block;
+      margin-top: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #CBD5E1;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    /* Interactive Simulation Box */
+    .demo-box {
+      background: #020617;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      margin-top: 25px;
+    }
+
+    .demo-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 10px;
+    }
+
+    .demo-header h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #E2E8F0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .interactive-window {
+      background: #0B0F19;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-sm);
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 860px) {
+      .interactive-window { grid-template-columns: 1fr; }
+    }
+
+    .window-col h5 {
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      font-weight: 700;
+    }
+
+    .code-snippet {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      background: var(--code-bg);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 14px;
+      border-radius: 8px;
+      color: #94A3B8;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+
+    .code-snippet .keyword { color: #F472B6; }
+    .code-snippet .string { color: #34D399; }
+    .code-snippet .func { color: #60A5FA; }
+    .code-snippet .comment { color: #64748B; font-style: italic; }
+
+    /* Timeline Purge Sequence */
+    .timeline {
+      position: relative;
+      margin: 30px 0 10px;
+      padding-left: 30px;
+    }
+
+    .timeline::before {
+      content: '';
+      position: absolute;
+      top: 10px;
+      bottom: 10px;
+      left: 9px;
+      width: 2px;
+      background: linear-gradient(to bottom, #10B981, #F59E0B 50%, #EF4444 100%);
+    }
+
+    .timeline-item {
+      position: relative;
+      margin-bottom: 30px;
+    }
+
+    .timeline-dot {
+      position: absolute;
+      left: -30px;
+      top: 4px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--bg);
+      border: 3px solid #10B981;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .timeline-item.warning .timeline-dot { border-color: #F59E0B; }
+    .timeline-item.danger .timeline-dot { border-color: #EF4444; }
+
+    .timeline-content {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-md);
+      padding: 18px 22px;
+    }
+
+    .timeline-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .timeline-header h4 {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .timeline-tag {
+      font-size: 0.72rem;
+      font-weight: 800;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #FFFFFF;
+    }
+
+    /* Comparison Table */
+    .table-container {
+      overflow-x: auto;
+      margin-top: 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      text-align: left;
+    }
+
+    th {
+      background: rgba(255, 255, 255, 0.06);
+      color: #E2E8F0;
+      padding: 14px 16px;
+      font-weight: 700;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      color: #94A3B8;
+      vertical-align: middle;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+      color: #F8FAFC;
+    }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      margin-top: 60px;
+      padding-top: 25px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      color: #64748B;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="badge-top">Live Bank Gateway Architecture • Production Reference</div>
+      <h1>Propithub <span class="highlight">Autopay &amp; Lifecycle</span> Guide</h1>
+      <p class="subtitle">
+        Visual end-to-end blueprint of live bank mandate handshakes across Stripe, Razorpay, Easebuzz, PayPal, alongside the automated Free Trial conversion and 15-day purge engine.
+      </p>
+    </header>
+
+    <!-- Nav Tabs Switcher -->
+    <div class="nav-tabs">
+      <button class="nav-btn active" onclick="switchTab('tab-stripe')">
+        <span style="color:#635BFF">💳</span> Stripe (3DS Elements)
+      </button>
+      <button class="nav-btn" onclick="switchTab('tab-razorpay')">
+        <span style="color:#10B981">⚡</span> Razorpay (UPI AutoPay)
+      </button>
+      <button class="nav-btn" onclick="switchTab('tab-easebuzz')">
+        <span style="color:#0A58CA">🏦</span> Easebuzz (e-NACH DigiGov)
+      </button>
+      <button class="nav-btn" onclick="switchTab('tab-paypal')">
+        <span style="color:#0079C1">🅿️</span> PayPal (Vault Agreement)
+      </button>
+      <button class="nav-btn" onclick="switchTab('tab-trial')">
+        <span style="color:#EF4444">⏳</span> Free Trial Expiry &amp; Purge
+      </button>
+      <button class="nav-btn" onclick="switchTab('tab-matrix')">
+        <span>📊</span> Full Gateway Matrix
+      </button>
+    </div>
+
+    <!-- ==================== 1. STRIPE ==================== -->
+    <div id="tab-stripe" class="tab-content active">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title-left">
+            <div class="gw-logo" style="background: linear-gradient(135deg, #635BFF, #4338CA);">S</div>
+            <div class="title-text">
+              <h2>Stripe e-Mandate Authorization (Credit &amp; Debit Cards)</h2>
+              <p>Global PCI-DSS Level-1 certified headless off-session card vaulting</p>
+            </div>
+          </div>
+          <span class="pill-badge live">✓ Live 3DS 2.0 Bank OTP Handshake</span>
+        </div>
+
+        <div class="pipeline-grid">
+          <div class="pipe-step">
+            <div class="step-num">1</div>
+            <h4>SetupIntent Init</h4>
+            <p>Cloud Function creates a Stripe Customer &amp; SetupIntent with usage set to <code>off_session</code>.</p>
+            <div class="tech-tag">createStripeSetupIntent</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">2</div>
+            <h4>Stripe Elements</h4>
+            <p>Mounts encrypted card iframe directly on Stripe's CDN. Zero raw card data touches Propithub servers.</p>
+            <div class="tech-tag">stripe.confirmCardSetup()</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">3</div>
+            <h4>Bank 3DS OTP</h4>
+            <p>Issuing bank triggers 3D-Secure 2.0 challenge popup to verify card ownership via SMS/App OTP.</p>
+            <div class="tech-tag">Visa / Mastercard 3DS</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">4</div>
+            <h4>Mandate Token</h4>
+            <p>Backend retrieves SetupIntent, extracts card brand &amp; last4, and stores reusable <code>pm_xxx</code> token.</p>
+            <div class="tech-tag">verifyStripeMandate</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">5</div>
+            <h4>Off-Session Debit</h4>
+            <p>On rent day, daily Cloud Cron debits card headlessly with zero user intervention.</p>
+            <div class="tech-tag">stripe.paymentIntents.create</div>
+          </div>
+        </div>
+
+        <div class="demo-box">
+          <div class="demo-header">
+            <h3><span>🔒</span> Behind-the-Scenes Technical Payload</h3>
+            <span style="font-size:0.75rem; color:#64748B;">functions/src/index.ts</span>
+          </div>
+          <div class="interactive-window">
+            <div class="window-col">
+              <h5>Initial Setup (Client to Bank)</h5>
+              <div class="code-snippet">
+<span class="comment">// 1. Client confirms card setup via Stripe.js</span>
+<span class="keyword">const</span> res = <span class="keyword">await</span> stripe.<span class="func">confirmCardSetup</span>(clientSecret, {
+  payment_method: {
+    card: cardElement,
+    billing_details: { name: <span class="string">'Jane Doe'</span>, email: <span class="string">'jane@example.com'</span> }
+  }
+});
+<span class="comment">// 2. Triggers bank 3DS OTP challenge modal</span>
+<span class="comment">// 3. Returns paymentMethod ID: "pm_1N4xyz92LkQ..."</span>
+              </div>
+            </div>
+            <div class="window-col">
+              <h5>Automated Monthly Debit (Headless Server-to-Server)</h5>
+              <div class="code-snippet">
+<span class="comment">// Daily Cron executes on rent due day</span>
+<span class="keyword">const</span> debit = <span class="keyword">await</span> stripe.paymentIntents.<span class="func">create</span>({
+  amount: <span class="string">2500000</span>, <span class="comment">// $2,500.00</span>
+  currency: <span class="string">'usd'</span>,
+  customer: <span class="string">'cus_9A8B7C...'</span>,
+  payment_method: <span class="string">'pm_1N4xyz92LkQ...'</span>,
+  off_session: <span class="keyword">true</span>, <span class="comment">// Zero login required</span>
+  confirm: <span class="keyword">true</span>
+});
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 2. RAZORPAY ==================== -->
+    <div id="tab-razorpay" class="tab-content">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title-left">
+            <div class="gw-logo" style="background: linear-gradient(135deg, #10B981, #059669);">₹</div>
+            <div class="title-text">
+              <h2>Razorpay UPI AutoPay &amp; Cards (RBI Compliant)</h2>
+              <p>NPCI Standing Instructions for Google Pay, PhonePe, Paytm &amp; Indian Debit Cards</p>
+            </div>
+          </div>
+          <span class="pill-badge live">✓ UPI MPIN / OTP Auth</span>
+        </div>
+
+        <div class="pipeline-grid">
+          <div class="pipe-step">
+            <div class="step-num">1</div>
+            <h4>₹1.00 Token Order</h4>
+            <p>Cloud Function creates a ₹1 registration order with recurring flags and rent cap notes.</p>
+            <div class="tech-tag">createRazorpayMandateOrder</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">2</div>
+            <h4>Checkout Sheet</h4>
+            <p>Official Razorpay Sheet opens displaying monthly frequency and maximum authorized cap.</p>
+            <div class="tech-tag">Razorpay(options).open()</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">3</div>
+            <h4>UPI MPIN Auth</h4>
+            <p>User enters UPI ID (e.g. <code>user@okhdfcbank</code>) and signs mandate with secret UPI PIN in GPay/PhonePe.</p>
+            <div class="tech-tag">NPCI UPI AutoPay</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">4</div>
+            <h4>HMAC Verification</h4>
+            <p>Cloud Function verifies HMAC SHA-256 cryptographic signature and fetches recurring token.</p>
+            <div class="tech-tag">verifyRazorpayMandate</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">5</div>
+            <h4>T-48h Notice &amp; Debit</h4>
+            <p>Dispatches mandatory 48-hr advance SMS/Email before triggering off-session bank debit.</p>
+            <div class="tech-tag">RBI Pre-Debit Alert</div>
+          </div>
+        </div>
+
+        <div class="demo-box">
+          <div class="demo-header">
+            <h3><span>⚡</span> Cryptographic Signature &amp; Execution</h3>
+            <span style="font-size:0.75rem; color:#64748B;">functions/src/index.ts</span>
+          </div>
+          <div class="interactive-window">
+            <div class="window-col">
+              <h5>Cryptographic Verification</h5>
+              <div class="code-snippet">
+<span class="keyword">const</span> expectedSig = crypto
+  .<span class="func">createHmac</span>(<span class="string">'sha256'</span>, razorpayKeySecret)
+  .<span class="func">update</span>(<span class="string">`${orderId}|${paymentId}`</span>)
+  .<span class="func">digest</span>(<span class="string">'hex'</span>);
+
+<span class="comment">// Prevents client-side payment spoofing</span>
+<span class="keyword">if</span> (!crypto.<span class="func">timingSafeEqual</span>(expectedSig, sig)) {
+  <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'Invalid Signature'</span>);
+}
+              </div>
+            </div>
+            <div class="window-col">
+              <h5>Headless Recurring Execution</h5>
+              <div class="code-snippet">
+<span class="comment">// Executed by Cron on Rent Due Day</span>
+<span class="keyword">const</span> recurringOrder = <span class="keyword">await</span> rzp.orders.<span class="func">create</span>({
+  amount: rentAmountPaise,
+  currency: <span class="string">'INR'</span>,
+  receipt: <span class="string">'auto_rent_'</span> + agreementId,
+  notes: { mandateToken: <span class="string">'token_K92z83...'</span> }
+});
+<span class="comment">// Emits automated PDF invoice and receipt</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 3. EASEBUZZ ==================== -->
+    <div id="tab-easebuzz" class="tab-content">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title-left">
+            <div class="gw-logo" style="background: linear-gradient(135deg, #0A58CA, #084298);">EB</div>
+            <div class="title-text">
+              <h2>Easebuzz e-NACH NetBanking (NPCI DigiGov)</h2>
+              <p>National Automated Clearing House direct bank account mandate switch</p>
+            </div>
+          </div>
+          <span class="pill-badge live">✓ SHA-512 HMAC Signed</span>
+        </div>
+
+        <div class="pipeline-grid">
+          <div class="pipe-step">
+            <div class="step-num">1</div>
+            <h4>SHA-512 Initiate</h4>
+            <p>Cloud Function computes SHA-512 hash string using Merchant Key, Salt, and Transaction ID.</p>
+            <div class="tech-tag">createEasebuzzMandateSession</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">2</div>
+            <h4>Bank Selection</h4>
+            <p>User selects primary bank (HDFC, SBI, ICICI, Axis) and enters Savings Account Number.</p>
+            <div class="tech-tag">e-NACH Modal</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">3</div>
+            <h4>DigiGov Switch</h4>
+            <p>Routes to NPCI DigiGov switch; tenant verifies bank ownership via NetBanking OTP or Debit Card PIN.</p>
+            <div class="tech-tag">NPCI NACH Hub</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">4</div>
+            <h4>Reverse Hash Check</h4>
+            <p>Cloud Function computes reverse SHA-512 hash to authenticate Easebuzz return payload.</p>
+            <div class="tech-tag">verifyEasebuzzMandate</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">5</div>
+            <h4>NACH Auto-Debit</h4>
+            <p>Mandate token cleared through clearinghouse on rent cycle with automated ledger posting.</p>
+            <div class="tech-tag">EBZ-NACH Queue</div>
+          </div>
+        </div>
+
+        <div class="demo-box">
+          <div class="demo-header">
+            <h3><span>🏛️</span> Easebuzz Cryptographic Hash Formulas</h3>
+            <span style="font-size:0.75rem; color:#64748B;">SHA-512 Standard</span>
+          </div>
+          <div class="interactive-window">
+            <div class="window-col">
+              <h5>Outbound Initiate Hash</h5>
+              <div class="code-snippet">
+<span class="comment">// Formula: key|txnid|amount|productinfo|firstname|email|udf1..|salt</span>
+<span class="keyword">const</span> raw = <span class="string">`${key}|${txnid}|1.00|${productinfo}|${name}|${email}|${role}|${id}|||||||||${salt}`</span>;
+<span class="keyword">const</span> hash = crypto
+  .<span class="func">createHash</span>(<span class="string">'sha512'</span>)
+  .<span class="func">update</span>(raw)
+  .<span class="func">digest</span>(<span class="string">'hex'</span>);
+              </div>
+            </div>
+            <div class="window-col">
+              <h5>Inbound Return Hash Verification</h5>
+              <div class="code-snippet">
+<span class="comment">// Formula: salt|status|||||||||||email|firstname|productinfo|amount|txnid|key</span>
+<span class="keyword">const</span> returnRaw = <span class="string">`${salt}|${status}|||||||||||${email}|${name}|${productinfo}|1.00|${txnid}|${key}`</span>;
+<span class="keyword">const</span> computed = crypto
+  .<span class="func">createHash</span>(<span class="string">'sha512'</span>)
+  .<span class="func">update</span>(returnRaw)
+  .<span class="func">digest</span>(<span class="string">'hex'</span>);
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 4. PAYPAL ==================== -->
+    <div id="tab-paypal" class="tab-content">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title-left">
+            <div class="gw-logo" style="background: linear-gradient(135deg, #003087, #0079C1);">P</div>
+            <div class="title-text">
+              <h2>PayPal Smart Buttons (Vault &amp; Billing Agreement)</h2>
+              <p>Continuous international wallet and linked card debit agreements</p>
+            </div>
+          </div>
+          <span class="pill-badge live">✓ PayPal Vault v2 API</span>
+        </div>
+
+        <div class="pipeline-grid">
+          <div class="pipe-step">
+            <div class="step-num">1</div>
+            <h4>Setup Token</h4>
+            <p>Cloud Function initiates an official PayPal Vault Setup Token via REST v2 credentials.</p>
+            <div class="tech-tag">createPayPalSetupToken</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">2</div>
+            <h4>Smart Buttons</h4>
+            <p>Mounts in-page PayPal Smart Buttons modal with recurring agreement parameters.</p>
+            <div class="tech-tag">paypal.Buttons().render()</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">3</div>
+            <h4>User Approval</h4>
+            <p>User logs into PayPal and approves agreement choosing balance, checking account, or card.</p>
+            <div class="tech-tag">PayPal Auth Window</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">4</div>
+            <h4>Vault Agreement</h4>
+            <p>Captures authorized vault agreement token (<code>B-PAYPAL-xxx</code>) and binds to user record.</p>
+            <div class="tech-tag">verifyPayPalMandate</div>
+          </div>
+          <div class="pipe-step">
+            <div class="step-num">5</div>
+            <h4>Monthly Capture</h4>
+            <p>Automated server capture call charges vaulted token headlessly on renewal dates.</p>
+            <div class="tech-tag">PAYPAL-VAULT Debit</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 5. FREE TRIAL & PURGE ==================== -->
+    <div id="tab-trial" class="tab-content">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title-left">
+            <div class="gw-logo" style="background: linear-gradient(135deg, #EF4444, #B91C1C);">⏳</div>
+            <div class="title-text">
+              <h2>Free Trial Lifecycle, Expiry &amp; 15-Day Dropout Purge</h2>
+              <p>Automated conversion to Starter ($29/mo) vs. 15-day countdown permanent deletion</p>
+            </div>
+          </div>
+          <span class="pill-badge danger">Automated Daily Cron Engine</span>
+        </div>
+
+        <p style="color:var(--text-muted); margin-bottom:20px; font-size:0.95rem;">
+          When an owner registers, they receive an initial free trial governed by SuperAdmin (0, 7, 14, or 30 days). The system handles two divergent paths upon expiration:
+        </p>
+
+        <!-- Divergent Paths -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:30px;">
+          <div style="background:rgba(16, 185, 129, 0.06); border:1.5px solid rgba(16, 185, 129, 0.3); border-radius:var(--radius-md); padding:22px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+              <span style="font-size:1.2rem;">🟢</span>
+              <h3 style="font-size:1.1rem; color:#34D399;">Path A: Autopay is ON</h3>
+            </div>
+            <p style="font-size:0.88rem; color:#E2E8F0; line-height:1.5; margin-bottom:12px;">
+              If the owner authorized a card or bank mandate during trial:
+            </p>
+            <ul style="font-size:0.83rem; color:var(--text-muted); margin-left:18px; line-height:1.6;">
+              <li><strong>Zero Interruption:</strong> Account seamlessly promotes to <code>planStatus: 'active'</code>.</li>
+              <li><strong>Auto-Debit:</strong> Automatically charges Base Plan (<strong>Starter @ $29/mo</strong>) via the saved live gateway mandate.</li>
+              <li><strong>Platform Invoice:</strong> Creates official paid receipt record in <code>platformInvoices</code>.</li>
+              <li><strong>Zero Data Loss:</strong> Portfolios, units, and tenant links remain permanently online.</li>
+            </ul>
+          </div>
+
+          <div style="background:rgba(239, 68, 68, 0.06); border:1.5px solid rgba(239, 68, 68, 0.3); border-radius:var(--radius-md); padding:22px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+              <span style="font-size:1.2rem;">🔴</span>
+              <h3 style="font-size:1.1rem; color:#F87171;">Path B: Autopay is OFF (Trial Dropout)</h3>
+            </div>
+            <p style="font-size:0.88rem; color:#E2E8F0; line-height:1.5; margin-bottom:12px;">
+              If no mandate was registered, a strict <strong>15-day purge countdown</strong> begins:
+            </p>
+            <ul style="font-size:0.83rem; color:var(--text-muted); margin-left:18px; line-height:1.6;">
+              <li><strong>Immediate Lock:</strong> Status transitions to <code>planStatus: 'trial_expired'</code>.</li>
+              <li><strong>Day 0 Email:</strong> Notifies owner that data will be purged in 15 days.</li>
+              <li><strong>Day 14 Final Alert:</strong> Dispatches high-urgency SMS + Email (24h before deletion).</li>
+              <li><strong>Day 15 Cascade Purge:</strong> Deep wipe deletes properties, units, files, and user record.</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:15px; color:#FFFFFF;">
+          📅 Path B: 15-Day Dropout Purge Timeline
+        </h3>
+
+        <div class="timeline">
+          <div class="timeline-item">
+            <div class="timeline-dot"></div>
+            <div class="timeline-content">
+              <div class="timeline-header">
+                <h4>Day 0: Trial Expires &amp; Purge Scheduled</h4>
+                <span class="timeline-tag" style="background:#10B981;">T-15 Days</span>
+              </div>
+              <p style="font-size:0.85rem; color:var(--text-muted);">
+                Cloud Function <code>checkSubscriptionExpiry</code> detects trial period has ended without Autopay. Marks <code>planStatus = 'trial_expired'</code> and sets <code>purgeScheduledAt = now + 15 days</code>. Dispatches Day 0 email alert.
+              </p>
+            </div>
+          </div>
+
+          <div class="timeline-item warning">
+            <div class="timeline-dot"></div>
+            <div class="timeline-content">
+              <div class="timeline-header">
+                <h4>Days 1 &ndash; 13: Read-Only Dashboard Lock</h4>
+                <span class="timeline-tag" style="background:#F59E0B;">Grace Period</span>
+              </div>
+              <p style="font-size:0.85rem; color:var(--text-muted);">
+                Owner sees persistent banner with remaining countdown days. Adding units or initiating leases is blocked by <code>usePlanLimits</code> until a subscription is activated.
+              </p>
+            </div>
+          </div>
+
+          <div class="timeline-item danger">
+            <div class="timeline-dot"></div>
+            <div class="timeline-content">
+              <div class="timeline-header">
+                <h4>Day 14: Final 24-Hour Emergency Warning</h4>
+                <span class="timeline-tag" style="background:#EF4444;">T-24 Hours</span>
+              </div>
+              <p style="font-size:0.85rem; color:var(--text-muted);">
+                Automated Cloud Cron dispatches high-urgency Twilio SMS + SendGrid email warning that account, uploaded documents, and leases will be permanently erased at midnight.
+              </p>
+            </div>
+          </div>
+
+          <div class="timeline-item danger">
+            <div class="timeline-dot"></div>
+            <div class="timeline-content">
+              <div class="timeline-header">
+                <h4>Day 15 (Midnight): Cascade Account &amp; Data Purge</h4>
+                <span class="timeline-tag" style="background:#B91C1C;">PERMANENT DELETION</span>
+              </div>
+              <p style="font-size:0.85rem; color:var(--text-muted);">
+                Cloud Function <code>purgeExpiredTrialAccounts</code> runs at midnight. Executes an atomic batch deletion:
+              </p>
+              <div class="code-snippet" style="margin-top:10px;">
+<span class="comment">// 1. Delete associated properties, units, tickets</span>
+<span class="keyword">await</span> db.collection(<span class="string">'properties'</span>).where(<span class="string">'ownerId'</span>, <span class="string">'=='</span>, ownerId).<span class="func">delete</span>();
+<span class="comment">// 2. Delete tenant agreements and platform invoices</span>
+<span class="keyword">await</span> db.collection(<span class="string">'agreements'</span>).where(<span class="string">'ownerId'</span>, <span class="string">'=='</span>, ownerId).<span class="func">delete</span>();
+<span class="comment">// 3. Delete owner record & Firebase Auth user</span>
+<span class="keyword">await</span> db.collection(<span class="string">'owners'</span>).doc(ownerId).<span class="func">delete</span>();
+<span class="keyword">await</span> admin.auth().<span class="func">deleteUser</span>(ownerId);
+              </div>
+              <div style="margin-top:8px; font-size:0.78rem; color:#F87171;">
+                ⚠️ <strong>Protection Guard:</strong> Paying subscribers are <em>never</em> purged. If a paid plan expires, it transitions to <code>past_due</code> (protected indefinitely).
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 6. GATEWAY MATRIX ==================== -->
+    <div id="tab-matrix" class="tab-content">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="title-text">
+            <h2>Payment Gateway Capability &amp; Mandate Matrix</h2>
+            <p>Comparison of initial authentication, recurring off-session debits, and security mechanisms</p>
+          </div>
+          <span class="pill-badge live">4 Production Gateways</span>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Gateway</th>
+                <th>Payment Methods</th>
+                <th>Initial Setup Authentication</th>
+                <th>Permanent Token</th>
+                <th>Recurring Debit API</th>
+                <th>Webhook Confirmation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong style="color:#A5B4FC;">Stripe</strong></td>
+                <td>Credit / Debit Cards (Global)</td>
+                <td>Stripe Elements + 3DS 2.0 Bank OTP</td>
+                <td><code>pm_1N4xyz...</code></td>
+                <td><code>stripe.paymentIntents.create(off_session)</code></td>
+                <td><code>setup_intent.succeeded</code></td>
+              </tr>
+              <tr>
+                <td><strong style="color:#34D399;">Razorpay</strong></td>
+                <td>UPI AutoPay &amp; Indian Cards</td>
+                <td>UPI MPIN (GPay/PhonePe) or 3DS Card</td>
+                <td><code>rzp_mandate_xxx</code></td>
+                <td><code>rzp.orders.create(recurring_mandate)</code></td>
+                <td><code>token.confirmed</code> / captured</td>
+              </tr>
+              <tr>
+                <td><strong style="color:#60A5FA;">Easebuzz</strong></td>
+                <td>e-NACH NetBanking (DigiGov)</td>
+                <td>NetBanking OTP / Debit Card PIN</td>
+                <td><code>EBZ_MANDATE_xxx</code></td>
+                <td><code>EBZ-NACH</code> Clearinghouse Queue</td>
+                <td><code>easebuzzWebhook (SHA-512)</code></td>
+              </tr>
+              <tr>
+                <td><strong style="color:#38BDF8;">PayPal</strong></td>
+                <td>PayPal Wallet &amp; Vaulted Cards</td>
+                <td>PayPal Login &amp; Agreement Approval</td>
+                <td><code>B-PAYPAL-xxx</code></td>
+                <td><code>PAYPAL-VAULT</code> REST v2 Capture</td>
+                <td>Instant Return &amp; Capture</td>
+              </tr>
+              <tr>
+                <td><strong style="color:#FBBF24;">Mock Sandbox</strong></td>
+                <td>Zero-Credential Test Simulator</td>
+                <td>1-Click Test Confirmation</td>
+                <td><code>MOCK-xxx</code></td>
+                <td>Instant Local Ledger Debit</td>
+                <td>Local State Dispatch</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer>
+      Propithub Property Management Platform • End-to-End Payment Gateway &amp; Lifecycle Blueprint • Production Grade
+    </footer>
+  </div>
+
+  <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+
+      const targetTab = document.getElementById(tabId);
+      if (targetTab) targetTab.classList.add('active');
+
+      const activeBtn = Array.from(document.querySelectorAll('.nav-btn')).find(b => 
+        b.getAttribute('onclick')?.includes(tabId)
+      );
+      if (activeBtn) activeBtn.classList.add('active');
+    }
+  </script>
+</body>
+</html>
