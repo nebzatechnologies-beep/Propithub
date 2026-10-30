@@ -30,18 +30,58 @@ export const StaffDashboardQueuePage: React.FC = () => {
   const [schedUnit, setSchedUnit] = useState('');
   const [schedTime, setSchedTime] = useState('09:00 AM - 11:00 AM');
 
-  // Resolve by UID first, then email, then displayName — never blindly take index 0
-  const currentStaff: StaffMember | undefined =
-    state.staff.find((s) => s.id === staffId) ||
-    (staffEmail ? state.staff.find((s) => s.email?.toLowerCase() === staffEmail) : undefined) ||
-    (staffName ? state.staff.find((s) => s.name.toLowerCase() === staffName.toLowerCase()) : undefined);
+  const [queueFilter, setQueueFilter] = useState<'all' | 'active' | 'resolved'>('all');
 
-  // Tickets: match by assignedStaffId (UID) only.
-  // The assignedTo name-fallback was removed — two staff members across different owner
-  // accounts sharing the same display name would see each other's entire queue.
-  const myTickets = state.tickets.filter(
-    (t) => staffId && t.assignedStaffId === staffId
-  );
+  // Resolve by UID first, then email, then displayName.
+  // If state.staff hasn't synced the document yet, dynamically synthesize from authenticated UserProfile.
+  const currentStaff: StaffMember | undefined = useMemo(() => {
+    const found =
+      state.staff.find((s) => s.id === staffId) ||
+      (staffEmail ? state.staff.find((s) => s.email?.toLowerCase() === staffEmail) : undefined) ||
+      (staffName ? state.staff.find((s) => s.name.toLowerCase() === staffName.toLowerCase()) : undefined);
+    if (found) return found;
+
+    if (user && (user.role === 'staff' || (user as any).role === 'staff')) {
+      return {
+        id: user.id,
+        name: user.displayName || user.email?.split('@')[0] || 'Technician',
+        role: (user as any).staffRole || 'Maintenance Staff',
+        ownerId: user.ownerId || '',
+        ownerName: user.ownerName || 'Property Owner',
+        phone: user.phone || '',
+        email: user.email || '',
+        activeTickets: 0,
+        rating: (user as any).rating || 5.0,
+        completed: (user as any).completed || 0,
+        paymentDetails: {
+          method: 'bank',
+          bank: { accountName: user.displayName || '', accountNumber: '', country: 'India', routing: '' },
+          upi: { upiId: '', qrImage: null },
+          paypalEmail: '',
+        },
+      };
+    }
+    return undefined;
+  }, [state.staff, staffId, staffEmail, staffName, user]);
+
+  // Tickets: match by assignedStaffId (UID)
+  const myTickets = useMemo(() => {
+    return state.tickets.filter(
+      (t) =>
+        (staffId && t.assignedStaffId === staffId) ||
+        (currentStaff?.id && t.assignedStaffId === currentStaff.id)
+    );
+  }, [state.tickets, staffId, currentStaff?.id]);
+
+  const activeTickets = useMemo(() => myTickets.filter((t) => t.status !== 'resolved'), [myTickets]);
+  const resolvedTickets = useMemo(() => myTickets.filter((t) => t.status === 'resolved'), [myTickets]);
+  const dynamicCompleted = Math.max(currentStaff?.completed || 0, resolvedTickets.length);
+
+  const filteredQueue = useMemo(() => {
+    if (queueFilter === 'active') return activeTickets;
+    if (queueFilter === 'resolved') return resolvedTickets;
+    return myTickets;
+  }, [queueFilter, activeTickets, resolvedTickets, myTickets]);
 
   const handleSaveTicketStatus = async () => {
     if (!selectedTicket || !currentStaff) return;
@@ -178,16 +218,16 @@ export const StaffDashboardQueuePage: React.FC = () => {
       <div className="grid grid-3" style={{ marginBottom: '20px' }}>
         <div className="stat">
           <div className="num">
-            {myTickets.filter((t) => t.status !== 'resolved').length}
+            {activeTickets.length}
           </div>
           <div className="lbl">Active tickets</div>
         </div>
         <div className="stat">
-          <div className="num">{currentStaff?.completed ?? 0}</div>
+          <div className="num">{dynamicCompleted}</div>
           <div className="lbl">Completed all-time</div>
         </div>
         <div className="stat">
-          <div className="num">★ {currentStaff?.rating ?? '—'}</div>
+          <div className="num">★ {currentStaff?.rating ? Number(currentStaff.rating).toFixed(1) : '5.0'}</div>
           <div className="lbl">Rating</div>
         </div>
       </div>
@@ -197,7 +237,7 @@ export const StaffDashboardQueuePage: React.FC = () => {
           className={`tab ${subTab === 'queue' ? 'active' : ''}`}
           onClick={() => setSubTab('queue')}
         >
-          Ticket queue ({myTickets.filter((t) => t.status !== 'resolved').length})
+          Ticket queue ({myTickets.length})
         </div>
         <div
           className={`tab ${subTab === 'schedule' ? 'active' : ''}`}
@@ -216,13 +256,43 @@ export const StaffDashboardQueuePage: React.FC = () => {
               </div>
             ) : (
               <>
-                {/* Desktop / Tablet Table View (>640px) */}
-                <div className="staff-desktop-table">
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Ticket</th>
+                <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={`btn small ${queueFilter === 'all' ? 'brass' : 'secondary'}`}
+                    onClick={() => setQueueFilter('all')}
+                  >
+                    All ({myTickets.length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn small ${queueFilter === 'active' ? 'brass' : 'secondary'}`}
+                    onClick={() => setQueueFilter('active')}
+                  >
+                    Active ({activeTickets.length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn small ${queueFilter === 'resolved' ? 'brass' : 'secondary'}`}
+                    onClick={() => setQueueFilter('resolved')}
+                  >
+                    Resolved ({resolvedTickets.length})
+                  </button>
+                </div>
+
+                {filteredQueue.length === 0 ? (
+                  <div style={{ color: 'var(--ink-soft)', padding: '24px 16px', textAlign: 'center' }}>
+                    <p style={{ margin: 0, fontSize: '14px' }}>No {queueFilter} tickets found.</p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Desktop / Tablet Table View (>640px) */}
+                    <div className="staff-desktop-table">
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Ticket</th>
                           <th>Unit</th>
                           <th>Tenant & Contact</th>
                           <th>Issue</th>
@@ -232,14 +302,14 @@ export const StaffDashboardQueuePage: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {myTickets.map((t) => (
+                        {filteredQueue.map((t) => (
                           <tr key={t.id}>
                             <td><b>{t.id}</b></td>
                             <td>{t.unit}</td>
                             <td>
                               <div style={{ fontWeight: 600 }}>{t.tenant || 'Tenant'}</div>
                               <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
-                                {t.tenantContact?.phone || '+91 98450 11223'}
+                                {t.tenantContact?.phone ? t.tenantContact.phone : '—'}
                                 {t.tenantContact?.email ? ` • ${t.tenantContact.email}` : ''}
                               </div>
                             </td>
@@ -293,7 +363,7 @@ export const StaffDashboardQueuePage: React.FC = () => {
 
                 {/* Mobile Touch-Optimized Cards (<=640px) */}
                 <div className="staff-mobile-cards">
-                  {myTickets.map((t) => (
+                  {filteredQueue.map((t) => (
                     <div key={t.id} className="staff-card">
                       <div className="staff-card-header">
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -374,6 +444,8 @@ export const StaffDashboardQueuePage: React.FC = () => {
                     </div>
                   ))}
                 </div>
+              </>
+            )}
               </>
             )}
           </div>

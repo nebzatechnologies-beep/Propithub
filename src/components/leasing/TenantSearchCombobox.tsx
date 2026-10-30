@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
-import { Search, UserCheck, UserPlus, X, Mail, Phone, Home, Edit3 } from 'lucide-react';
+import { Search, UserCheck, UserPlus, X, Mail, Phone, Home } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { UserProfile, TenantRecord } from '../../types';
@@ -156,15 +156,39 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
     return Array.from(map.values());
   }, [state.tenants, state.users, state.properties, state.units, state.agreements, ownerId]);
 
-  // Filter candidates by query
-  const filteredCandidates = candidateTenants.filter((t) => {
-    if (!query.trim()) return true;
+  // Filter candidates by query and sort with exact/starts-with priority (OWN-19)
+  // Only returns matching candidates when query is typed, never dumps all tenants on empty focus
+  const filteredCandidates = React.useMemo(() => {
+    if (!query.trim()) return [];
     const q = query.toLowerCase().trim();
-    const nameMatch = (t.name || '').toLowerCase().includes(q);
-    const emailMatch = (t.email || '').toLowerCase().includes(q);
-    const phoneMatch = (t.phone || '').toLowerCase().includes(q);
-    return nameMatch || emailMatch || phoneMatch;
-  });
+    const isEmailQuery = q.includes('@');
+
+    const scored = candidateTenants
+      .map((t) => {
+        const name = (t.name || '').toLowerCase();
+        const email = (t.email || '').toLowerCase();
+        const phone = (t.phone || '').toLowerCase();
+
+        let score = 0;
+        if (email === q) score += 1000;
+        else if (name === q) score += 800;
+        else if (isEmailQuery && email.startsWith(q)) score += 600;
+        else if (email.startsWith(q)) score += 500;
+        else if (name.startsWith(q)) score += 400;
+        else if (email.includes(q)) score += 200;
+        else if (name.includes(q)) score += 100;
+        else if (phone.includes(q)) score += 50;
+
+        // Boost owner's directory/past tenants slightly ONLY IF there is an actual match
+        if (score > 0 && !t.isPlatformUser) score += 25;
+
+        return { tenant: t, score };
+      })
+      .filter((item) => item.score > 0);
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.map((item) => item.tenant);
+  }, [candidateTenants, query]);
 
   const handleSelect = (t: SelectedTenantInfo) => {
     onSelectTenant(t);
@@ -222,15 +246,6 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
     setIsOpen(false);
   };
 
-  const openEditModalForSelected = () => {
-    if (!selectedTenant) return;
-    setNewName(selectedTenant.name || '');
-    setNewEmail(selectedTenant.email || '');
-    setNewPhone(selectedTenant.phone || '');
-    setNewPassword(selectedTenant.tempPassword || 'Welcome@123');
-    setIsAddingNew(true);
-  };
-
   return (
     <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
       {label && (
@@ -285,22 +300,14 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
                 )}
               </div>
               <div style={{ fontSize: '12px', color: 'var(--ink-soft)', display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: '3px' }}>
-                {selectedTenant.email ? (
+                {selectedTenant.email && (
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Mail size={12} style={{ flexShrink: 0 }} /> {selectedTenant.email}
                   </span>
-                ) : (
-                  <span style={{ color: 'var(--brass)', cursor: 'pointer', fontStyle: 'italic' }} onClick={openEditModalForSelected}>
-                    + Add email
-                  </span>
                 )}
-                {selectedTenant.phone ? (
+                {selectedTenant.phone && (
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Phone size={12} style={{ flexShrink: 0 }} /> {selectedTenant.phone}
-                  </span>
-                ) : (
-                  <span style={{ color: 'var(--brass)', cursor: 'pointer', fontStyle: 'italic' }} onClick={openEditModalForSelected}>
-                    + Add phone
                   </span>
                 )}
               </div>
@@ -311,24 +318,15 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
             <button
               type="button"
               className="btn secondary small"
-              onClick={openEditModalForSelected}
-              title="Edit tenant details"
-              style={{ padding: '5px 8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-            >
-              <Edit3 size={13} /> Edit
-            </button>
-            <button
-              type="button"
-              className="btn secondary small"
               onClick={() => {
                 onSelectTenant(null);
                 setQuery('');
                 setTimeout(() => inputRef.current?.focus(), 50);
               }}
               title="Remove and select another tenant"
-              style={{ padding: '5px 8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              style={{ padding: '6px 12px', fontSize: '12.5px', display: 'flex', alignItems: 'center', gap: '5px' }}
             >
-              <X size={13} /> Change
+              <X size={14} /> Change
             </button>
           </div>
         </div>
@@ -442,30 +440,13 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
               placeholder={placeholder}
               value={query}
               onChange={(e) => {
-                setQuery(e.target.value);
-                setIsOpen(true);
+                const val = e.target.value;
+                setQuery(val);
+                setIsOpen(val.trim().length > 0);
               }}
-              onFocus={() => setIsOpen(true)}
-              onBlur={() => {
-                // If user typed something and leaves the field without explicitly picking,
-                // auto-resolve so they are never blocked when clicking "Next"
-                const trimmed = query.trim();
-                if (trimmed && !selectedTenant) {
-                  const exact = candidateTenants.find(
-                    (c) => c.name.toLowerCase() === trimmed.toLowerCase() || c.email.toLowerCase() === trimmed.toLowerCase()
-                  );
-                  if (exact) {
-                    onSelectTenant(exact);
-                  } else {
-                    onSelectTenant({
-                      id: `usr_tenant_${Date.now()}`,
-                      name: trimmed,
-                      email: '',
-                      phone: '',
-                      tempPassword: 'Welcome@123',
-                      isNew: true,
-                    });
-                  }
+              onFocus={() => {
+                if (query.trim().length > 0) {
+                  setIsOpen(true);
                 }
               }}
               onKeyDown={(e) => {
@@ -480,8 +461,6 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
                     handleSelect(exactMatch);
                   } else if (filteredCandidates.length === 1) {
                     handleSelect(filteredCandidates[0]);
-                  } else {
-                    handleQuickUseTypedName(trimmed);
                   }
                 }
               }}
@@ -494,8 +473,39 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
             />
           </div>
 
-          {/* Search Results Dropdown Menu */}
-          {isOpen && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', flexWrap: 'wrap', gap: '6px' }}>
+            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
+              Type name, email, or phone to find matching residents
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setNewName(query.trim());
+                setNewEmail('');
+                setNewPhone('');
+                setNewPassword('Welcome@123');
+                setIsAddingNew(true);
+                setIsOpen(false);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--brass)',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: 0,
+              }}
+            >
+              <UserPlus size={13} /> + Register New Tenant
+            </button>
+          </div>
+
+          {/* Search Results Dropdown Menu (only shown when query is typed) */}
+          {isOpen && query.trim().length > 0 && (
             <div
               style={{
                 position: 'absolute',

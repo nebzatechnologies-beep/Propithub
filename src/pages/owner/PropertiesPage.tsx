@@ -892,18 +892,18 @@ export const PropertiesPage: React.FC = () => {
                                     <span
                                       className={`badge ${unitEffectiveStatus === 'occupied'
                                           ? 'green'
-                                          : u.status === 'reserved'
+                                          : unitEffectiveStatus === 'reserved'
                                             ? 'amber'
-                                            : u.status === 'maintenance'
+                                            : unitEffectiveStatus === 'maintenance'
                                               ? 'grey'
-                                              : 'amber'
+                                              : 'grey'
                                         }`}
                                     >
                                       {unitEffectiveStatus === 'occupied'
                                         ? 'Occupied'
-                                        : u.status === 'reserved'
+                                        : unitEffectiveStatus === 'reserved'
                                           ? 'Reserved'
-                                          : u.status === 'maintenance'
+                                          : unitEffectiveStatus === 'maintenance'
                                             ? 'Maintenance'
                                             : 'Vacant'}
                                     </span>
@@ -1023,18 +1023,18 @@ export const PropertiesPage: React.FC = () => {
                               <span
                                 className={`badge ${unitEffectiveStatus === 'occupied'
                                     ? 'green'
-                                    : u.status === 'reserved'
+                                    : unitEffectiveStatus === 'reserved'
                                       ? 'amber'
-                                      : u.status === 'maintenance'
+                                      : unitEffectiveStatus === 'maintenance'
                                         ? 'grey'
-                                        : 'amber'
+                                        : 'grey'
                                   }`}
                               >
                                 {unitEffectiveStatus === 'occupied'
                                   ? 'Occupied'
-                                  : u.status === 'reserved'
+                                  : unitEffectiveStatus === 'reserved'
                                     ? 'Reserved'
-                                    : u.status === 'maintenance'
+                                    : unitEffectiveStatus === 'maintenance'
                                       ? 'Maintenance'
                                       : 'Vacant'}
                               </span>

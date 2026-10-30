@@ -53,9 +53,16 @@ export const TenantDashboardPage: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const tenantEmail = user?.email?.toLowerCase().trim() || '';
+  const tenantRecord = state.tenants.find(
+    (t) =>
+      (user?.id && t.id === user.id) ||
+      (tenantEmail && t.email?.toLowerCase() === tenantEmail)
+  );
   const rawDisplayName = user?.displayName?.trim();
-  const tenantName = rawDisplayName && !rawDisplayName.includes('@')
+  const tenantName = (rawDisplayName && !rawDisplayName.includes('@'))
     ? rawDisplayName
+    : (tenantRecord?.name && !tenantRecord.name.includes('@'))
+    ? tenantRecord.name
     : user?.email
     ? user.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
     : 'Resident';
@@ -97,12 +104,6 @@ export const TenantDashboardPage: React.FC = () => {
     );
   }, [hasActiveOrPendingLease, state.moveouts, user?.id]);
 
-  // Resolve tenantRecord: prefer ID, fall back to email (never name — prevents cross-tenant collision)
-  const tenantRecord = state.tenants.find(
-    (t) =>
-      (user?.id && t.id === user.id) ||
-      (!isFirebaseConfigured && tenantEmail && t.email?.toLowerCase() === tenantEmail)
-  );
   // Match by tenantId (primary) or email (offline fallback only).
   // Display-name fallback removed — two tenants sharing the same display name would
   // see each other's reviews without this guard.
@@ -168,6 +169,15 @@ export const TenantDashboardPage: React.FC = () => {
       // Must be actively occupied or reserved
       if (u.status !== 'occupied' && u.status !== 'reserved') return false;
 
+      // If tenant explicitly declined an invitation for this unit, exclude it unless there is a subsequent active agreement
+      const hasDeclinedReq = (state.tenancyRequests || []).some(
+        (r) =>
+          (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId) &&
+          (r.unitId === u.id || r.unitNumber === u.unitNumber) &&
+          (r.tenantId === user?.id || (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)) &&
+          r.status === 'declined'
+      );
+
       // If tenant has an active / non-terminated agreement or pending request for this unit, it IS active!
       const hasActiveAgreementForUnit = state.agreements.some(
         (a) =>
@@ -176,6 +186,11 @@ export const TenantDashboardPage: React.FC = () => {
           (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)) &&
           a.status !== 'terminated'
       );
+
+      if (hasDeclinedReq && !hasActiveAgreementForUnit) {
+        return false;
+      }
+
       const hasPendingReqForUnit = (state.tenancyRequests || []).some(
         (r) =>
           (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId) &&
@@ -214,15 +229,23 @@ export const TenantDashboardPage: React.FC = () => {
       );
       if (hasCompletedMoveOut) return false;
 
-      return true;
+      return false;
     })
     .sort((a, b) => {
-      // Sort: units matched by tenantId (most trusted) first, then agreement-backed, then the rest
-      const aById = user?.id && a.currentTenantId === user.id ? 0 : 1;
-      const bById = user?.id && b.currentTenantId === user.id ? 0 : 1;
-      const aHasAgreement = myAgreementUnitIds.has(a.id) ? 0 : 1;
-      const bHasAgreement = myAgreementUnitIds.has(b.id) ? 0 : 1;
-      return (aById + aHasAgreement) - (bById + bHasAgreement);
+      // Prioritize units backed by an active or accepted agreement
+      const aHasActive = state.agreements.some(
+        (ag) => (ag.tenantId === user?.id || (tenantEmail && ag.tenantEmail?.toLowerCase() === tenantEmail)) &&
+          (ag.unit === a.unitNumber || ag.unit === a.id) && ag.status === 'active'
+      ) ? 0 : 1;
+      const bHasActive = state.agreements.some(
+        (ag) => (ag.tenantId === user?.id || (tenantEmail && ag.tenantEmail?.toLowerCase() === tenantEmail)) &&
+          (ag.unit === b.unitNumber || ag.unit === b.id) && ag.status === 'active'
+      ) ? 0 : 1;
+      if (aHasActive !== bHasActive) return aHasActive - bHasActive;
+
+      const aHasAg = myAgreementUnitIds.has(a.id) ? 0 : 1;
+      const bHasAg = myAgreementUnitIds.has(b.id) ? 0 : 1;
+      return aHasAg - bHasAg;
     });
 
   // Active Building Announcements for Tenant
@@ -537,8 +560,12 @@ export const TenantDashboardPage: React.FC = () => {
 
     updateState((prev) => {
       // 1. Keep Unit status as 'reserved' until deposit paid & owner counter-signs
+      const isTargetUnit = (u: any) =>
+        u.id === req.unitId ||
+        (Boolean(req.unitNumber) && u.unitNumber === req.unitNumber && (!req.propertyId || !u.propertyId || u.propertyId === req.propertyId));
+
       const updatedUnits = prev.units.map((u) =>
-        u.id === req.unitId
+        isTargetUnit(u)
           ? {
             ...u,
             status: 'reserved' as const,
@@ -613,7 +640,7 @@ export const TenantDashboardPage: React.FC = () => {
 
       // Persist to Firestore backend
       saveAgreement(newAgreement);
-      const assignedUnit = updatedUnits.find((u) => u.id === req.unitId);
+      const assignedUnit = updatedUnits.find(isTargetUnit);
       if (assignedUnit) saveUnit(assignedUnit);
       const acceptedReq = updatedRequests.find((r) => r.id === req.id);
       if (acceptedReq) saveTenancyRequest(acceptedReq, ownerNotif);
@@ -2572,7 +2599,7 @@ export const TenantDashboardPage: React.FC = () => {
                 Your Registered Resident Profile
               </div>
               <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div><b style={{ color: 'var(--ink)' }}>Full Name:</b> {user?.displayName || 'Not specified'}</div>
+                <div><b style={{ color: 'var(--ink)' }}>Full Name:</b> {tenantName}</div>
                 <div><b style={{ color: 'var(--ink)' }}>Email:</b> {user?.email}</div>
                 <div><b style={{ color: 'var(--ink)' }}>Phone:</b> {user?.phone || 'Not specified'}</div>
                 <div><b style={{ color: 'var(--ink)' }}>Resident ID:</b> <code style={{ background: 'var(--surface)', border: '1px solid var(--line)', padding: '2px 6px', borderRadius: '4px', color: 'var(--ink)' }}>{user?.id}</code></div>
@@ -2635,7 +2662,7 @@ export const TenantDashboardPage: React.FC = () => {
               </div>
               <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <div>
-                  <b style={{ color: 'var(--ink)' }}>Full Name:</b> {user?.displayName || 'Not specified'}
+                  <b style={{ color: 'var(--ink)' }}>Full Name:</b> {tenantName}
                 </div>
                 <div>
                   <b style={{ color: 'var(--ink)' }}>Email:</b> {user?.email}

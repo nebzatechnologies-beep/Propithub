@@ -1,4 +1,4 @@
-import { ref, uploadString, getDownloadURL } from 'firebase/storage';
+import { ref, uploadString, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage, isFirebaseConfigured } from './firebase';
 
 /**
@@ -82,5 +82,43 @@ export async function uploadOrCompressImage(
   } catch (err) {
     console.warn('Firebase storage upload fallback to compressed data URL:', err);
     return compressedDataUrl;
+  }
+}
+
+/**
+ * Uploads a document (PDF or image) to Firebase Storage.
+ * Returns the public download URL if configured, or the input data URL if offline/unconfigured.
+ * Prevents storing 1MB+ base64 payloads inside Firestore documents.
+ */
+export async function uploadDocumentFile(
+  fileOrDataUrl: File | string,
+  storagePath: string,
+  metadata?: { [key: string]: string }
+): Promise<string> {
+  if (!isFirebaseConfigured || !fileOrDataUrl) {
+    return typeof fileOrDataUrl === 'string' ? fileOrDataUrl : '';
+  }
+
+  try {
+    const storageRef = ref(storage, storagePath);
+    const customMetadata = metadata ? { customMetadata: metadata } : undefined;
+    if (typeof fileOrDataUrl === 'string') {
+      if (fileOrDataUrl.startsWith('http://') || fileOrDataUrl.startsWith('https://')) {
+        return fileOrDataUrl;
+      }
+      const match = fileOrDataUrl.match(/^data:(.*?);base64,/);
+      const contentType = match ? match[1] : 'application/pdf';
+      await uploadString(storageRef, fileOrDataUrl, 'data_url', { contentType, ...customMetadata });
+    } else {
+      await uploadBytes(storageRef, fileOrDataUrl, {
+        contentType: fileOrDataUrl.type || 'application/pdf',
+        ...customMetadata,
+      });
+    }
+    const downloadUrl = await getDownloadURL(storageRef);
+    return downloadUrl;
+  } catch (err) {
+    console.warn('Document storage upload failed, keeping fallback:', err);
+    return typeof fileOrDataUrl === 'string' ? fileOrDataUrl : '';
   }
 }

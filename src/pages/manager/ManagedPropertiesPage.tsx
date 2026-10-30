@@ -154,9 +154,18 @@ export const ManagedPropertiesPage: React.FC = () => {
                                 ) : null}
                                 <b>{u.unitNumber}</b>
                               </td>
-                              <td>{u.tenant || <span style={{ color: 'var(--ink-soft)' }}>Vacant</span>}</td>
                               <td>
-                                <span className={`badge ${u.status === 'occupied' ? 'green' : 'amber'}`}>
+                                {u.status === 'reserved' && u.tenant ? (
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                    <span className="badge amber" style={{ fontSize: '10.5px', padding: '1px 6px' }}>Pending Invite</span>
+                                    <span>{u.tenant}</span>
+                                  </span>
+                                ) : (
+                                  u.tenant || <span style={{ color: 'var(--ink-soft)' }}>Vacant</span>
+                                )}
+                              </td>
+                              <td>
+                                <span className={`badge ${u.status === 'occupied' ? 'green' : u.status === 'reserved' ? 'amber' : u.status === 'maintenance' ? 'red' : 'blue'}`}>
                                   {u.status.toUpperCase()}
                                 </span>
                               </td>
@@ -168,6 +177,10 @@ export const ManagedPropertiesPage: React.FC = () => {
                                   >
                                     <span className="track" />
                                   </label>
+                                ) : u.status === 'reserved' ? (
+                                  <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Reserved</span>
+                                ) : u.status === 'maintenance' ? (
+                                  <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Under Repair</span>
                                 ) : (
                                   <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Occupied</span>
                                 )}
@@ -204,18 +217,22 @@ export const ManagedPropertiesPage: React.FC = () => {
                             <div>
                               <b style={{ fontSize: '15px', color: 'var(--ink)' }}>Unit {u.unitNumber}</b>
                               <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                                {u.tenant ? `Tenant: ${u.tenant}` : 'Vacant Unit'}
+                                {u.status === 'reserved' && u.tenant
+                                  ? `Pending Invite: ${u.tenant}`
+                                  : u.tenant
+                                  ? `Tenant: ${u.tenant}`
+                                  : 'Vacant Unit'}
                               </div>
                             </div>
                           </div>
-                          <span className={`badge ${u.status === 'occupied' ? 'green' : 'amber'}`}>
+                          <span className={`badge ${u.status === 'occupied' ? 'green' : u.status === 'reserved' ? 'amber' : u.status === 'maintenance' ? 'red' : 'blue'}`}>
                             {u.status.toUpperCase()}
                           </span>
                         </div>
 
-                        {u.status === 'vacant' && (
-                          <div style={{ margin: '10px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-sunken)', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--line)' }}>
-                            <span style={{ fontSize: '12.5px', color: 'var(--ink)' }}>Public Listing:</span>
+                        <div style={{ margin: '10px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-sunken)', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--line)' }}>
+                          <span style={{ fontSize: '12.5px', color: 'var(--ink)' }}>Public Listing:</span>
+                          {u.status === 'vacant' ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                               <span style={{ fontSize: '11px', color: u.isListedPublicly ? 'var(--ledger)' : 'var(--ink-soft)', fontWeight: 600 }}>
                                 {u.isListedPublicly ? 'Listed' : 'Unlisted'}
@@ -227,8 +244,12 @@ export const ManagedPropertiesPage: React.FC = () => {
                                 <span className="track" />
                               </label>
                             </div>
-                          </div>
-                        )}
+                          ) : (
+                            <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>
+                              {u.status === 'reserved' ? 'Reserved' : u.status === 'maintenance' ? 'Under Repair' : 'Occupied'}
+                            </span>
+                          )}
+                        </div>
 
                         <div className="staff-card-footer">
                           <button

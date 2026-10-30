@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { Agreement } from '../../types';
@@ -20,14 +20,112 @@ export const LeaseDocumentsPage: React.FC = () => {
   const [newAgFileName, setNewAgFileName] = useState<string | null>(null);
   const [newAgFileData, setNewAgFileData] = useState<string | null>(null);
 
-  // Only show agreements and units belonging to the manager's assigned owner (data isolation)
-  const myAgreements = ownerId
-    ? state.agreements.filter((a) => a.ownerId === ownerId)
-    : [];
+  const managerRecord = (state.managers || []).find(
+    (m) =>
+      (user?.id && String(m.id) === user.id) ||
+      (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
 
-  const myUnits = ownerId
-    ? state.units.filter((u) => u.ownerId === ownerId)
-    : [];
+  const myProperties = useMemo(() => {
+    if (!ownerId) return [];
+    const props = state.properties.filter((p) => p.ownerId === ownerId);
+    if (assignedPropertyId) {
+      return props.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id);
+    }
+    const explicitlyAssigned = props.filter((p) => p.assignedManagerId === user?.id);
+    return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
+  }, [state.properties, ownerId, assignedPropertyId, user?.id]);
+
+  const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
+
+  const myUnits = useMemo(() => {
+    if (!ownerId) return [];
+    return state.units.filter((u) => u.ownerId === ownerId && (!u.propertyId || myPropertyIds.has(u.propertyId)));
+  }, [state.units, ownerId, myPropertyIds]);
+
+  // Show agreements and active digital leases belonging to the manager's assigned portfolio
+  const myAgreements = useMemo(() => {
+    if (!ownerId) return [];
+
+    // 1. Direct agreements
+    const agList: Agreement[] = state.agreements.filter((a) => {
+      const matchOwner = a.ownerId === ownerId;
+      const matchProp = Boolean(a.propertyId && myPropertyIds.has(a.propertyId));
+      const matchUnit = myUnits.some((u) => u.unitNumber === a.unit || u.id === a.unit);
+      return matchOwner || matchProp || matchUnit;
+    });
+
+    // 2. Also merge active digital tenancy requests for these units
+    const existingAgIds = new Set(agList.map((a) => a.id));
+    (state.tenancyRequests || []).forEach((req) => {
+      const matchProp = Boolean(req.propertyId && myPropertyIds.has(req.propertyId));
+      const matchOwner = req.ownerId === ownerId;
+      const matchUnit = myUnits.some((u) => u.unitNumber === req.unitNumber || u.id === req.unitId);
+
+      if ((matchProp || matchOwner || matchUnit) && req.status === 'pending') {
+        const reqAgId = (req as any).agreementId || `REQ-${req.id.slice(-6)}`;
+        if (!existingAgIds.has(reqAgId)) {
+          agList.push({
+            id: reqAgId,
+            ownerId: req.ownerId || ownerId,
+            propertyId: req.propertyId || '',
+            unit: req.unitNumber || req.unitId,
+            tenant: req.tenantName || 'Prospective Resident',
+            tenantId: req.tenantId || '',
+            type: 'uploaded',
+            contentHtml: null,
+            fileName: req.agreementFileName || 'Digital Tenancy Agreement',
+            fileData: req.agreementFileData || null,
+            start: req.leaseStart || new Date().toISOString().split('T')[0],
+            end: req.leaseEnd || new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0],
+            rent: req.rent || 0,
+            deposit: req.deposit || 0,
+            status: 'pending_deposit' as any,
+            tenantSignature: null,
+            autoRenew: false,
+          });
+          existingAgIds.add(reqAgId);
+        }
+      }
+    });
+
+    return agList;
+  }, [state.agreements, state.tenancyRequests, ownerId, myPropertyIds, myUnits]);
+
+  const getAgreementStatusBadge = (a: Agreement) => {
+    const matchUnit = myUnits.find((u) => u.id === a.unit || u.unitNumber === a.unit);
+    const isDraft = a.status === 'draft' || a.id.startsWith('DFT-');
+    const isTenantDifferent = Boolean(
+      matchUnit && matchUnit.tenant && (a.tenant || '').trim().toLowerCase() !== matchUnit.tenant.trim().toLowerCase()
+    );
+    const isStaleDraft = isDraft && isTenantDifferent;
+
+    if (isStaleDraft) {
+      return (
+        <span
+          className="badge amber"
+          style={{ fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+          title={`Unit ${a.unit} is currently assigned or reserved for ${matchUnit?.tenant || 'another resident'}`}
+        >
+          Stale Draft
+        </span>
+      );
+    }
+    if (a.status === 'signed' || a.status === 'active') {
+      return <span className="badge green" style={{ fontSize: '11px' }}>Signed</span>;
+    }
+    if (a.status === 'awaiting_tenant_upload') {
+      return <span className="badge amber" style={{ fontSize: '11px' }}>Awaiting Signature</span>;
+    }
+    if (a.status === 'pending_deposit') {
+      return <span className="badge amber" style={{ fontSize: '11px' }}>Pending Deposit</span>;
+    }
+    if (isDraft) {
+      return <span className="badge grey" style={{ fontSize: '11px' }}>Draft</span>;
+    }
+    return <span className="badge grey" style={{ fontSize: '11px' }}>{a.status}</span>;
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -87,7 +185,7 @@ export const LeaseDocumentsPage: React.FC = () => {
           type="button"
           className="btn brass btn-mobile-full"
           onClick={() => {
-            setNewAgUnit(state.units[0]?.id || 'A-101');
+            setNewAgUnit(myUnits[0]?.id || 'A-101');
             setIsUploadOpen(true);
           }}
         >
@@ -126,21 +224,7 @@ export const LeaseDocumentsPage: React.FC = () => {
                           <td>{a.unit}</td>
                           <td>{a.start} → {a.end}</td>
                           <td>
-                            <span
-                              className={`badge ${
-                                a.status === 'signed'
-                                  ? 'green'
-                                  : a.status === 'awaiting_tenant_upload'
-                                  ? 'amber'
-                                  : 'grey'
-                              }`}
-                            >
-                              {a.status === 'signed'
-                                ? 'Signed'
-                                : a.status === 'awaiting_tenant_upload'
-                                ? 'Awaiting Signature'
-                                : a.status}
-                            </span>
+                            {getAgreementStatusBadge(a)}
                           </td>
                           <td>
                             {a.fileName ? (
@@ -171,21 +255,7 @@ export const LeaseDocumentsPage: React.FC = () => {
                   <div key={a.id} className="staff-card">
                     <div className="staff-card-header">
                       <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{a.id}</b>
-                      <span
-                        className={`badge ${
-                          a.status === 'signed'
-                            ? 'green'
-                            : a.status === 'awaiting_tenant_upload'
-                            ? 'amber'
-                            : 'grey'
-                        }`}
-                      >
-                        {a.status === 'signed'
-                          ? 'Signed'
-                          : a.status === 'awaiting_tenant_upload'
-                          ? 'Awaiting Sign'
-                          : a.status}
-                      </span>
+                      {getAgreementStatusBadge(a)}
                     </div>
 
                     <div style={{ fontWeight: 600, fontSize: '14.5px', color: 'var(--ink)', margin: '4px 0' }}>

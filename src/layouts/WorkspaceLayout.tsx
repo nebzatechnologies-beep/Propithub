@@ -47,7 +47,16 @@ export const WorkspaceLayout: React.FC = () => {
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [logoError, setLogoError] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
+
+  const showCustomLogo = Boolean(
+    !logoError &&
+    state.landingConfig?.faviconUrl &&
+    (state.landingConfig.faviconUrl.startsWith('data:image/') ||
+     state.landingConfig.faviconUrl.startsWith('http://') ||
+     state.landingConfig.faviconUrl.startsWith('https://'))
+  );
 
   // Close profile dropdown when clicking outside
   useEffect(() => {
@@ -115,6 +124,13 @@ export const WorkspaceLayout: React.FC = () => {
         (n) => n.id === rem.id || n.title === rem.title || (n.link && n.link === rem.actionLink)
       );
       if (!alreadyPresent) {
+        // Use underlying event timestamp if available instead of viewing timestamp
+        const eventTime =
+          rem.metadata?.eventTime ||
+          rem.metadata?.createdAt ||
+          (rem.dueDate && new Date(rem.dueDate).getTime() <= Date.now() ? rem.dueDate : undefined) ||
+          new Date().toISOString();
+
         notifs.push({
           id: rem.id,
           userId: user?.id || '',
@@ -122,7 +138,7 @@ export const WorkspaceLayout: React.FC = () => {
           body: rem.description,
           link: rem.actionLink,
           isRead: false,
-          createdAt: new Date().toISOString(),
+          createdAt: eventTime,
           actionable: true,
         });
       }
@@ -340,14 +356,12 @@ export const WorkspaceLayout: React.FC = () => {
           <div className="mobile-drawer" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px', height: 'var(--topbar-height, 70px)', boxSizing: 'border-box', borderBottom: '1px solid var(--line)' }}>
               <div className="brand-mark" style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-                {state.landingConfig?.faviconUrl ? (
+                {showCustomLogo ? (
                   <img
                     src={state.landingConfig.faviconUrl}
                     alt="Logo"
                     style={{ width: '22px', height: '22px', objectFit: 'contain' }}
-                    onError={(e) => {
-                      (e.target as HTMLElement).style.display = 'none';
-                    }}
+                    onError={() => setLogoError(true)}
                   />
                 ) : (
                   <PropithubIcon size={22} color="#10B981" />
@@ -452,14 +466,12 @@ export const WorkspaceLayout: React.FC = () => {
       <aside className="sidebar">
         <div className="brand" onClick={() => navigate('/')} style={{ cursor: 'pointer' }}>
           <div className="brand-mark" style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-            {state.landingConfig?.faviconUrl ? (
+            {showCustomLogo ? (
               <img
                 src={state.landingConfig.faviconUrl}
                 alt="Logo"
                 style={{ width: '24px', height: '24px', objectFit: 'contain' }}
-                onError={(e) => {
-                  (e.target as HTMLElement).style.display = 'none';
-                }}
+                onError={() => setLogoError(true)}
               />
             ) : (
               <PropithubIcon size={24} color="#10B981" />

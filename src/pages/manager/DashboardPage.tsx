@@ -59,6 +59,8 @@ export const ManagerDashboardPage: React.FC = () => {
 
   const occupiedUnits = myUnits.filter((u) => u.status === 'occupied').length;
   const vacantUnits = myUnits.filter((u) => u.status === 'vacant').length;
+  const reservedUnits = myUnits.filter((u) => u.status === 'reserved').length;
+  const maintenanceUnits = myUnits.filter((u) => u.status === 'maintenance').length;
   const occupancyRate = myUnits.length > 0 ? Math.round((occupiedUnits / myUnits.length) * 100) : 0;
   const activeTickets = myTickets.filter((t) => t.status !== 'resolved');
 
@@ -172,7 +174,7 @@ export const ManagerDashboardPage: React.FC = () => {
             {occupancyRate}%
           </div>
           <div className="delta" style={{ marginTop: '4px', fontSize: '12px', color: 'var(--ink-soft)' }}>
-            {occupiedUnits} occupied • {vacantUnits} vacant
+            {occupiedUnits} occupied • {reservedUnits > 0 ? `${reservedUnits} reserved • ` : ''}{maintenanceUnits > 0 ? `${maintenanceUnits} repair • ` : ''}{vacantUnits} vacant
           </div>
         </div>
 
@@ -312,6 +314,7 @@ export const ManagerDashboardPage: React.FC = () => {
               myProperties.slice(0, 4).map((p) => {
                 const unitsInProp = myUnits.filter((u) => u.propertyId === p.id);
                 const occupiedInProp = unitsInProp.filter((u) => u.status === 'occupied').length;
+                const reservedInProp = unitsInProp.filter((u) => u.status === 'reserved').length;
                 return (
                   <div
                     key={p.id}
@@ -330,7 +333,7 @@ export const ManagerDashboardPage: React.FC = () => {
                       </div>
                     </div>
                     <span className="badge grey" style={{ fontSize: '11.5px', fontWeight: 600 }}>
-                      {occupiedInProp}/{unitsInProp.length} Occ.
+                      {occupiedInProp}/{unitsInProp.length} Occ.{reservedInProp > 0 ? ` (${reservedInProp} Res.)` : ''}
                     </span>
                   </div>
                 );

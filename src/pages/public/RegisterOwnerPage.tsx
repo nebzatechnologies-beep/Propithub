@@ -39,8 +39,9 @@ export const RegisterOwnerPage: React.FC = () => {
       setError('Please provide your full name and email address.');
       return;
     }
-    if (!phone.trim()) {
-      setError('Please provide your mobile phone number.');
+    const cleanDigits = phone.replace(/[^0-9]/g, '');
+    if (!phone.trim() || cleanDigits.length < 7 || cleanDigits.length > 15) {
+      setError('Please provide a valid mobile phone number (7–15 digits).');
       return;
     }
     if (!password || password.length < 6) {

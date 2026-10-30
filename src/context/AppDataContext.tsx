@@ -523,9 +523,48 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           const reqMap = new Map<string, TenancyRequest>();
           (prev.tenancyRequests || []).forEach((r) => reqMap.set(r.id, r));
           fbRequests.forEach((r) => reqMap.set(r.id, r));
+          const allRequests = Array.from(reqMap.values());
+
+          const declinedRequests = allRequests.filter((r) => r.status === 'declined');
+          const acceptedRequests = allRequests.filter((r) => r.status === 'accepted');
+
+          const healedUnits = prev.units.map((u) => {
+            const declinedForUnit = declinedRequests.find(
+              (dr) =>
+                (dr.unitId === u.id || (dr.unitNumber === u.unitNumber && (!dr.propertyId || dr.propertyId === u.propertyId))) &&
+                (u.currentTenantId === dr.tenantId || (u.tenant && dr.tenantName && u.tenant.toLowerCase() === dr.tenantName.toLowerCase()))
+            );
+            const hasAccepted = acceptedRequests.some(
+              (ar) => ar.unitId === u.id || (ar.unitNumber === u.unitNumber && (!ar.propertyId || ar.propertyId === u.propertyId))
+            );
+            const hasActiveAg = (prev.agreements || []).some(
+              (ag) => (ag.status === 'active' || ag.status === 'signed') &&
+                      (ag.unit === u.unitNumber || (ag as any).unitId === u.id)
+            );
+
+            if (declinedForUnit && !hasAccepted && !hasActiveAg && u.status === 'reserved') {
+              return { ...u, status: 'vacant' as const, tenant: null, currentTenantId: null };
+            }
+
+            const acceptedForUnit = acceptedRequests.find(
+              (ar) => ar.unitId === u.id || (ar.unitNumber === u.unitNumber && (!ar.propertyId || ar.propertyId === u.propertyId))
+            );
+            if (acceptedForUnit && !u.tenant && (u.status === 'vacant' || u.status === 'reserved')) {
+              return {
+                ...u,
+                status: 'reserved' as const,
+                tenant: acceptedForUnit.tenantName,
+                currentTenantId: acceptedForUnit.tenantId,
+              };
+            }
+
+            return u;
+          });
+
           return {
             ...prev,
-            tenancyRequests: Array.from(reqMap.values()),
+            tenancyRequests: allRequests,
+            units: healedUnits,
           };
         });
       }
@@ -2791,18 +2830,82 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const saveTenancyRequest = async (req: TenancyRequest, notif?: any) => {
-    setState((prev) => ({
-      ...prev,
-      tenancyRequests: [...(prev.tenancyRequests || []).filter((r) => r.id !== req.id), req],
-      notifications: notif ? [notif, ...prev.notifications] : prev.notifications,
-    }));
+    setState((prev) => {
+      const isDeclined = req.status === 'declined';
+      const isAccepted = req.status === 'accepted';
+
+      const nextUnits = prev.units.map((u) => {
+        const matchesUnit =
+          u.id === req.unitId ||
+          (Boolean(req.unitNumber) && u.unitNumber === req.unitNumber && (!req.propertyId || !u.propertyId || u.propertyId === req.propertyId));
+        if (!matchesUnit) return u;
+
+        if (isDeclined) {
+          return {
+            ...u,
+            status: 'vacant' as const,
+            tenant: null,
+            currentTenantId: null,
+          };
+        }
+        if (isAccepted) {
+          return {
+            ...u,
+            status: 'reserved' as const,
+            tenant: req.tenantName,
+            currentTenantId: req.tenantId,
+            rent: req.rent || u.rent,
+            deposit: req.deposit || u.deposit,
+          };
+        }
+        return u;
+      });
+
+      return {
+        ...prev,
+        units: nextUnits,
+        tenancyRequests: [...(prev.tenancyRequests || []).filter((r) => r.id !== req.id), req],
+        notifications: notif ? [notif, ...prev.notifications] : prev.notifications,
+      };
+    });
+
     if (isFirebaseConfigured) {
       try {
         await setDoc(doc(db, 'tenancyRequests', req.id), req, { merge: true });
         if (notif) {
           await setDoc(doc(db, 'notifications', notif.id), notif, { merge: true });
         }
+
+        const targetUnit = state.units.find(
+          (u) =>
+            u.id === req.unitId ||
+            (Boolean(req.unitNumber) && u.unitNumber === req.unitNumber && (!req.propertyId || !u.propertyId || u.propertyId === req.propertyId))
+        );
+
+        if (req.status === 'declined' && targetUnit) {
+          await setDoc(
+            doc(db, 'units', targetUnit.id),
+            cleanFirestoreObject({ ...targetUnit, status: 'vacant', tenant: null, currentTenantId: null }),
+            { merge: true }
+          ).catch(console.warn);
+        }
+
         if (req.status === 'accepted') {
+          if (targetUnit) {
+            await setDoc(
+              doc(db, 'units', targetUnit.id),
+              cleanFirestoreObject({
+                ...targetUnit,
+                status: 'reserved',
+                tenant: req.tenantName,
+                currentTenantId: req.tenantId,
+                rent: req.rent || targetUnit.rent,
+                deposit: req.deposit || targetUnit.deposit,
+              }),
+              { merge: true }
+            ).catch(console.warn);
+          }
+
           const tenantToUpdate: Partial<TenantRecord> = {
             id: req.tenantId,
             name: req.tenantName,
@@ -2933,6 +3036,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 method: paymentMethod,
                 lateFeeApplied: updatedInv?.lateFeeApplied ?? p.lateFeeApplied,
                 amount: updatedInv?.total ?? p.amount,
+                currency: updatedInv?.currency || p.currency || 'USD',
+                propertyId: updatedInv?.propertyId || p.propertyId || '',
               }
             : p
         );
@@ -2941,6 +3046,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           id: transactionId || generateTransactionId(),
           invoiceId: updatedInv.id,
           ownerId: updatedInv.ownerId || '',
+          propertyId: updatedInv.propertyId || '',
+          currency: updatedInv.currency || 'USD',
           tenantId: updatedInv.tenantId || '',
           unit: updatedInv.unit || '',
           tenant: updatedInv.tenant || '',
@@ -3023,6 +3130,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
               unit: ag.unit,
               propertyName: propName,
               amount: ag.rent,
+              currency: ag.currency || updatedInv?.currency || DEFAULT_CURRENCY,
               tax: 0,
               total: ag.rent,
               due: ag.start || paidAt.split('T')[0],
@@ -3718,20 +3826,30 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const savePlatformGateways = async (gateways: PlatformGateways, activeBillingGateway?: string) => {
     const act = (activeBillingGateway || gateways.activeBillingGateway || state.activeBillingGateway || 'stripe') as any;
+    // Sanitize in memory: do not keep raw secrets in browser state
+    const sanitizedGateways: PlatformGateways = {
+      ...gateways,
+      stripe: { ...gateways.stripe, secretKey: '' },
+      razorpay: { ...gateways.razorpay, keySecret: '' },
+      paypal: gateways.paypal ? { ...gateways.paypal, secret: '' } : undefined as any,
+      easebuzz: gateways.easebuzz ? { ...gateways.easebuzz, salt: '' } : undefined as any,
+    };
     setState((prev) => ({
       ...prev,
-      platformGateways: gateways,
+      platformGateways: sanitizedGateways,
       activeBillingGateway: act,
     }));
     if (isFirebaseConfigured) {
       try {
+        const fn = httpsCallable(functions, 'savePlatformGateways');
+        await fn({ platformGateways: gateways, activeBillingGateway: act });
+      } catch (err) {
+        console.warn('Backend savePlatformGateways error, falling back to sanitized write:', err);
         await setDoc(doc(db, 'platformConfig', 'gateways'), {
-          platformGateways: gateways,
+          platformGateways: sanitizedGateways,
           activeBillingGateway: act,
           updatedAt: new Date().toISOString(),
         }, { merge: true });
-      } catch (err) {
-        console.warn('Firestore savePlatformGateways sync error:', err);
       }
     }
   };
@@ -3801,18 +3919,27 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const saveCommsConfig = async (commsCfg: any) => {
+    const sanitizedCfg: any = {
+      ...commsCfg,
+      twilioAuthToken: '',
+      sendgridKey: '',
+      whatsappAccessToken: '',
+      geminiApiKey: '',
+    };
     setState((prev) => ({
       ...prev,
       commsConfig: {
         ...prev.commsConfig,
-        ...commsCfg,
+        ...sanitizedCfg,
       },
     }));
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'platformConfig', 'comms'), commsCfg, { merge: true });
+        const fn = httpsCallable(functions, 'savePlatformCommsAndEvents');
+        await fn({ commsConfig: commsCfg });
       } catch (err) {
-        console.warn('Firestore saveCommsConfig sync error:', err);
+        console.warn('Backend savePlatformCommsAndEvents error, falling back to sanitized write:', err);
+        await setDoc(doc(db, 'platformConfig', 'comms'), sanitizedCfg, { merge: true });
       }
     }
   };
@@ -5496,16 +5623,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const saveStaff = async (staffMember: StaffMember, userProfile?: UserProfile) => {
+    const sanitizedStaff = { ...staffMember };
+    delete (sanitizedStaff as any).tempPassword;
     setState((prev) => ({
       ...prev,
-      staff: [...prev.staff.filter((s) => s.id !== staffMember.id), staffMember],
+      staff: [...prev.staff.filter((s) => s.id !== staffMember.id), sanitizedStaff],
       users: userProfile ? [...prev.users.filter((u) => u.id !== userProfile.id), userProfile] : prev.users,
     }));
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'staff', staffMember.id), staffMember, { merge: true });
+        await setDoc(doc(db, 'staff', staffMember.id), sanitizedStaff, { merge: true });
         if (userProfile) {
-          await setDoc(doc(db, 'users', userProfile.id), userProfile, { merge: true });
+          const sanitizedProfile = { ...userProfile };
+          delete (sanitizedProfile as any).tempPassword;
+          await setDoc(doc(db, 'users', userProfile.id), sanitizedProfile, { merge: true });
         }
       } catch (err) {
         console.warn('Firestore saveStaff sync error:', err);
@@ -5515,16 +5646,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const saveManager = async (manager: any, userProfile?: UserProfile) => {
     const pmId = String(manager.id);
+    const sanitizedManager = { ...manager };
+    delete sanitizedManager.tempPassword;
     setState((prev) => ({
       ...prev,
-      propertyManagers: [...(prev.propertyManagers || []).filter((m: any) => String(m.id) !== pmId), manager],
+      propertyManagers: [...(prev.propertyManagers || []).filter((m: any) => String(m.id) !== pmId), sanitizedManager],
       users: userProfile ? [...prev.users.filter((u) => u.id !== userProfile.id), userProfile] : prev.users,
     }));
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'propertyManagers', pmId), manager, { merge: true });
+        await setDoc(doc(db, 'propertyManagers', pmId), sanitizedManager, { merge: true });
         if (userProfile) {
-          await setDoc(doc(db, 'users', userProfile.id), userProfile, { merge: true });
+          const sanitizedProfile = { ...userProfile };
+          delete (sanitizedProfile as any).tempPassword;
+          await setDoc(doc(db, 'users', userProfile.id), sanitizedProfile, { merge: true });
         }
       } catch (err) {
         console.warn('Firestore saveManager sync error:', err);
@@ -6413,8 +6548,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     let errorMessage: string | undefined = entry.errorMessage;
 
     // Check gateway configuration
-    const hasSg = Boolean(state.commsConfig?.sendgridKey);
-    const hasTw = Boolean(state.commsConfig?.twilioSid && state.commsConfig?.twilioAuthToken);
+    const hasSg = Boolean(state.commsConfig?.sendgridConnected || state.commsConfig?.sendgridKey);
+    const hasTw = Boolean(state.commsConfig?.twilioConnected || (state.commsConfig?.twilioSid && state.commsConfig?.twilioAuthToken));
 
     // If external delivery requested and Firebase is configured
     if (isFirebaseConfigured && (wantsEmail || wantsSms)) {
@@ -6434,13 +6569,6 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             channel: channelParam,
             targetPhone: (wantsSms && hasTw) ? entry.recipientContact?.phone : undefined,
             targetEmail: (wantsEmail && hasSg) ? entry.recipientContact?.email : undefined,
-            commsConfig: {
-              twilioSid: state.commsConfig.twilioSid,
-              twilioAuthToken: state.commsConfig.twilioAuthToken,
-              twilioNumber: state.commsConfig.twilioNumber,
-              sendgridKey: state.commsConfig.sendgridKey,
-              sendgridFrom: state.commsConfig.sendgridFrom,
-            },
           });
 
           if (wantsEmail && hasSg) {

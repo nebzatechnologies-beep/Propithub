@@ -25,21 +25,35 @@ export const SupportTicketsPage: React.FC = () => {
       (user?.id && u.currentTenantId === user.id) ||
       (tenantEmail && u.tenant?.toLowerCase() === tenantEmail)
   ).filter((u) => {
-    if (u.status !== 'occupied' && u.status !== 'reserved') return false;
-    const hasActiveAgreement = (state.agreements || []).some(
+    if (u.status !== 'occupied') return false;
+
+    // Never allow units with declined invitations
+    const hasDeclinedRequest = (state.tenancyRequests || []).some(
+      (r) =>
+        (r.tenantId === user?.id || (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)) &&
+        (r.unitId === u.id || r.unitNumber === u.unitNumber) &&
+        r.status === 'declined'
+    );
+    if (hasDeclinedRequest) return false;
+
+    const myUnitAgreements = (state.agreements || []).filter(
       (a) =>
         (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)) &&
-        (a.status === 'active' || a.status === 'pending_deposit') &&
         (a.unit === u.unitNumber || a.unit === u.id)
     );
-    if (hasActiveAgreement) return true;
+    // If agreements exist, lease must be active
+    const hasActiveAgreement = myUnitAgreements.some((a) => a.status === 'active');
+    if (myUnitAgreements.length > 0 && !hasActiveAgreement) return false;
+
     const isCompleted = (state.moveouts || []).some(
       (m) =>
-        m.tenantId === user?.id &&
+        (m.tenantId === user?.id || (tenantEmail && (m.tenant?.toLowerCase() === tenantEmail || (m as any).tenantEmail?.toLowerCase() === tenantEmail))) &&
         (m.unit === u.unitNumber || m.unit === u.id) &&
-        m.status === 'refund_completed'
+        (m.status === 'refund_completed' || (m as any).tenantConfirmedReceipt)
     );
-    return !isCompleted;
+    if (isCompleted) return false;
+
+    return hasActiveAgreement || (myUnitAgreements.length === 0 && Boolean(u.currentTenantId === user?.id));
   });
 
   // Comprehensive active tenancies across properties
@@ -63,7 +77,7 @@ export const SupportTicketsPage: React.FC = () => {
         if (tenantEmail && (a.tenantEmail?.toLowerCase() === tenantEmail || a.tenant?.toLowerCase() === tenantEmail)) return true;
         return false;
       })
-      .filter((a) => a.status === 'active' || a.status === 'pending_deposit')
+      .filter((a) => a.status === 'active')
       .forEach((ag) => {
         const prop = state.properties.find((p) => p.id === ag.propertyId);
         const pName = prop?.name || (ag as any).propertyName || tenantRecord?.propertyName || 'Residence';
@@ -101,7 +115,13 @@ export const SupportTicketsPage: React.FC = () => {
       }
     });
 
-    if (list.length === 0 && tenantRecord && tenantRecord.unit && tenantRecord.unit !== 'Unassigned') {
+    const hasDeclinedForRecord = (state.tenancyRequests || []).some(
+      (r) =>
+        (r.tenantId === user?.id || (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)) &&
+        r.unitNumber === tenantRecord?.unit &&
+        r.status === 'declined'
+    );
+    if (list.length === 0 && tenantRecord && tenantRecord.unit && tenantRecord.unit !== 'Unassigned' && !hasDeclinedForRecord) {
       list.push({
         key: `rec_${tenantRecord.unit}`,
         unit: tenantRecord.unit,
@@ -169,6 +189,14 @@ export const SupportTicketsPage: React.FC = () => {
   );
 
   const handleCreateTicket = async () => {
+    if (!ticketIssue.trim()) {
+      showToast('⚠️ Please enter an issue title describing the maintenance problem.');
+      return;
+    }
+    if (myResidentTenancies.length === 0) {
+      showToast('Maintenance requests can only be submitted for an active, occupied unit.');
+      return;
+    }
     setIsSubmittingTicket(true);
     try {
       const activeT = myResidentTenancies.find((t) => t.key === ticketTenancyKey) || myResidentTenancies[0];
@@ -177,7 +205,7 @@ export const SupportTicketsPage: React.FC = () => {
       const targetPropertyId = activeT?.propertyId;
 
       const tickId = generateTicketId();
-      const issueTitle = ticketIssue.trim() || 'Maintenance request';
+      const issueTitle = ticketIssue.trim();
       const description = ticketDetail.trim();
       const newTick: Ticket = {
         id: tickId,

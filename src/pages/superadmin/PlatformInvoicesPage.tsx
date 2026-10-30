@@ -43,6 +43,17 @@ export const PlatformInvoicesPage: React.FC = () => {
   const [isSavingTmpl, setIsSavingTmpl] = useState(false);
   const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
   const [remindingId, setRemindingId] = useState<string | null>(null);
+
+  const formatInvoiceDate = (dateStr?: string) => {
+    if (!dateStr) return '—';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+    } catch {
+      return dateStr;
+    }
+  };
   
   // Live Studio Modal State (For Manual Ad-Hoc Invoicing)
   const [isStudioOpen, setIsStudioOpen] = useState(false);
@@ -562,10 +573,10 @@ export const PlatformInvoicesPage: React.FC = () => {
                                   </span>
                                 )}
                               </td>
-                              <td>{inv.issueDate}</td>
+                              <td>{formatInvoiceDate(inv.issueDate)}</td>
                               <td>
                                 <span style={{ color: isOverdue ? '#DC2626' : 'inherit', fontWeight: isOverdue ? 600 : 400 }}>
-                                  {inv.dueDate}
+                                  {formatInvoiceDate(inv.dueDate)}
                                 </span>
                               </td>
                               <td>
@@ -744,9 +755,9 @@ export const PlatformInvoicesPage: React.FC = () => {
                         </div>
 
                         <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '12px', display: 'flex', justifyContent: 'space-between' }}>
-                          <span>Issued: {inv.issueDate}</span>
+                          <span>Issued: {formatInvoiceDate(inv.issueDate)}</span>
                           <span style={{ color: isOverdue ? '#DC2626' : 'inherit', fontWeight: isOverdue ? 700 : 400 }}>
-                            Due: {inv.dueDate}
+                            Due: {formatInvoiceDate(inv.dueDate)}
                           </span>
                         </div>
 

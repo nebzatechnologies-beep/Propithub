@@ -24,9 +24,14 @@ service firebase.storage {
       allow write: if isAuthenticated() && isImage() && request.resource.size < 15 * 1024 * 1024;
     }
 
-    // Lease Agreements
+    // Lease Agreements (Owner, tenant of the agreement, or admin)
     match /agreements/{agreementId}/{fileName} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        isPrivileged() ||
+        resource.metadata.tenantId == request.auth.uid ||
+        resource.metadata.ownerId == request.auth.uid ||
+        resource.metadata.tenantId == null
+      );
       allow write: if isAuthenticated() && isDocument() && request.resource.size < 20 * 1024 * 1024;
     }
 
@@ -48,9 +53,14 @@ service firebase.storage {
       allow write: if isAuthenticated() && (request.auth.uid == userId || isPrivileged()) && request.resource.size < 10 * 1024 * 1024;
     }
 
-    // Invoice offline payment proofs & receipts
+    // Invoice offline payment proofs & receipts (Owner, tenant of the invoice, or admin)
     match /invoices/{invoiceId}/{fileName} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        isPrivileged() ||
+        resource.metadata.tenantId == request.auth.uid ||
+        resource.metadata.ownerId == request.auth.uid ||
+        resource.metadata.tenantId == null
+      );
       allow write: if isAuthenticated() && isDocument() && request.resource.size < 15 * 1024 * 1024;
     }
 

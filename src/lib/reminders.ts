@@ -1,6 +1,6 @@
 import { UserProfile, Property, Unit, PaymentTransaction, Invoice, Agreement, Ticket, PlatformSupportTicket } from '../types';
 import { AppState } from './store';
-import { DEFAULT_CURRENCY , DEFAULT_CURRENCY_SYMBOL } from './currencyService';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from './currencyService';
 
 export type ReminderSeverity = 'urgent' | 'warning' | 'info' | 'positive';
 export type ReminderChannel = 'in_app' | 'email' | 'sms' | 'push';
@@ -1059,6 +1059,7 @@ export const getStaffReminders = (
 
   activeWorkOrders.forEach((t) => {
     const isHigh = t.priority === 'High';
+    const eventTime = (t as any).updatedAt || t.created || new Date().toISOString();
     reminders.push({
       id: `staff_ticket_job_${t.id}`,
       title: `${isHigh ? 'High Priority ' : ''}Work Order: ${t.issue}`,
@@ -1069,6 +1070,8 @@ export const getStaffReminders = (
       actionLink: '/staff/dashboard',
       category: 'maintenance',
       unitNumber: t.unit,
+      dueDate: eventTime,
+      metadata: { eventTime },
     });
   });
 
@@ -1079,11 +1082,14 @@ export const getStaffReminders = (
 
   pendingProofPayments.forEach((t) => {
     const payer = t.payment.payer === 'tenant' ? (t.tenant || 'Resident') : 'Property Owner';
-    const ticketCurr = (t as any).currency || (t.propertyId ? state.properties.find((p) => p.id === t.propertyId)?.currency : null) || DEFAULT_CURRENCY;
+    const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency;
+    const rawCurr = (t as any).currency || unitCurr || (t.propertyId ? state.properties.find((p) => p.id === t.propertyId)?.currency : null);
+    const currSym = getCurrencySymbol(rawCurr) || DEFAULT_CURRENCY_SYMBOL;
+    const eventTime = (t as any).payment?.submittedAt || (t as any).updatedAt || t.created || new Date().toISOString();
     reminders.push({
       id: `staff_payment_pending_${t.id}`,
       title: `Task Fee Submitted: Unit ${t.unit}`,
-      description: `${payer} submitted payment proof for ${ticketCurr}${(t.payment.amount || 0).toLocaleString()} (${t.issue}). Confirm receipt to settle.`,
+      description: `${payer} submitted payment proof for ${currSym}${(t.payment.amount || 0).toLocaleString()} (${t.issue}). Confirm receipt to settle.`,
       severity: 'warning',
       icon: 'credit-card',
       actionLabel: 'Confirm Payment',
@@ -1091,6 +1097,9 @@ export const getStaffReminders = (
       category: 'approval',
       unitNumber: t.unit,
       amount: t.payment.amount || 0,
+      currency: currSym,
+      dueDate: eventTime,
+      metadata: { eventTime },
     });
   });
 
@@ -1101,7 +1110,14 @@ export const getStaffReminders = (
 
   if (awaitingPaymentTickets.length > 0) {
     const totalAwaiting = awaitingPaymentTickets.reduce((sum, t) => sum + (t.payment.amount || 0), 0);
-    const feeCurrency = (awaitingPaymentTickets[0] as any)?.currency || state.properties[0]?.currency || DEFAULT_CURRENCY;
+    const firstAwaitingUnit = awaitingPaymentTickets[0];
+    const unitCurr = state.units.find((u) => u.unitNumber === firstAwaitingUnit?.unit || u.id === firstAwaitingUnit?.unit)?.currency;
+    const rawCurr = (firstAwaitingUnit as any)?.currency || unitCurr || state.properties[0]?.currency;
+    const feeCurrency = getCurrencySymbol(rawCurr) || DEFAULT_CURRENCY_SYMBOL;
+    const latestEventTime = awaitingPaymentTickets.reduce((latest, t) => {
+      const tTime = (t as any).updatedAt || t.created || '';
+      return tTime > latest ? tTime : latest;
+    }, '') || new Date().toISOString();
     reminders.push({
       id: `staff_fees_awaiting_${awaitingPaymentTickets.length}`,
       title: `${awaitingPaymentTickets.length} Task Fee${awaitingPaymentTickets.length > 1 ? 's' : ''} Awaiting Payment (${feeCurrency}${totalAwaiting.toLocaleString()})`,
@@ -1111,6 +1127,9 @@ export const getStaffReminders = (
       actionLabel: 'View Task Payments',
       actionLink: '/staff/payments',
       category: 'rent',
+      currency: feeCurrency,
+      dueDate: latestEventTime,
+      metadata: { eventTime: latestEventTime },
     });
   }
 

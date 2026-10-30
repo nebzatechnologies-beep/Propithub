@@ -16,29 +16,29 @@ export const ConnectionsPage: React.FC = () => {
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   // Form states for editable keys
-  const [stripePub, setStripePub] = useState(state.platformGateways.stripe.pubKey);
-  const [stripeSecret, setStripeSecret] = useState(state.platformGateways.stripe.secretKey);
-  const [razorpayKey, setRazorpayKey] = useState(state.platformGateways.razorpay.keyId);
-  const [razorpaySecret, setRazorpaySecret] = useState(state.platformGateways.razorpay.keySecret);
+  const [stripePub, setStripePub] = useState(state.platformGateways.stripe.pubKey || '');
+  const [stripeSecret, setStripeSecret] = useState('');
+  const [razorpayKey, setRazorpayKey] = useState(state.platformGateways.razorpay.keyId || '');
+  const [razorpaySecret, setRazorpaySecret] = useState('');
   const [paypalClient, setPaypalClient] = useState(state.platformGateways.paypal?.clientId || '');
-  const [paypalSecret, setPaypalSecret] = useState(state.platformGateways.paypal?.secret || '');
+  const [paypalSecret, setPaypalSecret] = useState('');
   const [easebuzzKey, setEasebuzzKey] = useState(state.platformGateways.easebuzz?.merchantKey || '');
-  const [easebuzzSalt, setEasebuzzSalt] = useState(state.platformGateways.easebuzz?.salt || '');
+  const [easebuzzSalt, setEasebuzzSalt] = useState('');
   const [easebuzzSubMerchant, setEasebuzzSubMerchant] = useState(state.platformGateways.easebuzz?.subMerchantId || '');
   const [testingEasebuzz, setTestingEasebuzz] = useState(false);
 
   const [twSid, setTwSid] = useState(state.commsConfig.twilioSid || '');
-  const [twAuth, setTwAuth] = useState(state.commsConfig.twilioAuthToken || '');
+  const [twAuth, setTwAuth] = useState('');
   const [twNum, setTwNum] = useState(state.commsConfig.twilioNumber || '');
   const [sgFrom, setSgFrom] = useState(state.commsConfig.sendgridFrom || '');
-  const [sgKey, setSgKey] = useState(state.commsConfig.sendgridKey || '');
+  const [sgKey, setSgKey] = useState('');
   const [testPhone, setTestPhone] = useState(user?.phone || '+919876543210');
   const [testEmail, setTestEmail] = useState(user?.email || 'admin@propithub.com');
 
   // WhatsApp Cloud API form states
   const [waPhoneId, setWaPhoneId] = useState(state.commsConfig.whatsappPhoneNumberId || '');
   const [waWabaId, setWaWabaId] = useState(state.commsConfig.whatsappWabaId || '');
-  const [waToken, setWaToken] = useState(state.commsConfig.whatsappAccessToken || '');
+  const [waToken, setWaToken] = useState('');
   const [waVerifyToken, setWaVerifyToken] = useState(state.commsConfig.whatsappWebhookVerifyToken || 'propithub_webhook_secret_2026');
   const [waBotEnabled, setWaBotEnabled] = useState(state.commsConfig.whatsappBotEnabled ?? true);
   const [showWaToken, setShowWaToken] = useState(false);
@@ -46,7 +46,7 @@ export const ConnectionsPage: React.FC = () => {
   const [waTestMsg, setWaTestMsg] = useState('Propithub WhatsApp Automation handshake test: Platform operational!');
 
   // Google Gemini AI form states
-  const [geminiKey, setGeminiKey] = useState(state.commsConfig.geminiApiKey || '');
+  const [geminiKey, setGeminiKey] = useState('');
   const [geminiModel, setGeminiModel] = useState(state.commsConfig.geminiModel || 'gemini-1.5-flash');
   const [aiEnabled, setAiEnabled] = useState(state.commsConfig.aiEnabled ?? true);
   const [aiReceiptOcr, setAiReceiptOcr] = useState(state.commsConfig.aiReceiptOcrEnabled ?? true);
@@ -56,25 +56,47 @@ export const ConnectionsPage: React.FC = () => {
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [aiTestPrompt, setAiTestPrompt] = useState('Explain how Propithub automates rent payment reminders in 2 short bullet points.');
 
+  // Fetch server-masked status (secrets are never transferred in plain text)
+  const fetchSecretsStatus = async () => {
+    try {
+      const getStatusFn = httpsCallable<any, any>(functions, 'getPlatformSecretsStatus');
+      const res = await getStatusFn({});
+      if (res.data) {
+        const gw = res.data.gateways;
+        const cm = res.data.comms;
+        if (gw?.stripe?.configured) setStripeSecret((prev) => prev || gw.stripe.maskedSecret);
+        if (gw?.razorpay?.configured) setRazorpaySecret((prev) => prev || gw.razorpay.maskedSecret);
+        if (gw?.paypal?.configured) setPaypalSecret((prev) => prev || gw.paypal.maskedSecret);
+        if (gw?.easebuzz?.configured) setEasebuzzSalt((prev) => prev || gw.easebuzz.maskedSecret);
 
-  // Sync inputs when platformGateways loads from Firestore
+        if (cm?.twilio?.configured) setTwAuth((prev) => prev || cm.twilio.maskedSecret);
+        if (cm?.sendgrid?.configured) setSgKey((prev) => prev || cm.sendgrid.maskedSecret);
+        if (cm?.whatsapp?.configured) setWaToken((prev) => prev || cm.whatsapp.maskedSecret);
+        if (cm?.gemini?.configured) setGeminiKey((prev) => prev || cm.gemini.maskedSecret);
+      }
+    } catch (err) {
+      console.warn('Secrets status fetch error:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchSecretsStatus();
+  }, []);
+
+  // Sync inputs when platformGateways loads from Firestore (only non-sensitive public IDs)
   useEffect(() => {
     if (state.platformGateways) {
       if (state.platformGateways.stripe) {
         setStripePub(state.platformGateways.stripe.pubKey || '');
-        setStripeSecret(state.platformGateways.stripe.secretKey || '');
       }
       if (state.platformGateways.razorpay) {
         setRazorpayKey(state.platformGateways.razorpay.keyId || '');
-        setRazorpaySecret(state.platformGateways.razorpay.keySecret || '');
       }
       if (state.platformGateways.paypal) {
         setPaypalClient(state.platformGateways.paypal.clientId || '');
-        setPaypalSecret(state.platformGateways.paypal.secret || '');
       }
       if (state.platformGateways.easebuzz) {
         setEasebuzzKey(state.platformGateways.easebuzz.merchantKey || '');
-        setEasebuzzSalt(state.platformGateways.easebuzz.salt || '');
         setEasebuzzSubMerchant(state.platformGateways.easebuzz.subMerchantId || '');
       }
     }
@@ -83,20 +105,16 @@ export const ConnectionsPage: React.FC = () => {
   useEffect(() => {
     if (state.commsConfig) {
       setTwSid(state.commsConfig.twilioSid || '');
-      setTwAuth(state.commsConfig.twilioAuthToken || '');
       setTwNum(state.commsConfig.twilioNumber || '');
       setSgFrom(state.commsConfig.sendgridFrom || '');
-      setSgKey(state.commsConfig.sendgridKey || '');
 
       setWaPhoneId(state.commsConfig.whatsappPhoneNumberId || '');
       setWaWabaId(state.commsConfig.whatsappWabaId || '');
-      setWaToken(state.commsConfig.whatsappAccessToken || '');
       setWaVerifyToken(state.commsConfig.whatsappWebhookVerifyToken || 'propithub_webhook_secret_2026');
       if (typeof state.commsConfig.whatsappBotEnabled === 'boolean') {
         setWaBotEnabled(state.commsConfig.whatsappBotEnabled);
       }
 
-      setGeminiKey(state.commsConfig.geminiApiKey || '');
       setGeminiModel(state.commsConfig.geminiModel || 'gemini-1.5-flash');
       if (typeof state.commsConfig.aiEnabled === 'boolean') setAiEnabled(state.commsConfig.aiEnabled);
       if (typeof state.commsConfig.aiReceiptOcrEnabled === 'boolean') setAiReceiptOcr(state.commsConfig.aiReceiptOcrEnabled);
@@ -120,13 +138,6 @@ export const ConnectionsPage: React.FC = () => {
         channel,
         targetPhone: channel === 'sms' ? testPhone.trim() : undefined,
         targetEmail: channel === 'email' ? testEmail.trim() : undefined,
-        commsConfig: {
-          twilioSid: twSid.trim() || state.commsConfig.twilioSid,
-          twilioAuthToken: twAuth.trim() || state.commsConfig.twilioAuthToken,
-          twilioNumber: twNum.trim() || state.commsConfig.twilioNumber,
-          sendgridKey: sgKey.trim() || state.commsConfig.sendgridKey,
-          sendgridFrom: sgFrom.trim() || state.commsConfig.sendgridFrom,
-        },
       });
       const status = channel === 'sms' ? res.data?.smsStatus : res.data?.emailStatus;
       showToast(`Test ${channel.toUpperCase()} dispatch status: ${status || 'Dispatched'}`);
@@ -166,6 +177,7 @@ export const ConnectionsPage: React.FC = () => {
         },
       };
       await savePlatformGateways(updated);
+      await fetchSecretsStatus();
       showToast('✓ Easebuzz live production credentials saved and connected.');
     } finally {
       setSavingKey(null);
@@ -197,6 +209,7 @@ export const ConnectionsPage: React.FC = () => {
         },
       };
       await savePlatformGateways(updated);
+      await fetchSecretsStatus();
       showToast('✓ Stripe keys saved and persisted to platform configuration.');
     } finally {
       setSavingKey(null);
@@ -216,6 +229,7 @@ export const ConnectionsPage: React.FC = () => {
         },
       };
       await savePlatformGateways(updated);
+      await fetchSecretsStatus();
       showToast('✓ Razorpay keys saved and persisted to platform configuration.');
     } finally {
       setSavingKey(null);
@@ -236,6 +250,7 @@ export const ConnectionsPage: React.FC = () => {
         },
       };
       await savePlatformGateways(updated);
+      await fetchSecretsStatus();
       showToast('✓ PayPal keys saved and persisted to platform configuration.');
     } finally {
       setSavingKey(null);
@@ -252,6 +267,7 @@ export const ConnectionsPage: React.FC = () => {
         twilioNumber: twNum.trim(),
         twilioConnected: isConn,
       });
+      await fetchSecretsStatus();
       showToast(isConn ? '✓ Twilio live credentials saved and connected.' : 'Twilio settings saved.');
     } finally {
       setSavingKey(null);
@@ -267,6 +283,7 @@ export const ConnectionsPage: React.FC = () => {
         sendgridKey: sgKey.trim(),
         sendgridConnected: isConn,
       });
+      await fetchSecretsStatus();
       showToast(isConn ? '✓ SendGrid live credentials saved and connected.' : 'SendGrid settings saved.');
     } finally {
       setSavingKey(null);
@@ -311,6 +328,7 @@ export const ConnectionsPage: React.FC = () => {
         whatsappBotEnabled: waBotEnabled,
         whatsappConnected: isConn,
       });
+      await fetchSecretsStatus();
       showToast(isConn ? '✓ Meta WhatsApp Cloud API credentials saved and active.' : 'WhatsApp settings saved.');
     } finally {
       setSavingKey(null);
@@ -348,6 +366,7 @@ export const ConnectionsPage: React.FC = () => {
         aiConversationalAssistantEnabled: aiConversationalAssistant,
         aiConnected: isConn,
       });
+      await fetchSecretsStatus();
       showToast(isConn ? '✓ Google Gemini AI configuration saved and active.' : 'AI configuration saved.');
     } finally {
       setSavingKey(null);

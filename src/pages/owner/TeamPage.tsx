@@ -10,7 +10,7 @@ import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '..
 
 export const TeamPage: React.FC = () => {
   const { state, updateState, recordManagerPayout, saveManager, deleteManager, reassignManagerProperty, showToast } = useAppData();
-  const { user, provisionUser } = useAuth();
+  const { user, provisionUser, resetPassword } = useAuth();
   const navigate = useNavigate();
 
   const [subTab, setSubTab] = useState<'managers' | 'payouts'>('managers');
@@ -146,10 +146,10 @@ export const TeamPage: React.FC = () => {
       name,
       email,
       phone: pmPhone.trim(),
-      propertyId: pmPropertyId,
+      propertyId: pmPropertyId ? pmPropertyId : null,
+      assignedProperties: pmPropertyId ? [pmPropertyId] : [],
       ownerName: user?.displayName || 'Property Owner',
       ownerId,
-      tempPassword: passwordToUse,
     };
 
     await saveManager(newPm);
@@ -299,25 +299,21 @@ export const TeamPage: React.FC = () => {
                           <span style={{ color: 'var(--danger)', fontWeight: 600 }}>No access</span>
                         </div>
                         <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
-                          {pm.tempPassword && (
-                            <button
-                              type="button"
-                              className="btn secondary small"
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                              onClick={() => {
-                                setCredentialsModal({
-                                  isOpen: true,
-                                  name: pm.name,
-                                  email: pm.email,
-                                  password: pm.tempPassword || '',
-                                  role: 'Property Manager',
-                                  property: assignedProp?.name || 'All Properties',
-                                });
-                              }}
-                            >
-                              <Key size={12} /> Credentials
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                            onClick={async () => {
+                              const r = await resetPassword(pm.email);
+                              if (r.success) {
+                                showToast(`Password reset link dispatched to ${pm.email}`);
+                              } else {
+                                showToast(r.error || 'Failed to dispatch reset link');
+                              }
+                            }}
+                          >
+                            <Key size={12} /> Send Password Reset
+                          </button>
                           <button
                             type="button"
                             className="btn secondary small"

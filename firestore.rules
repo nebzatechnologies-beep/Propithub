@@ -9,13 +9,19 @@ service cloud.firestore {
     function isSuperAdmin() {
       return isAuthenticated() && (
         request.auth.token.role == 'superadmin' ||
-        request.auth.token.role == 'admin'
+        request.auth.token.role == 'admin' ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'superadmin' ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'))
       );
     }
 
     function isOwner() {
       return isAuthenticated() && (
         request.auth.token.role == 'owner' ||
+        exists(/databases/$(database)/documents/owners/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'owner') ||
         isSuperAdmin()
       );
     }
@@ -23,6 +29,9 @@ service cloud.firestore {
     function isTenant() {
       return isAuthenticated() && (
         request.auth.token.role == 'tenant' ||
+        exists(/databases/$(database)/documents/tenants/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'tenant') ||
         isSuperAdmin()
       );
     }
@@ -30,6 +39,9 @@ service cloud.firestore {
     function isManager() {
       return isAuthenticated() && (
         request.auth.token.role == 'manager' ||
+        exists(/databases/$(database)/documents/propertyManagers/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager') ||
         isSuperAdmin()
       );
     }
@@ -37,6 +49,9 @@ service cloud.firestore {
     function isStaff() {
       return isAuthenticated() && (
         request.auth.token.role == 'staff' ||
+        exists(/databases/$(database)/documents/staff/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'staff') ||
         isSuperAdmin()
       );
     }
@@ -45,10 +60,41 @@ service cloud.firestore {
       return isAuthenticated() && (request.auth.uid == uid || isSuperAdmin());
     }
 
-    // Public Landing & Configuration
-    match /platformConfig/{configId} {
+    // Platform Configuration
+    // Public non-sensitive configs (landing CMS, pricing plans, trial policy, public gateway IDs) are readable
+    // Sensitive raw configs ('gateways' containing legacy keys, 'comms') can only be read/written by SuperAdmin
+    match /platformConfig/landing {
       allow read: if true;
       allow write: if isSuperAdmin();
+    }
+    match /platformConfig/trialPolicy {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+    match /platformConfig/gateways {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+    match /platformConfig/comms {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+    match /platformConfig/notifications {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+    match /platformConfig/invoiceTemplate {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+    match /platformConfig/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    // Platform Secrets - Server-only storage (zero client read/write access)
+    match /platformSecrets/{secretId} {
+      allow read, write: if false;
     }
 
     // Subscription Plans (public to view, superadmin to manage)
@@ -60,13 +106,24 @@ service cloud.firestore {
     // Master Users Directory
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow write: if isUser(userId) || isOwner() || isSuperAdmin();
+      allow create: if isAuthenticated() && (isUser(userId) || isOwner() || isManager() || isSuperAdmin());
+      allow update: if isSuperAdmin() ||
+        (isUser(userId) && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'deletionStatus', 'scheduledPermanentDeletionAt']))) ||
+        (isOwner() && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['deletionStatus', 'scheduledPermanentDeletionAt']))) ||
+        (isManager() && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['deletionStatus', 'scheduledPermanentDeletionAt'])));
+      allow delete: if isSuperAdmin();
+    }
+
+    // User Claim Requests (triggers Cloud Function for role claims)
+    match /userClaimRequests/{claimId} {
+      allow read, write: if isAuthenticated();
     }
 
     // Tenants Directory
     match /tenants/{tenantId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+      allow write: if isUser(tenantId) || isOwner() || isManager() || isSuperAdmin() ||
+        (isTenant() && (request.auth.uid == tenantId || request.auth.uid == resource.data.userId || request.auth.uid == request.resource.data.userId));
     }
 
     // Staff Directory & Schedules
@@ -95,6 +152,11 @@ service cloud.firestore {
     match /owners/{ownerId} {
       allow read: if isAuthenticated();
       allow write: if isUser(ownerId) || isSuperAdmin();
+
+      // Owner private secrets (payment gateway secret keys, webhooks - protected from tenants/staff)
+      match /privateSecrets/{secretDoc} {
+        allow read, write: if isUser(ownerId) || isSuperAdmin();
+      }
     }
 
     // Properties & Units
@@ -104,23 +166,25 @@ service cloud.firestore {
     }
     match /units/{unitId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner() || isManager() || isSuperAdmin();
+      allow write: if isOwner() || isManager() || isSuperAdmin() || isTenant();
     }
 
     // Agreements
     match /agreements/{agreementId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+      allow write: if isOwner() || isManager() || isSuperAdmin() ||
+        (isTenant() && (request.auth.uid == resource.data.tenantId || request.auth.uid == request.resource.data.tenantId));
     }
 
     // Payments & Invoices
     match /payments/{paymentId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+      allow write: if isOwner() || isManager() || isSuperAdmin();
     }
     match /invoices/{invoiceId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+      allow write: if isOwner() || isManager() || isSuperAdmin() ||
+        (isTenant() && (request.auth.uid == resource.data.tenantId || request.auth.uid == request.resource.data.tenantId));
     }
 
     // Maintenance Tickets

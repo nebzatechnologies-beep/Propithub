@@ -412,29 +412,33 @@ export const LeaseAgreementPage: React.FC = () => {
 
   // The move-out record to display: active has priority; if none active, show completed
   const existingMoveOut = activeMoveOut || completedMoveOut;
+  // Effective agreement for lifecycle banners
+  const fallbackAgreement = (state.agreements || []).find((a) => isTenantAgreement(a) && a.status !== 'terminated') || (state.agreements || []).find(isTenantAgreement) || null;
+  const effectiveAgreement = myAgreement || fallbackAgreement;
+
   const isMoveOutCompleted = Boolean(completedMoveOut && !activeMoveOut);
-  const isTerminatedLease = myAgreement?.status === 'terminated' || isMoveOutCompleted;
+  const isTerminatedLease = effectiveAgreement?.status === 'terminated' || isMoveOutCompleted;
 
   // Cross-reference deposit invoice payment status — strict matching ONLY.
-  const matchingDepInv = myAgreement?.depositInvoiceId
-    ? state.invoices.find((i) => i.id === myAgreement.depositInvoiceId)
-    : state.invoices.find((i) => i.leaseAgreementId === myAgreement?.id && i.invoiceType === 'deposit');
-  const isDepositSettled = myAgreement?.depositStatus === 'paid' || matchingDepInv?.status === 'paid';
+  const matchingDepInv = effectiveAgreement?.depositInvoiceId
+    ? state.invoices.find((i) => i.id === effectiveAgreement.depositInvoiceId)
+    : state.invoices.find((i) => i.leaseAgreementId === effectiveAgreement?.id && i.invoiceType === 'deposit');
+  const isDepositSettled = effectiveAgreement?.depositStatus === 'paid' || matchingDepInv?.status === 'paid';
   const isPendingApproval =
-    myAgreement?.status === 'pending_approval' ||
-    (myAgreement as any)?.status === 'awaiting_owner_signature' ||
-    Boolean(myAgreement?.signedDocumentUrl && (myAgreement?.status === 'awaiting_tenant_upload' || myAgreement?.status === 'awaiting_tenant_signature'));
-  const isPendingDeposit = !isDepositSettled && myAgreement?.status === 'pending_deposit';
-  const isActiveLease = myAgreement?.status === 'active' && !isPendingApproval && !isPendingDeposit && !isTerminatedLease && !isMoveOutCompleted;
+    effectiveAgreement?.status === 'pending_approval' ||
+    (effectiveAgreement as any)?.status === 'awaiting_owner_signature' ||
+    Boolean(effectiveAgreement?.signedDocumentUrl && (effectiveAgreement?.status === 'awaiting_tenant_upload' || effectiveAgreement?.status === 'awaiting_tenant_signature'));
+  const isPendingDeposit = !isDepositSettled && (effectiveAgreement?.status === 'pending_deposit' || (effectiveAgreement as any)?.status === 'signed');
+  const isActiveLease = effectiveAgreement?.status === 'active' && !isPendingApproval && !isPendingDeposit && !isTerminatedLease && !isMoveOutCompleted;
   const isAwaitingUpload =
     !isPendingApproval &&
     !isActiveLease &&
     !isPendingDeposit &&
     !isTerminatedLease &&
-    (myAgreement?.status === 'awaiting_tenant_upload' ||
-      myAgreement?.status === 'awaiting_tenant_signature' ||
-      myAgreement?.status === 'rejected' ||
-      !myAgreement?.signedDocumentUrl);
+    (effectiveAgreement?.status === 'awaiting_tenant_upload' ||
+      effectiveAgreement?.status === 'awaiting_tenant_signature' ||
+      effectiveAgreement?.status === 'rejected' ||
+      !effectiveAgreement?.signedDocumentUrl);
 
   // Strictly matched agreements for this resident
   const rawAgreements = state.agreements.filter(isTenantAgreement);
@@ -525,7 +529,7 @@ export const LeaseAgreementPage: React.FC = () => {
       : (tenantRecord && tenantRecord.unit && tenantRecord.unit !== 'Unassigned' && !isTerminatedLease && !isMoveOutCompleted && !isResidentFullyVacated)
         ? [
           {
-            id: `AGR-${(tenantRecord.id || 'LEASE').slice(-6).toUpperCase()}`,
+            id: (tenantRecord as any).agreementId || state.agreements.find((a) => (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)) && a.unit === tenantRecord.unit)?.id || `AGR-${(tenantRecord.id || 'LEASE').slice(-6).toUpperCase()}`,
             ownerId: tenantRecord.ownerId || targetOwner?.id || '',
             ownerName: tenantRecord.owner || resolvedOwnerName,
             propertyId: tenantRecord.propertyId || '',
@@ -835,7 +839,7 @@ export const LeaseAgreementPage: React.FC = () => {
             </Link>
           </div>
         </div>
-      ) : !myAgreement ? (
+      ) : !effectiveAgreement ? (
         <div style={{ background: '#F8F9FA', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px 18px', marginBottom: '18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
           <FileText size={20} color="var(--ink-soft)" />
           <div>
@@ -1100,9 +1104,14 @@ export const LeaseAgreementPage: React.FC = () => {
                 statusBadgeText = 'Signature Pending';
               }
 
+              const agRef = (ag as any).customAgreementNumber || ag.id;
+              const displayAgRef = agRef.startsWith('#')
+                ? agRef
+                : `#${agRef.startsWith('AG-') || agRef.startsWith('AGR-') || agRef.length <= 10 ? agRef : agRef.slice(-6).toUpperCase()}`;
+
               unifiedRecords.push({
                 id: ag.id,
-                ref: `#${ag.id.slice(-6).toUpperCase()}`,
+                ref: displayAgRef,
                 unit: ag.unit || '—',
                 property: agProp,
                 owner: ag.ownerName || resolvedOwnerName,

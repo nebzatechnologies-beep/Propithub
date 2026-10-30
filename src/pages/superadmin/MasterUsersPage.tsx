@@ -146,8 +146,11 @@ export const MasterUsersPage: React.FC = () => {
     }
   };
 
-  const renderStars = (rating: number = 4.8) => {
-    const fullStars = Math.floor(rating);
+  const renderStars = (rating?: number) => {
+    if (rating === undefined || rating === null) {
+      return <span style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>—</span>;
+    }
+    const fullStars = Math.floor(Math.max(0, Math.min(5, rating)));
     return (
       <span style={{ color: 'var(--brass)', letterSpacing: '1px' }}>
         {'★'.repeat(fullStars)}
@@ -231,12 +234,13 @@ export const MasterUsersPage: React.FC = () => {
                           : '—';
 
                       const ownerSettings = state.ownerSettings[u.id];
-                      const isTrial = ownerSettings?.planStatus === 'trialing';
+                      const hasPaidInvoices = (state.platformInvoices || []).some((inv) => inv.ownerId === u.id && inv.status === 'paid');
+                      const isTrial = u.role === 'owner' && !hasPaidInvoices && (ownerSettings?.planStatus === 'trialing' || (!ownerSettings?.planStatus && (u as any).planStatus === 'trialing'));
                       const activePlanName = ownerSettings?.planName || u.plan || 'Growth';
                       const planObj = state.plans.find((p) => p.name.toLowerCase() === activePlanName.toLowerCase());
                       const planPrice = planObj ? planObj.price : 79;
                       const userMrr = u.role === 'owner' ? (isTrial ? '$0 (Trial)' : `$${planPrice}`) : '—';
-                      const isPastDue = u.status === 'past_due' || (u.role === 'owner' && ownerSettings?.planStatus === 'expired');
+                      const isPastDue = u.status === 'past_due' || (u.role === 'owner' && !hasPaidInvoices && ownerSettings?.planStatus === 'expired');
 
                       return (
                         <tr key={u.id}>
@@ -281,7 +285,7 @@ export const MasterUsersPage: React.FC = () => {
                             )}
                           </td>
                           <td style={{ fontWeight: 500 }}>{userMrr}</td>
-                          <td>{renderStars(u.rating || 4.8)}</td>
+                          <td>{u.role === 'owner' || u.role === 'staff' ? renderStars(u.rating) : '—'}</td>
                           <td>
                             <span className={`badge ${isTrial ? 'amber' : isPastDue ? 'red' : 'green'}`}>
                               {isTrial ? 'Trial' : isPastDue ? 'Past due' : 'Active'}
@@ -409,7 +413,7 @@ export const MasterUsersPage: React.FC = () => {
 
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', fontSize: '12px', color: 'var(--ink-soft)' }}>
                       <span>Tenant Rating:</span>
-                      <div>{renderStars(u.rating || 4.8)}</div>
+                      <div>{u.role === 'owner' || u.role === 'staff' ? renderStars(u.rating) : '—'}</div>
                     </div>
 
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>

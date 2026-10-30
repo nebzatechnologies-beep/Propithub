@@ -169,6 +169,35 @@ export const Tenant360Page: React.FC = () => {
         return;
       }
 
+      // Disqualify if this resident ONLY has a pending or declined invitation and no active/accepted relationship (OWN-15)
+      const hasActiveAgreement = myAgreements.some(
+        (a) =>
+          (a.status === 'active' || a.status === 'signed') &&
+          ((Boolean(a.tenantId) && a.tenantId === t.id) ||
+            (Boolean(a.tenantEmail) && Boolean(t.email) && a.tenantEmail!.toLowerCase() === t.email.toLowerCase()))
+      );
+      const occupiesOccupiedUnit = myUnits.some(
+        (u) =>
+          u.status === 'occupied' &&
+          (u.currentTenantId === t.id || (t.unit && t.unit !== 'Unassigned' && (u.id === t.unit || u.unitNumber === t.unit)))
+      );
+      const hasPendingReq = mySentRequests.some(
+        (r) =>
+          r.status === 'pending' &&
+          ((Boolean(r.tenantId) && r.tenantId === t.id) ||
+            (Boolean(r.tenantEmail) && Boolean(t.email) && r.tenantEmail.toLowerCase() === t.email.toLowerCase()))
+      );
+      const hasDeclinedReq = mySentRequests.some(
+        (r) =>
+          r.status === 'declined' &&
+          ((Boolean(r.tenantId) && r.tenantId === t.id) ||
+            (Boolean(r.tenantEmail) && Boolean(t.email) && r.tenantEmail.toLowerCase() === t.email.toLowerCase()))
+      );
+
+      if ((hasPendingReq || hasDeclinedReq) && !matchesAcceptedReq && !hasActiveAgreement && !occupiesOccupiedUnit) {
+        return;
+      }
+
       // Prefer ID match, then unit assignment — avoid name-only match across owners
       const matchingUnit = myUnits.find(
         (u) =>
@@ -234,17 +263,38 @@ export const Tenant360Page: React.FC = () => {
       if (req.status === 'accepted') {
         const keyById = (req.tenantId || '').toLowerCase();
         const keyByEmail = (req.tenantEmail || '').toLowerCase();
-        if ((!keyById || !tenantMap.has(keyById)) && (!keyByEmail || !tenantMap.has(keyByEmail))) {
+        const existingKey = (keyById && tenantMap.has(keyById))
+          ? keyById
+          : (keyByEmail && tenantMap.has(keyByEmail))
+            ? keyByEmail
+            : null;
+
+        // Resolve unit scoped to this owner's units — unit number match requires propertyId
+        const targetUnit = myUnits.find((u) => u.id === req.unitId) ||
+          (req.unitNumber && req.propertyId
+            ? myUnits.find((u) => u.unitNumber === req.unitNumber && u.propertyId === req.propertyId)
+            : myUnits.find((u) => req.unitNumber && u.unitNumber === req.unitNumber));
+
+        if (existingKey) {
+          const existing = tenantMap.get(existingKey)!;
+          tenantMap.set(existingKey, {
+            ...existing,
+            unit: req.unitNumber || targetUnit?.unitNumber || existing.unit,
+            unitsRented: Array.from(new Set([...(existing.unitsRented || []), req.unitNumber || targetUnit?.unitNumber].filter(Boolean) as string[])),
+            rent: req.rent || targetUnit?.rent || existing.rent,
+            deposit: req.deposit || targetUnit?.deposit || existing.deposit,
+            leaseStart: req.leaseStart || existing.leaseStart,
+            leaseEnd: req.leaseEnd || existing.leaseEnd,
+            propertyName: req.propertyName || targetUnit?.propertyName || existing.propertyName,
+            propertyId: req.propertyId || targetUnit?.propertyId || existing.propertyId,
+            currency: req.currency || targetUnit?.currency || existing.currency,
+          });
+        } else {
           const userProf = state.users.find(
             (u) =>
               (req.tenantId && u.id === req.tenantId) ||
               (req.tenantEmail && u.email && u.email.toLowerCase() === req.tenantEmail.toLowerCase())
           );
-          // Resolve unit scoped to this owner's units — unit number match requires propertyId
-          const targetUnit = myUnits.find((u) => u.id === req.unitId) ||
-            (req.unitNumber && req.propertyId
-              ? myUnits.find((u) => u.unitNumber === req.unitNumber && u.propertyId === req.propertyId)
-              : myUnits.find((u) => req.unitNumber && u.unitNumber === req.unitNumber));
 
           const newRecord: TenantRecord = {
             id: req.tenantId || userProf?.id || `usr_tenant_${Date.now()}`,
@@ -353,13 +403,10 @@ export const Tenant360Page: React.FC = () => {
     const seenTenantKeys = new Set<string>();
     Array.from(tenantMap.values()).forEach((t) => {
       const emailK = t.email ? `email:${t.email.toLowerCase().trim()}` : '';
-      const unitK = t.unit && t.unit !== 'Unassigned' ? `unit:${t.propertyId || ''}_${t.unit.toLowerCase().trim()}` : '';
       const idK = t.id ? `id:${t.id}` : '';
       if (emailK && seenTenantKeys.has(emailK)) return;
-      if (unitK && seenTenantKeys.has(unitK)) return;
       if (idK && seenTenantKeys.has(idK)) return;
       if (emailK) seenTenantKeys.add(emailK);
-      if (unitK) seenTenantKeys.add(unitK);
       if (idK) seenTenantKeys.add(idK);
       uniqueTenants.push(t);
     });

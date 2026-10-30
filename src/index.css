@@ -1392,10 +1392,11 @@ input[type="file"]::-webkit-file-upload-button:hover,
 }
 
 .onboard-resident-modal {
-  max-width: 720px;
+  max-width: 960px;
   width: 100% !important;
-  max-height: 92vh;
-  max-height: 92dvh;
+  min-height: 540px;
+  max-height: 94vh;
+  max-height: 94dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1405,6 +1406,8 @@ input[type="file"]::-webkit-file-upload-button:hover,
 }
 
 .onboard-resident-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 340px;
   overflow-x: hidden !important;
   overflow-y: auto !important;
   box-sizing: border-box !important;
@@ -1466,6 +1469,7 @@ input[type="file"]::-webkit-file-upload-button:hover,
   .onboard-resident-modal {
     width: 100% !important;
     max-width: 100% !important;
+    min-height: auto !important;
     max-height: 94vh !important;
     max-height: 94dvh !important;
     border-radius: 10px !important;

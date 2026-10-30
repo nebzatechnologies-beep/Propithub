@@ -75,6 +75,17 @@ export const PaymentsPage: React.FC = () => {
     return formatCurrencyAmount(converted, activeCurrencyCode);
   };
 
+  const formatTxDate = (d?: string | null) => {
+    if (!d) return '—';
+    try {
+      const parsed = new Date(d);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+      }
+    } catch {}
+    return d.includes('T') ? d.split('T')[0] : d;
+  };
+
   const [subTab, setSubTab] = useState<'rent_due' | 'deposit' | 'transactions' | 'invoices' | 'methods' | 'template' | 'settings'>('rent_due');
   const [remindingTenantId, setRemindingTenantId] = useState<string | null>(null);
   const [isSettling, setIsSettling] = useState(false);
@@ -1326,13 +1337,18 @@ export const PaymentsPage: React.FC = () => {
       return;
     }
 
+    const targetOffProp = unitObj ? state.properties.find((p) => p.id === unitObj.propertyId) : undefined;
+    const effectiveOfflineCurrency = normalizeCurrencyCode(unitObj?.currency || targetOffProp?.currency || DEFAULT_CURRENCY);
+
     const newTxn: PaymentTransaction = {
       id: payId,
       ownerId,
+      propertyId: unitObj?.propertyId || targetOffProp?.id || '',
       tenant: tenantName,
       tenantId,
       unit: unitObj?.unitNumber || unitObj?.id || 'Unit',
       amount: offlineAmount,
+      currency: effectiveOfflineCurrency,
       date: offlineDate,
       dueDate: offlineDate,
       status: 'paid',
@@ -1368,6 +1384,7 @@ export const PaymentsPage: React.FC = () => {
         propertyId: unitObj?.propertyId || '',
         invoiceType: 'rent',
         amount: offlineAmount,
+        currency: effectiveOfflineCurrency,
         tax: 0,
         total: offlineAmount,
         due: offlineDate,
@@ -2601,7 +2618,7 @@ export const PaymentsPage: React.FC = () => {
                             <td style={{ fontWeight: 600, color: isOutflow ? '#7E22CE' : 'var(--ink)' }}>
                               {isOutflow ? `- ${getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}${p.amount?.toLocaleString()}` : `${getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}${p.amount?.toLocaleString()}`}
                             </td>
-                            <td>{p.date ? (p.date.includes('T') ? p.date.split('T')[0] : p.date) : (p.dueDate || '—')}</td>
+                            <td>{formatTxDate(p.date || p.dueDate)}</td>
                             <td>{p.method}</td>
                             <td>
                               <span
@@ -2692,7 +2709,7 @@ export const PaymentsPage: React.FC = () => {
                           </div>
                           <div>
                             <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Date / Method</div>
-                            <span>{p.date ? (p.date.includes('T') ? p.date.split('T')[0] : p.date) : (p.dueDate || '—')} • {p.method}</span>
+                            <span>{formatTxDate(p.date || p.dueDate)} • {p.method}</span>
                           </div>
                           <div style={{ gridColumn: '1 / -1' }}>
                             <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Linked Document</div>

@@ -321,3 +321,14 @@ export function formatCurrencyAmount(
   const symbolPrefix = symbol.length > 1 && !symbol.endsWith(' ') ? `${symbol} ` : symbol;
   return `${symbolPrefix}${formattedNumber}`;
 }
+
+/**
+ * Cleanly formats a currency code and its symbol without duplication (e.g. 'USD ($)' vs 'AED').
+ */
+export function formatCurrencyLabel(code?: string | null, symbol?: string | null): string {
+  const c = normalizeCurrencyCode(code);
+  const meta = GLOBAL_CURRENCIES.find((item) => item.code === c);
+  const s = (symbol || meta?.symbol || c).trim();
+  if (!s || s === c) return c;
+  return `${c} (${s})`;
+}

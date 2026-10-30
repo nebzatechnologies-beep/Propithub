@@ -197,7 +197,19 @@ export function usePlanLimits(explicitOwnerId?: string) {
 
   const propertiesUsed = resolvedOwnerId ? state.properties.filter((p) => p.ownerId === resolvedOwnerId).length : 0;
   const unitsUsed = resolvedOwnerId ? state.units.filter((u) => u.ownerId === resolvedOwnerId).length : 0;
-  const tenantsUsed = resolvedOwnerId ? state.tenants.filter((t) => t.ownerId === resolvedOwnerId).length : 0;
+  const tenantsUsed = resolvedOwnerId
+    ? state.tenants.filter((t) => {
+        if (t.ownerId !== resolvedOwnerId) return false;
+        const hasAssignedUnit = Boolean(t.unit && t.unit !== 'Unassigned' && t.unit !== 'Pending');
+        const hasActiveAg = (state.agreements || []).some(
+          (a) => a.ownerId === resolvedOwnerId && a.status === 'active' && (a.tenantId === t.id || (t.email && a.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
+        );
+        const hasAcceptedReq = (state.tenancyRequests || []).some(
+          (r) => r.ownerId === resolvedOwnerId && r.status === 'accepted' && (r.tenantId === t.id || (t.email && r.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
+        );
+        return hasAssignedUnit || hasActiveAg || hasAcceptedReq;
+      }).length
+    : 0;
   const managersUsed = resolvedOwnerId ? (state.propertyManagers || []).filter((m: any) => m.ownerId === resolvedOwnerId).length : 0;
   const staffUsed = resolvedOwnerId ? (state.staff || []).filter((s: any) => s.ownerId === resolvedOwnerId).length : 0;
 

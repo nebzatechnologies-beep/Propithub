@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
+import { StaffMember } from '../../types';
 
 export const StaffRatingsPage: React.FC = () => {
   const { state } = useAppData();
@@ -9,19 +10,43 @@ export const StaffRatingsPage: React.FC = () => {
   const staffEmail = user?.email?.toLowerCase() || '';
   const staffName = user?.displayName || '';
 
-  // Resolve by UID first, then email, then displayName — never blindly use index 0
-  const currentStaff =
-    state.staff.find((s) => s.id === staffId) ||
-    (staffEmail ? state.staff.find((s) => s.email?.toLowerCase() === staffEmail) : undefined) ||
-    (staffName ? state.staff.find((s) => s.name.toLowerCase() === staffName.toLowerCase()) : undefined);
+  // Resolve by UID first, then email, then displayName.
+  // If state.staff hasn't synced the document yet, dynamically synthesize from authenticated UserProfile.
+  const currentStaff: StaffMember | undefined = useMemo(() => {
+    const found =
+      state.staff.find((s) => s.id === staffId) ||
+      (staffEmail ? state.staff.find((s) => s.email?.toLowerCase() === staffEmail) : undefined) ||
+      (staffName ? state.staff.find((s) => s.name.toLowerCase() === staffName.toLowerCase()) : undefined);
+    if (found) return found;
+
+    if (user && (user.role === 'staff' || (user as any).role === 'staff')) {
+      return {
+        id: user.id,
+        name: user.displayName || user.email?.split('@')[0] || 'Technician',
+        role: (user as any).staffRole || 'Maintenance Staff',
+        ownerId: user.ownerId || '',
+        ownerName: user.ownerName || 'Property Owner',
+        phone: user.phone || '',
+        email: user.email || '',
+        activeTickets: 0,
+        rating: (user as any).rating || 5.0,
+        completed: (user as any).completed || 0,
+        paymentDetails: {
+          method: 'bank',
+          bank: { accountName: user.displayName || '', accountNumber: '', country: 'India', routing: '' },
+          upi: { upiId: '', qrImage: null },
+          paypalEmail: '',
+        },
+      };
+    }
+    return undefined;
+  }, [state.staff, staffId, staffEmail, staffName, user]);
 
   // Build feedback list from real resolved tickets assigned to this staff member.
-  // Match by assignedStaffId (UID) only — name fallback removed to prevent cross-owner
-  // leakage when two staff members share the same display name.
   const resolvedTickets = state.tickets.filter(
     (t) =>
       t.status === 'resolved' &&
-      staffId && t.assignedStaffId === staffId
+      ((staffId && t.assignedStaffId === staffId) || (currentStaff?.id && t.assignedStaffId === currentStaff.id))
   );
 
   const ratedTickets = resolvedTickets.filter((t) => (t as any).rating && (t as any).rating > 0);

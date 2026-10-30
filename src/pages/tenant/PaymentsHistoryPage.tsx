@@ -18,6 +18,7 @@ import {
   Home,
   Lock,
   History,
+  Info,
   Printer,
   QrCode,
   Receipt,
@@ -325,6 +326,13 @@ export const PaymentsHistoryPage: React.FC = () => {
         statusColor = '#B45309';
       }
 
+      const isLeaseApproved = ag.status === 'pending_deposit' || ag.status === 'active';
+      if (!isLeaseApproved && !isAgTerminatedOrVacated && status === 'due') {
+        statusBadgeText = 'Awaiting Lease Approval';
+        statusBg = '#FEF3C7';
+        statusColor = '#B45309';
+      }
+
       list.push({
         id: `dep_ag_${ag.id}`,
         reference: `#DEP-${ag.unit}`,
@@ -340,6 +348,7 @@ export const PaymentsHistoryPage: React.FC = () => {
         statusBadgeText,
         statusBg,
         statusColor,
+        isLeaseApproved,
         paidAt: depInv?.paidAt || (ag.depositStatus === 'paid' ? (ag.approvedAt || ag.counterSignedAt) : undefined),
         dueDate: depInv?.due,
         depositInvoice: depInv,
@@ -422,6 +431,16 @@ export const PaymentsHistoryPage: React.FC = () => {
         statusColor = '#15803D';
       }
 
+      const matchingAg = state.agreements.find(
+        (a) => a.id === depInv.leaseAgreementId || (a.unit === depInv.unit && (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)))
+      );
+      const isLeaseApproved = !matchingAg || matchingAg.status === 'pending_deposit' || matchingAg.status === 'active';
+      if (!isLeaseApproved && !mo && depInv.status !== 'paid' && status === 'due') {
+        statusBadgeText = 'Awaiting Lease Approval';
+        statusBg = '#FEF3C7';
+        statusColor = '#B45309';
+      }
+
       list.push({
         id: `dep_inv_${depInv.id}`,
         reference: `#${depInv.id}`,
@@ -437,6 +456,7 @@ export const PaymentsHistoryPage: React.FC = () => {
         statusBadgeText,
         statusBg,
         statusColor,
+        isLeaseApproved,
         paidAt: depInv.paidAt,
         dueDate: depInv.due,
         depositInvoice: depInv,
@@ -595,21 +615,38 @@ export const PaymentsHistoryPage: React.FC = () => {
     ? (targetAgreement.rent || 0)
     : effectiveAgreements.reduce((sum, a) => sum + (a.rent || 0), 0) || (tenantRecord?.rent || 0);
 
+  const fallbackAgreement = activeAgreement || myAgreements[0] || null;
   const currentProperty = state.properties.find(
-    (p) => p.id === activeAgreement?.propertyId || p.id === tenantRecord?.propertyId
+    (p) => p.id === activeAgreement?.propertyId || p.id === fallbackAgreement?.propertyId || p.id === tenantRecord?.propertyId
   );
   const currentUnit = state.units.find(
     (u) =>
       (activeAgreement?.unit && (u.unitNumber === activeAgreement.unit || u.id === activeAgreement.unit)) ||
+      (fallbackAgreement?.unit && (u.unitNumber === fallbackAgreement.unit || u.id === fallbackAgreement.unit)) ||
       (resolvedUnit && (u.unitNumber === resolvedUnit || u.id === resolvedUnit))
   );
   const resolvedCurrency =
     getCurrencySymbol(
       activeAgreement?.currency ||
+      fallbackAgreement?.currency ||
       currentUnit?.currency ||
       currentProperty?.currency ||
       tenantRecord?.currency
     ) || DEFAULT_CURRENCY_SYMBOL;
+
+  const getInvoiceCurrencySymbol = (inv: Invoice) => {
+    if (inv.currency) return getCurrencySymbol(inv.currency);
+    const matchingAg = state.agreements.find(
+      (a) => a.id === inv.leaseAgreementId || (a.unit === inv.unit && (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)))
+    );
+    const matchingUnit = state.units.find(
+      (u) => (u.unitNumber === inv.unit || u.id === inv.unit) && (!inv.propertyId || u.propertyId === inv.propertyId)
+    );
+    const matchingProp = state.properties.find(
+      (p) => p.id === inv.propertyId || p.id === matchingAg?.propertyId || p.id === matchingUnit?.propertyId
+    );
+    return getCurrencySymbol(matchingAg?.currency || matchingUnit?.currency || matchingProp?.currency) || resolvedCurrency;
+  };
 
   const [isTenantAutopayModalOpen, setIsTenantAutopayModalOpen] = useState(false);
   const [selectedTenantGateway, setSelectedTenantGateway] = useState<'stripe' | 'razorpay' | 'easebuzz' | 'paypal'>('razorpay');
@@ -2692,8 +2729,17 @@ export const PaymentsHistoryPage: React.FC = () => {
                         {upcomingDues.length === 0 ? (
                           <tr>
                             <td colSpan={7} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px' }}>
-                              <CheckCircle2 size={32} style={{ margin: '0 auto 8px', color: '#16A34A', display: 'block' }} />
-                              No upcoming rent dues remaining. All rent cycles for this agreement are settled!
+                              {rentSchedule.totalCyclesCount > 0 ? (
+                                <>
+                                  <CheckCircle2 size={32} style={{ margin: '0 auto 8px', color: '#16A34A', display: 'block' }} />
+                                  No upcoming rent dues remaining. All rent cycles for this agreement are settled!
+                                </>
+                              ) : (
+                                <>
+                                  <Info size={32} style={{ margin: '0 auto 8px', color: 'var(--ink-soft)', display: 'block' }} />
+                                  No active rent schedule found. Monthly rent dues will be scheduled once your tenancy lease is finalized and active.
+                                </>
+                              )}
                             </td>
                           </tr>
                         ) : (
@@ -2816,8 +2862,17 @@ export const PaymentsHistoryPage: React.FC = () => {
                 <div className="mobile-card-view">
                   {upcomingDues.length === 0 ? (
                     <div style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '28px 16px' }}>
-                      <CheckCircle2 size={30} style={{ margin: '0 auto 8px', color: '#16A34A', display: 'block' }} />
-                      No upcoming rent dues remaining. All rent cycles for this agreement are settled!
+                      {rentSchedule.totalCyclesCount > 0 ? (
+                        <>
+                          <CheckCircle2 size={30} style={{ margin: '0 auto 8px', color: '#16A34A', display: 'block' }} />
+                          No upcoming rent dues remaining. All rent cycles for this agreement are settled!
+                        </>
+                      ) : (
+                        <>
+                          <Info size={30} style={{ margin: '0 auto 8px', color: 'var(--ink-soft)', display: 'block' }} />
+                          No active rent schedule found. Monthly rent dues will be scheduled once your tenancy lease is finalized and active.
+                        </>
+                      )}
                     </div>
                   ) : (
                     upcomingDues.map((item) => {
@@ -3613,7 +3668,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                               </td>
                               <td>Unit {inv.unit}</td>
                               <td>
-                                <b style={{ fontSize: '15px' }}>{getCurrencySymbol(inv.currency) || resolvedCurrency}{inv.total.toLocaleString()}</b>
+                                <b style={{ fontSize: '15px' }}>{getInvoiceCurrencySymbol(inv)}{inv.total.toLocaleString()}</b>
                               </td>
                               <td>{inv.due}</td>
                               <td>
@@ -3642,19 +3697,42 @@ export const PaymentsHistoryPage: React.FC = () => {
                                     View Voucher
                                   </button>
                                   {!isPaid && inv.status !== 'pending_confirmation' && !isInvoiceForVacatedTenancy(inv) && (
-                                    <button
-                                      type="button"
-                                      className="btn brass small"
-                                      onClick={() => {
-                                        setActivePayingInvoice(prepareInvoiceForPayment(inv));
-                                        setSelectedMethod(ownerActiveGateway);
-                                        setCashHandoverLocation(`Unit ${resolvedUnit || inv.unit || 'Premises'} / On-Site Handover`);
-                                        setCashHandoverDate(new Date().toISOString().split('T')[0]);
-                                        setIsPayNowOpen(true);
-                                      }}
-                                    >
-                                      Pay Now
-                                    </button>
+                                    (() => {
+                                      const matchingAgForInvoice = inv.leaseAgreementId
+                                        ? state.agreements.find((a) => a.id === inv.leaseAgreementId)
+                                        : state.agreements.find(
+                                            (a) => (a.unit === inv.unit || a.id === inv.unit) && (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))
+                                          );
+                                      const isDepositAwaitingLeaseApproval =
+                                        inv.invoiceType === 'deposit' &&
+                                        matchingAgForInvoice &&
+                                        matchingAgForInvoice.status !== 'pending_deposit' &&
+                                        matchingAgForInvoice.status !== 'active';
+
+                                      if (isDepositAwaitingLeaseApproval) {
+                                        return (
+                                          <span className="badge amber" style={{ fontSize: '11px', whiteSpace: 'nowrap' }}>
+                                            Awaiting Lease Approval
+                                          </span>
+                                        );
+                                      }
+
+                                      return (
+                                        <button
+                                          type="button"
+                                          className="btn brass small"
+                                          onClick={() => {
+                                            setActivePayingInvoice(prepareInvoiceForPayment(inv));
+                                            setSelectedMethod(ownerActiveGateway);
+                                            setCashHandoverLocation(`Unit ${resolvedUnit || inv.unit || 'Premises'} / On-Site Handover`);
+                                            setCashHandoverDate(new Date().toISOString().split('T')[0]);
+                                            setIsPayNowOpen(true);
+                                          }}
+                                        >
+                                          Pay Now
+                                        </button>
+                                      );
+                                    })()
                                   )}
                                   {isInvoiceForVacatedTenancy(inv) && !isPaid && (
                                     <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500 }}>
@@ -3733,7 +3811,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                           <div>
                             <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Total Amount</div>
                             <div style={{ fontWeight: 800, fontSize: '16px', color: 'var(--ink)' }}>
-                              {getCurrencySymbol(inv.currency) || resolvedCurrency}{inv.total.toLocaleString()}
+                              {getInvoiceCurrencySymbol(inv)}{inv.total.toLocaleString()}
                             </div>
                           </div>
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -3745,19 +3823,42 @@ export const PaymentsHistoryPage: React.FC = () => {
                               View Voucher
                             </button>
                             {!isPaid && inv.status !== 'pending_confirmation' && !isInvoiceForVacatedTenancy(inv) && (
-                              <button
-                                type="button"
-                                className="btn brass small btn-mobile-full"
-                                onClick={() => {
-                                  setActivePayingInvoice(inv);
-                                  setSelectedMethod(ownerActiveGateway);
-                                  setCashHandoverLocation(`Unit ${resolvedUnit || inv.unit || 'Premises'} / On-Site Handover`);
-                                  setCashHandoverDate(new Date().toISOString().split('T')[0]);
-                                  setIsPayNowOpen(true);
-                                }}
-                              >
-                                Pay Now
-                              </button>
+                              (() => {
+                                const matchingAgForInvoice = inv.leaseAgreementId
+                                  ? state.agreements.find((a) => a.id === inv.leaseAgreementId)
+                                  : state.agreements.find(
+                                      (a) => (a.unit === inv.unit || a.id === inv.unit) && (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))
+                                    );
+                                const isDepositAwaitingLeaseApproval =
+                                  inv.invoiceType === 'deposit' &&
+                                  matchingAgForInvoice &&
+                                  matchingAgForInvoice.status !== 'pending_deposit' &&
+                                  matchingAgForInvoice.status !== 'active';
+
+                                if (isDepositAwaitingLeaseApproval) {
+                                  return (
+                                    <span className="badge amber btn-mobile-full" style={{ fontSize: '11px', whiteSpace: 'nowrap', textAlign: 'center' }}>
+                                      Awaiting Lease Approval
+                                    </span>
+                                  );
+                                }
+
+                                return (
+                                  <button
+                                    type="button"
+                                    className="btn brass small btn-mobile-full"
+                                    onClick={() => {
+                                      setActivePayingInvoice(inv);
+                                      setSelectedMethod(ownerActiveGateway);
+                                      setCashHandoverLocation(`Unit ${resolvedUnit || inv.unit || 'Premises'} / On-Site Handover`);
+                                      setCashHandoverDate(new Date().toISOString().split('T')[0]);
+                                      setIsPayNowOpen(true);
+                                    }}
+                                  >
+                                    Pay Now
+                                  </button>
+                                );
+                              })()
                             )}
                             {isInvoiceForVacatedTenancy(inv) && !isPaid && (
                               <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500 }}>
@@ -4241,20 +4342,26 @@ export const PaymentsHistoryPage: React.FC = () => {
                                          </button>
                                        )}
                                     {rec.status === 'due' && rec.depositInvoice && (
-                                      <button
-                                        type="button"
-                                        className="btn brass small"
-                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                        onClick={() => {
-                                          setActivePayingInvoice(rec.depositInvoice!);
-                                          setSelectedMethod(ownerActiveGateway);
-                                          setCashHandoverLocation(`Unit ${rec.unit || 'Premises'} / On-Site Handover`);
-                                          setCashHandoverDate(new Date().toISOString().split('T')[0]);
-                                          setIsPayNowOpen(true);
-                                        }}
-                                      >
-                                        <CreditCard size={12} /> Pay Now
-                                      </button>
+                                      rec.isLeaseApproved === false ? (
+                                        <span className="badge amber" style={{ fontSize: '11px', whiteSpace: 'nowrap' }}>
+                                          Awaiting Lease Approval
+                                        </span>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          className="btn brass small"
+                                          style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                          onClick={() => {
+                                            setActivePayingInvoice(rec.depositInvoice!);
+                                            setSelectedMethod(ownerActiveGateway);
+                                            setCashHandoverLocation(`Unit ${rec.unit || 'Premises'} / On-Site Handover`);
+                                            setCashHandoverDate(new Date().toISOString().split('T')[0]);
+                                            setIsPayNowOpen(true);
+                                          }}
+                                        >
+                                          <CreditCard size={12} /> Pay Now
+                                        </button>
+                                      )
                                     )}
                                     {rec.depositInvoice && (
                                       <button
@@ -4398,20 +4505,26 @@ export const PaymentsHistoryPage: React.FC = () => {
                                   </button>
                                 )}
                               {rec.status === 'due' && rec.depositInvoice && (
-                                <button
-                                  type="button"
-                                  className="btn brass small btn-mobile-full"
-                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                  onClick={() => {
-                                    setActivePayingInvoice(rec.depositInvoice!);
-                                    setSelectedMethod(ownerActiveGateway);
-                                    setCashHandoverLocation(`Unit ${rec.unit || 'Premises'} / On-Site Handover`);
-                                    setCashHandoverDate(new Date().toISOString().split('T')[0]);
-                                    setIsPayNowOpen(true);
-                                  }}
-                                >
-                                  <CreditCard size={12} /> Pay Now
-                                </button>
+                                rec.isLeaseApproved === false ? (
+                                  <span className="badge amber btn-mobile-full" style={{ fontSize: '11px', whiteSpace: 'nowrap', textAlign: 'center' }}>
+                                    Awaiting Lease Approval
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="btn brass small btn-mobile-full"
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                    onClick={() => {
+                                      setActivePayingInvoice(rec.depositInvoice!);
+                                      setSelectedMethod(ownerActiveGateway);
+                                      setCashHandoverLocation(`Unit ${rec.unit || 'Premises'} / On-Site Handover`);
+                                      setCashHandoverDate(new Date().toISOString().split('T')[0]);
+                                      setIsPayNowOpen(true);
+                                    }}
+                                  >
+                                    <CreditCard size={12} /> Pay Now
+                                  </button>
+                                )
                               )}
                               {rec.depositInvoice && (
                                 <button

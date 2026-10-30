@@ -384,23 +384,57 @@ export const AdminMessagesPage: React.FC = () => {
     }
   };
 
+  const formatLogDate = (raw: any): string => {
+    if (!raw) return 'Recent';
+    try {
+      let d: Date;
+      if (typeof raw === 'object' && typeof raw.seconds === 'number') {
+        d = new Date(raw.seconds * 1000);
+      } else {
+        d = new Date(raw);
+      }
+      if (isNaN(d.getTime())) return 'Recent';
+      return d.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+    } catch {
+      return 'Recent';
+    }
+  };
+
   const getStatusBadge = (statusObj: CommunicationLog['deliveryStatus']) => {
-    const statuses = Object.values(statusObj || {});
-    if (statuses.includes('delivered')) {
+    if (!statusObj) {
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: 'var(--ink-soft)', fontSize: '12px' }}>
+          Pending
+        </span>
+      );
+    }
+    const requested = Object.entries(statusObj).filter(([_, s]) => s && s !== 'not_requested');
+    const hasFail = requested.some(([_, s]) => s && (s.startsWith('failed') || s === 'failed'));
+    const hasSuccess = requested.some(([_, s]) => s === 'delivered');
+    const allSuccess = requested.length > 0 && requested.every(([_, s]) => s === 'delivered');
+
+    if (allSuccess) {
       return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#16a34a', fontWeight: 600, fontSize: '12px' }}>
           <CheckCircle2 size={14} /> Delivered
         </span>
       );
     }
-    if (statuses.some((s) => s && s.startsWith('failed'))) {
+    if (hasSuccess && hasFail) {
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#d97706', fontWeight: 600, fontSize: '12px' }} title="Some channels succeeded, others failed">
+          <AlertTriangle size={14} /> Partial
+        </span>
+      );
+    }
+    if (hasFail) {
       return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#dc2626', fontWeight: 600, fontSize: '12px' }}>
           <XCircle size={14} /> Failed
         </span>
       );
     }
-    if (statuses.includes('skipped')) {
+    if (requested.some(([_, s]) => s === 'skipped')) {
       return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#d97706', fontWeight: 600, fontSize: '12px' }}>
           <AlertTriangle size={14} /> Skipped
@@ -612,11 +646,9 @@ export const AdminMessagesPage: React.FC = () => {
                   </tr>
                 ) : (
                   filteredLogs.map((log) => {
-                    const dateStr = log.createdAt
-                      ? new Date(log.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
-                      : 'Recent';
-
+                    const dateStr = formatLogDate(log.createdAt || (log as any).timestamp || (log as any).sentAt);
                     const isPlatformNotice = log.senderRole === 'superadmin' || log.category === 'subscription' || !log.ownerId;
+                    const cleanTitle = (log.title || 'Platform Notification').replace(/\s*\(\s*N\/A\s*\)/gi, '').trim();
 
                     return (
                       <tr key={log.id}>
@@ -671,7 +703,7 @@ export const AdminMessagesPage: React.FC = () => {
                         </td>
                         <td>
                           <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--ink-base)' }}>
-                            {log.title}
+                            {cleanTitle}
                           </div>
                           <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px', maxHeight: '36px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {log.body}
@@ -708,10 +740,9 @@ export const AdminMessagesPage: React.FC = () => {
             </div>
           ) : (
             filteredLogs.map((log) => {
-              const dateStr = log.createdAt
-                ? new Date(log.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
-                : 'Recent';
+              const dateStr = formatLogDate(log.createdAt || (log as any).timestamp || (log as any).sentAt);
               const isPlatformNotice = log.senderRole === 'superadmin' || log.category === 'subscription' || !log.ownerId;
+              const cleanTitle = (log.title || 'Platform Notification').replace(/\s*\(\s*N\/A\s*\)/gi, '').trim();
 
               return (
                 <div key={log.id} className="staff-card" style={{ padding: '14px', marginBottom: '12px' }}>
@@ -761,7 +792,7 @@ export const AdminMessagesPage: React.FC = () => {
                   )}
 
                   <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--ink)', marginBottom: '4px' }}>
-                    {log.title}
+                    {cleanTitle}
                   </div>
                   <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '12px', lineHeight: 1.4 }}>
                     {log.body}

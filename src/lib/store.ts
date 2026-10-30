@@ -619,7 +619,7 @@ export const INITIAL_STATE: AppState = {
     razorpay: { enabled: true, connected: false, keyId: '', keySecret: '', mode: 'live' },
     paypal: { enabled: true, connected: false, clientId: '', secret: '', mode: 'live' },
     easebuzz: { enabled: true, connected: false, merchantKey: '', salt: '', subMerchantId: '', mode: 'live' },
-    mock: { enabled: true, connected: true },
+    mock: { enabled: false, connected: false },
   },
 
   commsConfig: {

@@ -19,6 +19,15 @@ export const PlansPage: React.FC = () => {
   const [isCreatingPlan, setIsCreatingPlan] = useState(false);
   const [isRetiring, setIsRetiring] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
+
+  const getDynamicOwnersCount = (planName: string, fallback: number = 0) => {
+    const ownerUsers = (state.users || []).filter((u) => u.role === 'owner');
+    if (ownerUsers.length === 0) return fallback;
+    return ownerUsers.filter((u) => {
+      const uPlan = u.plan || state.ownerSettings?.[u.id]?.planName || state.ownerSettings?.[u.id]?.planId || '';
+      return uPlan.toLowerCase() === planName.toLowerCase();
+    }).length;
+  };
   const [newPlanForm, setNewPlanForm] = useState({
     name: '',
     price: 99,
@@ -615,7 +624,7 @@ export const PlansPage: React.FC = () => {
                   </span>
                 )}
               </div>
-              <span className="badge grey">{p.owners} owners</span>
+              <span className="badge grey">{getDynamicOwnersCount(p.name, p.owners)} owners</span>
             </div>
             <div className="panel-body">
               <div>
@@ -689,8 +698,9 @@ export const PlansPage: React.FC = () => {
                   className="btn danger small btn-mobile-full"
                   style={{ flex: '1 1 auto' }}
                   onClick={() => {
-                    if (p.owners > 0) {
-                      showToast(`Can't retire "${p.name}" — owners are still on it.`);
+                    const liveCount = getDynamicOwnersCount(p.name, p.owners);
+                    if (liveCount > 0) {
+                      showToast(`Can't retire "${p.name}" — ${liveCount} owner(s) are still active on it.`);
                       return;
                     }
                     setPlanToRetire(p);

@@ -4,6 +4,7 @@ import { loadState, saveState, AppState, INITIAL_STATE, saveTrialPolicyCache, lo
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  updateProfile,
   signOut,
   onAuthStateChanged,
   sendPasswordResetEmail,
@@ -394,7 +395,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return { success: true, role: profile.role };
         }
       } catch (fbErr: any) {
-        console.warn('Firebase auth attempt failed, checking local credentials:', fbErr?.message);
+        console.warn('Firebase auth attempt failed:', fbErr?.message);
+        const code = fbErr?.code || '';
+        if (
+          code === 'auth/wrong-password' ||
+          code === 'auth/invalid-credential' ||
+          code === 'auth/user-not-found' ||
+          code === 'auth/user-disabled' ||
+          code === 'auth/too-many-requests'
+        ) {
+          return {
+            success: false,
+            error:
+              code === 'auth/wrong-password' || code === 'auth/invalid-credential'
+                ? 'Invalid email or password. Please verify your credentials.'
+                : code === 'auth/user-not-found'
+                ? 'No account registered with this email address. Please check your credentials or register.'
+                : code === 'auth/user-disabled'
+                ? 'This user account has been disabled. Please contact platform support.'
+                : code === 'auth/too-many-requests'
+                ? 'Too many failed login attempts. Please wait a few moments or reset your password.'
+                : fbErr?.message || 'Authentication failed. Please verify your credentials.',
+          };
+        }
       }
     }
 
@@ -486,6 +509,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (isFirebaseConfigured) {
       try {
         const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+        await updateProfile(cred.user, { displayName: name.trim() });
         newOwner.id = cred.user.uid;
         newSettings.ownerId = cred.user.uid;
         await setDoc(doc(db, 'users', cred.user.uid), newOwner);
@@ -554,6 +578,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (isFirebaseConfigured) {
       try {
         const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+        await updateProfile(cred.user, { displayName: name.trim() });
         newTenantUser.id = cred.user.uid;
         newTenantRecord.id = cred.user.uid;
         newTenantId = cred.user.uid;
@@ -608,7 +633,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ownerName: params.ownerName || 'Property Owner',
       status: 'active',
       createdAt: new Date().toISOString(),
-      tempPassword: params.password,
     };
 
     if (isFirebaseConfigured) {
@@ -625,8 +649,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           requestedAt: new Date().toISOString(),
           processed: false,
         });
-      } catch (err) {
-        console.warn('Firestore setDoc user profile error:', err);
+      } catch (err: any) {
+        console.error('Firestore setDoc user profile error:', err);
+        return {
+          success: false,
+          error: err?.message || 'Database error: Failed to provision user profile. Please check permissions.',
+        };
       }
     }
 

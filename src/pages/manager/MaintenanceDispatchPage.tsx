@@ -609,12 +609,20 @@ export const MaintenanceDispatchPage: React.FC = () => {
                   onChange={(e) => setAssigneeName(e.target.value)}
                 >
                   <option value="">Choose staff member…</option>
+                  {myStaff.length === 0 && (
+                    <option disabled value="">(No technicians onboarded yet)</option>
+                  )}
                   {myStaff.map((s) => (
                     <option key={s.id} value={s.name}>
                       {s.name} ({s.role})
                     </option>
                   ))}
                 </select>
+                {myStaff.length === 0 && (
+                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '6px' }}>
+                    No technicians found in team. Use "+ Onboard Technician" to add a technician to your portfolio.
+                  </div>
+                )}
               </div>
 
               <div className="field">

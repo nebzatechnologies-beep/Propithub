@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useAppData } from '../../context/AppDataContext';
+import { getCurrencySymbol, DEFAULT_CURRENCY_SYMBOL } from '../../lib/currencyService';
 import {
   Search,
   X,
@@ -264,13 +265,15 @@ export const GlobalSearch: React.FC = () => {
       // Units
       (state.units || []).filter((u) => myPropIds.has(u.propertyId)).forEach((u) => {
         const prop = myProperties.find((p) => p.id === u.propertyId);
+        const currSym = getCurrencySymbol(u.currency || prop?.currency) || DEFAULT_CURRENCY_SYMBOL;
+        const tenantInfo = u.tenant ? ` • Resident: ${u.tenant}` : ' • Vacant';
         items.push({
           id: `unit-${u.id}`,
           category: 'Units',
-          title: `Unit ${u.unitNumber}`,
-          subtitle: `${prop?.name || 'Property'} • Status: ${u.status.toUpperCase()} • Rent: $${u.rent || 0}/mo`,
+          title: `Unit ${u.unitNumber}${u.tenant ? ` (${u.tenant})` : ''}`,
+          subtitle: `${prop?.name || 'Property'} • Status: ${u.status.toUpperCase()}${tenantInfo} • Rent: ${currSym}${Number(u.rent || 0).toLocaleString()}/mo`,
           badge: u.status,
-          badgeColor: u.status === 'occupied' ? '#059669' : '#d97706',
+          badgeColor: u.status === 'occupied' ? '#059669' : u.status === 'reserved' ? '#d97706' : '#64748b',
           link: '/owner/properties',
           icon: <Home size={16} />,
         });
@@ -392,11 +395,12 @@ export const GlobalSearch: React.FC = () => {
         .filter((u) => (tenantId && u.currentTenantId === tenantId) || (tenantEmailLower && u.tenant?.toLowerCase() === tenantEmailLower))
         .forEach((u) => {
           const prop = (state.properties || []).find((p) => p.id === u.propertyId);
+          const currSym = getCurrencySymbol(u.currency || prop?.currency) || DEFAULT_CURRENCY_SYMBOL;
           items.push({
             id: `unit-${u.id}`,
             category: 'Units',
             title: `Unit ${u.unitNumber} - ${prop?.name || 'Rented Unit'}`,
-            subtitle: `${prop?.address?.formattedAddress || prop?.address?.city || ''} • Rent: $${u.rent || 0}/mo`,
+            subtitle: `${prop?.address?.formattedAddress || prop?.address?.city || ''} • Rent: ${currSym}${Number(u.rent || 0).toLocaleString()}/mo`,
             badge: 'Active Lease',
             badgeColor: '#059669',
             link: '/tenant/dashboard',
@@ -408,11 +412,12 @@ export const GlobalSearch: React.FC = () => {
       (state.agreements || [])
         .filter((a) => (tenantId && a.tenantId === tenantId) || (tenantEmailLower && a.tenantEmail?.toLowerCase() === tenantEmailLower))
         .forEach((a) => {
+          const agCurr = getCurrencySymbol(a.currency) || DEFAULT_CURRENCY_SYMBOL;
           items.push({
             id: `agr-${a.id}`,
             category: 'Leases',
             title: `Lease Agreement - Unit ${a.unit}`,
-            subtitle: `Term: ${a.start} to ${a.end} • Rent: $${a.rent || 0}/mo`,
+            subtitle: `Term: ${a.start} to ${a.end} • Rent: ${agCurr}${Number(a.rent || 0).toLocaleString()}/mo`,
             badge: a.status,
             badgeColor: '#059669',
             link: '/tenant/lease',
@@ -424,10 +429,11 @@ export const GlobalSearch: React.FC = () => {
       (state.payments || [])
         .filter((p) => (tenantId && p.tenantId === tenantId) || (tenantEmailLower && p.tenant?.toLowerCase() === tenantEmailLower))
         .forEach((p) => {
+          const payCurr = getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL;
           items.push({
             id: `pay-${p.id}`,
             category: 'Finances',
-            title: `Payment: $${p.amount} (${p.type ? p.type.toUpperCase() : 'RENT'})`,
+            title: `Payment: ${payCurr}${Number(p.amount || 0).toLocaleString()} (${p.type ? p.type.toUpperCase() : 'RENT'})`,
             subtitle: `Date: ${p.date ? new Date(p.date).toLocaleDateString() : 'Recent'} • Status: ${p.status.toUpperCase()}`,
             badge: p.status,
             badgeColor: p.status === 'paid' ? '#059669' : '#d97706',
@@ -472,7 +478,21 @@ export const GlobalSearch: React.FC = () => {
     // --- MANAGER SCOPE ---
     else if (role === 'manager') {
       const ownerId = user?.ownerId || '';
-      const myProperties = (state.properties || []).filter((p) => (ownerId ? p.ownerId === ownerId : true));
+      const managerRecord = (state.managers || []).find(
+        (m) =>
+          (user?.id && String(m.id) === user.id) ||
+          (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
+      );
+      const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
+
+      const myProperties = (state.properties || []).filter((p) => {
+        if (!ownerId) return true;
+        if (p.ownerId !== ownerId) return false;
+        if (assignedPropertyId) {
+          return p.id === assignedPropertyId || p.assignedManagerId === user?.id;
+        }
+        return true;
+      });
       const myPropIds = new Set(myProperties.map((p) => p.id));
 
       myProperties.forEach((p) => {
@@ -480,7 +500,7 @@ export const GlobalSearch: React.FC = () => {
           id: `prop-${p.id}`,
           category: 'Properties',
           title: p.name,
-          subtitle: `${p.address?.city || ''} • Total Units: ${p.unitCount || 0}`,
+          subtitle: `${p.address?.city || 'Local Property'} • Total Units: ${p.unitCount || 0}`,
           badge: 'Property',
           badgeColor: '#0284c7',
           link: '/manager/properties',
@@ -488,25 +508,45 @@ export const GlobalSearch: React.FC = () => {
         });
       });
 
+      // Units with dynamic currency and resident names
       (state.units || []).filter((u) => myPropIds.has(u.propertyId)).forEach((u) => {
+        const prop = myProperties.find((p) => p.id === u.propertyId);
+        const currSym = getCurrencySymbol(u.currency || prop?.currency) || DEFAULT_CURRENCY_SYMBOL;
+        const tenantInfo = u.tenant ? ` • Resident: ${u.tenant}` : ' • Vacant';
         items.push({
           id: `unit-${u.id}`,
           category: 'Units',
-          title: `Unit ${u.unitNumber}`,
-          subtitle: `Status: ${u.status.toUpperCase()} • Rent: $${u.rent || 0}/mo`,
+          title: `Unit ${u.unitNumber}${u.tenant ? ` (${u.tenant})` : ''}`,
+          subtitle: `Status: ${u.status.toUpperCase()}${tenantInfo} • Rent: ${currSym}${Number(u.rent || 0).toLocaleString()}/mo`,
           badge: u.status,
-          badgeColor: u.status === 'occupied' ? '#059669' : '#d97706',
+          badgeColor: u.status === 'occupied' ? '#059669' : u.status === 'reserved' ? '#d97706' : '#64748b',
           link: '/manager/properties',
           icon: <Home size={16} />,
         });
       });
 
+      // Residents directory
+      (state.tenants || []).filter((t) => !t.propertyId || myPropIds.has(t.propertyId)).forEach((t) => {
+        items.push({
+          id: `tenant-${t.id}`,
+          category: 'Tenants',
+          title: t.name || t.email,
+          subtitle: `Unit: ${t.unit || 'N/A'} • Email: ${t.email}${t.phone ? ` • ${t.phone}` : ''}`,
+          badge: 'Resident',
+          badgeColor: '#059669',
+          link: '/manager/properties',
+          icon: <Users size={16} />,
+        });
+      });
+
+      // Maintenance tickets with resident info
       (state.tickets || []).filter((t) => t.propertyId && myPropIds.has(t.propertyId)).forEach((t) => {
+        const tenantInfo = t.tenant ? ` • Tenant: ${t.tenant}` : '';
         items.push({
           id: `tick-${t.id}`,
           category: 'Maintenance',
           title: `Ticket #${t.id.slice(-5)}: ${t.issue}`,
-          subtitle: `Unit: ${t.unit} • Assigned: ${t.assignedTo || 'Unassigned'} • Status: ${t.status}`,
+          subtitle: `Unit: ${t.unit}${tenantInfo} • Assigned: ${t.assignedTo || 'Unassigned'} • Status: ${t.status}`,
           badge: t.status,
           badgeColor: '#0284c7',
           link: '/manager/maintenance',

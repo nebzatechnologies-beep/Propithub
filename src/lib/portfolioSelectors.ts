@@ -28,10 +28,11 @@ export function resolveUnitOccupancy(
   agreements: Agreement[] = [],
   tenancyRequests: TenancyRequest[] = []
 ): UnitOccupancyInfo {
-  // Check active/signed agreement
+  // Check active/signed agreement for this specific property and unit
   const activeAgreement = agreements.find(
     (a) =>
-      (a.unitId === unit.id || a.unit === unit.unitNumber) &&
+      (!a.propertyId || !unit.propertyId || a.propertyId === unit.propertyId) &&
+      (a.unitId === unit.id || (a.unit && (a.unit === unit.unitNumber || a.unit === unit.id))) &&
       (a.status === 'active' || a.status === 'signed')
   );
 
@@ -39,7 +40,8 @@ export function resolveUnitOccupancy(
   const pendingAgreement = !activeAgreement
     ? agreements.find(
         (a) =>
-          (a.unitId === unit.id || a.unit === unit.unitNumber) &&
+          (!a.propertyId || !unit.propertyId || a.propertyId === unit.propertyId) &&
+          (a.unitId === unit.id || (a.unit && (a.unit === unit.unitNumber || a.unit === unit.id))) &&
           (a.status === 'awaiting_tenant_signature' ||
             a.status === 'pending_countersign' ||
             a.status === 'pending_deposit' ||
@@ -51,7 +53,8 @@ export function resolveUnitOccupancy(
   // Check pending tenancy request
   const pendingRequest = tenancyRequests.find(
     (r) =>
-      (r.unitId === unit.id || r.unitNumber === unit.unitNumber) &&
+      (!r.propertyId || !unit.propertyId || r.propertyId === unit.propertyId) &&
+      (r.unitId === unit.id || (r.unitNumber && (r.unitNumber === unit.unitNumber || r.unitNumber === unit.id))) &&
       r.status === 'pending'
   );
 
@@ -59,15 +62,14 @@ export function resolveUnitOccupancy(
 
   if (unit.status === 'maintenance') {
     effectiveStatus = 'maintenance';
-  } else if (activeAgreement) {
-    effectiveStatus = 'occupied';
-  } else if (pendingAgreement || pendingRequest || unit.status === 'reserved') {
+  } else if (unit.status === 'reserved' || pendingAgreement || pendingRequest) {
+    // If unit is reserved or has a pending invitation/signing, it is strictly Reserved, not Occupied
     effectiveStatus = 'reserved';
-  } else if (unit.status === 'occupied') {
+  } else if (activeAgreement || unit.status === 'occupied') {
     // If marked occupied on unit model, verify it isn't explicitly terminated without a tenant
     const hasTerminatedAgreementOnly =
-      agreements.some((a) => (a.unitId === unit.id || a.unit === unit.unitNumber) && a.status === 'terminated') &&
-      !agreements.some((a) => (a.unitId === unit.id || a.unit === unit.unitNumber) && (a.status === 'active' || a.status === 'signed'));
+      agreements.some((a) => (!a.propertyId || !unit.propertyId || a.propertyId === unit.propertyId) && (a.unitId === unit.id || a.unit === unit.unitNumber) && a.status === 'terminated') &&
+      !agreements.some((a) => (!a.propertyId || !unit.propertyId || a.propertyId === unit.propertyId) && (a.unitId === unit.id || a.unit === unit.unitNumber) && (a.status === 'active' || a.status === 'signed'));
 
     if (hasTerminatedAgreementOnly && !unit.currentTenantId && !unit.tenant) {
       effectiveStatus = 'vacant';

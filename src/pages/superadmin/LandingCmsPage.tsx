@@ -3111,7 +3111,7 @@ export const LandingCmsPage: React.FC = () => {
         }}
       >
         <span style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
-          All modifications save to local system storage and take effect immediately across public visitors.
+          All modifications publish directly to live Firestore configuration and update instantly for all public visitors.
         </span>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button type="button" className="btn secondary" onClick={handleResetDefaults}>

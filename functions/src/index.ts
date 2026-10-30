@@ -12,35 +12,154 @@ const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
 
 /**
- * Load platform gateway secrets from Firestore /platformConfig/gateways
+ * Load platform gateway secrets from Firestore:
+ * 1. Read from secure private collection /platformSecrets/gateways (Zero client access)
+ * 2. If not migrated yet, migrate from legacy /platformConfig/gateways, copy to /platformSecrets,
+ *    and purge raw secret keys from the world-readable /platformConfig document.
  */
 async function getPlatformGatewaysConfig() {
   try {
-    const doc = await db.collection('platformConfig').doc('gateways').get();
-    if (doc.exists) {
-      return doc.data()?.platformGateways || doc.data() || {};
+    const secDoc = await db.collection('platformSecrets').doc('gateways').get();
+    if (secDoc.exists) {
+      return secDoc.data()?.platformGateways || secDoc.data() || {};
+    }
+
+    // Auto-migration from legacy platformConfig/gateways
+    const legacyDoc = await db.collection('platformConfig').doc('gateways').get();
+    if (legacyDoc.exists) {
+      const data = legacyDoc.data() || {};
+      const legacyGateways = data.platformGateways || {};
+
+      const hasSecrets = Boolean(
+        legacyGateways?.stripe?.secretKey ||
+        legacyGateways?.razorpay?.keySecret ||
+        legacyGateways?.paypal?.secret ||
+        legacyGateways?.easebuzz?.salt
+      );
+
+      if (hasSecrets) {
+        await db.collection('platformSecrets').doc('gateways').set({
+          platformGateways: legacyGateways,
+          activeBillingGateway: data.activeBillingGateway || 'stripe',
+          migratedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+
+        const sanitized = {
+          stripe: {
+            enabled: Boolean(legacyGateways.stripe?.enabled),
+            connected: Boolean(legacyGateways.stripe?.connected),
+            pubKey: legacyGateways.stripe?.pubKey || '',
+            mode: legacyGateways.stripe?.mode || 'test',
+          },
+          razorpay: {
+            enabled: Boolean(legacyGateways.razorpay?.enabled),
+            connected: Boolean(legacyGateways.razorpay?.connected),
+            keyId: legacyGateways.razorpay?.keyId || '',
+            mode: legacyGateways.razorpay?.mode || 'test',
+          },
+          paypal: {
+            enabled: Boolean(legacyGateways.paypal?.enabled),
+            connected: Boolean(legacyGateways.paypal?.connected),
+            clientId: legacyGateways.paypal?.clientId || '',
+            mode: legacyGateways.paypal?.mode || 'test',
+          },
+          easebuzz: {
+            enabled: Boolean(legacyGateways.easebuzz?.enabled),
+            connected: Boolean(legacyGateways.easebuzz?.connected),
+            merchantKey: legacyGateways.easebuzz?.merchantKey || '',
+            subMerchantId: legacyGateways.easebuzz?.subMerchantId || '',
+            mode: legacyGateways.easebuzz?.mode || 'test',
+          },
+          mock: legacyGateways.mock || { enabled: false, connected: false },
+          activeBillingGateway: data.activeBillingGateway || 'stripe',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        await db.collection('platformConfig').doc('gateways').set({
+          platformGateways: sanitized,
+          activeBillingGateway: data.activeBillingGateway || 'stripe',
+        }, { merge: true });
+
+        functions.logger.info('[getPlatformGatewaysConfig] Successfully migrated platform gateway secrets to /platformSecrets/gateways and sanitized /platformConfig/gateways');
+      }
+
+      return legacyGateways;
     }
   } catch (err: any) {
-    functions.logger.warn('[getPlatformGatewaysConfig] Firestore read skipped or permission denied:', err?.message);
+    functions.logger.warn('[getPlatformGatewaysConfig] Firestore read/migration error:', err?.message);
   }
   return {};
 }
 
 /**
- * Load platform comms secrets from Firestore /platformConfig/comms
+ * Load platform comms secrets from Firestore:
+ * 1. Read from secure private collection /platformSecrets/comms (Zero client access)
+ * 2. If not migrated yet, migrate from legacy /platformConfig/comms, copy to /platformSecrets,
+ *    and purge raw secret tokens from the world-readable /platformConfig document.
  */
 async function getPlatformCommsConfig() {
   try {
-    const doc = await db.collection('platformConfig').doc('comms').get();
-    if (doc.exists) {
-      const data = doc.data() || {};
+    const secDoc = await db.collection('platformSecrets').doc('comms').get();
+    if (secDoc.exists) {
+      const data = secDoc.data() || {};
       return {
         ...(data.commsConfig || {}),
         ...data,
       };
     }
+
+    // Auto-migration from legacy platformConfig/comms
+    const legacyDoc = await db.collection('platformConfig').doc('comms').get();
+    if (legacyDoc.exists) {
+      const data = legacyDoc.data() || {};
+      const legacyComms = data.commsConfig || data || {};
+
+      const hasSecrets = Boolean(
+        legacyComms?.twilioAuthToken ||
+        legacyComms?.sendgridKey ||
+        legacyComms?.whatsappAccessToken ||
+        legacyComms?.geminiApiKey
+      );
+
+      if (hasSecrets) {
+        await db.collection('platformSecrets').doc('comms').set({
+          commsConfig: legacyComms,
+          notificationToggles: data.notificationToggles || {},
+          migratedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+
+        const sanitized = {
+          twilioSid: legacyComms.twilioSid || '',
+          twilioNumber: legacyComms.twilioNumber || '',
+          twilioConnected: Boolean(legacyComms.twilioConnected),
+          sendgridFrom: legacyComms.sendgridFrom || '',
+          sendgridConnected: Boolean(legacyComms.sendgridConnected),
+          whatsappPhoneNumberId: legacyComms.whatsappPhoneNumberId || '',
+          whatsappWabaId: legacyComms.whatsappWabaId || '',
+          whatsappBotEnabled: legacyComms.whatsappBotEnabled ?? true,
+          whatsappConnected: Boolean(legacyComms.whatsappConnected),
+          geminiModel: legacyComms.geminiModel || 'gemini-1.5-flash',
+          aiEnabled: legacyComms.aiEnabled ?? true,
+          aiReceiptOcrEnabled: legacyComms.aiReceiptOcrEnabled ?? true,
+          aiDamageDetectionEnabled: legacyComms.aiDamageDetectionEnabled ?? true,
+          aiVoiceTranscriptionEnabled: legacyComms.aiVoiceTranscriptionEnabled ?? true,
+          aiConversationalAssistantEnabled: legacyComms.aiConversationalAssistantEnabled ?? true,
+          aiConnected: Boolean(legacyComms.aiConnected),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        await db.collection('platformConfig').doc('comms').set({
+          commsConfig: sanitized,
+          notificationToggles: data.notificationToggles || {},
+        }, { merge: true });
+
+        functions.logger.info('[getPlatformCommsConfig] Successfully migrated platform comms secrets to /platformSecrets/comms and sanitized /platformConfig/comms');
+      }
+
+      return legacyComms;
+    }
   } catch (err: any) {
-    functions.logger.warn('[getPlatformCommsConfig] Firestore read skipped or permission denied:', err?.message);
+    functions.logger.warn('[getPlatformCommsConfig] Firestore read/migration error:', err?.message);
   }
   return {};
 }
@@ -64,20 +183,30 @@ async function resolveGatewayConfig(
   // Between Tenant and Owner: Look up Landlord credentials first, ensuring secrets exist and are non-empty
   if (ownerId) {
     try {
-      const ownerDoc = await db.collection('owners').doc(ownerId).get();
-      if (ownerDoc.exists) {
-        const methods = ownerDoc.data()?.paymentMethods;
-        if (methods && methods[gateway] && methods[gateway].enabled) {
-          const m = methods[gateway];
-          const hasSecret = Boolean(
-            (gateway === 'stripe' && m.secretKey && !m.secretKey.includes('•••')) ||
-            (gateway === 'razorpay' && m.keySecret && !m.keySecret.includes('•••')) ||
-            (gateway === 'paypal' && (m.secret || m.clientId) && !(m.secret || '').includes('•••')) ||
-            (gateway === 'easebuzz' && m.salt && !m.salt.includes('•••'))
-          );
-          if (hasSecret) {
-            return m;
-          }
+      // 1. Check secure privateSecrets subcollection first
+      let methods: any = null;
+      const secretDoc = await db.collection('owners').doc(ownerId).collection('privateSecrets').doc('gateways').get();
+      if (secretDoc.exists) {
+        methods = secretDoc.data()?.paymentMethods || secretDoc.data();
+      }
+      // 2. Fallback to legacy owners document
+      if (!methods) {
+        const ownerDoc = await db.collection('owners').doc(ownerId).get();
+        if (ownerDoc.exists) {
+          methods = ownerDoc.data()?.paymentMethods;
+        }
+      }
+
+      if (methods && methods[gateway] && methods[gateway].enabled) {
+        const m = methods[gateway];
+        const hasSecret = Boolean(
+          (gateway === 'stripe' && m.secretKey && !m.secretKey.includes('•••')) ||
+          (gateway === 'razorpay' && m.keySecret && !m.keySecret.includes('•••')) ||
+          (gateway === 'paypal' && (m.secret || m.clientId) && !(m.secret || '').includes('•••')) ||
+          (gateway === 'easebuzz' && m.salt && !m.salt.includes('•••'))
+        );
+        if (hasSecret) {
+          return m;
         }
       }
     } catch (err) {
@@ -2510,52 +2639,324 @@ export const updateStaffPayoutMethod = functions.https.onCall(async (data, conte
 
 /**
  * 12. savePlatformCommsAndEvents (Callable)
- * Executed by Superadmin to save Twilio / SendGrid keys and toggle notification events.
+ * Executed by Superadmin to save Twilio, SendGrid, WhatsApp, Gemini keys securely
+ * into /platformSecrets/comms (zero client access) while saving non-sensitive
+ * connection indicators to /platformConfig/comms.
  */
 export const savePlatformCommsAndEvents = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const callerRole = context.auth.token.role;
-  if (callerRole !== 'superadmin') {
+  const callerRole = context.auth.token?.role;
+  let isSuper = callerRole === 'superadmin' || callerRole === 'admin';
+  if (!isSuper) {
+    const userDoc = await db.collection('users').doc(context.auth.uid).get();
+    if (userDoc.exists && (userDoc.data()?.role === 'superadmin' || userDoc.data()?.role === 'admin')) {
+      isSuper = true;
+    }
+  }
+
+  if (!isSuper) {
     throw new functions.https.HttpsError('permission-denied', 'Only superadmin can configure platform comms.');
   }
 
   const { commsConfig, notificationToggles } = data;
+  const currentComms = await getPlatformCommsConfig();
 
-  await db.collection('platformConfig').doc('comms').set({
-    commsConfig: commsConfig || {},
+  const preserveSecret = (newVal: any, oldVal: any) => {
+    if (!newVal || String(newVal).includes('•••') || String(newVal).includes('••••')) {
+      return oldVal || '';
+    }
+    return String(newVal).trim();
+  };
+
+  const cleanTwilioAuth = preserveSecret(commsConfig?.twilioAuthToken, currentComms?.twilioAuthToken);
+  const cleanSendgridKey = preserveSecret(commsConfig?.sendgridKey, currentComms?.sendgridKey);
+  const cleanWaToken = preserveSecret(commsConfig?.whatsappAccessToken, currentComms?.whatsappAccessToken);
+  const cleanGeminiKey = preserveSecret(commsConfig?.geminiApiKey, currentComms?.geminiApiKey);
+
+  const twSid = (commsConfig?.twilioSid || '').trim();
+  const twNum = (commsConfig?.twilioNumber || '').trim();
+  const sgFrom = (commsConfig?.sendgridFrom || '').trim();
+  const waPhoneId = (commsConfig?.whatsappPhoneNumberId || '').trim();
+
+  const fullSecrets = {
+    ...commsConfig,
+    twilioSid: twSid,
+    twilioNumber: twNum,
+    twilioAuthToken: cleanTwilioAuth,
+    sendgridFrom: sgFrom,
+    sendgridKey: cleanSendgridKey,
+    whatsappPhoneNumberId: waPhoneId,
+    whatsappWabaId: (commsConfig?.whatsappWabaId || '').trim(),
+    whatsappAccessToken: cleanWaToken,
+    whatsappWebhookVerifyToken: (commsConfig?.whatsappWebhookVerifyToken || 'propithub_webhook_secret_2026').trim(),
+    whatsappBotEnabled: commsConfig?.whatsappBotEnabled ?? true,
+    geminiApiKey: cleanGeminiKey,
+    geminiModel: commsConfig?.geminiModel || 'gemini-1.5-flash',
+    twilioConnected: Boolean(twSid && cleanTwilioAuth && twNum),
+    sendgridConnected: Boolean(cleanSendgridKey && sgFrom),
+    whatsappConnected: Boolean(waPhoneId && cleanWaToken),
+    aiConnected: Boolean(cleanGeminiKey),
+  };
+
+  // 1. Secure storage (Zero client-side access)
+  await db.collection('platformSecrets').doc('comms').set({
+    commsConfig: fullSecrets,
     notificationToggles: notificationToggles || {},
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  return { success: true, message: 'Platform comms and event defaults saved.' };
+  // 2. Sanitized public storage (Safe for browser)
+  const sanitizedPublic = {
+    twilioSid: fullSecrets.twilioSid,
+    twilioNumber: fullSecrets.twilioNumber,
+    twilioConnected: fullSecrets.twilioConnected,
+    sendgridFrom: fullSecrets.sendgridFrom,
+    sendgridConnected: fullSecrets.sendgridConnected,
+    whatsappPhoneNumberId: fullSecrets.whatsappPhoneNumberId,
+    whatsappWabaId: fullSecrets.whatsappWabaId,
+    whatsappBotEnabled: fullSecrets.whatsappBotEnabled,
+    whatsappConnected: fullSecrets.whatsappConnected,
+    geminiModel: fullSecrets.geminiModel,
+    aiEnabled: commsConfig?.aiEnabled ?? true,
+    aiReceiptOcrEnabled: commsConfig?.aiReceiptOcrEnabled ?? true,
+    aiDamageDetectionEnabled: commsConfig?.aiDamageDetectionEnabled ?? true,
+    aiVoiceTranscriptionEnabled: commsConfig?.aiVoiceTranscriptionEnabled ?? true,
+    aiConversationalAssistantEnabled: commsConfig?.aiConversationalAssistantEnabled ?? true,
+    aiConnected: fullSecrets.aiConnected,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await db.collection('platformConfig').doc('comms').set({
+    commsConfig: sanitizedPublic,
+    notificationToggles: notificationToggles || {},
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  return { success: true, message: 'Platform comms and event defaults securely saved.' };
 });
 
 /**
  * 13. savePlatformGateways (Callable)
- * Executed by Superadmin to save Stripe, Razorpay, PayPal keys and active gateway.
+ * Executed by Superadmin to save Stripe, Razorpay, PayPal, Easebuzz keys securely
+ * into /platformSecrets/gateways (zero client access) while saving public publishable
+ * keys and flags into /platformConfig/gateways.
  */
 export const savePlatformGateways = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const callerRole = context.auth.token.role;
-  if (callerRole !== 'superadmin') {
+  const callerRole = context.auth.token?.role;
+  let isSuper = callerRole === 'superadmin' || callerRole === 'admin';
+  if (!isSuper) {
+    const userDoc = await db.collection('users').doc(context.auth.uid).get();
+    if (userDoc.exists && (userDoc.data()?.role === 'superadmin' || userDoc.data()?.role === 'admin')) {
+      isSuper = true;
+    }
+  }
+
+  if (!isSuper) {
     throw new functions.https.HttpsError('permission-denied', 'Only superadmin can configure platform payment gateways.');
   }
 
   const { platformGateways, activeBillingGateway } = data;
+  const currentSecrets = await getPlatformGatewaysConfig();
 
-  await db.collection('platformConfig').doc('gateways').set({
-    platformGateways: platformGateways || {},
+  const preserveSecret = (newVal: any, oldVal: any) => {
+    if (!newVal || String(newVal).includes('•••') || String(newVal).includes('••••')) {
+      return oldVal || '';
+    }
+    return String(newVal).trim();
+  };
+
+  const cleanStripeSecret = preserveSecret(platformGateways?.stripe?.secretKey, currentSecrets?.stripe?.secretKey);
+  const cleanStripeWebhook = preserveSecret(platformGateways?.stripe?.webhookSecret, currentSecrets?.stripe?.webhookSecret);
+  const cleanRazorpaySecret = preserveSecret(platformGateways?.razorpay?.keySecret, currentSecrets?.razorpay?.keySecret);
+  const cleanRazorpayWebhook = preserveSecret(platformGateways?.razorpay?.webhookSecret, currentSecrets?.razorpay?.webhookSecret);
+  const cleanPaypalSecret = preserveSecret(platformGateways?.paypal?.secret, currentSecrets?.paypal?.secret);
+  const cleanEasebuzzSalt = preserveSecret(platformGateways?.easebuzz?.salt, currentSecrets?.easebuzz?.salt);
+
+  const stripePub = (platformGateways?.stripe?.pubKey || '').trim();
+  const rzpKeyId = (platformGateways?.razorpay?.keyId || '').trim();
+  const paypalClientId = (platformGateways?.paypal?.clientId || '').trim();
+  const ebMerchantKey = (platformGateways?.easebuzz?.merchantKey || '').trim();
+
+  const fullSecrets = {
+    stripe: {
+      enabled: Boolean(platformGateways?.stripe?.enabled),
+      connected: Boolean(stripePub && cleanStripeSecret),
+      pubKey: stripePub,
+      secretKey: cleanStripeSecret,
+      webhookSecret: cleanStripeWebhook,
+      mode: platformGateways?.stripe?.mode || 'live',
+    },
+    razorpay: {
+      enabled: Boolean(platformGateways?.razorpay?.enabled),
+      connected: Boolean(rzpKeyId && cleanRazorpaySecret),
+      keyId: rzpKeyId,
+      keySecret: cleanRazorpaySecret,
+      webhookSecret: cleanRazorpayWebhook,
+      mode: platformGateways?.razorpay?.mode || 'live',
+    },
+    paypal: {
+      enabled: Boolean(platformGateways?.paypal?.enabled),
+      connected: Boolean(paypalClientId && cleanPaypalSecret),
+      clientId: paypalClientId,
+      secret: cleanPaypalSecret,
+      mode: platformGateways?.paypal?.mode || 'live',
+    },
+    easebuzz: {
+      enabled: Boolean(platformGateways?.easebuzz?.enabled),
+      connected: Boolean(ebMerchantKey && cleanEasebuzzSalt),
+      merchantKey: ebMerchantKey,
+      salt: cleanEasebuzzSalt,
+      subMerchantId: (platformGateways?.easebuzz?.subMerchantId || '').trim(),
+      mode: platformGateways?.easebuzz?.mode || 'live',
+    },
+    mock: platformGateways?.mock || { enabled: false, connected: false },
+    activeBillingGateway: activeBillingGateway || 'stripe',
+  };
+
+  // 1. Secure storage (Zero client-side access)
+  await db.collection('platformSecrets').doc('gateways').set({
+    platformGateways: fullSecrets,
     activeBillingGateway: activeBillingGateway || 'stripe',
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  return { success: true, message: 'Platform gateway configurations saved successfully.' };
+  // 2. Sanitized public storage (Safe for browser checkout & client listeners)
+  const sanitizedPublic = {
+    stripe: {
+      enabled: fullSecrets.stripe.enabled,
+      connected: fullSecrets.stripe.connected,
+      pubKey: fullSecrets.stripe.pubKey,
+      mode: fullSecrets.stripe.mode,
+    },
+    razorpay: {
+      enabled: fullSecrets.razorpay.enabled,
+      connected: fullSecrets.razorpay.connected,
+      keyId: fullSecrets.razorpay.keyId,
+      mode: fullSecrets.razorpay.mode,
+    },
+    paypal: {
+      enabled: fullSecrets.paypal.enabled,
+      connected: fullSecrets.paypal.connected,
+      clientId: fullSecrets.paypal.clientId,
+      mode: fullSecrets.paypal.mode,
+    },
+    easebuzz: {
+      enabled: fullSecrets.easebuzz.enabled,
+      connected: fullSecrets.easebuzz.connected,
+      merchantKey: fullSecrets.easebuzz.merchantKey,
+      subMerchantId: fullSecrets.easebuzz.subMerchantId,
+      mode: fullSecrets.easebuzz.mode,
+    },
+    mock: fullSecrets.mock,
+    activeBillingGateway: activeBillingGateway || 'stripe',
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await db.collection('platformConfig').doc('gateways').set({
+    platformGateways: sanitizedPublic,
+    activeBillingGateway: activeBillingGateway || 'stripe',
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  return { success: true, message: 'Platform gateway configurations securely saved.' };
+});
+
+/**
+ * 14. getPlatformSecretsStatus (Callable)
+ * Executed by Superadmin to see connection status and masked key previews
+ * without exposing raw secrets to the browser.
+ */
+export const getPlatformSecretsStatus = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+
+  const callerRole = context.auth.token?.role;
+  let isSuper = callerRole === 'superadmin' || callerRole === 'admin';
+  if (!isSuper) {
+    const userDoc = await db.collection('users').doc(context.auth.uid).get();
+    if (userDoc.exists && (userDoc.data()?.role === 'superadmin' || userDoc.data()?.role === 'admin')) {
+      isSuper = true;
+    }
+  }
+
+  if (!isSuper) {
+    throw new functions.https.HttpsError('permission-denied', 'Only superadmin can inspect platform status.');
+  }
+
+  const mask = (val?: string) => {
+    if (!val || val.trim().length === 0) return '';
+    const clean = val.trim();
+    if (clean.length <= 4) return '••••••••';
+    return `••••••••••••${clean.slice(-4)}`;
+  };
+
+  const gateways = await getPlatformGatewaysConfig();
+  const comms = await getPlatformCommsConfig();
+
+  return {
+    gateways: {
+      stripe: {
+        configured: Boolean(gateways?.stripe?.secretKey),
+        maskedSecret: mask(gateways?.stripe?.secretKey),
+        pubKey: gateways?.stripe?.pubKey || '',
+        connected: Boolean(gateways?.stripe?.connected),
+      },
+      razorpay: {
+        configured: Boolean(gateways?.razorpay?.keySecret),
+        maskedSecret: mask(gateways?.razorpay?.keySecret),
+        keyId: gateways?.razorpay?.keyId || '',
+        connected: Boolean(gateways?.razorpay?.connected),
+      },
+      paypal: {
+        configured: Boolean(gateways?.paypal?.secret),
+        maskedSecret: mask(gateways?.paypal?.secret),
+        clientId: gateways?.paypal?.clientId || '',
+        connected: Boolean(gateways?.paypal?.connected),
+      },
+      easebuzz: {
+        configured: Boolean(gateways?.easebuzz?.salt),
+        maskedSecret: mask(gateways?.easebuzz?.salt),
+        merchantKey: gateways?.easebuzz?.merchantKey || '',
+        connected: Boolean(gateways?.easebuzz?.connected),
+      },
+    },
+    comms: {
+      twilio: {
+        configured: Boolean(comms?.twilioAuthToken),
+        maskedSecret: mask(comms?.twilioAuthToken),
+        sid: comms?.twilioSid || '',
+        number: comms?.twilioNumber || '',
+        connected: Boolean(comms?.twilioConnected),
+      },
+      sendgrid: {
+        configured: Boolean(comms?.sendgridKey),
+        maskedSecret: mask(comms?.sendgridKey),
+        from: comms?.sendgridFrom || '',
+        connected: Boolean(comms?.sendgridConnected),
+      },
+      whatsapp: {
+        configured: Boolean(comms?.whatsappAccessToken),
+        maskedSecret: mask(comms?.whatsappAccessToken),
+        phoneId: comms?.whatsappPhoneNumberId || '',
+        wabaId: comms?.whatsappWabaId || '',
+        connected: Boolean(comms?.whatsappConnected),
+      },
+      gemini: {
+        configured: Boolean(comms?.geminiApiKey),
+        maskedSecret: mask(comms?.geminiApiKey),
+        model: comms?.geminiModel || 'gemini-1.5-flash',
+        connected: Boolean(comms?.aiConnected),
+      },
+    },
+  };
 });
 
 /**

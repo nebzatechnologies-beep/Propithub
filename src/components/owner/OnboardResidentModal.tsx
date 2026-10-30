@@ -10,6 +10,9 @@ import {
   getOneYearLaterDateString,
 } from '../../lib/dates';
 import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { uploadDocumentFile } from '../../lib/imageUploader';
+import { db, isFirebaseConfigured } from '../../lib/firebase';
+import { doc, setDoc } from 'firebase/firestore';
 import { TenancyRequest, Agreement, TenantRecord, UserProfile, RequiredIdItem, Invoice } from '../../types';
 import {
   UserPlus,
@@ -101,14 +104,23 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       if (selectedPropertyId && selectedPropertyId !== 'all' && u.propertyId !== selectedPropertyId) {
         return false;
       }
-      const hasActiveAgreement = (state.agreements || []).some(
-        (a) => a.status === 'active' && (a.unitId === u.id || (a.unit === u.unitNumber && a.propertyId === u.propertyId))
-      );
-      const isOccupiedOrReserved = u.status === 'occupied' || u.status === 'reserved' || Boolean(u.currentTenantId) || hasActiveAgreement;
       if (u.id === preselectedUnitId) return true;
+      const hasActiveAgreement = (state.agreements || []).some(
+        (a) => a.status === 'active' && (a.unitId === u.id || (a.unit === u.unitNumber && (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)))
+      );
+      const hasPendingReq = (state.tenancyRequests || []).some(
+        (r) => r.status === 'pending' && (r.unitId === u.id || (r.unitNumber === u.unitNumber && (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)))
+      );
+      const isOccupiedOrReserved =
+        u.status === 'occupied' ||
+        u.status === 'reserved' ||
+        Boolean(u.currentTenantId) ||
+        Boolean(u.tenant && u.tenant !== 'Unassigned' && u.tenant !== 'Vacant') ||
+        hasActiveAgreement ||
+        hasPendingReq;
       return !isOccupiedOrReserved;
     });
-  }, [state.units, state.agreements, myProperties, selectedPropertyId, preselectedUnitId]);
+  }, [state.units, state.agreements, state.tenancyRequests, myProperties, selectedPropertyId, preselectedUnitId]);
 
   // --- Step 3: Agreement & Execution Mode State ---
   const [executionMode, setExecutionMode] = useState<'digital_dispatch' | 'already_executed_offline'>('digital_dispatch');
@@ -185,12 +197,26 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       const initialPropId = firstProp?.id || '';
       setSelectedPropertyId(initialPropId);
 
-      // Find initial unit
+      // Find initial unit strictly from non-occupied, non-reserved units
       const candidateUnits = state.units.filter((u) => {
         const matchOwner = myProperties.some((p) => p.id === u.propertyId);
         if (!matchOwner) return false;
         if (initialPropId && u.propertyId !== initialPropId) return false;
-        return u.status === 'vacant' || u.id === preselectedUnitId;
+        if (u.id === preselectedUnitId) return true;
+        const hasActiveAgreement = (state.agreements || []).some(
+          (a) => a.status === 'active' && (a.unitId === u.id || (a.unit === u.unitNumber && (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)))
+        );
+        const hasPendingReq = (state.tenancyRequests || []).some(
+          (r) => r.status === 'pending' && (r.unitId === u.id || (r.unitNumber === u.unitNumber && (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)))
+        );
+        const isOccupiedOrReserved =
+          u.status === 'occupied' ||
+          u.status === 'reserved' ||
+          Boolean(u.currentTenantId) ||
+          Boolean(u.tenant && u.tenant !== 'Unassigned' && u.tenant !== 'Vacant') ||
+          hasActiveAgreement ||
+          hasPendingReq;
+        return !isOccupiedOrReserved;
       });
 
       const initialUnit = preselectedUnitId
@@ -268,7 +294,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
         return;
       }
       setAgreementFileName(file.name);
-      setAgreementFileSize(Math.round(file.size / 1024));
+      setAgreementFileSize(file.size < 1024 ? 1 : Math.round(file.size / 1024));
       const reader = new FileReader();
       reader.onload = () => {
         setAgreementFileData(reader.result as string);
@@ -300,9 +326,14 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           showToast('Please enter a valid email address for the tenant.');
           return;
         }
-        const phoneDigits = (selectedTenant.phone || '').replace(/\D/g, '');
-        if (selectedTenant.phone && (phoneDigits.length < 7 || phoneDigits.length > 15)) {
+        const cleanPhone = (selectedTenant.phone || '').trim();
+        const phoneDigits = cleanPhone.replace(/\D/g, '');
+        if (!cleanPhone || phoneDigits.length < 7 || phoneDigits.length > 15) {
           showToast('Please enter a valid phone number (at least 7 digits with country code).');
+          return;
+        }
+        if (!selectedTenant.tempPassword || selectedTenant.tempPassword.trim().length < 6) {
+          showToast('Please specify a temporary password (at least 6 characters) for resident setup.');
           return;
         }
       }
@@ -466,6 +497,16 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       // -------------------------------------------------------------
       if (!isOfflineMode) {
         const requestId = `req_${Date.now()}`;
+        let uploadedAgreementUrl = agreementFileData;
+        if (agreementFileData && agreementFileData.startsWith('data:')) {
+          const fileExt = (agreementFileName || '').split('.').pop() || 'pdf';
+          const storagePath = `agreements/${requestId}/${Date.now()}_initial.${fileExt}`;
+          uploadedAgreementUrl = await uploadDocumentFile(agreementFileData, storagePath, {
+            tenantId,
+            ownerId,
+          });
+        }
+
         const newRequest: TenancyRequest = {
           id: requestId,
           ownerId,
@@ -486,7 +527,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           leaseEnd,
           message: `Welcome to your new home at ${propName}! Please review the attached lease agreement for Unit ${unitLabel}, accept, sign, and upload your signed copy to proceed to security deposit settlement.`,
           agreementFileName: agreementFileName || 'Rental_Agreement.pdf',
-          agreementFileData: agreementFileData,
+          agreementFileData: uploadedAgreementUrl,
           agreementFileSize: agreementFileSize || undefined,
           requireTenantId: requireIds,
           requiredIdList: requireIds ? idList.filter((i) => i.name.trim()) : [],
@@ -535,65 +576,27 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
               : u
           );
 
-          // Upsert tenant record
-          const existingTenantIdx = prev.tenants.findIndex(
-            (t) => t.id === tenantId || (cleanEmail && t.email?.toLowerCase() === cleanEmail)
-          );
-          let updatedTenants = [...prev.tenants];
-          if (existingTenantIdx >= 0) {
-            const t = prev.tenants[existingTenantIdx];
-            updatedTenants[existingTenantIdx] = {
-              ...t,
-              unit: unitLabel,
-              unitsRented: Array.from(new Set([...(t.unitsRented || []), unitLabel])),
-              owner: user?.displayName || 'Property Owner',
-              ownerId,
-              rent: rent || t.rent,
-              deposit: deposit || t.deposit,
-              currency: propCurrency,
-              leaseStart,
-              leaseEnd,
-            };
-          } else {
-            const newRecord: TenantRecord = {
-              id: tenantId,
-              name: cleanName,
-              email: cleanEmail,
-              phone: cleanPhone,
-              unit: unitLabel,
-              owner: user?.displayName || 'Property Owner',
-              ownerId,
-              leaseStart,
-              leaseEnd,
-              rent,
-              deposit,
-              currency: propCurrency,
-              rating: 0,
-              unitsRented: [unitLabel],
-              history: [],
-              kycDocuments: [],
-            };
-            updatedTenants.push(newRecord);
-
-            const newProfile: UserProfile = {
-              id: tenantId,
-              email: newRecord.email,
-              role: 'tenant',
-              ownerId,
-              displayName: cleanName,
-              phone: newRecord.phone,
-              status: 'invited',
-              createdAt: nowIso,
-              tempPassword,
-            };
-            saveTenant(newRecord, newProfile);
+          // For pending online invitation, record invited user profile without placing them into active tenants directory
+          const newProfile: UserProfile = {
+            id: tenantId,
+            email: cleanEmail,
+            role: 'tenant',
+            ownerId,
+            displayName: cleanName,
+            phone: cleanPhone,
+            status: 'invited',
+            createdAt: nowIso,
+            tempPassword,
+          };
+          if (isFirebaseConfigured) {
+            setDoc(doc(db, 'users', tenantId), newProfile, { merge: true }).catch(console.warn);
           }
 
           return {
             ...prev,
             tenancyRequests: [newRequest, ...(prev.tenancyRequests || [])],
             units: updatedUnits,
-            tenants: updatedTenants,
+            users: [...(prev.users || []).filter((u) => u.id !== tenantId), newProfile],
             notifications: [...(prev.notifications || []), notif],
           };
         });
@@ -606,6 +609,16 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       // -------------------------------------------------------------
       else {
         const agId = `AG-${Math.floor(1000 + Math.random() * 9000)}`;
+        let uploadedAgreementUrl = agreementFileData;
+        if (agreementFileData && agreementFileData.startsWith('data:')) {
+          const fileExt = (agreementFileName || '').split('.').pop() || 'pdf';
+          const storagePath = `agreements/${agId}/${Date.now()}_signed.${fileExt}`;
+          uploadedAgreementUrl = await uploadDocumentFile(agreementFileData, storagePath, {
+            tenantId,
+            ownerId,
+          });
+        }
+
         const newAg: Agreement = {
           id: agId,
           ownerId,
@@ -619,11 +632,11 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           executionMode: 'already_executed_offline',
           contentHtml: null,
           fileName: agreementFileName,
-          fileData: agreementFileData,
-          initialAgreementUrl: agreementFileData || undefined,
+          fileData: uploadedAgreementUrl,
+          initialAgreementUrl: uploadedAgreementUrl || undefined,
           initialAgreementName: agreementFileName || undefined,
           initialUploadedAt: nowIso,
-          ownerSignedDocumentUrl: agreementFileData || undefined,
+          ownerSignedDocumentUrl: uploadedAgreementUrl || undefined,
           ownerSignedDocumentName: agreementFileName || undefined,
           ownerSignedUploadedAt: nowIso,
           start: leaseStart,
@@ -634,7 +647,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           rentDueDay: dueDay || 1,
           status: 'active',
           tenantSignature: null,
-          signedDocumentUrl: agreementFileData || undefined,
+          signedDocumentUrl: uploadedAgreementUrl || undefined,
           signedDocumentName: agreementFileName,
           signedUploadedAt: nowIso,
           approvedAt: nowIso,

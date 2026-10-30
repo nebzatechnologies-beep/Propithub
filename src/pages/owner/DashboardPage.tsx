@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { useCurrency } from '../../context/CurrencyContext';
-import { GLOBAL_CURRENCIES, CurrencyMeta } from '../../lib/currencyService';
+import { GLOBAL_CURRENCIES, CurrencyMeta, formatCurrencyLabel } from '../../lib/currencyService';
 import { CurrencyConverterTrigger } from '../../components/common/CurrencyConverterTrigger';
 import { Link } from 'react-router-dom';
 import {
@@ -26,7 +26,7 @@ const normalizeCurrency = (raw?: string): { code: string; symbol: string; label:
   const upper = trimmed.toUpperCase();
   if (upper === '$' || upper === 'USD') return { code: 'USD', symbol: '$', label: '$' };
   if (upper === '£' || upper === 'GBP') return { code: 'GBP', symbol: '£', label: '£' };
-  if (upper === 'AED') return { code: 'AED', symbol: 'AED ', label: 'AED' };
+  if (upper === 'AED') return { code: 'AED', symbol: 'AED', label: 'AED' };
   if (upper === 'EUR' || upper === '€') return { code: 'EUR', symbol: '€', label: '€' };
   if (upper === '₹' || upper === 'INR') return { code: 'INR', symbol: '₹', label: '₹' };
   return { code: upper, symbol: trimmed, label: trimmed };
@@ -448,7 +448,7 @@ export const OwnerDashboardPage: React.FC = () => {
               const curr = getPropertyCurrency(p);
               return (
                 <option key={p.id} value={p.id}>
-                  {p.name} — {curr.code} ({curr.symbol})
+                  {p.name} — {formatCurrencyLabel(curr.code, curr.symbol)}
                 </option>
               );
             })}
@@ -750,7 +750,7 @@ export const OwnerDashboardPage: React.FC = () => {
                               className={`badge ${curr.code === 'USD' ? 'amber' : curr.code === 'GBP' ? 'red' : 'green'}`}
                               style={{ fontWeight: 600 }}
                             >
-                              {curr.code === 'USD' ? '$' : `${curr.symbol} ${curr.code}`}
+                              {formatCurrencyLabel(curr.code, curr.symbol)}
                             </span>
                           </td>
                           <td>{totalUnits} unit{totalUnits === 1 ? '' : 's'}</td>
@@ -804,7 +804,7 @@ export const OwnerDashboardPage: React.FC = () => {
                         className={`badge ${curr.code === 'USD' ? 'amber' : curr.code === 'GBP' ? 'red' : 'green'}`}
                         style={{ fontWeight: 600 }}
                       >
-                        {curr.code === 'USD' ? '$' : `${curr.symbol} ${curr.code}`}
+                        {formatCurrencyLabel(curr.code, curr.symbol)}
                       </span>
                     </div>
 

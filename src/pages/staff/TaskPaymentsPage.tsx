@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { StaffMember } from '../../types';
 import { CreditCard, CheckCircle2 } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
-import { DEFAULT_CURRENCY_SYMBOL } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
 
 export const StaffTaskPaymentsPage: React.FC = () => {
   const { state, saveTicket, sendStaffPaymentReminder, showToast } = useAppData();
@@ -14,10 +14,34 @@ export const StaffTaskPaymentsPage: React.FC = () => {
   const staffName = user?.displayName || '';
 
   // Resolve by UID first, then email, then displayName
-  const currentStaff: StaffMember | undefined =
+  const matchedStaff: StaffMember | undefined =
     state.staff.find((s) => s.id === staffId) ||
     (staffEmail ? state.staff.find((s) => s.email?.toLowerCase() === staffEmail) : undefined) ||
     (staffName ? state.staff.find((s) => s.name.toLowerCase() === staffName.toLowerCase()) : undefined);
+
+  // Dynamic fallback profile synthesis if staff document is still syncing or unseeded
+  const currentStaff: StaffMember | undefined =
+    matchedStaff ||
+    (user && (user.role === 'staff' || (user as any).role === 'staff')
+      ? {
+          id: user.id,
+          name: user.displayName || user.email?.split('@')[0] || 'Staff Member',
+          role: (user as any).staffRole || 'Technician',
+          ownerId: user.ownerId || '',
+          ownerName: user.ownerName || 'Property Owner',
+          phone: user.phone || '',
+          email: user.email || '',
+          activeTickets: 0,
+          rating: (user as any).rating || 5.0,
+          completed: (user as any).completed || 0,
+          paymentDetails: {
+            method: 'bank',
+            bank: { accountName: user.displayName || '', accountNumber: '', country: 'India', routing: '' },
+            upi: { upiId: '', qrImage: null },
+            paypalEmail: '',
+          },
+        }
+      : undefined);
 
   const [remindedTickets, setRemindedTickets] = useState<Record<string, boolean>>({});
   const [settlingTicketId, setSettlingTicketId] = useState<string | null>(null);
@@ -39,7 +63,8 @@ export const StaffTaskPaymentsPage: React.FC = () => {
       (currentStaff?.ownerId && p.ownerId === currentStaff.ownerId) ||
       myTickets.some((t) => t.propertyId === p.id)
   );
-  const staffCurrency = staffProperty?.currency || (myTickets[0] as any)?.currency || DEFAULT_CURRENCY_SYMBOL;
+  const staffRawCurrency = staffProperty?.currency || (myTickets[0] as any)?.currency || DEFAULT_CURRENCY_SYMBOL;
+  const staffCurrency = getCurrencySymbol(staffRawCurrency) || DEFAULT_CURRENCY_SYMBOL;
   const confirmedEarnings = myTickets
     .filter((t) => t.payment.status === 'confirmed')
     .reduce((sum, t) => sum + (t.payment.amount || 0), 0);
@@ -135,70 +160,71 @@ export const StaffTaskPaymentsPage: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {myTickets.map((t) => (
-                        <tr key={t.id}>
-                          <td><b>{t.id}</b></td>
-                          <td style={{ textTransform: 'capitalize' }}>{t.payment.payer}</td>
-                          <td style={{ fontWeight: 600 }}>{state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency || staffCurrency}{t.payment.amount?.toLocaleString()}</td>
-                          <td>{t.payment.method || '—'}</td>
-                          <td>
-                            <span
-                              className={`badge ${
-                                t.payment.status === 'confirmed'
-                                  ? 'green'
+                      {myTickets.map((t) => {
+                        const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency;
+                        const ticketDisplayCurr = getCurrencySymbol(unitCurr || (t as any).currency || staffCurrency) || staffCurrency;
+                        return (
+                          <tr key={t.id}>
+                            <td><b>{t.id}</b></td>
+                            <td style={{ textTransform: 'capitalize' }}>{t.payment.payer}</td>
+                            <td style={{ fontWeight: 600 }}>{ticketDisplayCurr}{t.payment.amount?.toLocaleString()}</td>
+                            <td>{t.payment.method || '—'}</td>
+                            <td>
+                              <span
+                                className={`badge ${
+                                  t.payment.status === 'confirmed'
+                                    ? 'green'
+                                    : t.payment.status === 'pending_approval'
+                                    ? 'brass'
+                                    : 'amber'
+                                }`}
+                              >
+                                {t.payment.status === 'confirmed'
+                                  ? 'Confirmed'
                                   : t.payment.status === 'pending_approval'
-                                  ? 'brass'
-                                  : 'amber'
-                              }`}
-                            >
-                              {t.payment.status === 'confirmed'
-                                ? 'Confirmed'
-                                : t.payment.status === 'pending_approval'
-                                ? 'Pending confirmation'
-                                : 'Awaiting payment'}
-                            </span>
-                          </td>
-                          <td>
-                            {t.payment.status === 'confirmed' ? (
-                              <span style={{ color: 'var(--ledger)', fontSize: '12.5px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                <CheckCircle2 size={14} /> Completed
+                                  ? 'Pending confirmation'
+                                  : 'Awaiting payment'}
                               </span>
-                            ) : (
-                              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                            </td>
+                            <td>
+                              {t.payment.status === 'confirmed' ? (
+                                <span style={{ color: 'var(--ledger)', fontSize: '12.5px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  <CheckCircle2 size={14} /> Completed
+                                </span>
+                              ) : t.payment.status === 'pending_approval' ? (
                                 <button
                                   type="button"
-                                  className="btn secondary small"
+                                  className="btn brass small"
                                   disabled={settlingTicketId === t.id}
                                   onClick={() => handleMarkPaymentCompleted(t.id)}
-                                  title="Mark task fee as received & completed"
+                                  title="Confirm receipt of submitted payment proof"
                                   style={{ fontWeight: 600 }}
                                 >
                                   <ButtonProcessing
                                     loading={settlingTicketId === t.id}
                                     loadingText="Settling..."
-                                    defaultText="Mark as completed"
+                                    defaultText="Confirm receipt"
                                   />
                                 </button>
-                                {t.payment.status === 'awaiting_payment' && (
-                                  <button
-                                    type="button"
-                                    className="btn brass small"
-                                    disabled={remindedTickets[t.id] || remindingTicketId === t.id}
-                                    onClick={() => handleSendPaymentReminder(t)}
-                                    title="Send payment reminder to payer"
-                                  >
-                                    <ButtonProcessing
-                                      loading={remindingTicketId === t.id}
-                                      loadingText="Sending..."
-                                      defaultText={remindedTickets[t.id] ? 'Reminder sent' : 'Send reminder'}
-                                    />
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  disabled={remindedTickets[t.id] || remindingTicketId === t.id}
+                                  onClick={() => handleSendPaymentReminder(t)}
+                                  title="Send payment reminder to payer"
+                                >
+                                  <ButtonProcessing
+                                    loading={remindingTicketId === t.id}
+                                    loadingText="Sending..."
+                                    defaultText={remindedTickets[t.id] ? 'Reminder sent' : 'Send reminder'}
+                                  />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -206,65 +232,70 @@ export const StaffTaskPaymentsPage: React.FC = () => {
 
               {/* Mobile Payment Cards (<=640px) */}
               <div className="staff-mobile-cards">
-                {myTickets.map((t) => (
-                  <div key={t.id} className="staff-card">
-                    <div className="staff-card-header">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{t.id}</b>
-                        <span className="badge grey" style={{ textTransform: 'capitalize' }}>
-                          Payer: {t.payment.payer}
+                {myTickets.map((t) => {
+                  const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency;
+                  const ticketDisplayCurr = getCurrencySymbol(unitCurr || (t as any).currency || staffCurrency) || staffCurrency;
+                  return (
+                    <div key={t.id} className="staff-card">
+                      <div className="staff-card-header">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{t.id}</b>
+                          <span className="badge grey" style={{ textTransform: 'capitalize' }}>
+                            Payer: {t.payment.payer}
+                          </span>
+                        </div>
+                        <span
+                          className={`badge ${
+                            t.payment.status === 'confirmed'
+                              ? 'green'
+                              : t.payment.status === 'pending_approval'
+                              ? 'brass'
+                              : 'amber'
+                          }`}
+                        >
+                          {t.payment.status === 'confirmed'
+                            ? 'Settled'
+                            : t.payment.status === 'pending_approval'
+                            ? 'Action Needed'
+                            : 'Unpaid'}
                         </span>
                       </div>
-                      <span
-                        className={`badge ${
-                          t.payment.status === 'confirmed'
-                            ? 'green'
-                            : t.payment.status === 'pending_approval'
-                            ? 'brass'
-                            : 'amber'
-                        }`}
-                      >
-                        {t.payment.status === 'confirmed'
-                          ? 'Settled'
-                          : t.payment.status === 'pending_approval'
-                          ? 'Action Needed'
-                          : 'Unpaid'}
-                      </span>
-                    </div>
 
-                    <div style={{ margin: '8px 0', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-                      <div style={{ fontSize: '22px', fontWeight: 700, color: t.payment.status === 'confirmed' ? 'var(--ledger)' : 'var(--ink)' }}>
-                        {state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency || staffCurrency}{t.payment.amount?.toLocaleString()}
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                        Method: <b>{t.payment.method || 'Standard'}</b>
-                      </div>
-                    </div>
-
-                    <div className="staff-card-footer">
-                      {t.payment.status === 'confirmed' ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--ledger)', fontSize: '12.5px', fontWeight: 600 }}>
-                          <CheckCircle2 size={15} /> Completed & Settled
+                      <div style={{ margin: '8px 0', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                        <div style={{ fontSize: '22px', fontWeight: 700, color: t.payment.status === 'confirmed' ? 'var(--ledger)' : 'var(--ink)' }}>
+                          {ticketDisplayCurr}{t.payment.amount?.toLocaleString()}
                         </div>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' }}>
-                          <button
-                            type="button"
-                            className="btn secondary small btn-mobile-full"
-                            style={{ fontWeight: 600 }}
-                            disabled={settlingTicketId === t.id}
-                            onClick={() => handleMarkPaymentCompleted(t.id)}
-                          >
-                            <ButtonProcessing
-                              loading={settlingTicketId === t.id}
-                              loadingText="Settling..."
-                              defaultText="✓ Mark as completed"
-                            />
-                          </button>
-                          {t.payment.status === 'awaiting_payment' && (
+                        <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                          Method: <b>{t.payment.method || 'Standard'}</b>
+                        </div>
+                      </div>
+
+                      <div className="staff-card-footer">
+                        {t.payment.status === 'confirmed' ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--ledger)', fontSize: '12.5px', fontWeight: 600 }}>
+                            <CheckCircle2 size={15} /> Completed & Settled
+                          </div>
+                        ) : t.payment.status === 'pending_approval' ? (
+                          <div style={{ width: '100%' }}>
                             <button
                               type="button"
                               className="btn brass small btn-mobile-full"
+                              style={{ fontWeight: 600 }}
+                              disabled={settlingTicketId === t.id}
+                              onClick={() => handleMarkPaymentCompleted(t.id)}
+                            >
+                              <ButtonProcessing
+                                loading={settlingTicketId === t.id}
+                                loadingText="Settling..."
+                                defaultText="✓ Confirm receipt"
+                              />
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ width: '100%' }}>
+                            <button
+                              type="button"
+                              className="btn secondary small btn-mobile-full"
                               disabled={remindedTickets[t.id] || remindingTicketId === t.id}
                               onClick={() => handleSendPaymentReminder(t)}
                             >
@@ -274,12 +305,12 @@ export const StaffTaskPaymentsPage: React.FC = () => {
                                 defaultText={remindedTickets[t.id] ? 'Reminder sent' : 'Send Payment Reminder'}
                               />
                             </button>
-                          )}
-                        </div>
-                      )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}
