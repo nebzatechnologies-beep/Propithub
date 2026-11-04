@@ -33,6 +33,7 @@ export interface MobilePropertyAddress {
   state?: string;
   country: string;
   postalCode?: string;
+  street?: string;
   lat?: number;
   lng?: number;
 }
@@ -816,6 +817,9 @@ export interface MobileAnnouncement {
   targetRoles: ('tenant' | 'staff' | 'manager')[];
   isPinned: boolean;
   requireAck: boolean;
+  requireAcknowledgment?: boolean;
+  acknowledgments?: any[];
+  targetScope?: any;
   status: 'published' | 'scheduled' | 'draft' | 'archived';
   createdAt: string;
   acknowledgedBy?: string[];
@@ -977,5 +981,24 @@ export interface MobileCommsConfig {
   sendgridKey: string;
   sendgridConnected: boolean;
   sendgridFrom: string;
+}
+
+export interface MobilePropertyEnquiry {
+  id: string;
+  unitId: string;
+  unitNumber: string;
+  propertyId: string;
+  propertyName: string;
+  ownerId: string;
+  managerId?: string;
+  prospectName: string;
+  prospectPhone: string;
+  prospectEmail?: string;
+  moveInDate: string;
+  notes?: string;
+  status: 'new' | 'reviewed' | 'onboarded';
+  tenantId?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 

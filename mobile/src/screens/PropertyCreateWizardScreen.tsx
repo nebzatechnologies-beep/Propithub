@@ -776,9 +776,11 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
       sortedImages.unshift(cover);
     }
 
+    const effectiveOwnerId = user.role === 'manager' ? (user.ownerId || '') : user.id;
+
     const newProp: MobileProperty = {
       id: propId,
-      ownerId: user.id,
+      ownerId: effectiveOwnerId,
       name: propertyName.trim(),
       propertyType,
       floorsCount: parseInt(floorsCount, 10) || 3,
@@ -802,7 +804,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         .map(([name, image]) => ({ name, image })),
       images: sortedImages,
       coverPhotoIndex: 0,
-      assignedManagerId: assignedManagerId || undefined,
+      assignedManagerId: user.role === 'manager' ? user.id : (assignedManagerId || undefined),
       rules: {
         petsAllowed,
         smokingAllowed,
@@ -817,7 +819,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
       id: `unit-${propId}-${u.unitNumber}`,
       propertyId: propId,
       propertyName: propertyName.trim(),
-      ownerId: user.id,
+      ownerId: effectiveOwnerId,
       unitNumber: u.unitNumber,
       unitType: u.unitType,
       floor: u.floor,

@@ -1,34 +1,30 @@
 import React, { useState, useMemo } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
-import { Ticket, StaffMember, StaffScheduleItem } from '../../types';
+import { Ticket, StaffMember } from '../../types';
 import { isFirebaseConfigured, db } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { Phone, Mail, MapPin, Clock, Calendar, AlertCircle, Megaphone, Pin, Flame } from 'lucide-react';
+import { Phone, Mail, MapPin, Clock, AlertCircle, Megaphone, Pin, Flame, CheckCircle2 } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { getStaffReminders } from '../../lib/reminders';
 import { DashboardReminderHub } from '../../components/dashboard/DashboardReminderHub';
 
 export const StaffDashboardQueuePage: React.FC = () => {
-  const { state, updateState, saveTicket, saveStaff, showToast } = useAppData();
+  const { state, updateState, saveTicket, saveStaff, showToast, acknowledgeAnnouncement } = useAppData();
   const { user } = useAuth();
   const staffId = user?.id || '';
   const staffEmail = user?.email?.toLowerCase() || '';
   const staffName = user?.displayName || '';
 
-  const [subTab, setSubTab] = useState<'queue' | 'schedule'>('queue');
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [statusInput, setStatusInput] = useState<'In progress' | 'Completed'>('In progress');
   const [completionNotes, setCompletionNotes] = useState('');
   const [isSavingStatus, setIsSavingStatus] = useState(false);
-  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
 
-  // Schedule management state
-  const [isAddScheduleOpen, setIsAddScheduleOpen] = useState(false);
-  const [schedDay, setSchedDay] = useState('Today');
-  const [schedJob, setSchedJob] = useState('');
-  const [schedUnit, setSchedUnit] = useState('');
-  const [schedTime, setSchedTime] = useState('09:00 AM - 11:00 AM');
+  // Announcement acknowledgment and smooth dismissal state
+  const [ackingNoticeId, setAckingNoticeId] = useState<string | null>(null);
+  const [justAckedIds, setJustAckedIds] = useState<Set<string>>(new Set());
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
 
   const [queueFilter, setQueueFilter] = useState<'all' | 'active' | 'resolved'>('all');
 
@@ -75,7 +71,6 @@ export const StaffDashboardQueuePage: React.FC = () => {
 
   const activeTickets = useMemo(() => myTickets.filter((t) => t.status !== 'resolved'), [myTickets]);
   const resolvedTickets = useMemo(() => myTickets.filter((t) => t.status === 'resolved'), [myTickets]);
-  const dynamicCompleted = Math.max(currentStaff?.completed || 0, resolvedTickets.length);
 
   const filteredQueue = useMemo(() => {
     if (queueFilter === 'active') return activeTickets;
@@ -115,18 +110,80 @@ export const StaffDashboardQueuePage: React.FC = () => {
     return getStaffReminders(state, user);
   }, [state, user]);
 
+  const staffIdSet = useMemo(() => {
+    const set = new Set<string>();
+    if (staffId) set.add(staffId);
+    if (user?.id) set.add(user.id);
+    if (currentStaff?.id) set.add(currentStaff.id);
+    return set;
+  }, [staffId, user?.id, currentStaff?.id]);
+
+  const handleStaffAcknowledge = async (announcementId: string, requireAck?: boolean) => {
+    setAckingNoticeId(announcementId);
+    try {
+      await acknowledgeAnnouncement(announcementId, {
+        tenantId: user?.id || staffId || 'staff',
+        tenantName: staffName || user?.displayName || currentStaff?.name || 'Staff Member',
+        tenantEmail: staffEmail || user?.email || undefined,
+        acknowledgedAt: new Date().toISOString(),
+      });
+      setJustAckedIds((prev) => new Set(prev).add(announcementId));
+      showToast(requireAck ? '✓ Notice acknowledged. Thank you!' : '✓ Notice marked as read.');
+
+      // Smoothly dismiss the notice from dashboard view after confirmation grace period
+      setTimeout(() => {
+        setDismissedNoticeIds((prev) => new Set(prev).add(announcementId));
+      }, 1500);
+    } catch (err) {
+      console.error('Failed to acknowledge bulletin:', err);
+      showToast('Could not record acknowledgment.');
+    } finally {
+      setAckingNoticeId(null);
+    }
+  };
+
   const staffAnnouncements = useMemo(() => {
-    const staffIdSet = new Set<string>();
-    if (staffId) staffIdSet.add(staffId);
-    if (user?.id) staffIdSet.add(user.id);
-    if (currentStaff?.id) staffIdSet.add(currentStaff.id);
+    const staffOwnerIds = new Set<string>();
+    if (currentStaff?.ownerId) staffOwnerIds.add(currentStaff.ownerId);
+    if (user?.ownerId) staffOwnerIds.add(user.ownerId);
+    myTickets.forEach((t) => {
+      if (t.ownerId) staffOwnerIds.add(t.ownerId);
+    });
+
+    const assignedPropertyIds = new Set<string>();
+    myTickets.forEach((t) => {
+      if (t.propertyId) assignedPropertyIds.add(t.propertyId);
+    });
+    if ((currentStaff as any)?.assignedProperties && Array.isArray((currentStaff as any).assignedProperties)) {
+      (currentStaff as any).assignedProperties.forEach((pId: string) => assignedPropertyIds.add(pId));
+    }
+    if ((user as any)?.assignedProperties && Array.isArray((user as any).assignedProperties)) {
+      (user as any).assignedProperties.forEach((pId: string) => assignedPropertyIds.add(pId));
+    }
 
     return (state.announcements || [])
       .filter((a) => {
         if (a.status !== 'published') return false;
+        if (dismissedNoticeIds.has(a.id)) return false;
+
         if (!a.targetScope?.targetRoles?.includes('staff') && !a.targetScope?.targetRoles?.includes('manager')) {
           return false;
         }
+
+        const isSystem = a.ownerId === 'system' || a.ownerId === 'superadmin' || (a.category as string) === 'system';
+        // Strict landlord isolation: Block if staff has no owner association or if announcement belongs to another landlord
+        if (!isSystem && (staffOwnerIds.size === 0 || !staffOwnerIds.has(a.ownerId))) {
+          return false;
+        }
+
+        // Property-level scoping: If targeted to specific properties, verify staff works on at least one
+        if (a.targetScope && !a.targetScope.allProperties && a.targetScope.propertyIds && a.targetScope.propertyIds.length > 0) {
+          if (assignedPropertyIds.size > 0 && !a.targetScope.propertyIds.some((pId) => assignedPropertyIds.has(pId))) {
+            return false;
+          }
+        }
+
+        // Specific user targeting
         if (
           a.targetScope?.mode === 'specific_people' ||
           (a.targetScope?.targetUserIds && a.targetScope.targetUserIds.length > 0)
@@ -135,6 +192,19 @@ export const StaffDashboardQueuePage: React.FC = () => {
           const isTargeted = targets.some((id) => staffIdSet.has(id));
           if (!isTargeted) return false;
         }
+
+        // Acknowledgment check: hide if already acknowledged (unless in 1.5s grace window)
+        const isAckedByArr = (a.acknowledgedBy || []).some((id) => staffIdSet.has(id));
+        const isAckedByObj = (a.acknowledgments || []).some(
+          (ack) =>
+            (ack.tenantId && staffIdSet.has(ack.tenantId)) ||
+            (ack.tenantEmail && staffEmail && ack.tenantEmail.toLowerCase() === staffEmail)
+        );
+        const hasAcked = isAckedByArr || isAckedByObj;
+        if (hasAcked && !justAckedIds.has(a.id)) {
+          return false;
+        }
+
         return true;
       })
       .sort((a, b) => {
@@ -142,7 +212,7 @@ export const StaffDashboardQueuePage: React.FC = () => {
         if (!a.isPinned && b.isPinned) return 1;
         return new Date(b.publishedAt || b.createdAt).getTime() - new Date(a.publishedAt || a.createdAt).getTime();
       });
-  }, [state.announcements, staffId, user, currentStaff]);
+  }, [state.announcements, staffIdSet, user, currentStaff, myTickets, dismissedNoticeIds, justAckedIds, staffEmail]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -161,96 +231,100 @@ export const StaffDashboardQueuePage: React.FC = () => {
 
       {/* Staff Operational Announcements & Bulletins */}
       {staffAnnouncements.length > 0 && (
-        <div className="panel" style={{ padding: '18px 20px', borderRadius: '12px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>
+        <div className="panel" style={{ borderRadius: '12px' }}>
+          <div className="panel-body">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>
             <Megaphone size={18} color="#10B981" />
             <span>Staff & Operational Bulletins ({staffAnnouncements.length})</span>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="bulletins-scroll-container">
             {staffAnnouncements.map((a) => {
               const isUrgent = a.priority === 'urgent' || a.priority === 'emergency';
+              const isAckedByArr = (a.acknowledgedBy || []).some((id) => staffIdSet.has(id));
+              const isAckedByObj = (a.acknowledgments || []).some(
+                (ack) =>
+                  (ack.tenantId && staffIdSet.has(ack.tenantId)) ||
+                  (ack.tenantEmail && staffEmail && ack.tenantEmail.toLowerCase() === staffEmail)
+              );
+              const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(a.id);
+
               return (
                 <div
                   key={a.id}
                   style={{
-                    padding: '14px 16px',
-                    borderRadius: '8px',
-                    borderLeft: isUrgent ? '4px solid #dc2626' : a.isPinned ? '4px solid var(--brass, #c59b27)' : '4px solid var(--border)',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    borderLeft: isUrgent ? '3px solid #dc2626' : a.isPinned ? '3px solid var(--brass, #c59b27)' : '3px solid var(--border)',
                     background: isUrgent ? '#fef2f2' : 'var(--surface-sunken)',
+                    transition: 'all 0.3s ease',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px', marginBottom: '6px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                      <span className="badge green" style={{ fontSize: '11px', textTransform: 'capitalize' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '2px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                      <span className="badge green" style={{ fontSize: '10px', padding: '0px 5px', textTransform: 'capitalize', lineHeight: '16px' }}>
                         {a.category}
                       </span>
                       {isUrgent && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#dc2626', color: '#fff', padding: '2px 7px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
-                          <Flame size={11} /> Urgent
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', background: '#dc2626', color: '#fff', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 700, lineHeight: '16px' }}>
+                          <Flame size={9} /> Urgent
                         </span>
                       )}
                       {a.isPinned && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fef3c7', color: '#92400e', padding: '2px 6px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
-                          <Pin size={10} /> Pinned
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', background: '#fef3c7', color: '#92400e', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 700, lineHeight: '16px' }}>
+                          <Pin size={8} /> Pinned
                         </span>
                       )}
+                      <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: 'var(--ink)', display: 'inline' }}>
+                        {a.title}
+                      </h4>
                     </div>
-                    <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
+                    <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)', flexShrink: 0 }}>
                       {new Date(a.publishedAt || a.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                     </span>
                   </div>
-                  <h4 style={{ margin: '0 0 6px', fontSize: '14.5px', fontWeight: 700, color: 'var(--ink)' }}>
-                    {a.title}
-                  </h4>
-                  <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--ink)' }}>
+
+                  <p style={{ margin: '2px 0 4px', fontSize: '12px', lineHeight: 1.35, color: 'var(--ink)' }}>
                     {a.body}
                   </p>
-                  <div style={{ marginTop: '8px', fontSize: '11.5px', color: 'var(--ink-soft)' }}>
-                    Notice from <strong>{a.authorName}</strong>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                    <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>
+                      Notice from <strong>{a.authorName}</strong>{a.requireAcknowledgment ? ' • Compliance acknowledgment required' : ''}
+                    </div>
+
+                    {hasAcked ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', color: '#16a34a', fontWeight: 600, fontSize: '10.5px', background: '#f0fdf4', padding: '1px 7px', borderRadius: '4px', border: '1px solid #bbf7d0' }}>
+                        <CheckCircle2 size={11} /> {a.requireAcknowledgment ? 'Acknowledged' : 'Read'}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className={`btn ${a.requireAcknowledgment ? 'brass' : 'secondary'} small ${ackingNoticeId === a.id ? 'btn-processing' : ''}`}
+                        onClick={() => handleStaffAcknowledge(a.id, a.requireAcknowledgment)}
+                        disabled={ackingNoticeId === a.id}
+                        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, padding: '2px 9px', borderRadius: '9999px', fontSize: '10.5px', height: '23px' }}
+                      >
+                        <ButtonProcessing
+                          loading={ackingNoticeId === a.id}
+                          loadingText="Recording..."
+                          defaultText={a.requireAcknowledgment ? 'Read & Acknowledge' : 'Mark as Read'}
+                          spinnerSize="xs"
+                        />
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
         </div>
+      </div>
       )}
 
-      <div className="grid grid-3" style={{ marginBottom: '20px' }}>
-        <div className="stat">
-          <div className="num">
-            {activeTickets.length}
-          </div>
-          <div className="lbl">Active tickets</div>
-        </div>
-        <div className="stat">
-          <div className="num">{dynamicCompleted}</div>
-          <div className="lbl">Completed all-time</div>
-        </div>
-        <div className="stat">
-          <div className="num">★ {currentStaff?.rating ? Number(currentStaff.rating).toFixed(1) : '5.0'}</div>
-          <div className="lbl">Rating</div>
-        </div>
-      </div>
 
-      <div className="tabs">
-        <div
-          className={`tab ${subTab === 'queue' ? 'active' : ''}`}
-          onClick={() => setSubTab('queue')}
-        >
-          Ticket queue ({myTickets.length})
-        </div>
-        <div
-          className={`tab ${subTab === 'schedule' ? 'active' : ''}`}
-          onClick={() => setSubTab('schedule')}
-        >
-          Work Schedule
-        </div>
-      </div>
-
-      {subTab === 'queue' ? (
-        <div className="panel">
-          <div className="panel-body">
-            {myTickets.length === 0 ? (
+      <div className="panel">
+        <div className="panel-body">
+          {myTickets.length === 0 ? (
               <div style={{ color: 'var(--ink-soft)', padding: '24px 16px', textAlign: 'center' }}>
                 <p style={{ margin: 0, fontSize: '14px' }}>No tickets currently assigned to you.</p>
               </div>
@@ -389,7 +463,7 @@ export const StaffDashboardQueuePage: React.FC = () => {
                         </span>
                       </div>
 
-                      <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--ink)', margin: '4px 0 6px' }}>
+                      <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--ink)', margin: '4px 0 6px', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                         {t.issue}
                       </div>
 
@@ -450,117 +524,6 @@ export const StaffDashboardQueuePage: React.FC = () => {
             )}
           </div>
         </div>
-      ) : (
-        <div className="panel">
-          <div
-            className="panel-head"
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              gap: '12px',
-            }}
-          >
-            <div>
-              <h3 style={{ margin: 0, fontSize: '16px' }}>Work Schedule & Maintenance Dispatch</h3>
-              <div className="hint" style={{ marginTop: '2px' }}>Your upcoming shifts and dispatched unit appointments</div>
-            </div>
-            <button
-              type="button"
-              className="btn brass small btn-mobile-full"
-              onClick={() => setIsAddScheduleOpen(true)}
-            >
-              + Add Schedule Entry
-            </button>
-          </div>
-          <div className="panel-body">
-            {(() => {
-              const unifiedSchedule: StaffScheduleItem[] = [
-                ...(state.staffSchedules || []).filter((s) => !s.staffId || s.staffId === staffId),
-                ...myTickets
-                  .filter((t) => t.status === 'in_progress')
-                  .map((t) => ({
-                    day: 'Ongoing',
-                    job: `${t.priority.toUpperCase()}: ${t.issue}`,
-                    unit: `Unit ${t.unit}`,
-                    time: 'Active Dispatch',
-                  })),
-              ];
-
-              if (unifiedSchedule.length === 0) {
-                return (
-                  <div style={{ textAlign: 'center', padding: '36px 16px', color: 'var(--ink-soft)' }}>
-                    <p style={{ margin: '0 0 12px 0', fontSize: '14px' }}>No scheduled tasks or appointments for this week.</p>
-                    <button
-                      type="button"
-                      className="btn secondary small btn-mobile-full"
-                      onClick={() => setIsAddScheduleOpen(true)}
-                    >
-                      + Add your first schedule block
-                    </button>
-                  </div>
-                );
-              }
-
-              return (
-                <>
-                  {/* Desktop / Tablet Schedule Table (>640px) */}
-                  <div className="staff-desktop-table">
-                    <div className="table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Day / Window</th>
-                            <th>Job Description</th>
-                            <th>Unit / Premises</th>
-                            <th>Time Slot</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {unifiedSchedule.map((s, idx) => (
-                            <tr key={idx}>
-                              <td><b>{s.day}</b></td>
-                              <td>{s.job}</td>
-                              <td>{s.unit}</td>
-                              <td style={{ color: 'var(--ink-soft)' }}>{s.time}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* Mobile Schedule Cards (<=640px) */}
-                  <div className="staff-mobile-cards">
-                    {unifiedSchedule.map((s, idx) => (
-                      <div key={idx} className="staff-card">
-                        <div className="staff-card-header">
-                          <span className="badge brass" style={{ fontWeight: 700 }}>
-                            <Calendar size={12} style={{ display: 'inline-block', verticalAlign: '-1px', marginRight: '4px' }} />
-                            {s.day}
-                          </span>
-                          <span style={{ fontSize: '12px', color: 'var(--ink-soft)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                            <Clock size={12} />
-                            {s.time}
-                          </span>
-                        </div>
-                        <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--ink)', marginTop: '4px' }}>
-                          {s.job}
-                        </div>
-                        <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <MapPin size={13} />
-                          {s.unit}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        </div>
-      )}
 
       {/* Update Ticket Modal */}
       {selectedTicket && (
@@ -619,103 +582,6 @@ export const StaffDashboardQueuePage: React.FC = () => {
                   loading={isSavingStatus}
                   loadingText="Saving update..."
                   defaultText="Save update"
-                />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Schedule Modal */}
-      {isAddScheduleOpen && (
-        <div className="modal-backdrop" onClick={() => setIsAddScheduleOpen(false)}>
-          <div className="modal-card" style={{ maxWidth: '440px', width: '92vw' }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <h3 style={{ fontSize: '16px' }}>Add Work Schedule Entry</h3>
-              <button type="button" className="btn secondary small" onClick={() => setIsAddScheduleOpen(false)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <div className="field">
-                <label>Day / Date</label>
-                <select value={schedDay} onChange={(e) => setSchedDay(e.target.value)}>
-                  <option value="Monday">Monday</option>
-                  <option value="Tuesday">Tuesday</option>
-                  <option value="Wednesday">Wednesday</option>
-                  <option value="Thursday">Thursday</option>
-                  <option value="Friday">Friday</option>
-                  <option value="Saturday">Saturday</option>
-                  <option value="Sunday">Sunday</option>
-                  <option value="Today">Today</option>
-                  <option value="Tomorrow">Tomorrow</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>Job Description</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Electrical wiring inspection / AC repair"
-                  value={schedJob}
-                  onChange={(e) => setSchedJob(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label>Unit / Premises</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Unit 204, Tower B"
-                  value={schedUnit}
-                  onChange={(e) => setSchedUnit(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label>Time Slot</label>
-                <input
-                  type="text"
-                  placeholder="e.g. 10:00 AM - 12:00 PM"
-                  value={schedTime}
-                  onChange={(e) => setSchedTime(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="modal-foot" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', padding: '14px 20px', borderTop: '1px solid var(--line)', flexWrap: 'wrap' }}>
-              <button type="button" className="btn secondary" onClick={() => setIsAddScheduleOpen(false)}>Cancel</button>
-              <button
-                type="button"
-                className="btn brass"
-                disabled={isSavingSchedule}
-                onClick={async () => {
-                  if (!schedJob.trim()) {
-                    showToast('Please enter a job description.');
-                    return;
-                  }
-                  setIsSavingSchedule(true);
-                  try {
-                    const newEntry: StaffScheduleItem = {
-                      day: schedDay,
-                      job: schedJob.trim(),
-                      unit: schedUnit.trim() || 'General Premises',
-                      time: schedTime.trim() || 'Flexible Window',
-                    };
-                    updateState((prev) => ({
-                      ...prev,
-                      staffSchedules: [...(prev.staffSchedules || []), newEntry],
-                    }));
-                    if (isFirebaseConfigured) {
-                      await setDoc(doc(db, 'staffSchedules', `SCHED-${Date.now()}`), { ...newEntry, staffId }, { merge: true }).catch(console.warn);
-                    }
-                    showToast('✓ Schedule entry added.');
-                    setIsAddScheduleOpen(false);
-                    setSchedJob('');
-                    setSchedUnit('');
-                  } finally {
-                    setIsSavingSchedule(false);
-                  }
-                }}
-              >
-                <ButtonProcessing
-                  loading={isSavingSchedule}
-                  loadingText="Saving to Schedule..."
-                  defaultText="Save to Schedule"
                 />
               </button>
             </div>

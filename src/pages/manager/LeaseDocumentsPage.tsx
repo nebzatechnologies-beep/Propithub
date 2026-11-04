@@ -1,17 +1,45 @@
 import React, { useState, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
-import { Agreement } from '../../types';
+import { Agreement, PropertyEnquiry } from '../../types';
 import { ButtonProcessing } from '../../components/common/Spinner';
+import { OnboardResidentModal } from '../../components/owner/OnboardResidentModal';
+import {
+  FileText,
+  UserPlus,
+  CheckCircle2,
+  Phone,
+  Clock,
+  Calendar,
+  Eye,
+  Download,
+  AlertTriangle,
+  X,
+} from 'lucide-react';
 
 export const LeaseDocumentsPage: React.FC = () => {
-  const { state, updateState, saveAgreement, showToast } = useAppData();
+  const { state, updateState, saveAgreement, approveSignedAgreement, updateEnquiryStatus, showToast } = useAppData();
   const { user } = useAuth();
-  const ownerId = user?.ownerId || '';
+  const [searchParams] = useSearchParams();
+
+  const initialTab = searchParams.get('tab') === 'enquiries' ? 'enquiries' : 'leases';
+  const [subTab, setSubTab] = useState<'leases' | 'enquiries'>(initialTab);
 
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isOnboardOpen, setIsOnboardOpen] = useState(false);
+  const [onboardEnquiryData, setOnboardEnquiryData] = useState<{
+    unitId: string;
+    propertyId: string;
+    name: string;
+    phone: string;
+    email?: string;
+  } | null>(null);
+
   const [viewingAgreement, setViewingAgreement] = useState<Agreement | null>(null);
+  const [inspectingSignedAgreement, setInspectingSignedAgreement] = useState<Agreement | null>(null);
+  const [isApproving, setIsApproving] = useState(false);
 
   const [newAgUnit, setNewAgUnit] = useState('');
   const [newAgStart, setNewAgStart] = useState('');
@@ -20,21 +48,24 @@ export const LeaseDocumentsPage: React.FC = () => {
   const [newAgFileName, setNewAgFileName] = useState<string | null>(null);
   const [newAgFileData, setNewAgFileData] = useState<string | null>(null);
 
-  const managerRecord = (state.managers || []).find(
-    (m) =>
+  const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
+    (m: any) =>
       (user?.id && String(m.id) === user.id) ||
       (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
   );
   const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
+  const ownerId = user?.ownerId || (managerRecord as any)?.ownerId || '';
 
   const myProperties = useMemo(() => {
-    if (!ownerId) return [];
-    const props = state.properties.filter((p) => p.ownerId === ownerId);
+    let props = state.properties;
+    if (ownerId) {
+      props = props.filter((p) => p.ownerId === ownerId);
+    }
     if (assignedPropertyId) {
       return props.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id);
     }
     const explicitlyAssigned = props.filter((p) => p.assignedManagerId === user?.id);
-    return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
+    return explicitlyAssigned;
   }, [state.properties, ownerId, assignedPropertyId, user?.id]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
@@ -93,6 +124,20 @@ export const LeaseDocumentsPage: React.FC = () => {
     return agList;
   }, [state.agreements, state.tenancyRequests, ownerId, myPropertyIds, myUnits]);
 
+  // Enquiries received for this manager's portfolio
+  const myEnquiries = useMemo(() => {
+    return (state.enquiries || []).filter((e) => {
+      if (e.managerId && e.managerId === user?.id) return true;
+      if (e.ownerId && ownerId && e.ownerId === ownerId) return true;
+      if (myPropertyIds.has(e.propertyId)) return true;
+      return false;
+    });
+  }, [state.enquiries, user?.id, ownerId, myPropertyIds]);
+
+  const newEnquiriesCount = useMemo(() => {
+    return myEnquiries.filter((e) => e.status === 'new').length;
+  }, [myEnquiries]);
+
   const getAgreementStatusBadge = (a: Agreement) => {
     const matchUnit = myUnits.find((u) => u.id === a.unit || u.unitNumber === a.unit);
     const isDraft = a.status === 'draft' || a.id.startsWith('DFT-');
@@ -108,23 +153,84 @@ export const LeaseDocumentsPage: React.FC = () => {
           style={{ fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
           title={`Unit ${a.unit} is currently assigned or reserved for ${matchUnit?.tenant || 'another resident'}`}
         >
-          Stale Draft
+          <Clock size={11} /> Stale Draft
+        </span>
+      );
+    }
+    if (a.status === 'pending_approval' || a.status === 'awaiting_tenant_upload' || a.status === ('awaiting_review' as any)) {
+      return (
+        <span
+          className="badge amber"
+          style={{
+            fontSize: '11px',
+            fontWeight: 600,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            background: '#FEF3C7',
+            color: '#92400E',
+            border: '1px solid #FCD34D',
+            padding: '3px 8px',
+            borderRadius: '6px',
+          }}
+        >
+          <Clock size={11} /> Pending Approval
         </span>
       );
     }
     if (a.status === 'signed' || a.status === 'active') {
-      return <span className="badge green" style={{ fontSize: '11px' }}>Signed</span>;
-    }
-    if (a.status === 'awaiting_tenant_upload') {
-      return <span className="badge amber" style={{ fontSize: '11px' }}>Awaiting Signature</span>;
+      return (
+        <span
+          className="badge green"
+          style={{
+            fontSize: '11px',
+            fontWeight: 600,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            background: '#ECFDF5',
+            color: '#065F46',
+            border: '1px solid #A7F3D0',
+            padding: '3px 8px',
+            borderRadius: '6px',
+          }}
+        >
+          <CheckCircle2 size={11} /> Signed
+        </span>
+      );
     }
     if (a.status === 'pending_deposit') {
-      return <span className="badge amber" style={{ fontSize: '11px' }}>Pending Deposit</span>;
+      return (
+        <span
+          className="badge blue"
+          style={{
+            fontSize: '11px',
+            fontWeight: 600,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            background: '#EFF6FF',
+            color: '#1E40AF',
+            border: '1px solid #BFDBFE',
+            padding: '3px 8px',
+            borderRadius: '6px',
+          }}
+        >
+          <Clock size={11} /> Pending Deposit
+        </span>
+      );
     }
     if (isDraft) {
-      return <span className="badge grey" style={{ fontSize: '11px' }}>Draft</span>;
+      return <span className="badge grey" style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '6px' }}>Draft</span>;
     }
-    return <span className="badge grey" style={{ fontSize: '11px' }}>{a.status}</span>;
+    const cleanStatus = a.status
+      ? a.status.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      : 'Active';
+    return (
+      <span className="badge grey" style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '6px' }}>
+        {cleanStatus}
+      </span>
+    );
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -147,13 +253,14 @@ export const LeaseDocumentsPage: React.FC = () => {
     }
     setIsUploading(true);
     try {
-      const agId = `AG-${Date.now().toString(36).toUpperCase()}`;
+      const agId = `AGR-${Date.now().toString().slice(-6)}`;
       const newAg: Agreement = {
         id: agId,
-        ownerId: ownerId || unitObj.ownerId || '',
+        ownerId: ownerId,
         propertyId: unitObj.propertyId || '',
         unit: unitObj.unitNumber || unitObj.id,
-        tenant: unitObj.tenant || 'Resident',
+        unitId: unitObj.id,
+        tenant: unitObj.tenant || 'Prospective Resident',
         tenantId: unitObj.currentTenantId || '',
         type: 'uploaded',
         contentHtml: null,
@@ -169,7 +276,6 @@ export const LeaseDocumentsPage: React.FC = () => {
       };
 
       await saveAgreement(newAg);
-
       setIsUploadOpen(false);
       showToast(`Agreement ${agId} uploaded for Unit ${newAg.unit}.`);
     } finally {
@@ -177,127 +283,450 @@ export const LeaseDocumentsPage: React.FC = () => {
     }
   };
 
+  const handleApproveSignedLease = async () => {
+    if (!inspectingSignedAgreement) return;
+    setIsApproving(true);
+    try {
+      await approveSignedAgreement(
+        inspectingSignedAgreement.id,
+        user?.displayName || managerRecord?.name || 'Property Manager'
+      );
+      setInspectingSignedAgreement(null);
+      showToast(`Signed lease for Unit ${inspectingSignedAgreement.unit} approved successfully!`);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to approve lease agreement.');
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  const handleStartOnboardingFromEnquiry = (enq: PropertyEnquiry) => {
+    updateEnquiryStatus(enq.id, 'reviewed');
+    setOnboardEnquiryData({
+      unitId: enq.unitId,
+      propertyId: enq.propertyId,
+      name: enq.prospectName,
+      phone: enq.prospectPhone,
+      email: enq.prospectEmail,
+    });
+    setIsOnboardOpen(true);
+  };
+
   return (
     <div>
-      <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-        <div className="hint">{myAgreements.length} documents on file</div>
+      {/* Clean Subtabs Bar */}
+      <div
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '4px',
+          background: 'var(--surface-sunken, #f1f5f9)',
+          borderRadius: '12px',
+          border: '1px solid var(--line, #e2e8f0)',
+          marginBottom: '20px',
+        }}
+      >
         <button
           type="button"
-          className="btn brass btn-mobile-full"
-          onClick={() => {
-            setNewAgUnit(myUnits[0]?.id || 'A-101');
-            setIsUploadOpen(true);
+          onClick={() => setSubTab('leases')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '8px 18px',
+            borderRadius: '8px',
+            fontSize: '13.5px',
+            fontWeight: subTab === 'leases' ? 700 : 500,
+            color: subTab === 'leases' ? '#065F46' : 'var(--slate, #64748b)',
+            background: subTab === 'leases' ? '#ffffff' : 'transparent',
+            boxShadow: subTab === 'leases' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+            border: 'none',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
           }}
         >
-          + Upload agreement
+          Leases ({myAgreements.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setSubTab('enquiries')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '8px 18px',
+            borderRadius: '8px',
+            fontSize: '13.5px',
+            fontWeight: subTab === 'enquiries' ? 700 : 500,
+            color: subTab === 'enquiries' ? '#065F46' : 'var(--slate, #64748b)',
+            background: subTab === 'enquiries' ? '#ffffff' : 'transparent',
+            boxShadow: subTab === 'enquiries' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+            border: 'none',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+        >
+          <span>Enquiries ({myEnquiries.length})</span>
+          {newEnquiriesCount > 0 && (
+            <span
+              style={{
+                background: '#ea580c',
+                color: '#fff',
+                fontSize: '10.5px',
+                padding: '1px 6px',
+                borderRadius: '8px',
+                fontWeight: 700,
+              }}
+            >
+              {newEnquiriesCount} New
+            </span>
+          )}
         </button>
       </div>
 
-      <div className="panel">
-        <div className="panel-body">
-          {myAgreements.length === 0 ? (
-            <div style={{ color: 'var(--ink-soft)', padding: '24px 16px', textAlign: 'center' }}>
-              No lease documents on record. Upload an agreement to get started.
+      {subTab === 'leases' ? (
+        <div>
+          {/* Action Header */}
+          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+            <div className="hint" style={{ fontSize: '13.5px', color: 'var(--slate, #64748b)' }}>
+              {myAgreements.length} {myAgreements.length === 1 ? 'document' : 'documents'} on file across managed units
             </div>
-          ) : (
-            <>
-              {/* Desktop / Tablet Table View (>640px) */}
-              <div className="desktop-table-view">
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Document</th>
-                        <th>Tenant</th>
-                        <th>Unit</th>
-                        <th>Term</th>
-                        <th>Status</th>
-                        <th>File</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {myAgreements.map((a) => (
-                        <tr key={a.id}>
-                          <td><b>{a.id}</b></td>
-                          <td>{a.tenant}</td>
-                          <td>{a.unit}</td>
-                          <td>{a.start} → {a.end}</td>
-                          <td>
-                            {getAgreementStatusBadge(a)}
-                          </td>
-                          <td>
-                            {a.fileName ? (
-                              <span className="badge green">{a.fileName}</span>
-                            ) : (
-                              <span className="badge grey">No file</span>
-                            )}
-                          </td>
-                          <td>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn brass btn-mobile-full"
+                onClick={() => {
+                  setOnboardEnquiryData(null);
+                  setIsOnboardOpen(true);
+                }}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontWeight: 700,
+                  background: '#059669',
+                  borderColor: '#059669',
+                  color: '#ffffff',
+                  padding: '9px 18px',
+                  borderRadius: '8px',
+                }}
+              >
+                <UserPlus size={15} /> Onboard Resident
+              </button>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-body">
+              {myAgreements.length === 0 ? (
+                <div style={{ color: 'var(--ink-soft)', padding: '36px 16px', textAlign: 'center' }}>
+                  <FileText size={36} style={{ color: 'var(--ink-soft)', margin: '0 auto 8px' }} />
+                  <p style={{ margin: 0, fontWeight: 600 }}>No lease documents on record.</p>
+                  <span style={{ fontSize: '12.5px' }}>Onboard a resident to issue and manage leases.</span>
+                </div>
+              ) : (
+                <>
+                  {/* Desktop / Tablet Table View (>640px) */}
+                  <div className="desktop-table-view">
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Document</th>
+                            <th>Tenant</th>
+                            <th>Unit</th>
+                            <th>Term</th>
+                            <th>Status</th>
+                            <th>File</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {myAgreements.map((a) => (
+                            <tr key={a.id}>
+                              <td><b>{a.id}</b></td>
+                              <td>{a.tenant}</td>
+                              <td>Unit {a.unit}</td>
+                              <td>{a.start} → {a.end}</td>
+                              <td>
+                                {getAgreementStatusBadge(a)}
+                              </td>
+                              <td>
+                                {a.fileName ? (
+                                  <span
+                                    className="badge green"
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      fontSize: '11px',
+                                      maxWidth: '180px',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                    title={a.fileName}
+                                  >
+                                    <FileText size={11} style={{ flexShrink: 0 }} />
+                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {a.fileName}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <span className="badge grey" style={{ fontSize: '11px' }}>No file</span>
+                                )}
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                  <button
+                                    type="button"
+                                    className="btn secondary small"
+                                    onClick={() => setViewingAgreement(a)}
+                                    style={{ padding: '5px 12px', borderRadius: '6px' }}
+                                  >
+                                    View
+                                  </button>
+                                  {(a.status === 'pending_approval' || a.status === 'awaiting_tenant_upload' || a.status === 'pending_deposit' || a.tenantSignature || (a as any).signedDocumentUrl) && (
+                                    <button
+                                      type="button"
+                                      className="btn brass small"
+                                      onClick={() => setInspectingSignedAgreement(a)}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        background: '#059669',
+                                        borderColor: '#059669',
+                                        color: '#ffffff',
+                                        fontWeight: 600,
+                                        padding: '5px 12px',
+                                        borderRadius: '6px',
+                                      }}
+                                    >
+                                      <CheckCircle2 size={12} /> Review & Approve
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Mobile Agreement Cards (<=640px) */}
+                  <div className="mobile-card-view">
+                    {myAgreements.map((a) => (
+                      <div key={a.id} className="staff-card">
+                        <div className="staff-card-header">
+                          <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{a.id}</b>
+                          {getAgreementStatusBadge(a)}
+                        </div>
+
+                        <div style={{ fontWeight: 600, fontSize: '14.5px', color: 'var(--ink)', margin: '4px 0' }}>
+                          {a.tenant}
+                        </div>
+
+                        <div className="staff-card-meta">
+                          <div className="staff-card-meta-item">
+                            <span>Unit: <b>{a.unit}</b></span>
+                          </div>
+                          <div className="staff-card-meta-item">
+                            <span>Term: {a.start} → {a.end}</span>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: '8px', fontSize: '12px' }}>
+                          {a.fileName ? (
+                            <span className="badge green" style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              📄 {a.fileName}
+                            </span>
+                          ) : (
+                            <span className="badge grey">No PDF attached</span>
+                          )}
+                        </div>
+
+                        <div className="staff-card-footer" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            style={{ fontWeight: 600, flex: 1 }}
+                            onClick={() => setViewingAgreement(a)}
+                          >
+                            View
+                          </button>
+                          {(a.status === 'pending_approval' || a.status === 'awaiting_tenant_upload' || a.status === 'pending_deposit' || a.tenantSignature || (a as any).signedDocumentUrl) && (
                             <button
                               type="button"
-                              className="btn secondary small"
-                              onClick={() => setViewingAgreement(a)}
+                              className="btn brass small"
+                              style={{ fontWeight: 700, flex: 1, background: '#059669', borderColor: '#059669', color: '#ffffff' }}
+                              onClick={() => setInspectingSignedAgreement(a)}
                             >
-                              View
+                              Review & Approve
                             </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Enquiries Tab */
+        <div>
+          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px' }}>
+            <div className="hint">
+              Prospective tenant enquiries for your managed properties. Contact prospects directly via phone to schedule walkthroughs.
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-body">
+              {myEnquiries.length === 0 ? (
+                <div style={{ color: 'var(--ink-soft)', padding: '36px 16px', textAlign: 'center' }}>
+                  <Phone size={36} style={{ color: 'var(--ink-soft)', margin: '0 auto 8px' }} />
+                  <p style={{ margin: 0, fontWeight: 600 }}>No enquiries received yet.</p>
+                  <span style={{ fontSize: '12.5px' }}>When renters submit enquiries from the public listing, they will appear here.</span>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {myEnquiries.map((enq) => (
+                    <div
+                      key={enq.id}
+                      style={{
+                        padding: '18px 20px',
+                        background: enq.status === 'new' ? 'var(--surface)' : 'var(--surface-sunken)',
+                        border: enq.status === 'new' ? '2px solid #10B981' : '1px solid var(--line)',
+                        borderRadius: '14px',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '14px',
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                          <span style={{ fontSize: '16px', fontWeight: 800, color: 'var(--ink)' }}>
+                            {enq.prospectName}
+                          </span>
+                          {enq.status === 'new' && (
+                            <span className="badge amber" style={{ fontSize: '11px', fontWeight: 700 }}>
+                              New Enquiry
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '13px', color: 'var(--ink-soft)', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                          <span>Unit: <b>{enq.unitNumber}</b> ({enq.propertyName})</span>
+                          <span>Desired Move-In: <b>{enq.moveInDate}</b></span>
+                          <span>Received: <b>{new Date(enq.createdAt).toLocaleDateString()}</b></span>
+                        </div>
+                        {enq.notes && (
+                          <div style={{ marginTop: '6px', fontSize: '12.5px', color: 'var(--ink)', fontStyle: 'italic' }}>
+                            "{enq.notes}"
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Actions Cluster */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                        <a
+                          href={`tel:${enq.prospectPhone}`}
+                          className="btn secondary small"
+                          style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                        >
+                          <Phone size={13} color="#10B981" /> Call {enq.prospectPhone}
+                        </a>
+                        <button
+                          type="button"
+                          className="btn brass small"
+                          onClick={() => handleStartOnboardingFromEnquiry(enq)}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontWeight: 700 }}
+                        >
+                          <UserPlus size={13} /> Onboard as Tenant
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unified Onboard Resident Modal for Property Manager */}
+      <OnboardResidentModal
+        isOpen={isOnboardOpen}
+        onClose={() => {
+          setIsOnboardOpen(false);
+          setOnboardEnquiryData(null);
+        }}
+        entryContext="leasing"
+        preselectedUnitId={onboardEnquiryData?.unitId}
+        preselectedPropertyId={onboardEnquiryData?.propertyId}
+        prefilledTenantName={onboardEnquiryData?.name}
+        prefilledTenantPhone={onboardEnquiryData?.phone}
+        prefilledTenantEmail={onboardEnquiryData?.email}
+        onSuccess={() => {
+          showToast('Resident invitation dispatched successfully!');
+        }}
+      />
+
+      {/* Review & Approve Signed Lease Modal */}
+      {inspectingSignedAgreement && (
+        <div className="modal-backdrop" onClick={() => setInspectingSignedAgreement(null)}>
+          <div className="modal-card" style={{ maxWidth: '580px', width: '92vw' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3 style={{ fontSize: '16.5px', fontWeight: 800 }}>Review & Approve Signed Lease</h3>
+              <button type="button" className="btn secondary small" onClick={() => setInspectingSignedAgreement(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ background: 'var(--surface-sunken)', padding: '14px 16px', borderRadius: '10px', marginBottom: '16px' }}>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>
+                  Unit {inspectingSignedAgreement.unit} — {inspectingSignedAgreement.tenant}
+                </div>
+                <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', marginTop: '4px' }}>
+                  Term: {inspectingSignedAgreement.start} → {inspectingSignedAgreement.end} • Rent: ${inspectingSignedAgreement.rent}/mo
                 </div>
               </div>
 
-              {/* Mobile Agreement Cards (<=640px) */}
-              <div className="mobile-card-view">
-                {myAgreements.map((a) => (
-                  <div key={a.id} className="staff-card">
-                    <div className="staff-card-header">
-                      <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{a.id}</b>
-                      {getAgreementStatusBadge(a)}
-                    </div>
+              {inspectingSignedAgreement.fileName && (
+                <div style={{ padding: '12px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', marginBottom: '16px', fontSize: '13px', color: '#065F46' }}>
+                  ✓ Signed Agreement Document: <b>{inspectingSignedAgreement.fileName}</b>
+                </div>
+              )}
 
-                    <div style={{ fontWeight: 600, fontSize: '14.5px', color: 'var(--ink)', margin: '4px 0' }}>
-                      {a.tenant}
-                    </div>
-
-                    <div className="staff-card-meta">
-                      <div className="staff-card-meta-item">
-                        <span>Unit: <b>{a.unit}</b></span>
-                      </div>
-                      <div className="staff-card-meta-item">
-                        <span>Term: {a.start} → {a.end}</span>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: '8px', fontSize: '12px' }}>
-                      {a.fileName ? (
-                        <span className="badge green" style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          📄 {a.fileName}
-                        </span>
-                      ) : (
-                        <span className="badge grey">No PDF attached</span>
-                      )}
-                    </div>
-
-                    <div className="staff-card-footer">
-                      <button
-                        type="button"
-                        className="btn secondary small btn-mobile-full"
-                        style={{ fontWeight: 600 }}
-                        onClick={() => setViewingAgreement(a)}
-                      >
-                        View Agreement Details
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+              <p style={{ fontSize: '13px', color: 'var(--ink-soft)', lineHeight: 1.45 }}>
+                By approving this signed agreement as Property Manager, you confirm the resident credentials and unlock security deposit settlement.
+              </p>
+            </div>
+            <div className="modal-foot" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', padding: '14px 20px', borderTop: '1px solid var(--line)' }}>
+              <button type="button" className="btn secondary" onClick={() => setInspectingSignedAgreement(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn brass"
+                onClick={handleApproveSignedLease}
+                disabled={isApproving}
+                style={{ fontWeight: 700 }}
+              >
+                <ButtonProcessing
+                  loading={isApproving}
+                  loadingText="Approving Lease..."
+                  defaultText="Approve & Countersign Lease"
+                />
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Upload Modal */}
       {isUploadOpen && (

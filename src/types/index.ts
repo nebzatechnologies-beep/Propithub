@@ -188,6 +188,9 @@ export interface Property {
   currency?: string;
   unitList?: Unit[];
   propertyType?: string;
+  propertyStructure?: 'single_unit' | 'multi_unit';
+  propertyCategory?: 'residential' | 'commercial' | 'mixed';
+  isSingleUnit?: boolean;
   floorsCount?: number;
   yearBuilt?: number;
   assignedManagerId?: string;
@@ -224,6 +227,7 @@ export interface Unit {
   waterMeter?: string;
   images?: string[];
   image?: string;
+  isWholeProperty?: boolean;
 }
 
 export interface TenantRentalHistory {
@@ -294,7 +298,13 @@ export interface TenancyRequest {
   requireTenantId?: boolean;
   requiredIdTypes?: string[];
   requiredIdList?: RequiredIdItem[];
+  offlineDepositCollected?: boolean;
+  offlineDepositRef?: string;
+  depositStatus?: 'paid' | 'unpaid';
   status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+  isBulkLease?: boolean;
+  bulkUnitIds?: string[];
+  bulkUnitNumbers?: string[];
   createdAt: string;
   respondedAt?: string;
 }
@@ -307,6 +317,9 @@ export interface Agreement {
   propertyName?: string;
   unit: string;
   unitId?: string;
+  isBulkLease?: boolean;
+  bulkUnitIds?: string[];
+  bulkUnitNumbers?: string[];
   tenant: string;
   tenantId: string;
   tenantEmail?: string;
@@ -650,6 +663,9 @@ export interface Ticket {
   agreementId?: string;
   unit: string;
   unitId?: string;
+  isBulkLease?: boolean;
+  bulkUnitIds?: string[];
+  bulkUnitNumbers?: string[];
   tenant: string;
   tenantId: string;
   tenantContact: {
@@ -699,6 +715,9 @@ export interface MoveOut {
   agreementId?: string;
   unit: string;
   unitId?: string;
+  isBulkLease?: boolean;
+  bulkUnitIds?: string[];
+  bulkUnitNumbers?: string[];
   tenant: string;
   tenantId?: string;
   tenantEmail?: string;
@@ -1234,6 +1253,8 @@ export type AnnouncementStatus = 'draft' | 'scheduled' | 'published' | 'archived
 export interface AnnouncementAcknowledgment {
   tenantId: string;
   tenantName: string;
+  tenantEmail?: string;
+  unit?: string;
   unitNumber?: string;
   propertyId?: string;
   propertyName?: string;
@@ -1249,6 +1270,8 @@ export interface Announcement {
   category: AnnouncementCategory;
   priority: AnnouncementPriority;
   status: AnnouncementStatus;
+  propertyId?: string;
+  propertyName?: string;
   targetScope: {
     allProperties: boolean;
     propertyIds: string[];
@@ -1259,11 +1282,31 @@ export interface Announcement {
   isPinned: boolean;
   requireAcknowledgment: boolean;
   acknowledgments?: AnnouncementAcknowledgment[];
+  acknowledgedBy?: string[];
   publishedAt: string;
   scheduledFor?: string;
   expiresAt?: string;
   viewsCount?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PropertyEnquiry {
+  id: string;
+  unitId: string;
+  unitNumber: string;
+  propertyId: string;
+  propertyName: string;
+  ownerId: string;
+  managerId?: string;
+  prospectName: string;
+  prospectPhone: string;
+  prospectEmail?: string;
+  moveInDate: string;
+  notes?: string;
+  status: 'new' | 'reviewed' | 'onboarded';
+  tenantId?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 

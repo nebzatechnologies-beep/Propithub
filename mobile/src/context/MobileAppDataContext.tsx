@@ -38,6 +38,7 @@ import {
   MobileLateFeeSettings,
   MobileDepositSettlement,
   MobileAgreementTemplate,
+  MobilePropertyEnquiry,
 } from '../types';
 import { calculateMobileInvoiceLateFee } from '../lib/lateFeeService';
 import { DEFAULT_CURRENCY_SYMBOL, formatCurrencyAmount } from '../lib/currencyService';
@@ -147,6 +148,7 @@ export interface MobileAppState {
   lateFeeSettings: MobileLateFeeSettings;
   depositSettlements: MobileDepositSettlement[];
   agreementTemplates: MobileAgreementTemplate[];
+  enquiries: MobilePropertyEnquiry[];
 }
 
 export const DEFAULT_MOBILE_LATE_FEE_SETTINGS: MobileLateFeeSettings = {
@@ -191,6 +193,7 @@ const INITIAL_STATE: MobileAppState = {
   lateFeeSettings: DEFAULT_MOBILE_LATE_FEE_SETTINGS,
   depositSettlements: [],
   agreementTemplates: [],
+  enquiries: [],
 };
 
 
@@ -231,6 +234,7 @@ interface MobileAppDataContextType {
   acknowledgeAnnouncement: (id: string, userId?: string) => void;
   sendTenancyRequest: (req: MobileTenancyRequest) => void;
   updateTenancyRequest: (id: string, status: 'accepted' | 'declined' | 'cancelled') => void;
+  submitEnquiry?: (enquiry: Omit<MobilePropertyEnquiry, 'id' | 'createdAt' | 'status'>) => Promise<void>;
   saveTicket: (ticket: MobileTicket) => void;
   updateTicket: (ticketId: string, updates: Partial<MobileTicket>) => void;
   sendStaffPaymentReminder: (ticketId: string) => void;
@@ -311,6 +315,19 @@ interface MobileAppDataContextType {
 
 
 const MobileAppDataContext = createContext<MobileAppDataContextType | undefined>(undefined);
+
+const cleanFirestoreObject = (obj: any): any => {
+  if (obj === null || obj === undefined) return null;
+  if (typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(cleanFirestoreObject);
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      cleaned[key] = cleanFirestoreObject(value);
+    }
+  }
+  return cleaned;
+};
 
 export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, role, isAuthenticated } = useMobileAuth();
@@ -439,8 +456,56 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const unsubAnnouncements = onSnapshot(collection(db, 'announcements'), (snap) => {
       const items: MobileAnnouncement[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileAnnouncement));
-      setState((prev) => ({ ...prev, announcements: items }));
+      setState((prev) => {
+        const prevAnnMap = new Map((prev.announcements || []).map((a) => [a.id, a]));
+        const merged = items.map((fbA) => {
+          const prevA = prevAnnMap.get(fbA.id);
+          const prevAckBy = prevA?.acknowledgedBy || [];
+          const combinedAckBy = Array.from(new Set([...(fbA.acknowledgedBy || []), ...prevAckBy]));
+          return { ...fbA, acknowledgedBy: combinedAckBy };
+        });
+        return { ...prev, announcements: merged };
+      });
     }, (err) => console.warn('Firestore announcements sync error:', err));
+
+    const unsubAcks = onSnapshot(collection(db, 'announcementAcknowledgments'), (snap) => {
+      const acksByAnnId = new Map<string, string[]>();
+      snap.forEach((d) => {
+        const data = d.data();
+        if (data && data.announcementId && (data.tenantId || data.tenantEmail)) {
+          const list = acksByAnnId.get(data.announcementId) || [];
+          if (data.tenantId) list.push(data.tenantId);
+          if (data.tenantEmail) list.push(data.tenantEmail.toLowerCase());
+          acksByAnnId.set(data.announcementId, list);
+        }
+      });
+      setState((prev) => {
+        if (!prev.announcements || prev.announcements.length === 0) return prev;
+        let changed = false;
+        const merged = prev.announcements.map((ann) => {
+          const extraIds = acksByAnnId.get(ann.id) || [];
+          if (extraIds.length === 0) return ann;
+          const currentAcks = new Set(ann.acknowledgedBy || []);
+          let annChanged = false;
+          extraIds.forEach((id) => {
+            if (!currentAcks.has(id)) {
+              currentAcks.add(id);
+              annChanged = true;
+            }
+          });
+          if (annChanged) {
+            changed = true;
+            return { ...ann, acknowledgedBy: Array.from(currentAcks) };
+          }
+          return ann;
+        });
+        return changed ? { ...prev, announcements: merged } : prev;
+      });
+    }, (err) => {
+      if (err.code !== 'permission-denied') {
+        console.warn('Firestore announcementAcknowledgments sync error:', err);
+      }
+    });
 
     const unsubTenancyRequests = onSnapshot(collection(db, 'tenancyRequests'), (snap) => {
       const items: MobileTenancyRequest[] = [];
@@ -450,6 +515,15 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         tenancyRequests: items
       }));
     }, (err) => console.warn('Firestore tenancyRequests sync error:', err));
+
+    const unsubEnquiries = onSnapshot(collection(db, 'enquiries'), (snap) => {
+      const items: MobilePropertyEnquiry[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePropertyEnquiry));
+      setState((prev) => ({
+        ...prev,
+        enquiries: items,
+      }));
+    }, (err) => console.warn('Firestore enquiries sync error:', err));
 
     const unsubRenewals = onSnapshot(collection(db, 'renewals'), (snap) => {
       const items: MobileRenewalItem[] = [];
@@ -638,7 +712,9 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubTickets();
       unsubStaff();
       unsubAnnouncements();
+      unsubAcks();
       unsubTenancyRequests();
+      unsubEnquiries();
       unsubRenewals();
       unsubMoveouts();
       unsubManagers();
@@ -791,6 +867,172 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       }));
     }
   }, [rawState.invoices.length, rawState.lateFeeSettings, rawState.ownerSettings]);
+
+  // -------------------------------------------------------------
+  // SELF-HEALING RECONCILIATION: MOVE-OUTS, AGREEMENTS & VACANCY
+  // Mirrors Web AppDataContext lines 1320-1720
+  // Concluded move-outs & terminated leases automatically free units
+  // to 'vacant', clear tenant assignments, and refresh property occupancy.
+  // -------------------------------------------------------------
+  useEffect(() => {
+    let hasChanges = false;
+    const cleanUnitStr = (u?: string) => (u || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+
+    // 1. Reconcile agreements against concluded move-outs and settlements
+    const reconciledAgreements = (rawState.agreements || []).map((a) => {
+      const aUnitClean = cleanUnitStr(a.unit);
+      const isConcludedMoveout =
+        (rawState.moveOuts || []).some((m) => {
+          const isDone = m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt;
+          if (!isDone) return false;
+          if (m.id === a.id || (m as any).agreementId === a.id || (m as any).leaseAgreementId === a.id) return true;
+          const matchesUnit = cleanUnitStr(m.unit) === aUnitClean;
+          const matchesTenant = m.tenantId === a.tenantId || m.tenantName === a.tenant;
+          const matchesProp = !m.propertyId || !a.propertyId || m.propertyId === a.propertyId;
+          if (matchesUnit && matchesTenant && matchesProp) {
+            const moTime = new Date((m as any).settledAt || (m as any).updatedAt || m.moveOutDate || (m as any).createdAt || 0).getTime();
+            const agTime = new Date(a.createdAt || a.start || 0).getTime();
+            if (moTime > 0 && agTime > moTime) {
+              return false; // Newer agreement created for re-entry
+            }
+            return true;
+          }
+          return false;
+        }) ||
+        (rawState.depositSettlements || []).some((s) => {
+          const isDone = s.status === 'refunded' || s.tenantConfirmedReceipt;
+          if (!isDone) return false;
+          if (s.agreementId === a.id) return true;
+          const matchesUnit = cleanUnitStr(s.unit) === aUnitClean;
+          const matchesTenant = s.tenantId === a.tenantId || s.tenantName === a.tenant;
+          const matchesProp = !s.propertyId || !a.propertyId || s.propertyId === a.propertyId;
+          if (matchesUnit && matchesTenant && matchesProp) {
+            const sTime = new Date(s.disbursedAt || (s as any).updatedAt || s.createdAt || 0).getTime();
+            const agTime = new Date(a.createdAt || a.start || 0).getTime();
+            if (sTime > 0 && agTime > sTime) {
+              return false;
+            }
+            return true;
+          }
+          return false;
+        });
+
+      if (isConcludedMoveout && a.status !== 'terminated' && a.status !== 'cancelled') {
+        hasChanges = true;
+        const upA: MobileAgreement = { ...a, status: 'terminated' as const };
+        if (isFirebaseConfigured) {
+          setDoc(doc(db, 'agreements', a.id), { status: 'terminated' }, { merge: true }).catch(console.warn);
+        }
+        return upA;
+      }
+      return a;
+    });
+
+    // 2. Self-healing: Units whose tenancy concluded or whose agreement is terminated become 'vacant'
+    let updatedUnits = rawState.units || [];
+    let unitsChanged = false;
+
+    (rawState.units || []).forEach((u) => {
+      const uClean = cleanUnitStr(u.unitNumber || u.id);
+      const hasPendingOrActiveAgForUnit = reconciledAgreements.some(
+        (ag) =>
+          cleanUnitStr(ag.unit) === uClean &&
+          ag.status !== 'terminated' &&
+          ag.status !== 'cancelled' &&
+          (!ag.propertyId || !u.propertyId || ag.propertyId === u.propertyId)
+      );
+
+      const hasPendingOrAcceptedRequest = (rawState.tenancyRequests || []).some(
+        (r) =>
+          (cleanUnitStr(r.unitNumber) === uClean || r.unitId === u.id) &&
+          (r.status === 'pending' || r.status === 'accepted') &&
+          (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)
+      );
+
+      const hasCompletedMoveout = (rawState.moveOuts || []).some(
+        (m) =>
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
+          cleanUnitStr(m.unit) === uClean &&
+          (!m.propertyId || !u.propertyId || m.propertyId === u.propertyId)
+      );
+
+      const hasTerminatedAgreementOnly =
+        reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && ag.status === 'terminated') &&
+        !reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && (ag.status === 'active' || (ag.status as string) === 'signed'));
+
+      const shouldBeVacant = !hasPendingOrActiveAgForUnit && !hasPendingOrAcceptedRequest && (hasCompletedMoveout || hasTerminatedAgreementOnly);
+
+      if (shouldBeVacant && (u.status !== 'vacant' || u.tenant !== null || u.currentTenantId !== null)) {
+        hasChanges = true;
+        unitsChanged = true;
+        updatedUnits = updatedUnits.map((unit) =>
+          unit.id === u.id
+            ? { ...unit, status: 'vacant' as const, tenant: null, currentTenantId: null }
+            : unit
+        );
+        if (isFirebaseConfigured) {
+          setDoc(doc(db, 'units', u.id), cleanFirestoreObject({
+            status: 'vacant',
+            tenant: null,
+            currentTenantId: null,
+          }), { merge: true }).catch(console.warn);
+        }
+      }
+    });
+
+    // 3. Recalculate property occupancies if units changed
+    let updatedProperties = rawState.properties || [];
+    if (unitsChanged) {
+      updatedProperties = (rawState.properties || []).map((p) => {
+        const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
+        if (p.occupied !== occ && isFirebaseConfigured) {
+          setDoc(doc(db, 'properties', p.id), { occupied: occ }, { merge: true }).catch(console.warn);
+        }
+        return { ...p, occupied: occ };
+      });
+    }
+
+    // 4. Self-healing: Reconcile tenants assigned to vacated units with no active leases
+    let updatedTenants = rawState.tenants || [];
+    (rawState.tenants || []).forEach((t) => {
+      if (t.unit && t.unit !== 'Unassigned' && t.unit !== 'Pending') {
+        const tUnitClean = cleanUnitStr(t.unit);
+        const hasActiveAg = reconciledAgreements.some(
+          (ag) => cleanUnitStr(ag.unit) === tUnitClean && (ag.status === 'active' || (ag.status as string) === 'signed') && (ag.tenantId === t.id || ag.tenant === t.name)
+        );
+        const hasPendingReq = (rawState.tenancyRequests || []).some(
+          (r) => cleanUnitStr(r.unitNumber) === tUnitClean && (r.status === 'pending' || r.status === 'accepted') && (r.tenantId === t.id || (r.tenantEmail && r.tenantEmail.toLowerCase() === t.email?.toLowerCase()))
+        );
+        if (!hasActiveAg && !hasPendingReq) {
+          hasChanges = true;
+          updatedTenants = updatedTenants.map((ten) =>
+            ten.id === t.id
+              ? { ...ten, unit: 'Unassigned', propertyName: 'Unassigned' }
+              : ten
+          );
+          if (isFirebaseConfigured) {
+            setDoc(doc(db, 'tenants', t.id), { unit: 'Unassigned', propertyName: 'Unassigned' }, { merge: true }).catch(console.warn);
+          }
+        }
+      }
+    });
+
+    if (hasChanges) {
+      setRawState((prev) => ({
+        ...prev,
+        agreements: reconciledAgreements,
+        units: updatedUnits,
+        properties: updatedProperties,
+        tenants: updatedTenants,
+      }));
+    }
+  }, [
+    rawState.moveOuts?.length,
+    rawState.depositSettlements?.length,
+    rawState.agreements?.length,
+    rawState.units?.length,
+    rawState.tenants?.length,
+  ]);
 
   // -------------------------------------------------------------
   // AUTHORITATIVE ROLE-BASED DATA ISOLATION ENGINE
@@ -976,9 +1218,8 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const myTenantUserId = currentUserId;
 
       const tenants = (rawState.tenants || []).filter((t) => {
-        if (t.id === myTenantUserId) return true;
+        if (t.id === myTenantUserId || (t as any).userId === myTenantUserId) return true;
         if (currentUserEmail && t.email?.toLowerCase().trim() === currentUserEmail) return true;
-        if (currentUserName && t.name?.toLowerCase().trim() === currentUserName) return true;
         return false;
       });
       const myTenantIds = new Set(tenants.map((t) => t.id));
@@ -987,13 +1228,15 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const agreements = (rawState.agreements || []).filter((a) => {
         if (myTenantIds.has(a.tenantId)) return true;
         if (currentUserEmail && a.tenantEmail?.toLowerCase().trim() === currentUserEmail) return true;
-        if (currentUserName && a.tenant?.toLowerCase().trim() === currentUserName) return true;
         return false;
       });
 
       const tenantPropertyIds = new Set<string>();
       const tenantPropertyUnitKeys = new Set<string>(); // `${propertyId}:${unitString.toLowerCase()}`
       const tenantDirectUnitIds = new Set<string>();
+      const tenantOwnerIds = new Set<string>();
+      const activeTenantPropertyIds = new Set<string>();
+      const activeTenantOwnerIds = new Set<string>();
 
       agreements.forEach((a) => {
         if (a.propertyId) {
@@ -1004,17 +1247,41 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
             tenantPropertyUnitKeys.add(`${a.propertyId}:${a.unitId.toLowerCase().trim()}`);
           }
         }
+        if (a.ownerId) tenantOwnerIds.add(a.ownerId);
+
+        const isActiveAg =
+          a.status === 'active' ||
+          (a.status as string) === 'signed' ||
+          (a.status !== 'terminated' && a.status !== 'cancelled' && a.status !== 'rejected' && a.status !== 'draft');
+        if (isActiveAg) {
+          if (a.propertyId) activeTenantPropertyIds.add(a.propertyId);
+          if (a.ownerId) activeTenantOwnerIds.add(a.ownerId);
+          const p = (rawState.properties || []).find((prop) => prop.id === a.propertyId);
+          if (p?.ownerId) activeTenantOwnerIds.add(p.ownerId);
+        }
       });
 
       tenants.forEach((t) => {
         if (t.propertyId) {
-          tenantPropertyIds.add(t.propertyId);
-          if (t.unit && t.unit !== 'Unassigned' && t.unit !== 'Pending') {
-            tenantPropertyUnitKeys.add(`${t.propertyId}:${t.unit.toLowerCase().trim()}`);
+          const hasActivePresence =
+            agreements.some((a) => a.propertyId === t.propertyId && a.status !== 'terminated' && a.status !== 'cancelled' && a.status !== 'rejected') ||
+            (rawState.units || []).some((u) => u.propertyId === t.propertyId && u.status === 'occupied' && (u.currentTenantId === myTenantUserId || (currentUserEmail && u.tenant?.toLowerCase().trim() === currentUserEmail))) ||
+            (rawState.tenancyRequests || []).some((tr) => tr.propertyId === t.propertyId && tr.status === 'accepted' && ((tr.tenantId && myTenantIds.has(tr.tenantId)) || (currentUserEmail && tr.tenantEmail?.toLowerCase().trim() === currentUserEmail)));
+
+          if (hasActivePresence) {
+            tenantPropertyIds.add(t.propertyId);
+            activeTenantPropertyIds.add(t.propertyId);
+            if (t.unit && t.unit !== 'Unassigned' && t.unit !== 'Pending') {
+              tenantPropertyUnitKeys.add(`${t.propertyId}:${t.unit.toLowerCase().trim()}`);
+            }
+            (t.unitsRented || []).forEach((u) => {
+              if (u) tenantPropertyUnitKeys.add(`${t.propertyId}:${u.toLowerCase().trim()}`);
+            });
+            if (t.ownerId) {
+              tenantOwnerIds.add(t.ownerId);
+              activeTenantOwnerIds.add(t.ownerId);
+            }
           }
-          (t.unitsRented || []).forEach((u) => {
-            if (u) tenantPropertyUnitKeys.add(`${t.propertyId}:${u.toLowerCase().trim()}`);
-          });
         }
       });
 
@@ -1028,25 +1295,58 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       });
       units.forEach((u) => {
         if (u.propertyId) tenantPropertyIds.add(u.propertyId);
+        if (u.ownerId) tenantOwnerIds.add(u.ownerId);
+        const p = (rawState.properties || []).find((prop) => prop.id === u.propertyId);
+        if (p?.ownerId) tenantOwnerIds.add(p.ownerId);
+
+        if (u.status === 'occupied') {
+          if (u.propertyId) activeTenantPropertyIds.add(u.propertyId);
+          if (u.ownerId) activeTenantOwnerIds.add(u.ownerId);
+          if (p?.ownerId) activeTenantOwnerIds.add(p.ownerId);
+        }
+      });
+
+      (rawState.tenancyRequests || []).forEach((tr) => {
+        const isMe = (tr.tenantId && myTenantIds.has(tr.tenantId)) || (currentUserEmail && tr.tenantEmail?.toLowerCase().trim() === currentUserEmail);
+        if (isMe && tr.status === 'accepted') {
+          if (tr.ownerId) {
+            tenantOwnerIds.add(tr.ownerId);
+            activeTenantOwnerIds.add(tr.ownerId);
+          }
+          if (tr.propertyId) {
+            tenantPropertyIds.add(tr.propertyId);
+            activeTenantPropertyIds.add(tr.propertyId);
+          }
+        }
       });
 
       const properties = (rawState.properties || []).filter((p) => tenantPropertyIds.has(p.id));
 
       const invoices = (rawState.invoices || []).filter((inv) => {
+        // Strict property scoping: Reject invoices belonging to foreign properties
+        if (inv.propertyId && !tenantPropertyIds.has(inv.propertyId)) return false;
+        // Foreign tenant isolation
+        if (inv.tenantId && !myTenantIds.has(inv.tenantId)) return false;
+
         if (inv.tenantId && myTenantIds.has(inv.tenantId)) return true;
         if (inv.leaseAgreementId && agreements.some((a) => a.id === inv.leaseAgreementId)) return true;
         if (inv.agreementId && agreements.some((a) => a.id === inv.agreementId)) return true;
-        if (currentUserEmail && inv.tenantEmail?.toLowerCase().trim() === currentUserEmail && (!inv.propertyId || tenantPropertyIds.has(inv.propertyId))) return true;
+        if (currentUserEmail && inv.tenantEmail?.toLowerCase().trim() === currentUserEmail && inv.propertyId && tenantPropertyIds.has(inv.propertyId)) return true;
         if (inv.unitId && tenantDirectUnitIds.has(inv.unitId)) return true;
         if (inv.unit && inv.propertyId && tenantPropertyUnitKeys.has(`${inv.propertyId}:${inv.unit.toLowerCase().trim()}`)) return true;
         return false;
       });
 
       const payments = (rawState.payments || []).filter((p) => {
+        // Strict property scoping: Reject payments belonging to foreign properties
+        if (p.propertyId && !tenantPropertyIds.has(p.propertyId)) return false;
+        // Foreign tenant isolation
+        if (p.tenantId && !myTenantIds.has(p.tenantId)) return false;
+
         if (p.tenantId && myTenantIds.has(p.tenantId)) return true;
         if (p.invoiceId && invoices.some((i) => i.id === p.invoiceId)) return true;
         if (p.agreementId && agreements.some((a) => a.id === p.agreementId)) return true;
-        if (currentUserEmail && ((p as any).tenantEmail?.toLowerCase().trim() === currentUserEmail || p.tenant?.toLowerCase().trim() === currentUserEmail) && (!p.propertyId || tenantPropertyIds.has(p.propertyId))) return true;
+        if (currentUserEmail && (p as any).tenantEmail?.toLowerCase().trim() === currentUserEmail && p.propertyId && tenantPropertyIds.has(p.propertyId)) return true;
         if (p.unitId && tenantDirectUnitIds.has(p.unitId)) return true;
         if (p.unit && p.propertyId && tenantPropertyUnitKeys.has(`${p.propertyId}:${p.unit.toLowerCase().trim()}`)) return true;
         return false;
@@ -1104,9 +1404,49 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       });
 
       const announcements = (rawState.announcements || []).filter((a) => {
-        const matchesRole = !a.targetRoles || a.targetRoles.includes('tenant');
-        const matchesProp = !a.propertyId || tenantPropertyIds.has(a.propertyId);
-        return a.status === 'published' && matchesRole && matchesProp;
+        if (a.status !== 'published') return false;
+        const targetRoles = (a as any).targetScope?.targetRoles || a.targetRoles || ['tenant'];
+        if (!targetRoles.includes('tenant')) return false;
+
+        const isSystem = (a.category as string) === 'system' || a.ownerId === 'system' || a.ownerId === 'superadmin';
+        // Strict Owner & Residency Isolation:
+        // Platform-wide system announcements can be seen by any tenant.
+        // Landlord announcements require the tenant to have an active residency and match the landlord ID.
+        if (!isSystem) {
+          if (activeTenantPropertyIds.size === 0) return false;
+          if (!a.ownerId || !activeTenantOwnerIds.has(a.ownerId)) return false;
+        }
+
+        const targetScope = (a as any).targetScope;
+        if (targetScope?.mode === 'specific_people' || (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)) {
+          const targets = targetScope.targetUserIds || [];
+          const isTargeted = targets.some((tid: string) => myTenantIds.has(tid) || tid === myTenantUserId);
+          if (!isTargeted) return false;
+        }
+
+        // Collect all explicit property IDs targeted by this announcement
+        const targetPropIds = new Set<string>();
+        if (Array.isArray(targetScope?.propertyIds)) {
+          targetScope.propertyIds.forEach((pid: string) => pid && targetPropIds.add(pid));
+        }
+        if (a.propertyId && a.propertyId !== 'all') {
+          targetPropIds.add(a.propertyId);
+        }
+
+        // Strict Property Isolation:
+        // If specific properties are targeted, tenant MUST reside in at least one of those exact property IDs
+        if (targetPropIds.size > 0) {
+          return Array.from(targetPropIds).some((pId) => activeTenantPropertyIds.has(pId));
+        }
+
+        // Broadcast to all properties of this owner:
+        // Only visible if owner explicitly enabled allProperties and tenant actively resides in this owner's portfolio
+        const isAllProperties = Boolean(targetScope?.allProperties || (!a.propertyId && (!targetScope?.propertyIds || targetScope.propertyIds.length === 0)));
+        if (isAllProperties) {
+          return activeTenantPropertyIds.size > 0 && activeTenantOwnerIds.has(a.ownerId);
+        }
+
+        return false;
       });
 
       const notifications = (rawState.notifications || []).filter((n) => {
@@ -1174,7 +1514,37 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const tenancyRequests = (rawState.tenancyRequests || []).filter((tr) => tr.propertyId && myPropertyIds.has(tr.propertyId));
       const renewals = (rawState.renewals || []).filter((r) => r.propertyId && myPropertyIds.has(r.propertyId));
       const cashClaims = (rawState.cashClaims || []).filter((c) => managerOwnerId && c.ownerId === managerOwnerId);
-      const announcements = (rawState.announcements || []).filter((a) => managerOwnerId && a.ownerId === managerOwnerId);
+      const managerOwnerIds = new Set<string>();
+      if (managerOwnerId) managerOwnerIds.add(managerOwnerId);
+      properties.forEach((p) => { if (p.ownerId) managerOwnerIds.add(p.ownerId); });
+
+      const announcements = (rawState.announcements || []).filter((a) => {
+        if (a.status !== 'published') return false;
+        const targetRoles = (a.targetRoles || (a as any).targetScope?.targetRoles || []);
+        if (targetRoles.length > 0 && !targetRoles.includes('manager')) return false;
+
+        const isSystem = a.ownerId === 'system' || a.ownerId === 'superadmin' || ((a as any).category as string) === 'system';
+        // Strict landlord isolation: Block if manager has no owner association or if announcement belongs to another landlord
+        if (!isSystem && (managerOwnerIds.size === 0 || !managerOwnerIds.has(a.ownerId))) {
+          return false;
+        }
+
+        // Targeted people check
+        const targetScope = (a as any).targetScope;
+        if (targetScope?.mode === 'specific_people' || (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)) {
+          const targets = targetScope.targetUserIds || [];
+          if (!targets.includes(currentUserId)) return false;
+        }
+
+        // Property-level scoping check
+        if (targetScope && !targetScope.allProperties && targetScope.propertyIds && targetScope.propertyIds.length > 0) {
+          if (myPropertyIds.size > 0 && !targetScope.propertyIds.some((pId: string) => myPropertyIds.has(pId))) {
+            return false;
+          }
+        }
+
+        return true;
+      });
       const notifications = (rawState.notifications || []).filter(
         (n) => n.recipientId === currentUserId || n.userId === currentUserId || (managerOwnerId && n.ownerId === managerOwnerId && (!n.recipientId || n.recipientRole === 'manager'))
       );
@@ -1233,8 +1603,31 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       const staffSchedules = (rawState.staffSchedules || []).filter((sc) => sc.staffId === currentUserId);
       const announcements = (rawState.announcements || []).filter((a) => {
-        if (staffOwnerId && a.ownerId !== staffOwnerId) return false;
-        return a.status === 'published' && (!a.targetRoles || a.targetRoles.includes('staff'));
+        if (a.status !== 'published') return false;
+        const targetRoles = (a.targetRoles || (a as any).targetScope?.targetRoles || []);
+        if (targetRoles.length > 0 && !targetRoles.includes('staff') && !targetRoles.includes('manager')) return false;
+
+        const isSystem = a.ownerId === 'system' || a.ownerId === 'superadmin' || ((a as any).category as string) === 'system';
+        // Strict landlord isolation: staff must have an owner associated and it must match
+        if (!isSystem && (!staffOwnerId || a.ownerId !== staffOwnerId)) {
+          return false;
+        }
+
+        // Specific people targeting check
+        const targetScope = (a as any).targetScope;
+        if (targetScope?.mode === 'specific_people' || (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)) {
+          const targets = targetScope.targetUserIds || [];
+          if (!targets.includes(currentUserId)) return false;
+        }
+
+        // Property-level scoping check
+        if (targetScope && !targetScope.allProperties && targetScope.propertyIds && targetScope.propertyIds.length > 0) {
+          if (myPropertyIds.size > 0 && !targetScope.propertyIds.some((pId: string) => myPropertyIds.has(pId))) {
+            return false;
+          }
+        }
+
+        return true;
       });
       const notifications = (rawState.notifications || []).filter(
         (n) => n.recipientId === currentUserId || n.userId === currentUserId
@@ -2138,19 +2531,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       properties: updatedProperties,
       invoices: updatedInvoices,
     };
-  };
-
-  const cleanFirestoreObject = (obj: any): any => {
-    if (obj === null || obj === undefined) return null;
-    if (typeof obj !== 'object') return obj;
-    if (Array.isArray(obj)) return obj.map(cleanFirestoreObject);
-    const cleaned: Record<string, any> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      if (value !== undefined) {
-        cleaned[key] = cleanFirestoreObject(value);
-      }
-    }
-    return cleaned;
   };
 
   const createDepositSettlement = (settlement: Partial<MobileMoveOut>) => {
@@ -3196,14 +3576,30 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const acknowledgeAnnouncement = (id: string, userId?: string) => {
+    const target = rawState.announcements.find((a) => a.id === id);
+    const uid = userId || user?.id || 'current-user';
+    const nextAck = Array.from(new Set([...(target?.acknowledgedBy || []), uid]));
+
     setState((prev) => ({
       ...prev,
       announcements: prev.announcements.map((a) =>
         a.id === id
-          ? { ...a, acknowledgedBy: Array.from(new Set([...(a.acknowledgedBy || []), userId || 'current-user'])) }
+          ? { ...a, acknowledgedBy: nextAck }
           : a
       ),
     }));
+
+    if (isFirebaseConfigured && target) {
+      const updatedAnn = { ...target, acknowledgedBy: nextAck, updatedAt: new Date().toISOString() };
+      setDoc(doc(db, 'announcements', id), cleanFirestoreObject(updatedAnn), { merge: true }).catch(() => {});
+      const ackDocId = `${id}_${uid}`;
+      setDoc(doc(db, 'announcementAcknowledgments', ackDocId), cleanFirestoreObject({
+        announcementId: id,
+        tenantId: uid,
+        tenantEmail: user?.email,
+        acknowledgedAt: new Date().toISOString(),
+      }), { merge: true }).catch(console.warn);
+    }
   };
 
   const sendTenancyRequest = (req: MobileTenancyRequest) => {
@@ -3453,6 +3849,22 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         tenancyRequests: updatedRequests,
       };
     });
+  };
+
+  const submitEnquiry = async (data: Omit<MobilePropertyEnquiry, 'id' | 'createdAt' | 'status'>) => {
+    const newEnquiry: MobilePropertyEnquiry = {
+      ...data,
+      id: `ENQ-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      status: 'new',
+      createdAt: new Date().toISOString(),
+    };
+    if (isFirebaseConfigured) {
+      await setDoc(doc(db, 'enquiries', newEnquiry.id), newEnquiry, { merge: true }).catch(console.warn);
+    }
+    setState((prev) => ({
+      ...prev,
+      enquiries: [newEnquiry, ...(prev.enquiries || [])],
+    }));
   };
 
   const approveSignedAgreement = async (
@@ -4430,6 +4842,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         acknowledgeAnnouncement,
         sendTenancyRequest,
         updateTenancyRequest,
+        submitEnquiry,
         saveTicket,
         updateTicket,
         sendStaffPaymentReminder,

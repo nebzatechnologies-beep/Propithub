@@ -3,8 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
-import { sanitizeCountry, resolveDisplayLocation } from '../../lib/addressUtils';
+import { sanitizeCountry, resolveDisplayLocation, getCleanAddressText } from '../../lib/addressUtils';
 import { PropithubIcon } from '../../components/common/PropithubLogo';
+import { ListingCard } from '../../components/public/ListingCard';
+import { ListingDetailsModal } from '../../components/public/ListingDetailsModal';
+import { Unit } from '../../types';
 
 export const LandingPage: React.FC = () => {
   const { state } = useAppData();
@@ -67,7 +70,29 @@ export const LandingPage: React.FC = () => {
     return () => observer.disconnect();
   }, []);
 
-  // Listings Filter
+  // Listings Filter & Modal State
+  const [selectedListingUnit, setSelectedListingUnit] = useState<Unit | null>(null);
+  const [savedUnitIds, setSavedUnitIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('propithub_saved_homes');
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  const toggleSaveUnit = (unitId: string) => {
+    setSavedUnitIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(unitId)) next.delete(unitId);
+      else next.add(unitId);
+      try {
+        localStorage.setItem('propithub_saved_homes', JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
+  };
+
   const [selectedCountry, setSelectedCountry] = useState<string>('All countries');
   const listedUnits = state.units.filter((u) => u.isListedPublicly && u.status === 'vacant');
   const countries = [
@@ -2576,216 +2601,97 @@ export const LandingPage: React.FC = () => {
                 {cfg.listingsSubtitle || 'Direct verified rentals from property owners across Propithub'}
               </p>
             </div>
-            <div className="listings-filter-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '13px', color: 'var(--slate)', fontWeight: 500 }}>
-                Filter by Country:
-              </span>
-              <select
-                value={selectedCountry}
-                onChange={(e) => setSelectedCountry(e.target.value)}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+              <div className="listings-filter-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--slate)', fontWeight: 500 }}>
+                  Country:
+                </span>
+                <select
+                  value={selectedCountry}
+                  onChange={(e) => setSelectedCountry(e.target.value)}
+                  style={{
+                    padding: '8px 12px',
+                    background: 'var(--card-bg)',
+                    color: 'var(--heading-color)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                  }}
+                >
+                  {countries.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate('/listings')}
+                className="btn brass small"
                 style={{
-                  padding: '8px 12px',
-                  background: 'var(--card-bg)',
-                  color: 'var(--heading-color)',
-                  border: '1px solid var(--border-color)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontWeight: 700,
+                  padding: '9px 16px',
                   borderRadius: '8px',
-                  fontSize: '13px',
                 }}
               >
-                {countries.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
+                View All ({listedUnits.length}) →
+              </button>
             </div>
           </div>
 
-          <div
-            className="landing-listings-grid"
-            style={{
-              display: 'grid',
-              gap: '24px',
-            }}
-          >
-            {filteredUnits.length === 0 ? (
+          {filteredUnits.length === 0 ? (
+            <div
+              style={{
+                textAlign: 'center',
+                padding: '48px 20px',
+                background: 'var(--surface-sunken, rgba(0,0,0,0.02))',
+                borderRadius: '16px',
+                border: '1px dashed var(--border-color)',
+                color: 'var(--slate)',
+              }}
+            >
+              <div style={{ fontSize: '28px', marginBottom: '8px' }}>🏡</div>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--heading-color)' }}>
+                No active vacant listings found in {selectedCountry === 'All countries' ? 'the portfolio' : selectedCountry}.
+              </div>
+              <div style={{ fontSize: '12.5px', marginTop: '4px' }}>
+                Check back soon or browse all locations.
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Single Horizontal Row (Max 4 Cards) */}
               <div
+                className="landing-listings-row"
                 style={{
-                  gridColumn: '1/-1',
-                  textAlign: 'center',
-                  padding: '48px 0',
-                  color: 'var(--slate)',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
+                  gap: '20px',
                 }}
               >
-                No active vacant listings found in this country.
+                {filteredUnits.slice(0, 4).map((u) => {
+                  const prop = state.properties.find(
+                    (p) =>
+                      (u.propertyId && p.id === u.propertyId) ||
+                      (p.name && u.propertyName && p.name.trim().toLowerCase() === u.propertyName.trim().toLowerCase()) ||
+                      (u.id && p.id && u.id.includes(p.id))
+                  );
+                  return (
+                    <ListingCard
+                      key={u.id}
+                      unit={u}
+                      property={prop}
+                      onSelect={(selected) => setSelectedListingUnit(selected)}
+                    />
+                  );
+                })}
               </div>
-            ) : (
-              filteredUnits.map((u) => (
-                <div
-                  key={u.id}
-                  style={{
-                    background: 'var(--card-bg)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '12px',
-                    overflow: 'hidden',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    transition: 'transform 0.2s ease, box-shadow 0.2s ease',
-                  }}
-                >
-                  <div
-                    style={{
-                      height: '180px',
-                      backgroundImage: `url(${
-                        (u.images && u.images[0]) ||
-                        u.image ||
-                        (u.currency === '$'
-                          ? 'https://images.unsplash.com/photo-1580587771525-78b9dba3b914?w=600&q=80'
-                          : u.currency === '£'
-                          ? 'https://images.unsplash.com/photo-1513694203232-719a280e022f?w=600&q=80'
-                          : 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=600&q=80')
-                      })`,
-                      backgroundSize: 'cover',
-                      backgroundPosition: 'center',
-                      position: 'relative',
-                      padding: '12px',
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <span
-                      style={{
-                        background: 'rgba(0,0,0,0.65)',
-                        color: '#fff',
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                      }}
-                    >
-                      Unit {u.unitNumber}
-                    </span>
-                    <span
-                      style={{
-                        background: 'var(--primary-color)',
-                        color: '#fff',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        padding: '4px 8px',
-                        borderRadius: '6px',
-                      }}
-                    >
-                      Vacant
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      padding: '20px',
-                      flexGrow: 1,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <div>
-                      <div
-                        style={{
-                          fontSize: '20px',
-                          fontWeight: 800,
-                          color: 'var(--heading-color)',
-                        }}
-                      >
-                        {u.currency}
-                        {u.rent.toLocaleString()}
-                        <span style={{ fontSize: '12.5px', fontWeight: 400, color: 'var(--slate)' }}>
-                          {' '}
-                          / month
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          fontWeight: 700,
-                          fontSize: '14.5px',
-                          color: 'var(--heading-color)',
-                          marginTop: '6px',
-                        }}
-                      >
-                        {u.propertyName}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: '12.5px',
-                          color: 'var(--slate)',
-                          marginTop: '4px',
-                          lineHeight: '1.4',
-                          display: '-webkit-box',
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: 'vertical',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          minHeight: '35px',
-                        }}
-                        title={u.address}
-                      >
-                        {u.address}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: '12px',
-                          color: 'var(--primary-color)',
-                          fontWeight: 600,
-                          marginTop: '6px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                        }}
-                      >
-                        <span>📍</span>
-                        <span>{resolveDisplayLocation(u.address, u.country)}</span>
-                      </div>
-                      {(() => {
-                        const prop = state.properties.find((p) => p.id === u.propertyId || p.name === u.propertyName);
-                        if (!prop || !prop.amenities || prop.amenities.length === 0) return null;
-                        return (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
-                            {prop.amenities.slice(0, 3).map((am) => (
-                              <span
-                                key={am}
-                                style={{
-                                  fontSize: '11px',
-                                  background: 'var(--surface, #f8f9fa)',
-                                  border: '1px solid var(--border, #e9ecef)',
-                                  borderRadius: '4px',
-                                  padding: '2px 6px',
-                                  color: 'var(--slate, #6c757d)',
-                                }}
-                              >
-                                {am}
-                              </span>
-                            ))}
-                            {prop.amenities.length > 3 && (
-                              <span style={{ fontSize: '10.5px', color: 'var(--slate, #6c757d)', alignSelf: 'center' }}>
-                                +{prop.amenities.length - 3} more
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                    <button
-                      type="button"
-                      className="btn-landing-outline"
-                      style={{ marginTop: '16px', width: '100%', justifyContent: 'center' }}
-                      onClick={() => navigate('/login')}
-                    >
-                      Enquire — Sign In to View Lease
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+            </>
+          )}
         </section>
       )}
 
@@ -3274,6 +3180,14 @@ export const LandingPage: React.FC = () => {
           </div>
         </footer>
       )}
+
+      {/* Public Listing Details & Enquiry Modal */}
+      <ListingDetailsModal
+        isOpen={!!selectedListingUnit}
+        unit={selectedListingUnit}
+        property={state.properties.find((p) => p.id === selectedListingUnit?.propertyId || p.name === selectedListingUnit?.propertyName)}
+        onClose={() => setSelectedListingUnit(null)}
+      />
     </div>
   );
 };

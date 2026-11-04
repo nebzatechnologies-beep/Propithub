@@ -7,6 +7,7 @@ import {
   AnnouncementPriority,
   AnnouncementStatus,
   InAppNotification,
+  TenantRecord,
 } from '../../types';
 import {
   Megaphone,
@@ -296,9 +297,43 @@ export const OwnerMessagesPage: React.FC = () => {
           recipientIds = formSelectedRecipientIds;
         } else {
           if (formTargetRoles.includes('tenant')) {
+            const isActiveTenant = (t: TenantRecord, targetPropId?: string) => {
+              if (t.status === 'invited' || t.status === 'pending' || t.status === 'vacated' || t.status === 'unmanaged_archive') {
+                return false;
+              }
+              const hasOnlyPendingRequest = (state.tenancyRequests || []).some(
+                (r) =>
+                  r.status === 'pending' &&
+                  (r.tenantId === t.id || (t.email && r.tenantEmail?.toLowerCase() === t.email.toLowerCase())) &&
+                  (!targetPropId || r.propertyId === targetPropId)
+              );
+              const hasActiveAgreement = (state.agreements || []).some(
+                (ag) =>
+                  (ag.tenantId === t.id || (t.email && ag.tenantEmail?.toLowerCase() === t.email.toLowerCase())) &&
+                  (ag.status === 'active' || (ag.status as string) === 'signed') &&
+                  (!targetPropId || ag.propertyId === targetPropId)
+              );
+              const hasOccupiedUnit = (state.units || []).some(
+                (u) =>
+                  (u.currentTenantId === t.id || (t.email && u.tenant?.toLowerCase() === t.email.toLowerCase())) &&
+                  u.status === 'occupied' &&
+                  (!targetPropId || u.propertyId === targetPropId)
+              );
+              const hasAcceptedRequest = (state.tenancyRequests || []).some(
+                (r) =>
+                  r.status === 'accepted' &&
+                  (r.tenantId === t.id || (t.email && r.tenantEmail?.toLowerCase() === t.email.toLowerCase())) &&
+                  (!targetPropId || r.propertyId === targetPropId)
+              );
+              if (hasOnlyPendingRequest && !hasActiveAgreement && !hasOccupiedUnit && !hasAcceptedRequest) {
+                return false;
+              }
+              return hasActiveAgreement || hasOccupiedUnit || hasAcceptedRequest || t.status === 'active';
+            };
+
             const matchedTenants = formScopeType === 'all'
-              ? myTenants
-              : myTenants.filter((t) => t.propertyId === formSelectedPropertyId || !t.propertyId);
+              ? myTenants.filter((t) => isActiveTenant(t))
+              : myTenants.filter((t) => t.propertyId === formSelectedPropertyId && isActiveTenant(t, formSelectedPropertyId));
             matchedTenants.forEach((t) => recipientIds.push(t.id));
           }
 

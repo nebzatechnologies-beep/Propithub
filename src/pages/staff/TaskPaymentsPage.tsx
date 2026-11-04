@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
+import { useCurrency } from '../../context/CurrencyContext';
 import { StaffMember } from '../../types';
 import { CreditCard, CheckCircle2 } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
-import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
 
 export const StaffTaskPaymentsPage: React.FC = () => {
   const { state, saveTicket, sendStaffPaymentReminder, showToast } = useAppData();
   const { user } = useAuth();
+  const { viewCurrency, convert, format } = useCurrency();
+  const activeCurrencyCode = viewCurrency || 'USD';
   const staffId = user?.id || '';
   const staffEmail = user?.email?.toLowerCase() || '';
   const staffName = user?.displayName || '';
@@ -63,19 +66,9 @@ export const StaffTaskPaymentsPage: React.FC = () => {
       (currentStaff?.ownerId && p.ownerId === currentStaff.ownerId) ||
       myTickets.some((t) => t.propertyId === p.id)
   );
-  const staffRawCurrency = staffProperty?.currency || (myTickets[0] as any)?.currency || DEFAULT_CURRENCY_SYMBOL;
+  const staffRawCurrency = staffProperty?.currency || (myTickets[0] as any)?.currency || 'USD';
   const staffCurrency = getCurrencySymbol(staffRawCurrency) || DEFAULT_CURRENCY_SYMBOL;
-  const confirmedEarnings = myTickets
-    .filter((t) => t.payment.status === 'confirmed')
-    .reduce((sum, t) => sum + (t.payment.amount || 0), 0);
 
-  const pendingConfirmAmount = myTickets
-    .filter((t) => t.payment.status === 'pending_approval')
-    .reduce((sum, t) => sum + (t.payment.amount || 0), 0);
-
-  const awaitingPaymentAmount = myTickets
-    .filter((t) => t.payment.status === 'awaiting_payment')
-    .reduce((sum, t) => sum + (t.payment.amount || 0), 0);
 
   const handleSendPaymentReminder = async (ticket: any) => {
     setRemindingTicketId(ticket.id);
@@ -108,32 +101,6 @@ export const StaffTaskPaymentsPage: React.FC = () => {
 
   return (
     <div>
-      {/* Metrics Row */}
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', marginBottom: '20px' }}>
-        <div className="stat">
-          <div className="num" style={{ color: 'var(--ledger)' }}>
-            {staffCurrency}{confirmedEarnings.toLocaleString()}
-          </div>
-          <div className="lbl">Settled Earnings</div>
-          <div className="delta">Received & verified</div>
-        </div>
-
-        <div className="stat">
-          <div className="num" style={{ color: 'var(--brass)' }}>
-            {staffCurrency}{pendingConfirmAmount.toLocaleString()}
-          </div>
-          <div className="lbl">Awaiting My Confirmation</div>
-          <div className="delta">Payer submitted payment</div>
-        </div>
-
-        <div className="stat">
-          <div className="num" style={{ color: 'var(--ink-soft)' }}>
-            {staffCurrency}{awaitingPaymentAmount.toLocaleString()}
-          </div>
-          <div className="lbl">Awaiting Payment</div>
-          <div className="delta">Work completed, invoice open</div>
-        </div>
-      </div>
 
       {/* Task Payments List */}
       <div className="section-title">Task Payment Records ({myTickets.length})</div>
@@ -161,13 +128,22 @@ export const StaffTaskPaymentsPage: React.FC = () => {
                     </thead>
                     <tbody>
                       {myTickets.map((t) => {
-                        const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency;
-                        const ticketDisplayCurr = getCurrencySymbol(unitCurr || (t as any).currency || staffCurrency) || staffCurrency;
+                        const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency || (t as any).currency || staffRawCurrency;
+                        const ticketDisplayCurr = getCurrencySymbol(unitCurr) || staffCurrency;
+                        const isDifferent = normalizeCurrencyCode(unitCurr) !== normalizeCurrencyCode(activeCurrencyCode);
+                        const convertedAmt = isDifferent ? convert(t.payment.amount || 0, unitCurr, activeCurrencyCode) : null;
                         return (
                           <tr key={t.id}>
                             <td><b>{t.id}</b></td>
                             <td style={{ textTransform: 'capitalize' }}>{t.payment.payer}</td>
-                            <td style={{ fontWeight: 600 }}>{ticketDisplayCurr}{t.payment.amount?.toLocaleString()}</td>
+                            <td style={{ fontWeight: 600 }}>
+                              {ticketDisplayCurr}{t.payment.amount?.toLocaleString()}
+                              {convertedAmt !== null && (
+                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '5px' }}>
+                                  ({format(convertedAmt, activeCurrencyCode)})
+                                </span>
+                              )}
+                            </td>
                             <td>{t.payment.method || '—'}</td>
                             <td>
                               <span
@@ -233,12 +209,14 @@ export const StaffTaskPaymentsPage: React.FC = () => {
               {/* Mobile Payment Cards (<=640px) */}
               <div className="staff-mobile-cards">
                 {myTickets.map((t) => {
-                  const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency;
-                  const ticketDisplayCurr = getCurrencySymbol(unitCurr || (t as any).currency || staffCurrency) || staffCurrency;
+                  const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency || (t as any).currency || staffRawCurrency;
+                  const ticketDisplayCurr = getCurrencySymbol(unitCurr) || staffCurrency;
+                  const isDifferent = normalizeCurrencyCode(unitCurr) !== normalizeCurrencyCode(activeCurrencyCode);
+                  const convertedAmt = isDifferent ? convert(t.payment.amount || 0, unitCurr, activeCurrencyCode) : null;
                   return (
                     <div key={t.id} className="staff-card">
                       <div className="staff-card-header">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                           <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{t.id}</b>
                           <span className="badge grey" style={{ textTransform: 'capitalize' }}>
                             Payer: {t.payment.payer}
@@ -261,9 +239,14 @@ export const StaffTaskPaymentsPage: React.FC = () => {
                         </span>
                       </div>
 
-                      <div style={{ margin: '8px 0', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-                        <div style={{ fontSize: '22px', fontWeight: 700, color: t.payment.status === 'confirmed' ? 'var(--ledger)' : 'var(--ink)' }}>
+                      <div style={{ margin: '8px 0', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: t.payment.status === 'confirmed' ? 'var(--ledger)' : 'var(--ink)' }}>
                           {ticketDisplayCurr}{t.payment.amount?.toLocaleString()}
+                          {convertedAmt !== null && (
+                            <span style={{ fontSize: '13px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
+                              ({format(convertedAmt, activeCurrencyCode)})
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
                           Method: <b>{t.payment.method || 'Standard'}</b>

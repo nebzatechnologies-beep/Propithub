@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
-import { Invoice, PaymentTransaction, InvoiceTemplateConfig } from '../../types';
+import { Invoice, PaymentTransaction, InvoiceTemplateConfig, CashHandoverClaim } from '../../types';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { getDaysFromNowString, getTodayDateString } from '../../lib/dates';
@@ -18,6 +18,7 @@ import { ButtonProcessing } from '../../components/common/Spinner';
 import { CurrencyConverterTrigger } from '../../components/common/CurrencyConverterTrigger';
 import { useCurrency } from '../../context/CurrencyContext';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, GLOBAL_CURRENCIES, formatCurrencyAmount, normalizeCurrencyCode } from '../../lib/currencyService';
+import { resolveUnitOccupancy } from '../../lib/portfolioSelectors';
 import {
   Download,
   FileText,
@@ -57,7 +58,7 @@ import {
 } from 'lucide-react';
 
 export const PaymentsPage: React.FC = () => {
-  const { state, updateState, saveInvoice, savePayment, markInvoicePaid, waiveInvoiceLateFee, saveOwnerSettings, confirmCashClaim, rejectCashClaim, submitCashClaim, logCommunication, showToast } = useAppData();
+  const { state, updateState, saveAgreement, saveInvoice, savePayment, markInvoicePaid, waiveInvoiceLateFee, saveOwnerSettings, confirmCashClaim, rejectCashClaim, submitCashClaim, logCommunication, showToast } = useAppData();
   const { user } = useAuth();
   const ownerId = user?.id || '';
 
@@ -70,8 +71,9 @@ export const PaymentsPage: React.FC = () => {
 
   const formatMoney = (amount: number | null | undefined, fromCurrency?: string) => {
     const raw = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
-    const fromCode = fromCurrency ? normalizeCurrencyCode(fromCurrency) : 'USD';
-    const converted = convert(raw, fromCode, activeCurrencyCode);
+    // If fromCurrency is provided, convert from that currency; if omitted, the amount is already in activeCurrencyCode
+    const fromCode = fromCurrency ? normalizeCurrencyCode(fromCurrency) : activeCurrencyCode;
+    const converted = fromCode === activeCurrencyCode ? raw : convert(raw, fromCode, activeCurrencyCode);
     return formatCurrencyAmount(converted, activeCurrencyCode);
   };
 
@@ -124,6 +126,7 @@ export const PaymentsPage: React.FC = () => {
 
   // Proof Review modal state
   const [reviewingProofInvoice, setReviewingProofInvoice] = useState<Invoice | null>(null);
+  const [reviewingClaim, setReviewingClaim] = useState<CashHandoverClaim | null>(null);
 
 
 
@@ -433,6 +436,7 @@ export const PaymentsPage: React.FC = () => {
 
   // Record Offline Payment Modal state
   const [isRecordOfflineOpen, setIsRecordOfflineOpen] = useState(false);
+  const [offlinePaymentType, setOfflinePaymentType] = useState<'rent' | 'deposit'>('rent');
   const [offlineUnit, setOfflineUnit] = useState('');
   const [offlineAmount, setOfflineAmount] = useState(0);
   const [offlineMethod, setOfflineMethod] = useState<'Cash' | 'Bank Transfer' | 'UPI' | 'Cheque'>('Cash');
@@ -441,7 +445,24 @@ export const PaymentsPage: React.FC = () => {
 
   const myUnits = state.units.filter((u) => Boolean(ownerId) && u.ownerId === ownerId);
   const myPayments = state.payments.filter((p) => Boolean(ownerId) && p.ownerId === ownerId);
-  const myInvoices = state.invoices.filter((i) => Boolean(ownerId) && i.ownerId === ownerId);
+  const myInvoices = useMemo(() => {
+    return state.invoices
+      .filter((i) => Boolean(ownerId) && i.ownerId === ownerId)
+      .map((inv) => {
+        // If an invoice is currently 'sent', 'unpaid', or 'overdue' but has an active pending cash claim,
+        // dynamically reflect its status as 'pending_confirmation' so it appears under Pending Confirmation filter
+        const hasPendingClaim = (state.cashClaims || []).some(
+          (c) =>
+            c.status === 'pending_confirmation' &&
+            c.claimedByRole === 'tenant' &&
+            (c.invoiceId === inv.id || (c.unit && c.unit === inv.unit && (c.type === 'deposit' ? (inv.invoiceType === 'deposit' || inv.type === 'deposit') : inv.invoiceType !== 'deposit')))
+        );
+        if (hasPendingClaim && inv.status !== 'paid') {
+          return { ...inv, status: 'pending_confirmation' as const };
+        }
+        return inv;
+      });
+  }, [state.invoices, state.cashClaims, ownerId]);
   const myAgreements = state.agreements.filter((a) => Boolean(ownerId) && a.ownerId === ownerId);
   const myMoveOuts = (state.moveouts || []).filter((m) => Boolean(ownerId) && m.ownerId === ownerId);
   const sampleUnit = myUnits[0] || null;
@@ -607,6 +628,20 @@ export const PaymentsPage: React.FC = () => {
     }> = [];
 
     myUnits.forEach((u) => {
+      // 1. Resolve unit occupancy strictly: if not effectively occupied, skip (no rent dues for vacant/vacated units)
+      const occupancy = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts);
+      if (occupancy.effectiveStatus !== 'occupied') return;
+
+      // 2. Guard: if unit has a settled or completed move-out, skip
+      const cleanU = (u.unitNumber || u.id || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+      const hasSettledMoveout = (state.moveouts || []).some(
+        (m) =>
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
+          (m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanU &&
+          (!m.propertyId || !u.propertyId || m.propertyId === u.propertyId)
+      );
+      if (hasSettledMoveout) return;
+
       const activeAg = myAgreements.find(
         (a) =>
           (a.unit === u.unitNumber || a.unit === u.id) &&
@@ -1315,7 +1350,7 @@ export const PaymentsPage: React.FC = () => {
     if (offlineMethod.toLowerCase().includes('cash')) {
       await submitCashClaim({
         direction: 'inflow',
-        type: 'rent',
+        type: offlinePaymentType,
         amount: offlineAmount,
         currency: 'INR',
         ownerId,
@@ -1333,7 +1368,7 @@ export const PaymentsPage: React.FC = () => {
       });
       setIsRecordingOffline(false);
       setIsRecordOfflineOpen(false);
-      showToast(`✓ Cash collection logged. Sent notification to ${tenantName} to confirm receipt.`);
+      showToast(`✓ Cash collection logged for ${offlinePaymentType === 'deposit' ? 'security deposit' : 'rent'}. Sent notification to ${tenantName} to confirm receipt.`);
       return;
     }
 
@@ -1353,7 +1388,7 @@ export const PaymentsPage: React.FC = () => {
       dueDate: offlineDate,
       status: 'paid',
       method: offlineMethod,
-      type: 'rent',
+      type: offlinePaymentType,
       notes: offlineRef ? `Ref: ${offlineRef}` : undefined,
     };
 
@@ -1363,13 +1398,57 @@ export const PaymentsPage: React.FC = () => {
         Boolean(ownerId) &&
         i.ownerId === ownerId &&
         (!unitObj?.propertyId || !i.propertyId || i.propertyId === unitObj.propertyId) &&
-        (unitObj ? i.unit === unitObj.unitNumber : true) &&
+        (unitObj ? (i.unit === unitObj.unitNumber || i.unit === unitObj.id) : true) &&
         (tenantId ? i.tenantId === tenantId : true) &&
+        (offlinePaymentType === 'deposit' ? i.invoiceType === 'deposit' : (i.invoiceType === 'rent' || !i.invoiceType)) &&
         i.status !== 'paid'
     );
 
     if (matchingInv) {
       await markInvoicePaid(matchingInv.id, offlineMethod, offlineRef || undefined);
+    } else if (offlinePaymentType === 'deposit') {
+      const depTmpl = state.ownerSettings[ownerId]?.depositTemplate;
+      const autoInvId = generateInvoiceId();
+      const autoInv: Invoice = {
+        id: autoInvId,
+        ownerId,
+        tenant: tenantName,
+        tenantId,
+        unit: unitObj?.unitNumber || unitObj?.id || 'Unit',
+        propertyName: unitObj?.propertyName || '',
+        propertyId: unitObj?.propertyId || '',
+        invoiceType: 'deposit',
+        amount: offlineAmount,
+        currency: effectiveOfflineCurrency,
+        tax: 0,
+        total: offlineAmount,
+        due: offlineDate,
+        status: 'paid',
+        issueDate: new Date().toISOString(),
+        paidAt: new Date(offlineDate).toISOString(),
+        paymentMethodUsed: offlineMethod,
+        receiptNumber: offlineRef || generateReceiptId(),
+        custodyMechanism: depTmpl?.custodyMechanism || 'Held in Landlord Trust Account',
+        depositClassification: depTmpl?.depositClassification || '100% Refundable Security Deposit',
+        notes: 'Security deposit settled offline directly with landlord.',
+        items: [{ description: `Security Deposit — Unit ${unitObj?.unitNumber || unitObj?.id || 'Unit'}`, amount: offlineAmount }],
+      };
+      await saveInvoice(autoInv);
+
+      const targetAg = state.agreements.find(
+        (a) =>
+          a.ownerId === ownerId &&
+          (unitObj ? (a.unit === unitObj.unitNumber || a.unit === unitObj.id) : true) &&
+          (tenantId ? a.tenantId === tenantId : true) &&
+          a.status !== 'terminated'
+      );
+      if (targetAg) {
+        saveAgreement({
+          ...targetAg,
+          depositStatus: 'paid',
+          status: 'active',
+        });
+      }
     } else {
       // Auto-generate settled invoice document in Firestore for direct payments using saved template
       const tmpl = state.ownerSettings[ownerId]?.invoiceTemplate;
@@ -1660,6 +1739,93 @@ export const PaymentsPage: React.FC = () => {
           Settings
         </div>
       </div>
+
+      {/* Global Pending Confirmation Banner across Invoices, Rent Due, and Deposit */}
+      {(() => {
+        const pendingClaimsForMe = (state.cashClaims || []).filter(
+          (c) =>
+            c.status === 'pending_confirmation' &&
+            c.claimedByRole === 'tenant' &&
+            (!ownerId || !c.ownerId || c.ownerId === ownerId)
+        );
+        if (pendingClaimsForMe.length === 0) return null;
+        return (
+          <div style={{ marginBottom: '20px' }}>
+            {pendingClaimsForMe.map((c) => (
+              <div
+                key={c.id}
+                style={{
+                  background: '#FFFBEB',
+                  border: '1.5px solid #F59E0B',
+                  borderRadius: 'var(--radius)',
+                  padding: '16px 18px',
+                  marginBottom: '12px',
+                  boxShadow: '0 2px 6px rgba(245, 158, 11, 0.1)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '12px',
+                }}
+              >
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <span style={{ background: '#FEF3C7', color: '#B45309', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700 }}>
+                      ⚡ {c.type === 'deposit' ? 'TENANT MOVE-IN DEPOSIT' : 'TENANT CASH PAYMENT'} CLAIM — CONFIRMATION REQUIRED
+                    </span>
+                    <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Claim #{c.id}</span>
+                  </div>
+                  <h4 style={{ margin: '6px 0 4px', fontSize: '15px', color: 'var(--ink)' }}>
+                    {c.tenantName} reported handing you {getCurrencySymbol(c.currency)} {c.amount.toLocaleString('en-IN')} in Cash for Unit {c.unit}
+                  </h4>
+                  <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>
+                    <b>Handover Date:</b> {c.handoverDate} • <b>Location:</b> {c.handoverLocation || 'On-Site'}
+                    {c.notes && <span style={{ display: 'block', marginTop: '2px', fontStyle: 'italic' }}>"{c.notes}"</span>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    style={{ background: '#fff', borderColor: '#EA580C', color: '#EA580C', padding: '8px 14px', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '5px' }}
+                    onClick={() => {
+                      const linkedInv = c.invoiceId ? state.invoices.find((i) => i.id === c.invoiceId) : state.invoices.find((i) => i.unit === c.unit);
+                      if (linkedInv) {
+                        setReviewingProofInvoice(linkedInv);
+                      } else {
+                        setReviewingClaim(c);
+                      }
+                    }}
+                  >
+                    <ShieldCheck size={14} /> Review Proof Details
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ background: '#16A34A', color: '#fff', border: 'none', padding: '8px 14px', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}
+                    onClick={() => confirmCashClaim(c.id)}
+                  >
+                    <CheckCircle size={15} /> Confirm Receipt & Settle
+                  </button>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    style={{ borderColor: '#DC2626', color: '#DC2626', padding: '8px 14px', fontSize: '12px', fontWeight: 600 }}
+                    onClick={() => {
+                      const reason = window.prompt('Please enter the reason for declining this cash claim (e.g. Cash was not received):');
+                      if (reason && reason.trim()) {
+                        rejectCashClaim(c.id, reason.trim());
+                      }
+                    }}
+                  >
+                    Decline / Not Received
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {subTab === 'rent_due' && (
         <div>
@@ -2287,7 +2453,26 @@ export const PaymentsPage: React.FC = () => {
                                     type="button"
                                     className="btn secondary small"
                                     onClick={() => {
-                                      setStudioInvoice(null);
+                                      setStudioInvoice({
+                                        id: '',
+                                        ownerId,
+                                        unit: item.unitNumber,
+                                        propertyName: item.propertyName,
+                                        tenant: item.tenantName,
+                                        tenantId: item.tenantId,
+                                        tenantPhone: item.tenantPhone,
+                                        tenantEmail: item.tenantEmail,
+                                        amount: item.amount,
+                                        currency: item.currency || '₹',
+                                        invoiceType: 'deposit',
+                                        type: 'deposit',
+                                        items: [
+                                          {
+                                            description: `Refundable Security Deposit — Unit ${item.unitNumber}`,
+                                            amount: item.amount,
+                                          },
+                                        ],
+                                      } as any);
                                       setStudioMode('create');
                                       setStudioInitialCategory('deposit');
                                       setIsStudioOpen(true);
@@ -2303,6 +2488,7 @@ export const PaymentsPage: React.FC = () => {
                                     type="button"
                                     className="btn brass small"
                                     onClick={() => {
+                                      setOfflinePaymentType('deposit');
                                       setOfflineUnit(item.unitId);
                                       setOfflineAmount(item.amount);
                                       setOfflineDate(new Date().toISOString().split('T')[0]);
@@ -2387,7 +2573,26 @@ export const PaymentsPage: React.FC = () => {
                             type="button"
                             className="btn secondary small btn-mobile-full"
                             onClick={() => {
-                              setStudioInvoice(null);
+                              setStudioInvoice({
+                                id: '',
+                                ownerId,
+                                unit: item.unitNumber,
+                                propertyName: item.propertyName,
+                                tenant: item.tenantName,
+                                tenantId: item.tenantId,
+                                tenantPhone: item.tenantPhone,
+                                tenantEmail: item.tenantEmail,
+                                amount: item.amount,
+                                currency: item.currency || '₹',
+                                invoiceType: 'deposit',
+                                type: 'deposit',
+                                items: [
+                                  {
+                                    description: `Refundable Security Deposit — Unit ${item.unitNumber}`,
+                                    amount: item.amount,
+                                  },
+                                ],
+                              } as any);
                               setStudioMode('create');
                               setStudioInitialCategory('deposit');
                               setIsStudioOpen(true);
@@ -2401,6 +2606,7 @@ export const PaymentsPage: React.FC = () => {
                             type="button"
                             className="btn brass small btn-mobile-full"
                             onClick={() => {
+                              setOfflinePaymentType('deposit');
                               setOfflineUnit(item.unitId);
                               setOfflineAmount(item.amount);
                               setOfflineDate(new Date().toISOString().split('T')[0]);
@@ -2441,7 +2647,7 @@ export const PaymentsPage: React.FC = () => {
 
       {subTab === 'transactions' && (
         <div>
-          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', marginBottom: '24px' }}>
             <div className="stat">
               <div className="num">{formatMoney(totalCollected)}</div>
               <div className="lbl">Collected</div>
@@ -2458,74 +2664,7 @@ export const PaymentsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Pending Tenant Cash Payment Handover Claims Banner */}
-          {(() => {
-            const pendingTenantCashClaims = (state.cashClaims || []).filter(
-              (c) => Boolean(ownerId) && c.ownerId === ownerId && c.status === 'pending_confirmation' && c.claimedByRole === 'tenant'
-            );
-            if (pendingTenantCashClaims.length === 0) return null;
-            return (
-              <div style={{ marginBottom: '20px' }}>
-                {pendingTenantCashClaims.map((c) => (
-                  <div
-                    key={c.id}
-                    style={{
-                      background: '#FFFBEB',
-                      border: '1.5px solid #F59E0B',
-                      borderRadius: 'var(--radius)',
-                      padding: '16px 18px',
-                      marginBottom: '12px',
-                      boxShadow: '0 2px 6px rgba(245, 158, 11, 0.1)',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                      gap: '12px',
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                        <span style={{ background: '#FEF3C7', color: '#B45309', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700 }}>
-                          ⚡ TENANT CASH PAYMENT CLAIM — CONFIRMATION REQUIRED
-                        </span>
-                        <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Claim #{c.id}</span>
-                      </div>
-                      <h4 style={{ margin: '6px 0 4px', fontSize: '15px', color: 'var(--ink)' }}>
-                        {c.tenantName} reported handing you {getCurrencySymbol(c.currency)} {c.amount.toLocaleString('en-IN')} in Cash for Unit {c.unit}
-                      </h4>
-                      <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>
-                        <b>Handover Date:</b> {c.handoverDate} • <b>Location:</b> {c.handoverLocation || 'On-Site'}
-                        {c.notes && <span style={{ display: 'block', marginTop: '2px', fontStyle: 'italic' }}>"{c.notes}"</span>}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                      <button
-                        type="button"
-                        className="btn"
-                        style={{ background: '#16A34A', color: '#fff', border: 'none', padding: '8px 14px', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}
-                        onClick={() => confirmCashClaim(c.id)}
-                      >
-                        <CheckCircle size={15} /> Confirm Receipt & Settle
-                      </button>
-                      <button
-                        type="button"
-                        className="btn secondary"
-                        style={{ borderColor: '#DC2626', color: '#DC2626', padding: '8px 14px', fontSize: '12px', fontWeight: 600 }}
-                        onClick={() => {
-                          const reason = window.prompt('Please enter the reason for declining this cash claim (e.g. Cash was not received):');
-                          if (reason && reason.trim()) {
-                            rejectCashClaim(c.id, reason.trim());
-                          }
-                        }}
-                      >
-                        Decline / Not Received
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
+          {/* (Duplicate banner removed - already rendered globally across tabs above) */}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
             <div className="section-title" style={{ margin: 0 }}>Transactions ({myPayments.length})</div>
@@ -5343,13 +5482,42 @@ export const PaymentsPage: React.FC = () => {
         <div className="modal-backdrop" onClick={() => setIsRecordOfflineOpen(false)}>
           <div className="modal-card" style={{ maxWidth: '480px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>Record Offline Rent Payment</h3>
+              <h3>{offlinePaymentType === 'deposit' ? 'Record Offline Security Deposit' : 'Record Offline Rent Payment'}</h3>
               <button type="button" className="btn secondary small" onClick={() => setIsRecordOfflineOpen(false)}>✕</button>
             </div>
             <div className="modal-body">
               <p className="hint" style={{ marginBottom: '14px' }}>
                 Log cash, cheque, or direct bank transfer payments and automatically reconcile pending invoices.
               </p>
+              <div className="field">
+                <label>Payment Purpose</label>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                  <button
+                    type="button"
+                    className={`btn small ${offlinePaymentType === 'rent' ? 'brass' : 'secondary'}`}
+                    style={{ flex: 1 }}
+                    onClick={() => {
+                      setOfflinePaymentType('rent');
+                      const matched = myUnits.find((u) => u.id === offlineUnit);
+                      if (matched?.rent) setOfflineAmount(matched.rent);
+                    }}
+                  >
+                    Monthly Rent
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn small ${offlinePaymentType === 'deposit' ? 'brass' : 'secondary'}`}
+                    style={{ flex: 1 }}
+                    onClick={() => {
+                      setOfflinePaymentType('deposit');
+                      const matched = myUnits.find((u) => u.id === offlineUnit);
+                      if (matched?.deposit) setOfflineAmount(matched.deposit);
+                    }}
+                  >
+                    Security Deposit
+                  </button>
+                </div>
+              </div>
               <div className="field">
                 <label>Target Unit & Resident</label>
                 <select
@@ -5358,7 +5526,11 @@ export const PaymentsPage: React.FC = () => {
                     const uId = e.target.value;
                     setOfflineUnit(uId);
                     const matched = myUnits.find((u) => u.id === uId);
-                    if (matched?.rent) setOfflineAmount(matched.rent);
+                    if (offlinePaymentType === 'deposit') {
+                      if (matched?.deposit) setOfflineAmount(matched.deposit);
+                    } else {
+                      if (matched?.rent) setOfflineAmount(matched.rent);
+                    }
                   }}
                 >
                   {[...myUnits]
@@ -5437,63 +5609,36 @@ export const PaymentsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Proof Review Modal for Landlord Verification */}
-      {reviewingProofInvoice && (() => {
-        // Fetch current invoice from live state to guarantee freshest updates
-        const currentInvoice =
-          state.invoices.find((inv) => inv.id === reviewingProofInvoice.id) || reviewingProofInvoice;
+      {/* Proof Review Modal for Landlord Verification (from Claim or Invoice) */}
+      {(reviewingProofInvoice || reviewingClaim) && (() => {
+        const currentInvoice = reviewingProofInvoice
+          ? (state.invoices.find((inv) => inv.id === reviewingProofInvoice.id) || reviewingProofInvoice)
+          : null;
 
-        // Match claims for this invoice, sorting newest first and prioritizing pending_confirmation
-        const matchingClaims = (state.cashClaims || [])
-          .filter((c) => c.invoiceId === currentInvoice.id || (currentInvoice.paymentProofRef && c.id === currentInvoice.paymentProofRef))
-          .sort((a, b) => new Date(b.claimedAt || 0).getTime() - new Date(a.claimedAt || 0).getTime());
+        const linkedClaim = reviewingClaim || (currentInvoice
+          ? (state.cashClaims || [])
+              .filter((c) => c.invoiceId === currentInvoice.id || (currentInvoice.paymentProofRef && c.id === currentInvoice.paymentProofRef) || (c.unit === currentInvoice.unit && c.status === 'pending_confirmation'))
+              .sort((a, b) => new Date(b.claimedAt || 0).getTime() - new Date(a.claimedAt || 0).getTime())[0]
+          : null);
 
-        const linkedClaim = matchingClaims.find((c) => c.status === 'pending_confirmation') || matchingClaims[0];
-
-        // Match payments for this invoice, sorting newest first and prioritizing pending_confirmation
-        const matchingPayments = (state.payments || [])
-          .filter((p) => p.invoiceId === currentInvoice.id || (linkedClaim && p.cashClaimId === linkedClaim.id))
-          .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
-
-        const linkedPayment = matchingPayments.find((p) => p.status === 'pending_confirmation') || matchingPayments[0];
+        const targetUnit = currentInvoice?.unit || linkedClaim?.unit || '';
+        const targetTenant = currentInvoice?.tenant || linkedClaim?.tenantName || 'Resident';
+        const targetAmount = currentInvoice?.total || linkedClaim?.amount || 0;
+        const targetCurrency = currentInvoice?.currency || linkedClaim?.currency || DEFAULT_CURRENCY_SYMBOL;
 
         // 1. Resolve Effective UTR / Transfer Reference
         const effectiveProofRef =
-          (currentInvoice.paymentProofRef && currentInvoice.paymentProofRef !== 'Direct Transfer')
+          (currentInvoice?.paymentProofRef && currentInvoice.paymentProofRef !== 'Direct Transfer')
             ? currentInvoice.paymentProofRef
             : (linkedClaim?.notes?.match(/Ref:\s*([^—\n]+)/)?.[1]?.trim() ||
-              linkedPayment?.notes?.match(/Ref:\s*([^—\n]+)/)?.[1]?.trim() ||
               linkedClaim?.id ||
-              linkedPayment?.id ||
-              currentInvoice.paymentProofRef ||
-              'Direct Transfer');
+              'On-Site Cash Claim');
 
         // 2. Resolve Effective Proof Screenshot / Receipt Image
-        const effectiveProofUrl =
-          linkedClaim?.proofPhotoUrl ||
-          linkedPayment?.audit?.proofPhotoUrl ||
-          currentInvoice.paymentProofUrl ||
-          '';
+        const effectiveProofUrl = linkedClaim?.proofPhotoUrl || currentInvoice?.paymentProofUrl || '';
 
-        // 3. Resolve Effective Resident Notes (clean out past rejection comments & Ref prefix)
-        let rawNotes =
-          linkedClaim?.notes ||
-          linkedPayment?.notes ||
-          currentInvoice.paymentProofNotes ||
-          '';
-
-        if (rawNotes.toLowerCase().includes('proof rejected')) {
-          const altClaimNote = linkedClaim?.notes;
-          const altPayNote = linkedPayment?.notes;
-          if (altClaimNote && !altClaimNote.toLowerCase().includes('proof rejected')) {
-            rawNotes = altClaimNote;
-          } else if (altPayNote && !altPayNote.toLowerCase().includes('proof rejected')) {
-            rawNotes = altPayNote;
-          } else {
-            rawNotes = '';
-          }
-        }
-
+        // 3. Resolve Effective Notes
+        let rawNotes = linkedClaim?.notes || currentInvoice?.paymentProofNotes || '';
         const effectiveProofNotes = rawNotes
           .replace(/^Ref:\s*[^—\n]+—\s*/i, '')
           .replace(/^Ref:\s*[^—\n]+$/i, '')
@@ -5501,25 +5646,25 @@ export const PaymentsPage: React.FC = () => {
 
         // 4. Resolve Effective Submission Date
         const effectiveSubmissionDate =
-          currentInvoice.paymentProofDate ||
+          currentInvoice?.paymentProofDate ||
           linkedClaim?.claimedAt ||
-          linkedPayment?.audit?.claimedAt ||
-          currentInvoice.issueDate;
+          linkedClaim?.handoverDate ||
+          new Date().toISOString();
 
         return (
-          <div className="modal-backdrop" onClick={() => setReviewingProofInvoice(null)}>
+          <div className="modal-backdrop" onClick={() => { setReviewingProofInvoice(null); setReviewingClaim(null); }}>
             <div className="modal-card" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
               <div className="modal-head" style={{ borderBottom: '1px solid var(--line)', padding: '16px 20px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <ShieldCheck size={20} color="var(--brass)" />
                   <h3 style={{ margin: 0, fontSize: '17px' }}>
-                    Verify Offline Payment Proof — {reviewingProofInvoice.id}
+                    Verify Payment Proof — Unit {targetUnit} ({linkedClaim?.id || currentInvoice?.id})
                   </h3>
                 </div>
                 <button
                   type="button"
                   className="btn secondary small"
-                  onClick={() => setReviewingProofInvoice(null)}
+                  onClick={() => { setReviewingProofInvoice(null); setReviewingClaim(null); }}
                 >
                   ✕
                 </button>
@@ -5531,7 +5676,7 @@ export const PaymentsPage: React.FC = () => {
                     <Clock size={15} /> Awaiting Landlord Settlement
                   </div>
                   <div style={{ fontSize: '12px', color: '#78350F', marginTop: '4px' }}>
-                    The resident reported paying offline. Verify that the funds reached your bank or UPI account before approving.
+                    The resident reported paying offline / cash. Verify the details and photo proof below before approving.
                   </div>
                 </div>
 
@@ -5539,19 +5684,25 @@ export const PaymentsPage: React.FC = () => {
                 <div style={{ background: '#FAFAF7', border: '1px solid var(--line)', borderRadius: '6px', padding: '14px', fontSize: '13px', lineHeight: '1.7', marginBottom: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)', paddingBottom: '6px', marginBottom: '6px' }}>
                     <span style={{ color: 'var(--ink-soft)' }}>Resident:</span>
-                    <b>{reviewingProofInvoice.tenant} (Unit {reviewingProofInvoice.unit})</b>
+                    <b>{targetTenant} (Unit {targetUnit})</b>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)', paddingBottom: '6px', marginBottom: '6px' }}>
-                    <span style={{ color: 'var(--ink-soft)' }}>Invoice Amount:</span>
-                    <b style={{ color: 'var(--brass)', fontSize: '15px' }}>{getCurrencySymbol(reviewingProofInvoice.currency) || DEFAULT_CURRENCY_SYMBOL}{reviewingProofInvoice.total?.toLocaleString()}</b>
+                    <span style={{ color: 'var(--ink-soft)' }}>Claimed Amount:</span>
+                    <b style={{ color: 'var(--brass)', fontSize: '15px' }}>{getCurrencySymbol(targetCurrency)}{targetAmount.toLocaleString('en-IN')}</b>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)', paddingBottom: '6px', marginBottom: '6px' }}>
-                    <span style={{ color: 'var(--ink-soft)' }}>UTR / Transfer Ref:</span>
+                    <span style={{ color: 'var(--ink-soft)' }}>UTR / Handover Ref:</span>
                     <b style={{ fontFamily: 'monospace' }}>{effectiveProofRef}</b>
                   </div>
+                  {linkedClaim?.handoverLocation && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)', paddingBottom: '6px', marginBottom: '6px' }}>
+                      <span style={{ color: 'var(--ink-soft)' }}>Location:</span>
+                      <span>{linkedClaim.handoverLocation}</span>
+                    </div>
+                  )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)', paddingBottom: '6px', marginBottom: '6px' }}>
-                    <span style={{ color: 'var(--ink-soft)' }}>Submission Date:</span>
-                    <span>{effectiveSubmissionDate ? new Date(effectiveSubmissionDate).toLocaleString() : 'Recent'}</span>
+                    <span style={{ color: 'var(--ink-soft)' }}>Date:</span>
+                    <span>{effectiveSubmissionDate ? new Date(effectiveSubmissionDate).toLocaleDateString() : 'Today'}</span>
                   </div>
                   {effectiveProofNotes && (
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -5587,7 +5738,7 @@ export const PaymentsPage: React.FC = () => {
                     </div>
                   ) : (
                     <div style={{ padding: '16px', border: '1px dashed var(--line)', borderRadius: '6px', textAlign: 'center', color: 'var(--ink-soft)', fontSize: '12px' }}>
-                      No receipt image attached. Remittance verified via UTR reference only.
+                      No receipt screenshot attached. Claim logged as on-site direct cash handover.
                     </div>
                   )}
                 </div>
@@ -5610,21 +5761,28 @@ export const PaymentsPage: React.FC = () => {
                   type="button"
                   className={`btn secondary small btn-mobile-full ${isRejectingProof ? 'btn-processing' : ''}`}
                   disabled={isRejectingProof || isApprovingProof}
-                  onClick={() => handleRejectProof(reviewingProofInvoice)}
+                  onClick={async () => {
+                    if (currentInvoice) {
+                      await handleRejectProof(currentInvoice);
+                    } else if (linkedClaim) {
+                      const reason = window.prompt('Please enter the reason for declining this claim:');
+                      if (reason && reason.trim()) {
+                        await rejectCashClaim(linkedClaim.id, reason.trim());
+                      }
+                    }
+                    setReviewingProofInvoice(null);
+                    setReviewingClaim(null);
+                  }}
                   style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
                 >
-                  <ButtonProcessing
-                    loading={isRejectingProof}
-                    loadingText="Rejecting..."
-                    defaultText="✕ Reject / Request Re-submission"
-                  />
+                  ✕ Decline / Not Received
                 </button>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   <button
                     type="button"
                     className="btn secondary btn-mobile-full"
                     disabled={isApprovingProof || isRejectingProof}
-                    onClick={() => setReviewingProofInvoice(null)}
+                    onClick={() => { setReviewingProofInvoice(null); setReviewingClaim(null); }}
                   >
                     Close
                   </button>
@@ -5632,15 +5790,18 @@ export const PaymentsPage: React.FC = () => {
                     type="button"
                     className={`btn brass btn-mobile-full ${isApprovingProof ? 'btn-processing' : ''}`}
                     disabled={isApprovingProof || isRejectingProof}
-                    onClick={() => handleApproveProof(reviewingProofInvoice)}
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                    onClick={async () => {
+                      if (currentInvoice) {
+                        await handleApproveProof(currentInvoice);
+                      } else if (linkedClaim) {
+                        await confirmCashClaim(linkedClaim.id);
+                      }
+                      setReviewingProofInvoice(null);
+                      setReviewingClaim(null);
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#16A34A', borderColor: '#16A34A', color: '#fff' }}
                   >
-                    <ButtonProcessing
-                      loading={isApprovingProof}
-                      loadingText="Settling..."
-                      defaultText="Confirm Receipt & Settle"
-                      icon={<CheckCircle size={15} />}
-                    />
+                    <CheckCircle size={15} /> Confirm Receipt & Settle
                   </button>
                 </div>
               </div>
@@ -5743,22 +5904,22 @@ export const PaymentsPage: React.FC = () => {
                 <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                   Export Scope Preview
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-                  <div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: '10px' }}>
+                  <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Invoices to Compile</div>
                     <b style={{ fontSize: '18px', color: modalInvoicesToDownload.length > 0 ? 'var(--brass)' : 'var(--danger)' }}>
                       {modalInvoicesToDownload.length} {modalInvoicesToDownload.length === 1 ? 'Invoice' : 'Invoices'}
                     </b>
                   </div>
-                  <div>
+                  <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Cumulative Value</div>
                     <b style={{ fontSize: '18px', color: 'var(--ink)' }}>
                       {dominantRentCurrency}{modalInvoicesToDownload.reduce((sum, inv) => sum + (inv.total || inv.amount || 0), 0).toLocaleString('en-IN')}
                     </b>
                   </div>
-                  <div style={{ gridColumn: 'span 2' }}>
+                  <div style={{ gridColumn: '1 / -1', minWidth: 0 }}>
                     <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Timeline Reference</div>
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>{modalTimelineLabel}</div>
+                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)', wordBreak: 'break-word' }}>{modalTimelineLabel}</div>
                   </div>
                 </div>
 

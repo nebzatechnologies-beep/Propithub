@@ -1,7 +1,7 @@
 import React from 'react';
 import { Invoice } from '../../types';
 import { useAppData } from '../../context/AppDataContext';
-import { DEFAULT_CURRENCY } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY, getCurrencySymbol } from '../../lib/currencyService';
 
 interface RentalInvoiceDocumentProps {
   invoice: Invoice;
@@ -21,7 +21,7 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
   const ownerBank = (ownerSettings?.paymentMethods as any)?.bank || state.ownerPaymentMethods.bank;
   const ownerUpi = (ownerSettings?.paymentMethods as any)?.upi || state.ownerPaymentMethods.upi;
 
-  const currency = invoice.currency || state.units.find((u) => u.unitNumber === invoice.unit || u.id === invoice.unit)?.currency || DEFAULT_CURRENCY;
+  const currency = getCurrencySymbol(invoice.currency || state.units.find((u) => u.unitNumber === invoice.unit || u.id === invoice.unit)?.currency || DEFAULT_CURRENCY);
   const isDeposit = invoice.invoiceType === 'deposit' || invoice.type === 'deposit';
   const effectiveTemplate = isDeposit ? (ownerSettings?.depositTemplate || ownerSettings?.invoiceTemplate) : ownerSettings?.invoiceTemplate;
 

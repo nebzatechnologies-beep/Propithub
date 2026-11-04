@@ -12,6 +12,7 @@ import {
   Image,
   TextInput,
   RefreshControl,
+  Linking,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -27,6 +28,7 @@ import { TenantMultiPropertySwitcher } from '../components/TenantMultiPropertySw
 import { MobileTenancyRequest, MobileMoveOut } from '../types';
 import { getTenantReminders, DashboardReminder } from '../lib/reminders';
 import { syncDeviceRemindersAsync } from '../lib/notifications';
+import { AddressDisplay } from '../components/AddressDisplay';
 import { downloadOrShareDocument } from '../lib/documentService';
 import { doc, getDoc } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../lib/firebase';
@@ -288,11 +290,17 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
 
   // Unread urgent or pinned announcements
   const activeAnnouncements = useMemo(() => {
-    return (state.announcements || []).filter(
-      (a) =>
-        a.status === 'published' &&
-        !a.acknowledgedBy?.includes(user?.id || currentTenant.id)
-    );
+    return (state.announcements || []).filter((a) => {
+      if (a.status !== 'published') return false;
+      const myIds = new Set<string>();
+      if (user?.id) myIds.add(user.id);
+      if (currentTenant?.id) myIds.add(currentTenant.id);
+      const isAckedByArr = (a.acknowledgedBy || []).some((id) => myIds.has(id));
+      const isAckedByObj = ((a as any).acknowledgments || []).some(
+        (ack: any) => myIds.has(ack.tenantId) || (user?.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+      );
+      return !isAckedByArr && !isAckedByObj;
+    });
   }, [state.announcements, user, currentTenant]);
 
   // Pending invoices to display for the active unit (1-to-1 Web Parity)
@@ -553,7 +561,12 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
               </View>
             </View>
 
-            {tenantReminders.map((reminder) => {
+            <ScrollView
+              style={tenantReminders.length > 2 ? { maxHeight: 220 } : undefined}
+              nestedScrollEnabled={true}
+              showsVerticalScrollIndicator={tenantReminders.length > 2}
+            >
+              {tenantReminders.map((reminder) => {
               const isUrgent = reminder.severity === 'urgent';
               const isPositive = reminder.severity === 'positive';
               const borderColor = isUrgent ? '#EF4444' : isPositive ? '#10B981' : '#F59E0B';
@@ -615,6 +628,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
                 </View>
               );
             })}
+            </ScrollView>
           </View>
         )}
 
@@ -726,38 +740,46 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
           )}
 
         {/* SECTION: Building Announcements (1-to-1 Web Parity) */}
-        {activeAnnouncements.map((a) => {
-          const isUrgent = a.priority === 'urgent' || a.category === 'emergency';
-          return (
-            <View
-              key={a.id}
-              style={[
-                styles.emergencyCard,
-                isUrgent ? { borderLeftColor: '#DC2626', backgroundColor: '#FEF2F2' } : { borderLeftColor: '#2563EB', backgroundColor: '#EFF6FF' },
-              ]}
-            >
-              <View style={styles.emergencyTopRow}>
-                <Feather
-                  name={isUrgent ? 'alert-triangle' : 'bell'}
-                  size={16}
-                  color={isUrgent ? '#DC2626' : '#2563EB'}
-                  style={{ marginRight: 6 }}
-                />
-                <Text style={[styles.emergencyTitle, !isUrgent && { color: '#2563EB' }]}>
-                  {a.title.toUpperCase()}
-                </Text>
-              </View>
-              <Text style={styles.emergencyBody}>{a.body}</Text>
-              <TouchableOpacity
-                style={[styles.ackBtn, isUrgent ? { backgroundColor: '#DC2626' } : { backgroundColor: '#2563EB' }]}
-                onPress={() => acknowledgeAnnouncement(a.id, user?.id || currentTenant.id)}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.ackBtnText}>I Have Read & Acknowledge</Text>
-              </TouchableOpacity>
-            </View>
-          );
-        })}
+        {activeAnnouncements.length > 0 && (
+          <ScrollView
+            style={{ maxHeight: 155, marginBottom: 12 }}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={true}
+          >
+            {activeAnnouncements.map((a) => {
+              const isUrgent = a.priority === 'urgent' || a.category === 'emergency';
+              return (
+                <View
+                  key={a.id}
+                  style={[
+                    styles.emergencyCard,
+                    isUrgent ? { borderLeftColor: '#DC2626', backgroundColor: '#FEF2F2' } : { borderLeftColor: '#2563EB', backgroundColor: '#EFF6FF' },
+                  ]}
+                >
+                  <View style={styles.emergencyTopRow}>
+                    <Feather
+                      name={isUrgent ? 'alert-triangle' : 'bell'}
+                      size={16}
+                      color={isUrgent ? '#DC2626' : '#2563EB'}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text style={[styles.emergencyTitle, !isUrgent && { color: '#2563EB' }]}>
+                      {a.title.toUpperCase()}
+                    </Text>
+                  </View>
+                  <Text style={styles.emergencyBody}>{a.body}</Text>
+                  <TouchableOpacity
+                    style={[styles.ackBtn, isUrgent ? { backgroundColor: '#DC2626' } : { backgroundColor: '#2563EB' }]}
+                    onPress={() => acknowledgeAnnouncement(a.id, user?.id || currentTenant.id)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.ackBtnText}>Read & Acknowledge</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </ScrollView>
+        )}
 
         {/* SECTION 1: Pending Tenancy Invitations Card (1-to-1 Web Parity) */}
         {incomingRequest && (
@@ -1270,11 +1292,13 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
                 {Boolean(activeProperty?.address) && (
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Address</Text>
-                    <Text style={styles.detailValue} numberOfLines={2}>
-                      {typeof activeProperty?.address === 'string'
-                        ? activeProperty.address
-                        : (activeProperty?.address as any)?.formattedAddress || (activeProperty?.address as any)?.street || '—'}
-                    </Text>
+                    <AddressDisplay
+                      address={activeProperty?.address}
+                      fallback="—"
+                      style={{ maxWidth: '65%', justifyContent: 'flex-end' }}
+                      textStyle={styles.detailValue}
+                      numberOfLines={2}
+                    />
                   </View>
                 )}
 
@@ -2075,6 +2099,8 @@ const createStyles = (colors: any, isDark: boolean) =>
       marginBottom: 8,
     },
     ackBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
       alignSelf: 'flex-start',
       backgroundColor: '#DC2626',
       paddingHorizontal: 12,

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Unit, LandingConfig } from '../types';
-import { sanitizeCountry, resolveDisplayLocation } from '../lib/addressUtils';
+import { sanitizeCountry, resolveDisplayLocation, getCleanAddressText } from '../lib/addressUtils';
 
 interface LandingPageProps {
   config: LandingConfig;
@@ -138,24 +138,29 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <div className="loc" style={{ fontWeight: 600, marginTop: '4px' }}>
                     {u.propertyName}
                   </div>
-                  <div
-                    className="loc"
-                    style={{
-                      fontSize: '12.5px',
-                      color: 'var(--ink-soft)',
-                      marginTop: '4px',
-                      lineHeight: '1.4',
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      minHeight: '35px',
-                    }}
-                    title={u.address}
-                  >
-                    {u.address}
-                  </div>
+                  {(() => {
+                    const cleanAddr = getCleanAddressText(u.address, 'Address on file').text;
+                    return (
+                      <div
+                        className="loc"
+                        style={{
+                          fontSize: '12.5px',
+                          color: 'var(--ink-soft)',
+                          marginTop: '4px',
+                          lineHeight: '1.4',
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          minHeight: '35px',
+                        }}
+                        title={cleanAddr}
+                      >
+                        {cleanAddr}
+                      </div>
+                    );
+                  })()}
                   <div
                     className="loc"
                     style={{

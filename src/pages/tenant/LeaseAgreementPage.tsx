@@ -26,6 +26,7 @@ import {
   Home,
   Sparkles,
   AlertTriangle,
+  HandCoins,
 } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
@@ -946,8 +947,16 @@ export const LeaseAgreementPage: React.FC = () => {
               </button>
               <button
                 type="button"
+                className="btn secondary btn-mobile-full"
+                onClick={() => navigate('/tenant/payments?tab=deposit')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                <HandCoins size={15} /> Settle Offline / Cash Handover
+              </button>
+              <button
+                type="button"
                 className="btn brass btn-mobile-full"
-                onClick={() => navigate('/tenant/payments')}
+                onClick={() => navigate('/tenant/payments?tab=deposit')}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
                 <CreditCard size={15} /> Pay Security Deposit →

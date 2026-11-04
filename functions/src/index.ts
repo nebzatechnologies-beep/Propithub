@@ -5594,8 +5594,41 @@ export const onCashHandoverClaimWrite = functions.firestore
 
     // Trigger 1: Tenant submitted cash payment claim awaiting owner confirmation
     const isNewPendingClaim = after.status === 'pending_confirmation' && (!before || before.status !== 'pending_confirmation');
-    if (isNewPendingClaim && ownerId) {
-      const ownerContact = await getUserContact(ownerId);
+    if (isNewPendingClaim) {
+      // 1. Reconcile and update target invoice in Firestore to pending_confirmation
+      if (after.invoiceId || after.unit) {
+        try {
+          const invQuery = after.invoiceId
+            ? db.collection('invoices').doc(after.invoiceId).get()
+            : db.collection('invoices')
+                .where('unit', '==', unit)
+                .where('status', 'in', ['sent', 'unpaid', 'overdue'])
+                .limit(1)
+                .get();
+
+          const invSnap = await invQuery;
+          const invDocs = 'docs' in invSnap ? invSnap.docs : (invSnap.exists ? [invSnap] : []);
+          for (const docRef of invDocs) {
+            await docRef.ref.set(
+              {
+                status: 'pending_confirmation',
+                paymentMethodUsed: 'Cash (Handover)',
+                paymentProofRef: after.notes?.match(/Ref:\s*([^—\n]+)/)?.[1]?.trim() || after.notes || claimId,
+                paymentProofUrl: after.proofPhotoUrl || null,
+                paymentProofNotes: after.notes || null,
+                paymentProofDate: after.claimedAt || new Date().toISOString(),
+              },
+              { merge: true }
+            );
+            functions.logger.info(`[onCashHandoverClaimWrite] Auto-reconciled invoice ${docRef.id} to pending_confirmation`);
+          }
+        } catch (invErr: any) {
+          functions.logger.warn('[onCashHandoverClaimWrite] Auto-reconcile invoice error:', invErr?.message);
+        }
+      }
+
+      if (ownerId) {
+        const ownerContact = await getUserContact(ownerId);
       if (ownerContact) {
         const smsMsg = `Propithub Cash Claim: Tenant ${tenantName} reported cash payment of ₹${amount.toLocaleString()} for Unit ${unit}. Please verify & confirm in your portal: https://propithub.web.app/owner/payments`;
         if (ownerContact.phone) {
@@ -5619,8 +5652,9 @@ export const onCashHandoverClaimWrite = functions.firestore
         }
       }
     }
+  }
 
-    // Trigger 2: Owner confirmed cash payment claim
+  // Trigger 2: Owner confirmed cash payment claim
     const isConfirmed = after.status === 'confirmed' && (!before || before.status !== 'confirmed');
     if (isConfirmed && after.tenantId) {
       const tenantContact = await getUserContact(after.tenantId);

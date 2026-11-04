@@ -574,7 +574,7 @@ export const MOBILE_TOUR_STEPS: Record<UserRole, MobileTourStep[]> = {
         'Get pinged immediately when a property manager or owner assigns an urgent repair task to you.',
       capabilities: [
         'Instant active job counter and dispatch alerts',
-        'Work schedule & shift logging controls',
+        'Direct maintenance queue & work order inspection',
         'Theme and mobile display settings in the More menu',
       ],
       proTip:

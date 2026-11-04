@@ -693,7 +693,7 @@ export const getOwnerReminders = (
     });
   });
 
-  // 4. Offline Payment Proofs Pending Confirmation
+  // 4. Offline Payment Proofs & Cash Handover Claims Pending Confirmation
   const pendingProofs = (state.payments || []).filter((p) => {
     if (p.status !== 'pending_confirmation') return false;
     const unitObj = myUnits.find((u) => u.id === p.unit || u.unitNumber === p.unit);
@@ -703,12 +703,26 @@ export const getOwnerReminders = (
     return matchesFilter(prop.id, unitObj?.currency || prop.currency);
   });
 
-  if (pendingProofs.length > 0) {
+  const pendingCashClaims = (state.cashClaims || []).filter((c) => {
+    if (c.status !== 'pending_confirmation' || c.claimedByRole !== 'tenant') return false;
+    if (c.ownerId && c.ownerId !== ownerId) return false;
+    const unitObj = myUnits.find((u) => u.id === c.unit || u.unitNumber === c.unit);
+    const prop = myProperties.find((pr) => pr.id === (c.propertyId || unitObj?.propertyId));
+    if (!prop) return false;
+    return matchesFilter(prop.id, c.currency || unitObj?.currency || prop.currency);
+  });
+
+  const totalOfflinePendingCount = new Set([
+    ...pendingProofs.map((p) => p.invoiceId || p.id),
+    ...pendingCashClaims.map((c) => c.invoiceId || c.id),
+  ]).size;
+
+  if (totalOfflinePendingCount > 0) {
     reminders.push({
       id: 'owner_pending_proofs',
-      title: `${pendingProofs.length} Offline Payment Proof${pendingProofs.length > 1 ? 's' : ''} Awaiting Verification`,
-      description: `Residents have submitted bank transfer receipts. Verify funds in your bank account and approve to issue official settled receipts.`,
-      severity: 'warning',
+      title: `${totalOfflinePendingCount} Offline Payment & Deposit Proof${totalOfflinePendingCount > 1 ? 's' : ''} Awaiting Verification`,
+      description: `Residents have logged cash / direct transfer payments awaiting your confirmation. Verify funds and approve to reconcile invoice and lease records.`,
+      severity: 'urgent',
       icon: 'credit-card',
       actionLabel: 'Review & Verify Proofs',
       actionLink: '/owner/payments',
@@ -915,6 +929,26 @@ export const getOwnerReminders = (
     });
   }
 
+  // 12. New Inquiries for Available Listings
+  const newOwnerEnquiries = (state.enquiries || []).filter(
+    (e) => e.status === 'new' && (e.ownerId === ownerId || myPropertyIds.has(e.propertyId))
+  );
+  if (newOwnerEnquiries.length > 0) {
+    const firstEnq = newOwnerEnquiries[0];
+    reminders.push({
+      id: `owner_new_enquiry_${firstEnq.id}`,
+      title: `Action Required: New Enquiry - Unit ${firstEnq.unitNumber}`,
+      description: `${firstEnq.prospectName} (${firstEnq.prospectPhone}) submitted an enquiry for Unit ${firstEnq.unitNumber} (${firstEnq.propertyName}). Direct phone contact required.`,
+      severity: 'urgent',
+      icon: 'bell',
+      actionLabel: 'View Enquiry Details',
+      actionLink: '/owner/leasing?tab=enquiries',
+      category: 'occupancy',
+      unitNumber: firstEnq.unitNumber,
+      propertyName: firstEnq.propertyName,
+    });
+  }
+
   // Sort by priority
   const priorityOrder: Record<ReminderSeverity, number> = {
     urgent: 1,
@@ -994,7 +1028,11 @@ export const getManagerReminders = (
     return true;
   });
 
+  const seenApprovalUnitKeys = new Set<string>();
   pendingApprovalLeases.forEach((a) => {
+    const key = `${a.propertyId || ''}_${a.unit}`;
+    if (seenApprovalUnitKeys.has(key)) return;
+    seenApprovalUnitKeys.add(key);
     reminders.push({
       id: `manager_lease_approve_${a.id}`,
       title: `Signed Lease Awaiting Review: Unit ${a.unit}`,
@@ -1021,6 +1059,31 @@ export const getManagerReminders = (
       actionLabel: 'View Managed Units',
       actionLink: '/manager/properties',
       category: 'occupancy',
+    });
+  }
+
+  // 6. New Inquiries for Managed Units
+  const newManagerEnquiries = (state.enquiries || []).filter((e) => {
+    if (e.status !== 'new') return false;
+    if (e.managerId && e.managerId === user.id) return true;
+    if (e.ownerId && ownerId && e.ownerId === ownerId) return true;
+    if (myPropertyIds.has(e.propertyId)) return true;
+    return false;
+  });
+
+  if (newManagerEnquiries.length > 0) {
+    const firstEnq = newManagerEnquiries[0];
+    reminders.push({
+      id: `manager_new_enquiry_${firstEnq.id}`,
+      title: `Action Required: New Enquiry - Unit ${firstEnq.unitNumber}`,
+      description: `${firstEnq.prospectName} (${firstEnq.prospectPhone}) submitted an enquiry for Unit ${firstEnq.unitNumber} (${firstEnq.propertyName}). Direct phone contact required.`,
+      severity: 'urgent',
+      icon: 'bell',
+      actionLabel: 'View Enquiry Details',
+      actionLink: '/manager/leasing?tab=enquiries',
+      category: 'occupancy',
+      unitNumber: firstEnq.unitNumber,
+      propertyName: firstEnq.propertyName,
     });
   }
 
@@ -1086,17 +1149,19 @@ export const getStaffReminders = (
     const rawCurr = (t as any).currency || unitCurr || (t.propertyId ? state.properties.find((p) => p.id === t.propertyId)?.currency : null);
     const currSym = getCurrencySymbol(rawCurr) || DEFAULT_CURRENCY_SYMBOL;
     const eventTime = (t as any).payment?.submittedAt || (t as any).updatedAt || t.created || new Date().toISOString();
+    const feeAmount = t.payment?.amount || (t as any).laborCost || (t as any).estimatedCost || 0;
+    const amountText = feeAmount > 0 ? `${currSym}${feeAmount.toLocaleString()}` : 'payment proof';
     reminders.push({
       id: `staff_payment_pending_${t.id}`,
       title: `Task Fee Submitted: Unit ${t.unit}`,
-      description: `${payer} submitted payment proof for ${currSym}${(t.payment.amount || 0).toLocaleString()} (${t.issue}). Confirm receipt to settle.`,
+      description: `${payer} submitted ${amountText} (${t.issue}). Confirm receipt to settle.`,
       severity: 'warning',
       icon: 'credit-card',
       actionLabel: 'Confirm Payment',
       actionLink: '/staff/payments',
       category: 'approval',
       unitNumber: t.unit,
-      amount: t.payment.amount || 0,
+      amount: feeAmount,
       currency: currSym,
       dueDate: eventTime,
       metadata: { eventTime },

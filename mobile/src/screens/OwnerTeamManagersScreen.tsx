@@ -22,6 +22,7 @@ import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { MobilePropertyManager, MobileManagerPayout } from '../types';
 import { usePlanLimits, ResourceQuotaType } from '../hooks/usePlanLimits';
 import { PlanLimitModal } from '../components/PlanLimitModal';
+import { getCleanAddressText } from '../lib/addressUtils';
 
 export interface OwnerTeamManagersScreenProps {
   initialTab?: 'managers' | 'payouts';
@@ -111,12 +112,27 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
 
   // Disburse / Record Manager Payout Modal
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
-  const [payingManager, setPayingManager] = useState<{ id: string; name: string } | null>(null);
+  const [payingManager, setPayingManager] = useState<any | null>(null);
   const [payMonth, setPayMonth] = useState('October 2026');
   const [payAmount, setPayAmount] = useState(viewCurrency === 'INR' ? '25000' : '2500');
   const [payMethod, setPayMethod] = useState<'Bank Transfer' | 'UPI' | 'Cash'>('Bank Transfer');
   const [payUtr, setPayUtr] = useState('');
   const [payNotes, setPayNotes] = useState('Monthly management fee & operations commission');
+
+  const payingManagerProp = useMemo(() => {
+    if (!payingManager) return null;
+    return (
+      state.properties.find(
+        (p) =>
+          p.id === payingManager.propertyId ||
+          p.id === payingManager.assignedPropertyId ||
+          p.assignedManagerId === payingManager.id ||
+          p.name === payingManager.assignedProperty
+      ) || null
+    );
+  }, [payingManager, state.properties]);
+
+  const payoutCurrency = payingManagerProp?.currency || payingManager?.currency || viewCurrency;
 
   // Payout calculation
   const totalPaidDisbursed = myPayouts
@@ -234,7 +250,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
       ownerId: user?.id || 'owner-1',
       month: payMonth.trim() || 'October 2026',
       amount: numAmount,
-      currency: viewCurrency,
+      currency: payoutCurrency,
       status: 'paid',
       paymentMethod: payMethod,
       utrReference: payUtr.trim() || `UTR-${Date.now().toString().slice(-6)}`,
@@ -248,7 +264,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
 
     Alert.alert(
       'Payout Recorded ✓',
-      `Disbursed ${format(numAmount, viewCurrency)} to ${payingManager.name} for ${payMonth}. Ref: ${newPayout.utrReference}`,
+      `Disbursed ${format(numAmount, payoutCurrency)} to ${payingManager.name} for ${payMonth}. Ref: ${newPayout.utrReference}`,
       [{ text: 'OK' }]
     );
   };
@@ -482,8 +498,23 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
               </View>
             </View>
 
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionHeading}>Payout History</Text>
+            <View style={[styles.sectionHeaderRow, { justifyContent: 'space-between', alignItems: 'center' }]}>
+              <Text style={styles.sectionHeading}>Payout History ({myPayouts.length})</Text>
+              <TouchableOpacity
+                style={styles.recordPayoutBtn}
+                onPress={() => {
+                  if (myManagers.length > 0) {
+                    setPayingManager(myManagers[0]);
+                    setIsPayModalOpen(true);
+                  } else {
+                    Alert.alert('No Managers', 'Please add a property manager first.');
+                  }
+                }}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="add-circle" size={15} color="#FFFFFF" style={{ marginRight: 4 }} />
+                <Text style={styles.recordPayoutBtnText}>Disburse Pay</Text>
+              </TouchableOpacity>
             </View>
 
             {myPayouts.length === 0 ? (
@@ -705,10 +736,50 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.fieldLabel}>Select Property Manager *</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 6 }}>
+                {myManagers.map((mgr) => {
+                  const isSelected = payingManager?.id === mgr.id;
+                  const assignedProp = state.properties.find(
+                    (p) =>
+                      p.id === mgr.propertyId ||
+                      p.id === (mgr as any).assignedPropertyId ||
+                      p.assignedManagerId === mgr.id ||
+                      p.name === (mgr as any).assignedProperty ||
+                      (mgr.assignedProperties && mgr.assignedProperties.includes(p.id))
+                  );
+                  const propCurr = assignedProp?.currency || (mgr as any).currency || viewCurrency;
+                  return (
+                    <TouchableOpacity
+                      key={mgr.id}
+                      style={[
+                        styles.managerSelectChip,
+                        isSelected && styles.managerSelectChipActive,
+                      ]}
+                      onPress={() => {
+                        setPayingManager(mgr);
+                        const salary = (mgr as any).monthlySalary || (mgr as any).compensationAmount;
+                        if (salary) {
+                          setPayAmount(String(salary));
+                        }
+                      }}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={[styles.managerSelectChipName, isSelected && { color: '#059669', fontWeight: '700' }]}>
+                        {mgr.name}
+                      </Text>
+                      <Text style={styles.managerSelectChipProp}>
+                        {assignedProp?.name || (mgr as any).assignedProperty || 'Unassigned'} ({propCurr})
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
               <Text style={styles.fieldLabel}>Billing Month</Text>
               <TextInput style={styles.input} value={payMonth} onChangeText={setPayMonth} />
 
-              <Text style={styles.fieldLabel}>Payout Amount ({viewCurrency})</Text>
+              <Text style={styles.fieldLabel}>Payout Amount ({payoutCurrency})</Text>
               <TextInput
                 style={styles.input}
                 value={payAmount}
@@ -811,7 +882,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
               {/* List of Properties */}
               {myProperties.map((prop) => {
                 const isSelected = selectedReassignPropId === prop.id;
-                const propAddr = typeof prop.address === 'string' ? prop.address : prop.address?.formattedAddress || prop.address?.city || 'Property';
+                const propAddr = getCleanAddressText(prop.address, 'Property').text;
                 return (
                   <TouchableOpacity
                     key={prop.id}
@@ -1516,5 +1587,41 @@ const createStyles = (colors: any, isDark: boolean) =>
     methodChipTextActive: {
       color: isDark ? '#34D399' : '#059669',
       fontWeight: '700',
+    },
+    recordPayoutBtn: {
+      backgroundColor: '#059669',
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 8,
+    },
+    recordPayoutBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    managerSelectChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      marginRight: 8,
+    },
+    managerSelectChipActive: {
+      borderColor: '#059669',
+      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+    },
+    managerSelectChipName: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.ink,
+    },
+    managerSelectChipProp: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 2,
     },
   });

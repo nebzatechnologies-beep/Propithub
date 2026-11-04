@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
+import { useCurrency } from '../../context/CurrencyContext';
 import { UserProfile } from '../../types';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
@@ -7,6 +8,7 @@ import { ButtonProcessing } from '../../components/common/Spinner';
 
 export const MasterUsersPage: React.FC = () => {
   const { state, updateOwnerPlan, markUserReminded, updateOwnerTrial, deleteUserAccount, logCommunication, showToast } = useAppData();
+  const { viewCurrency, convert, format } = useCurrency();
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [selectedOwner, setSelectedOwner] = useState<UserProfile | null>(null);
@@ -239,7 +241,8 @@ export const MasterUsersPage: React.FC = () => {
                       const activePlanName = ownerSettings?.planName || u.plan || 'Growth';
                       const planObj = state.plans.find((p) => p.name.toLowerCase() === activePlanName.toLowerCase());
                       const planPrice = planObj ? planObj.price : 79;
-                      const userMrr = u.role === 'owner' ? (isTrial ? '$0 (Trial)' : `$${planPrice}`) : '—';
+                      const convertedPrice = convert(planPrice, 'USD', viewCurrency);
+                      const userMrr = u.role === 'owner' ? (isTrial ? `${format(0, viewCurrency)} (Trial)` : format(convertedPrice, viewCurrency)) : '—';
                       const isPastDue = u.status === 'past_due' || (u.role === 'owner' && !hasPaidInvoices && ownerSettings?.planStatus === 'expired');
 
                       return (
@@ -365,7 +368,8 @@ export const MasterUsersPage: React.FC = () => {
                 const activePlanName = ownerSettings?.planName || u.plan || 'Growth';
                 const planObj = state.plans.find((p) => p.name.toLowerCase() === activePlanName.toLowerCase());
                 const planPrice = planObj ? planObj.price : 79;
-                const userMrr = u.role === 'owner' ? (isTrial ? '$0 (Trial)' : `$${planPrice}`) : '—';
+                const convertedPrice = convert(planPrice, 'USD', viewCurrency);
+                const userMrr = u.role === 'owner' ? (isTrial ? `${format(0, viewCurrency)} (Trial)` : format(convertedPrice, viewCurrency)) : '—';
                 const isPastDue = u.status === 'past_due' || (u.role === 'owner' && ownerSettings?.planStatus === 'expired');
 
                 const cleanName = (u.displayName || u.email?.split('@')[0] || 'User').replace(/PropitHubHave/gi, 'Propithub');

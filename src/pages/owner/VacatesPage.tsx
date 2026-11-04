@@ -9,6 +9,7 @@ import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { Spinner, ButtonProcessing } from '../../components/common/Spinner';
 import { DEFAULT_CURRENCY, normalizeCurrencyCode, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
 
 export const DEFAULT_INSPECTION_ITEMS: MoveOutAmenityCheck[] = [
   { room: 'Living Room', item: 'Paint, Walls & Ceilings', amenity: 'Paint, Walls & Ceilings', condition: 'good', deduction: 0, photos: [], notes: '' },
@@ -31,6 +32,7 @@ const DEFAULT_AMENITIES = [
 export const VacatesPage: React.FC = () => {
   const { state, updateState, saveMoveout, createDepositSettlement, executeDepositRefund, submitCashClaim, showToast } = useAppData();
   const { user } = useAuth();
+  const { viewCurrency, convert, format } = useCurrency();
   const ownerId = user?.id || '';
 
   // Owner initiate notice modal state
@@ -730,20 +732,21 @@ export const VacatesPage: React.FC = () => {
     };
 
     const targetPropId = (targetMoveout as any).propertyId || targetMoveout.propertyId;
+    const cleanUnitStr = (s?: string) => (s || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*|-/gi, '').trim();
+
     // Resolve unit: scoped to owner's units only
     const targetUnit =
       myUnits.find((u) => u.id === targetMoveout.unit) ||
       myUnits.find(
         (u) =>
-          u.unitNumber === targetMoveout.unit &&
+          cleanUnitStr(u.unitNumber) === cleanUnitStr(targetMoveout.unit) &&
           (!targetPropId || u.propertyId === targetPropId)
       ) ||
+      myUnits.find((u) => cleanUnitStr(u.unitNumber) === cleanUnitStr(targetMoveout.unit)) ||
       (targetMoveout.tenantId
         ? myUnits.find((u) => u.currentTenantId === targetMoveout.tenantId)
         : undefined);
     const targetUnitId = targetUnit?.id;
-
-    const cleanUnitStr = (s?: string) => (s || '').toLowerCase().replace(/unit\s*|-/g, '').trim();
 
     // Resolve ALL active and future renewal agreements for this specific vacated unit only
     const matchedAgreements = myAgreements.filter((a) => {
@@ -1021,16 +1024,18 @@ export const VacatesPage: React.FC = () => {
     if (isFirebaseConfigured) {
       try {
         await setDoc(doc(db, 'moveouts', targetMoveout.id), updatedMoveout, { merge: true });
-        if (targetUnitId) {
-          await setDoc(doc(db, 'units', targetUnitId), { status: 'vacant', tenant: null, currentTenantId: null }, { merge: true });
-          if (targetUnit?.propertyId) {
+        const finalUnitId = targetUnitId || targetUnit?.id;
+        if (finalUnitId) {
+          await setDoc(doc(db, 'units', finalUnitId), { status: 'vacant', tenant: null, currentTenantId: null }, { merge: true });
+          const propId = targetUnit?.propertyId || targetPropId;
+          if (propId) {
             const propUnits = state.units
-              .map((u) => (u.id === targetUnitId ? { ...u, status: 'vacant' as const } : u))
-              .filter((u) => u.propertyId === targetUnit.propertyId);
+              .map((u) => (u.id === finalUnitId ? { ...u, status: 'vacant' as const } : u))
+              .filter((u) => u.propertyId === propId);
             const occ = propUnits.filter((u) => u.status === 'occupied').length;
             const total = propUnits.length || 1;
             await setDoc(
-              doc(db, 'properties', targetUnit.propertyId),
+              doc(db, 'properties', propId),
               {
                 occupied: occ,
                 unitCount: total,
@@ -1221,6 +1226,11 @@ export const VacatesPage: React.FC = () => {
                         <td>
                           {getCurrencySymbol(m.currency)}
                           {(m.deposit ?? 0).toLocaleString()}
+                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(m.currency || DEFAULT_CURRENCY) && (
+                            <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
+                              ~{format(convert(m.deposit || 0, m.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)}
+                            </span>
+                          )}
                         </td>
                         <td>
                           {(() => {
@@ -1480,7 +1490,14 @@ export const VacatesPage: React.FC = () => {
                       </div>
                       <div>
                         <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Deposit Held</div>
-                        <b style={{ color: 'var(--ledger)' }}>{getCurrencySymbol(m.currency)}{(m.deposit ?? 0).toLocaleString()}</b>
+                        <b style={{ color: 'var(--ledger)' }}>
+                          {getCurrencySymbol(m.currency)}{(m.deposit ?? 0).toLocaleString()}
+                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(m.currency || DEFAULT_CURRENCY) && (
+                            <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '4px' }}>
+                              (~{format(convert(m.deposit || 0, m.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
+                            </span>
+                          )}
+                        </b>
                       </div>
                       <div>
                         <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Inspection</div>

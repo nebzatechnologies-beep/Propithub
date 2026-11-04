@@ -206,7 +206,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
     <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 1200 }}>
       <div
         className="modal"
-        style={{ maxWidth: '640px', width: '92%', maxHeight: '90vh', overflowY: 'auto' }}
+        style={{ maxWidth: '640px', width: '100%', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
@@ -575,7 +575,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
                       Landlord Refund Disbursement Details
                     </span>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', fontSize: '13px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '10px', fontSize: '13px' }}>
                     <div>
                       <span style={{ color: 'var(--ink-soft)', fontSize: '11.5px', display: 'block' }}>Disbursed Amount</span>
                       <b style={{ color: '#15803D', fontSize: '15px' }}>
@@ -697,7 +697,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))',
                   gap: '8px',
                   background: 'var(--surface-sunken, #F4F4F5)',
                   padding: '4px',

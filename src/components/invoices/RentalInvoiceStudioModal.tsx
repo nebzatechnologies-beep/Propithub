@@ -23,7 +23,8 @@ import {
 } from 'lucide-react';
 import { getDaysFromNowString, getTodayDateString } from '../../lib/dates';
 import { ButtonProcessing } from '../common/Spinner';
-import { DEFAULT_CURRENCY , DEFAULT_CURRENCY_SYMBOL } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
 import { downloadSingleInvoicePDF } from '../../lib/pdf';
 
 interface RentalInvoiceStudioModalProps {
@@ -56,6 +57,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
   ownerId,
 }) => {
   const { state, updateState, saveInvoice, markInvoicePaid, showToast } = useAppData();
+  const { viewCurrency } = useCurrency();
   const [isSavingInvoice, setIsSavingInvoice] = useState(false);
   const [isMarkingPaid, setIsMarkingPaid] = useState(false);
 
@@ -63,6 +65,18 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
   const ownerSettings = state.ownerSettings[ownerId];
   const ownerBank = (ownerSettings?.paymentMethods as any)?.bank || state.ownerPaymentMethods.bank;
   const ownerUpi = (ownerSettings?.paymentMethods as any)?.upi || state.ownerPaymentMethods.upi;
+
+  // Accurately determine currency symbol based on unit, property, owner preference, or viewCurrency
+  const resolveCurrencyForUnit = (targetUnit?: any): string => {
+    if (targetUnit?.currency) return getCurrencySymbol(targetUnit.currency);
+    const targetProp = targetUnit
+      ? state.properties.find((p) => p.id === targetUnit.propertyId || p.name === targetUnit.propertyName)
+      : null;
+    if (targetProp?.currency) return getCurrencySymbol(targetProp.currency);
+    if ((ownerSettings as any)?.preferredCurrency) return getCurrencySymbol((ownerSettings as any).preferredCurrency);
+    if (viewCurrency) return getCurrencySymbol(viewCurrency);
+    return DEFAULT_CURRENCY_SYMBOL;
+  };
 
   // Active Tab: 'edit' or 'preview'
   const [activeTab, setActiveTab] = useState<'edit' | 'preview'>(
@@ -197,7 +211,11 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
         setUpiId(initialInvoice.bankDetails.upiId || upiId);
       }
 
-      setCurrency(initialInvoice.currency || DEFAULT_CURRENCY_SYMBOL);
+      const matchedUnit = myUnits.find((u) => u.id === initialInvoice.unit || u.unitNumber === initialInvoice.unit);
+      const resolvedCurr = initialInvoice.currency
+        ? getCurrencySymbol(initialInvoice.currency)
+        : resolveCurrencyForUnit(matchedUnit);
+      setCurrency(resolvedCurr);
       setTermsAndConditions(initialInvoice.termsAndConditions || (isDep ? DEFAULT_DEPOSIT_TERMS : DEFAULT_RENT_TERMS));
       setNotes(initialInvoice.notes || 'Thank you for your prompt tenancy settlement.');
       setSignatoryName(initialInvoice.signatoryName || 'Authorized Property Manager');
@@ -226,8 +244,8 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
       setRefundTimelineDays(
         effTemplate?.refundTimelineDays || 14
       );
-      const matchingUnit = myUnits.find((u) => u.id === selectedUnitId || u.unitNumber === selectedUnitId);
-      if (matchingUnit?.currency) setCurrency(matchingUnit.currency);
+
+
       if (effTemplate?.issuerName) setIssuerName(effTemplate.issuerName);
       if (effTemplate?.issuerTaxNo) setIssuerTaxNo(effTemplate.issuerTaxNo);
       if (effTemplate?.issuerAddress) setIssuerAddress(effTemplate.issuerAddress);
@@ -250,6 +268,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
         setTenantId(defaultUnit.currentTenantId || '');
         setUnitNumber(defaultUnit.unitNumber || defaultUnit.id);
         setPropertyName(defaultUnit.propertyName || '');
+        setCurrency(resolveCurrencyForUnit(defaultUnit));
 
         const matchedTenant = state.tenants.find((t) => t.id === defaultUnit.currentTenantId || t.name === tName);
         if (matchedTenant) {
@@ -273,6 +292,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
         setTenantId('');
         setUnitNumber('');
         setPropertyName('');
+        setCurrency(resolveCurrencyForUnit());
         setItems([
           {
             description: isDep ? 'Refundable Security Deposit' : 'Monthly Rent',
@@ -310,6 +330,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
       setTenantId(unitObj.currentTenantId || '');
       setUnitNumber(unitObj.unitNumber || unitObj.id);
       setPropertyName(unitObj.propertyName || '');
+      setCurrency(resolveCurrencyForUnit(unitObj));
 
       const matchedTenant = state.tenants.find((t) => t.id === unitObj.currentTenantId || t.name === tName);
       if (matchedTenant) {
@@ -829,14 +850,42 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
                     <Percent size={16} color="var(--brass)" />
                     <b style={{ fontSize: '14px' }}>4. Itemized Charges, Taxes & Discounts</b>
                   </div>
-                  <button
-                    type="button"
-                    className="btn secondary small"
-                    onClick={handleAddItem}
-                    style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-                  >
-                    <Plus size={14} /> Add Line Item
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Currency:</span>
+                      <select
+                        value={currency}
+                        onChange={(e) => setCurrency(e.target.value)}
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          borderRadius: '4px',
+                          border: '1px solid var(--line-strong)',
+                          background: 'var(--surface)',
+                          color: 'var(--ink)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <option value="₹">₹ (INR)</option>
+                        <option value="$">$ (USD)</option>
+                        <option value="€">€ (EUR)</option>
+                        <option value="£">£ (GBP)</option>
+                        <option value="AED">AED</option>
+                        <option value="S$">S$ (SGD)</option>
+                        <option value="CA$">CA$ (CAD)</option>
+                        <option value="A$">A$ (AUD)</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      onClick={handleAddItem}
+                      style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+                    >
+                      <Plus size={14} /> Add Line Item
+                    </button>
+                  </div>
                 </div>
                 <div className="panel-body" style={{ padding: '16px 18px' }}>
                   {/* Line Items List */}
@@ -1242,6 +1291,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
                     downloadSingleInvoicePDF({
                       id: invoiceId || 'INV-PREVIEW',
                       ownerId,
+                currency: currency || DEFAULT_CURRENCY_SYMBOL,
                       tenant: tenantName || 'Resident',
                       tenantId,
                       unit: unitNumber || 'Premises',
@@ -1313,6 +1363,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
               invoice={{
                 id: invoiceId || 'INV-PREVIEW',
                 ownerId,
+                currency: currency || DEFAULT_CURRENCY_SYMBOL,
                 tenant: tenantName,
                 tenantId,
                 unit: unitNumber,

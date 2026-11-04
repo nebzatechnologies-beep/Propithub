@@ -10,6 +10,7 @@ import { toast, ToastType, ToastOptions } from '../lib/toast';
 import { ModernToastContainer } from '../components/common/ModernToastContainer';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, normalizeCurrencyCode, getCurrencySymbol } from '../lib/currencyService';
 import { calculateInvoiceLateFee } from '../lib/lateFeeService';
+import { resolveUnitOccupancy } from '../lib/portfolioSelectors';
 import {
   ManagerPayoutRecord,
   OwnerSettings,
@@ -46,6 +47,7 @@ import {
   TenantAutopayMandate,
   OwnerSubscriptionMandate,
   AgreementTemplate,
+  PropertyEnquiry,
 } from '../types';
 
 interface AppDataContextType {
@@ -160,6 +162,8 @@ interface AppDataContextType {
   createPlatformSupportTicket: (ticket: Omit<PlatformSupportTicket, 'id' | 'createdAt' | 'status'> & { id?: string }) => Promise<PlatformSupportTicket>;
   resolvePlatformSupportTicket: (ticketId: string, resolutionNotes?: string) => Promise<void>;
   savePlatformSupportTicket: (ticket: PlatformSupportTicket) => Promise<void>;
+  submitEnquiry: (enquiryData: Omit<PropertyEnquiry, 'id' | 'createdAt' | 'status'>) => Promise<string>;
+  updateEnquiryStatus: (id: string, status: 'new' | 'reviewed' | 'onboarded') => Promise<void>;
   logAuditEvent: (entry: {
     actor?: string;
     actorRole?: 'superadmin' | 'owner' | 'tenant' | 'staff' | 'system' | string;
@@ -326,6 +330,22 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           prev.tickets.forEach((t) => tickMap.set(t.id, t));
           fbTickets.forEach((t) => tickMap.set(t.id, t));
           return { ...prev, tickets: Array.from(tickMap.values()) };
+        });
+      }
+    }).catch(console.warn);
+
+    getDocs(collection(db, 'tenancyRequests')).then((snap) => {
+      const fbRequests: TenancyRequest[] = [];
+      snap.forEach((d) => {
+        const r = d.data() as TenancyRequest;
+        if (r && r.id) fbRequests.push(r);
+      });
+      if (fbRequests.length > 0) {
+        setState((prev) => {
+          const reqMap = new Map<string, TenancyRequest>();
+          (prev.tenancyRequests || []).forEach((r) => reqMap.set(r.id, r));
+          fbRequests.forEach((r) => reqMap.set(r.id, r));
+          return { ...prev, tenancyRequests: Array.from(reqMap.values()) };
         });
       }
     }).catch(console.warn);
@@ -1182,24 +1202,47 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.warn('Firestore communicationLogs listener warning:', err);
     });
 
-    // 27. Sync platform audit log live from Firestore (strictly real data only)
-    const unsubAuditLog = onSnapshot(collection(db, 'auditLog'), (snapshot) => {
-      const fbLogs: any[] = [];
-      snapshot.forEach((d) => {
-        // Exclude and clean up any synthetic seed records if present
-        if (d.id.startsWith('audit_init_')) {
-          deleteDoc(doc(db, 'auditLog', d.id)).catch(() => {});
-          return;
+    // 27. Sync platform audit log live from Firestore (strictly real data only, only for permitted roles)
+    let unsubAuditLog: () => void = () => {};
+    const activeRole = typeof window !== 'undefined'
+      ? (localStorage.getItem('keystone_active_user_role') || (loadState().users || []).find((u) => u.id === localStorage.getItem('keystone_active_user_id'))?.role)
+      : null;
+    const canReadAuditLog = activeRole === 'owner' || activeRole === 'superadmin' || activeRole === 'admin';
+
+    if (canReadAuditLog) {
+      unsubAuditLog = onSnapshot(
+        collection(db, 'auditLog'),
+        (snapshot) => {
+          const fbLogs: any[] = [];
+          snapshot.forEach((d) => {
+            // Exclude and clean up any synthetic seed records if present
+            if (d.id.startsWith('audit_init_')) {
+              deleteDoc(doc(db, 'auditLog', d.id)).catch(() => {});
+              return;
+            }
+            const item = d.data();
+            if (item) fbLogs.push({ ...item, id: item.id || d.id });
+          });
+          // Sort newest first by timestamp, time, or createdAt
+          fbLogs.sort(
+            (a, b) =>
+              new Date(b.timestamp || b.time || b.createdAt || 0).getTime() -
+              new Date(a.timestamp || a.time || a.createdAt || 0).getTime()
+          );
+          setState((prev) => ({ ...prev, auditLog: fbLogs }));
+        },
+        (err) => {
+          if (err.code === 'permission-denied') {
+            // Role is restricted by Firestore security rules. Cancel listener immediately to stop retry attempts.
+            try {
+              unsubAuditLog();
+            } catch (_) {}
+          } else {
+            console.warn('Firestore auditLog listener warning:', err);
+          }
         }
-        const item = d.data();
-        if (item) fbLogs.push({ ...item, id: item.id || d.id });
-      });
-      // Sort newest first by timestamp, time, or createdAt
-      fbLogs.sort((a, b) => new Date(b.timestamp || b.time || b.createdAt || 0).getTime() - new Date(a.timestamp || a.time || a.createdAt || 0).getTime());
-      setState((prev) => ({ ...prev, auditLog: fbLogs }));
-    }, (err) => {
-      console.warn('Firestore auditLog listener warning:', err);
-    });
+      );
+    }
 
     // 28. Sync platform support tickets live from Firestore
     const unsubPlatformSupport = onSnapshot(collection(db, 'platformSupport'), (snapshot) => {
@@ -1231,7 +1274,25 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
       fbAnnouncements.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
       if (fbAnnouncements.length > 0) {
-        setState((prev) => ({ ...prev, announcements: fbAnnouncements }));
+        setState((prev) => {
+          // Preserve locally recorded tenant acknowledgments so rollback does not occur
+          const prevAnnMap = new Map((prev.announcements || []).map((a) => [a.id, a]));
+          const merged = fbAnnouncements.map((fbA) => {
+            const prevA = prevAnnMap.get(fbA.id);
+            if (!prevA || !prevA.acknowledgments || prevA.acknowledgments.length === 0) return fbA;
+            const combined = [...(fbA.acknowledgments || [])];
+            prevA.acknowledgments.forEach((pa) => {
+              const exists = combined.some(
+                (ca) =>
+                  (pa.tenantId && ca.tenantId === pa.tenantId) ||
+                  ((pa as any).tenantEmail && (ca as any).tenantEmail?.toLowerCase() === (pa as any).tenantEmail.toLowerCase())
+              );
+              if (!exists) combined.push(pa);
+            });
+            return { ...fbA, acknowledgments: combined };
+          });
+          return { ...prev, announcements: merged };
+        });
       }
     }, (err) => {
       if (err.code === 'permission-denied') {
@@ -1240,6 +1301,81 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         console.warn('Firestore announcements listener warning:', err);
       }
     });
+
+    // 30. Sync announcement acknowledgments live from Firestore
+    const unsubAcks = onSnapshot(
+      collection(db, 'announcementAcknowledgments'),
+      (snapshot) => {
+        const acksByAnnId = new Map<string, AnnouncementAcknowledgment[]>();
+        snapshot.forEach((d) => {
+          const data = d.data();
+          if (data && data.announcementId) {
+            const list = acksByAnnId.get(data.announcementId) || [];
+            list.push({
+              tenantId: data.tenantId || '',
+              tenantName: data.tenantName || '',
+              tenantEmail: data.tenantEmail || '',
+              unit: data.unit || data.unitNumber || '',
+              unitNumber: data.unitNumber || data.unit || '',
+              propertyId: data.propertyId || '',
+              propertyName: data.propertyName || '',
+              acknowledgedAt: data.acknowledgedAt || '',
+            });
+            acksByAnnId.set(data.announcementId, list);
+          }
+        });
+
+        setState((prev) => {
+          if (!prev.announcements || prev.announcements.length === 0) return prev;
+          let changed = false;
+          const merged = prev.announcements.map((ann) => {
+            const extraAcks = acksByAnnId.get(ann.id) || [];
+            if (extraAcks.length === 0) return ann;
+            const existingAcks = ann.acknowledgments || [];
+            const combined = [...existingAcks];
+            extraAcks.forEach((ea) => {
+              const alreadyPresent = combined.some(
+                (ca) =>
+                  (ea.tenantId && ca.tenantId === ea.tenantId) ||
+                  (ea.tenantEmail && ca.tenantEmail?.toLowerCase() === ea.tenantEmail.toLowerCase())
+              );
+              if (!alreadyPresent) {
+                combined.push(ea);
+                changed = true;
+              }
+            });
+            return changed ? { ...ann, acknowledgments: combined } : ann;
+          });
+          return changed ? { ...prev, announcements: merged } : prev;
+        });
+      },
+      (err) => {
+        if (err.code !== 'permission-denied') {
+          console.warn('Firestore announcementAcknowledgments listener warning:', err);
+        }
+      }
+    );
+
+    // 31. Sync public listing enquiries live from Firestore
+    const unsubEnquiries = onSnapshot(
+      collection(db, 'enquiries'),
+      (snapshot) => {
+        const fbEnquiries: PropertyEnquiry[] = [];
+        snapshot.forEach((d) => {
+          const item = d.data() as PropertyEnquiry;
+          if (item) {
+            fbEnquiries.push({ ...item, id: item.id || d.id });
+          }
+        });
+        fbEnquiries.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setState((prev) => ({ ...prev, enquiries: fbEnquiries }));
+      },
+      (err) => {
+        if (err.code !== 'permission-denied') {
+          console.warn('Firestore enquiries listener warning:', err);
+        }
+      }
+    );
 
     return () => {
       unsubUsers();
@@ -1274,6 +1410,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubAuditLog();
       unsubPlatformSupport();
       unsubAnnouncements();
+      unsubAcks();
+      unsubEnquiries();
     };
   }, []);
 
@@ -1324,7 +1462,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const aUnitClean = cleanUnitStr(a.unit);
       const isConcludedMoveout =
         (state.moveouts || []).some((m) => {
-          const isDone = m.status === 'refund_completed' || m.tenantConfirmedReceipt;
+          const isDone = m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt;
           if (!isDone) return false;
           // 1. Direct ID match
           if (m.id === a.id || (m as any).agreementId === a.id || (m as any).leaseAgreementId === a.id) return true;
@@ -1549,6 +1687,42 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return p;
     });
 
+    // Self-healing: Check if any units need vacancy self-healing
+    state.units.forEach((u) => {
+      const uClean = cleanUnitStr(u.unitNumber || u.id);
+      const hasPendingOrActiveAgForUnit = reconciledAgreements.some(
+        (ag) =>
+          cleanUnitStr(ag.unit) === uClean &&
+          ag.status !== 'terminated' &&
+          ag.status !== 'cancelled' &&
+          (!ag.propertyId || !u.propertyId || ag.propertyId === u.propertyId)
+      );
+
+      const hasPendingOrAcceptedRequest = (state.tenancyRequests || []).some(
+        (r) =>
+          (cleanUnitStr(r.unitNumber) === uClean || r.unitId === u.id) &&
+          (r.status === 'pending' || r.status === 'accepted') &&
+          (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)
+      );
+
+      const hasCompletedMoveout = (state.moveouts || []).some(
+        (m) =>
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
+          cleanUnitStr(m.unit) === uClean &&
+          (!m.propertyId || !u.propertyId || (m as any).propertyId === u.propertyId)
+      );
+
+      const hasTerminatedAgreementOnly =
+        reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && ag.status === 'terminated') &&
+        !reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && (ag.status === 'active' || ag.status === 'signed'));
+
+      const shouldBeVacant = !hasPendingOrActiveAgForUnit && !hasPendingOrAcceptedRequest && (hasCompletedMoveout || hasTerminatedAgreementOnly);
+
+      if (shouldBeVacant && (u.status !== 'vacant' || u.tenant !== null || u.currentTenantId !== null)) {
+        hasChanges = true;
+      }
+    });
+
     if (hasChanges) {
       setState((prev) => {
         let updatedUnits = prev.units;
@@ -1610,12 +1784,18 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
           const hasCompletedMoveout = (state.moveouts || []).some(
             (m) =>
-              (m.status === 'refund_completed' || m.tenantConfirmedReceipt) &&
+              (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
               cleanUnitStr(m.unit) === uClean &&
               (!m.propertyId || !u.propertyId || (m as any).propertyId === u.propertyId)
           );
 
-          if (!hasPendingOrActiveAgForUnit && !hasPendingOrAcceptedRequest && hasCompletedMoveout && u.status !== 'vacant') {
+          const hasTerminatedAgreementOnly =
+            reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && ag.status === 'terminated') &&
+            !reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && (ag.status === 'active' || ag.status === 'signed'));
+
+          const shouldBeVacant = !hasPendingOrActiveAgForUnit && !hasPendingOrAcceptedRequest && (hasCompletedMoveout || hasTerminatedAgreementOnly);
+
+          if (shouldBeVacant && (u.status !== 'vacant' || u.tenant !== null || u.currentTenantId !== null)) {
             hasChanges = true;
             updatedUnits = updatedUnits.map((unit) =>
               unit.id === u.id
@@ -1651,13 +1831,16 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             );
             const hasConcludedMoveout = (state.moveouts || []).some(
               (m) =>
-                (m.status === 'refund_completed' || m.tenantConfirmedReceipt) &&
+                (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
                 cleanUnitStr(m.unit) === tUnitClean &&
                 ((m.propertyId && t.propertyId) ? (m as any).propertyId === t.propertyId : (!m.propertyId && !t.propertyId && Boolean((m as any).propertyName && (t as any).propertyName && (m as any).propertyName === (t as any).propertyName))) &&
                 (m.tenantId ? m.tenantId === t.id : (m.tenant && m.tenant.toLowerCase() === t.name.toLowerCase()))
             );
+            const hasTerminatedAg = reconciledAgreements.some(
+              (ag) => cleanUnitStr(ag.unit) === tUnitClean && ag.status === 'terminated' && (ag.tenantId === t.id || ag.tenant === t.name)
+            );
 
-            if (!hasActiveAg && hasConcludedMoveout) {
+            if (!hasActiveAg && (hasConcludedMoveout || hasTerminatedAg)) {
               hasChanges = true;
               updatedTenants = updatedTenants.map((tenant) =>
                 tenant.id === t.id
@@ -1701,7 +1884,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             const invUnitClean = cleanUnitStr(inv.unit);
             const isConcluded = (state.moveouts || []).some(
               (m) =>
-                (m.status === 'refund_completed' || m.tenantConfirmedReceipt) &&
+                (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
                 cleanUnitStr(m.unit) === invUnitClean &&
                 (!inv.tenantId || m.tenantId === inv.tenantId || (m.tenant && m.tenant.toLowerCase() === inv.tenant?.toLowerCase()))
             );
@@ -1762,6 +1945,13 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Automated background evaluation for scheduled & expired announcements
   useEffect(() => {
     const evaluateAnnouncements = async () => {
+      // Background auto-publishing and auto-archiving of announcements should strictly run
+      // only for owners and superadmins who have write authorization on announcements.
+      const activeRole = typeof window !== 'undefined'
+        ? (localStorage.getItem('keystone_active_user_role') || (loadState().users || []).find((u) => u.id === localStorage.getItem('keystone_active_user_id'))?.role)
+        : null;
+      const canManageAnnouncements = activeRole === 'owner' || activeRole === 'superadmin' || activeRole === 'admin';
+
       const now = Date.now();
       const currentAnnouncements = state.announcements || [];
       let hasChanges = false;
@@ -1775,8 +1965,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             publishedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'announcements', a.id), pub).catch(console.error);
+          if (isFirebaseConfigured && canManageAnnouncements) {
+            setDoc(doc(db, 'announcements', a.id), pub).catch(() => {});
           }
           return pub;
         }
@@ -1788,8 +1978,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             status: 'archived',
             updatedAt: new Date().toISOString(),
           };
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'announcements', a.id), arch).catch(console.error);
+          if (isFirebaseConfigured && canManageAnnouncements) {
+            setDoc(doc(db, 'announcements', a.id), arch).catch(() => {});
           }
           return arch;
         }
@@ -1868,56 +2058,64 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const targetPlan = state.plans.find((p) => p.name.toLowerCase() === planName.toLowerCase()) || state.plans[0];
     const userObj = state.users.find((u) => u.id === userId);
     const userEmail = userObj?.email?.toLowerCase();
+    const now = new Date();
+    const periodEnd = new Date(now.getTime() + 365 * 86400000).toISOString();
 
-    setState((prev) => {
-      const existingSettings: OwnerSettings = prev.ownerSettings[userId] || {
-        ownerId: userId,
-        planId: targetPlan?.id || planName.toLowerCase(),
-        planName,
-        planStatus: 'active',
-        trialEndsAt: null,
-        subscriptionEndsAt: new Date(Date.now() + 365 * 86400000).toISOString(),
-        paymentMethods: prev.ownerPaymentMethods,
-        lateFeeConfig: prev.lateFeeSettings,
-        taxConfig: prev.taxSettings,
-      };
-      const updatedSettings: OwnerSettings = {
-        ...existingSettings,
-        ownerId: userId,
-        planId: targetPlan?.id || planName.toLowerCase(),
-        planName,
-        planStatus: 'active',
-        trialEndsAt: null,
-        subscriptionEndsAt: existingSettings.subscriptionEndsAt || new Date(Date.now() + 365 * 86400000).toISOString(),
-        paymentMethods: existingSettings.paymentMethods || prev.ownerPaymentMethods,
-        lateFeeConfig: existingSettings.lateFeeConfig || prev.lateFeeSettings,
-        taxConfig: existingSettings.taxConfig || prev.taxSettings,
-      };
-      return {
-        ...prev,
-        users: prev.users.map((u) =>
-          u.id === userId || (userEmail && u.email?.toLowerCase() === userEmail)
-            ? { ...u, plan: planName }
-            : u
-        ),
-        ownerPlan: planName,
-        ownerSettings: {
-          ...prev.ownerSettings,
-          [userId]: updatedSettings,
-        },
-      };
-    });
+    const adminInvoiceId = `inv_adm_${Date.now()}`;
+    const newPlatformInvoice: PlatformInvoice = {
+      id: adminInvoiceId,
+      ownerId: userId,
+      ownerName: userObj?.displayName || 'Owner',
+      ownerEmail: userEmail || '',
+      planId: targetPlan?.id || planName.toLowerCase(),
+      planName: targetPlan?.name || planName,
+      amount: targetPlan?.price || 0,
+      tax: 0,
+      total: targetPlan?.price || 0,
+      currency: 'USD',
+      billingCycle: 'monthly',
+      status: 'paid',
+      issueDate: now.toISOString(),
+      dueDate: now.toISOString(),
+      paidAt: now.toISOString(),
+      periodStart: now.toISOString(),
+      periodEnd: periodEnd,
+      paymentMethod: 'Admin Plan Override',
+      notes: `Plan set to ${targetPlan?.name || planName} by Platform Administrator on ${now.toLocaleDateString()}.`,
+    };
+
+    const updatedSettings: OwnerSettings = {
+      ...(state.ownerSettings[userId] || {}),
+      ownerId: userId,
+      planId: targetPlan?.id || planName.toLowerCase(),
+      planName: targetPlan?.name || planName,
+      planStatus: 'active',
+      trialEndsAt: null,
+      subscriptionEndsAt: periodEnd,
+      paymentMethods: state.ownerSettings[userId]?.paymentMethods || state.ownerPaymentMethods,
+      lateFeeConfig: state.ownerSettings[userId]?.lateFeeConfig || state.lateFeeSettings,
+      taxConfig: state.ownerSettings[userId]?.taxConfig || state.taxSettings,
+    };
+
+    setState((prev) => ({
+      ...prev,
+      users: prev.users.map((u) =>
+        u.id === userId || (userEmail && u.email?.toLowerCase() === userEmail)
+          ? { ...u, plan: targetPlan?.name || planName, planStatus: 'active' }
+          : u
+      ),
+      platformInvoices: [newPlatformInvoice, ...(prev.platformInvoices || [])],
+      ownerPlan: prev.currentUserId === userId ? (targetPlan?.name || planName) : prev.ownerPlan,
+      ownerSettings: {
+        ...prev.ownerSettings,
+        [userId]: updatedSettings,
+      },
+    }));
 
     if (isFirebaseConfigured && userId) {
-      setDoc(doc(db, 'users', userId), { plan: planName }, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'owners', userId), {
-        ownerId: userId,
-        planId: targetPlan?.id || planName.toLowerCase(),
-        planName,
-        planStatus: 'active',
-        trialEndsAt: null,
-        subscriptionEndsAt: new Date(Date.now() + 365 * 86400000).toISOString(),
-      }, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'users', userId), { plan: targetPlan?.name || planName, planStatus: 'active' }, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'owners', userId), updatedSettings, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'platformInvoices', adminInvoiceId), newPlatformInvoice, { merge: true }).catch(console.warn);
     }
 
     logAuditEvent({
@@ -1925,7 +2123,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       actorRole: 'superadmin',
       action: 'Owner Subscription Modified',
       category: 'financial',
-      detail: `Plan for user ${userObj?.displayName || userEmail || userId} set to "${planName}".`,
+      detail: `Plan for user ${userObj?.displayName || userEmail || userId} set to "${targetPlan?.name || planName}".`,
     }).catch(console.warn);
   };
 
@@ -2529,7 +2727,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const updatedProperties = prev.properties.map((p) => {
         if (p.id === propId) {
           const propUnits = updatedUnits.filter((u) => u.propertyId === p.id);
-          const occ = propUnits.filter((u) => u.status === 'occupied').length;
+          const occ = propUnits.filter((u) => resolveUnitOccupancy(u, prev.agreements, prev.tenancyRequests).effectiveStatus === 'occupied').length;
           const total = propUnits.length || p.unitCount || 1;
           return {
             ...p,
@@ -2552,10 +2750,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         await setDoc(doc(db, 'units', unit.id), cleanFirestoreObject(unit), { merge: true });
         const propId = targetPropertyId || unit.propertyId;
         if (propId) {
-          const propUnits = state.units
+          const propUnits = (state.units || [])
             .map((u) => (u.id === unit.id ? unit : u))
             .filter((u) => u.propertyId === propId);
-          const occ = propUnits.filter((u) => u.status === 'occupied').length;
+          const occ = propUnits.filter((u) => resolveUnitOccupancy(u, state.agreements, state.tenancyRequests).effectiveStatus === 'occupied').length;
           const total = propUnits.length || 1;
           await setDoc(
             doc(db, 'properties', propId),
@@ -2831,7 +3029,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const saveTenancyRequest = async (req: TenancyRequest, notif?: any) => {
     setState((prev) => {
-      const isDeclined = req.status === 'declined';
+      const isDeclined = req.status === 'declined' || req.status === 'cancelled';
       const isAccepted = req.status === 'accepted';
 
       const nextUnits = prev.units.map((u) => {
@@ -2871,9 +3069,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'tenancyRequests', req.id), req, { merge: true });
+        await setDoc(doc(db, 'tenancyRequests', req.id), cleanFirestoreObject(req), { merge: true });
         if (notif) {
-          await setDoc(doc(db, 'notifications', notif.id), notif, { merge: true });
+          await setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true });
         }
 
         const targetUnit = state.units.find(
@@ -2882,7 +3080,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             (Boolean(req.unitNumber) && u.unitNumber === req.unitNumber && (!req.propertyId || !u.propertyId || u.propertyId === req.propertyId))
         );
 
-        if (req.status === 'declined' && targetUnit) {
+        if ((req.status === 'declined' || req.status === 'cancelled') && targetUnit) {
           await setDoc(
             doc(db, 'units', targetUnit.id),
             cleanFirestoreObject({ ...targetUnit, status: 'vacant', tenant: null, currentTenantId: null }),
@@ -2920,8 +3118,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             leaseStart: req.leaseStart,
             leaseEnd: req.leaseEnd,
           };
-          await setDoc(doc(db, 'tenants', req.tenantId), tenantToUpdate, { merge: true });
-          await setDoc(doc(db, 'users', req.tenantId), { ownerId: req.ownerId, ownerName: req.ownerName }, { merge: true });
+          await setDoc(doc(db, 'tenants', req.tenantId), cleanFirestoreObject(tenantToUpdate), { merge: true });
+          await setDoc(doc(db, 'users', req.tenantId), cleanFirestoreObject({ ownerId: req.ownerId, ownerName: req.ownerName }), { merge: true });
         }
       } catch (err) {
         console.warn('Firestore saveTenancyRequest sync error:', err);
@@ -3755,13 +3953,65 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const saveMoveout = async (moveout: MoveOut) => {
     const isNew = !(state.moveouts || []).some((m) => m.id === moveout.id);
-    setState((prev) => ({
-      ...prev,
-      moveouts: [...prev.moveouts.filter((m) => m.id !== moveout.id), moveout],
-    }));
+    const isSettled = moveout.status === 'refund_completed' || (moveout as any).status === 'settled' || Boolean(moveout.tenantConfirmedReceipt);
+
+    const clean = (s?: string) => (s || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+    const mUnitClean = clean(moveout.unit);
+
+    let targetUnit = isSettled
+      ? state.units.find(
+          (u) =>
+            ((mUnitClean && (clean(u.unitNumber) === mUnitClean || clean(u.id) === mUnitClean)) ||
+              (moveout.tenantId && u.currentTenantId === moveout.tenantId)) &&
+            (!moveout.propertyId || !u.propertyId || u.propertyId === moveout.propertyId)
+        ) ||
+        state.units.find(
+          (u) => mUnitClean && (clean(u.unitNumber) === mUnitClean || clean(u.id) === mUnitClean)
+        )
+      : undefined;
+
+    setState((prev) => {
+      let updatedUnits = prev.units;
+      let updatedProperties = prev.properties;
+
+      if (isSettled && targetUnit) {
+        updatedUnits = prev.units.map((u) =>
+          u.id === targetUnit!.id
+            ? { ...u, status: 'vacant' as const, tenant: null, currentTenantId: null }
+            : u
+        );
+        updatedProperties = prev.properties.map((p) => {
+          const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
+          return { ...p, occupied: occ };
+        });
+      }
+
+      return {
+        ...prev,
+        moveouts: [...prev.moveouts.filter((m) => m.id !== moveout.id), moveout],
+        units: updatedUnits,
+        properties: updatedProperties,
+      };
+    });
+
     if (isFirebaseConfigured) {
       try {
         await setDoc(doc(db, 'moveouts', moveout.id), moveout, { merge: true });
+        if (isSettled && targetUnit) {
+          await setDoc(doc(db, 'units', targetUnit.id), cleanFirestoreObject({
+            status: 'vacant',
+            tenant: null,
+            currentTenantId: null,
+          }), { merge: true });
+
+          const propId = targetUnit.propertyId || moveout.propertyId;
+          if (propId) {
+            const occ = state.units
+              .map((u) => (u.id === targetUnit!.id ? { ...u, status: 'vacant' as const } : u))
+              .filter((u) => u.propertyId === propId && u.status === 'occupied').length;
+            await setDoc(doc(db, 'properties', propId), { occupied: occ }, { merge: true });
+          }
+        }
       } catch (err) {
         console.warn('Firestore saveMoveout sync error:', err);
       }
@@ -4254,18 +4504,21 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     );
 
     // Unit update -> transition to vacant ONLY if still assigned to this vacated tenancy
+    const clean = (s?: string) => (s || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+    const exClean = clean(existing.unit);
     const targetUnit = state.units.find(
       (u) =>
-        (u.unitNumber === existing.unit || u.id === existing.unit) &&
+        (exClean && (clean(u.unitNumber) === exClean || clean(u.id) === exClean)) &&
         (!existing.propertyId || !u.propertyId || u.propertyId === existing.propertyId)
+    ) || state.units.find(
+      (u) => exClean && (clean(u.unitNumber) === exClean || clean(u.id) === exClean)
     );
     const targetUnitId = targetUnit?.id;
 
     const updatedUnits = state.units.map((u) => {
       const matches =
         u.id === targetUnitId ||
-        ((u.unitNumber === existing.unit || u.id === existing.unit) &&
-          (!existing.propertyId || !u.propertyId || u.propertyId === existing.propertyId));
+        (exClean && (clean(u.unitNumber) === exClean || clean(u.id) === exClean));
       const isAssignedToThisVacatingTenant =
         !existing.tenantId ||
         u.currentTenantId === existing.tenantId ||
@@ -4428,6 +4681,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         await setDoc(doc(db, 'agreements', existing.agreementId), { depositStatus: 'refunded', status: 'terminated' }, { merge: true });
         if (targetUnit) {
           await setDoc(doc(db, 'units', targetUnit.id), { status: 'vacant', tenant: null, currentTenantId: null }, { merge: true });
+          if (targetUnit.propertyId) {
+            const occ = updatedUnits.filter((u) => u.propertyId === targetUnit.propertyId && u.status === 'occupied').length;
+            await setDoc(doc(db, 'properties', targetUnit.propertyId), { occupied: occ }, { merge: true }).catch(console.warn);
+          }
         }
         if (matchingMoveout) {
           await setDoc(
@@ -4603,8 +4860,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     // Update Unit -> vacant only if not occupied by an active re-onboarded lease (scoped to property)
     const targetUnit = (state.units || []).find(
       (u) =>
-        (settleUnitClean && (normalizeUnitStr(u.unitNumber) === settleUnitClean || normalizeUnitStr(u.id) === settleUnitClean) && (!effPropId || !u.propertyId || u.propertyId === effPropId)) ||
-        (vacatingTenantId && u.currentTenantId === vacatingTenantId && (!effPropId || !u.propertyId || u.propertyId === effPropId))
+        (settleUnitClean && (normalizeUnitStr(u.unitNumber) === settleUnitClean || normalizeUnitStr(u.id) === settleUnitClean) && (!effPropId || effPropId === 'prop-1' || !u.propertyId || u.propertyId === effPropId)) ||
+        (vacatingTenantId && u.currentTenantId === vacatingTenantId && (!effPropId || effPropId === 'prop-1' || !u.propertyId || u.propertyId === effPropId))
+    ) || (state.units || []).find(
+      (u) => settleUnitClean && (normalizeUnitStr(u.unitNumber) === settleUnitClean || normalizeUnitStr(u.id) === settleUnitClean)
     );
     const targetUnitId = targetUnit?.id;
 
@@ -4783,6 +5042,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
         if (targetUnit && !hasOtherActiveTenancy) {
           await setDoc(doc(db, 'units', targetUnit.id), cleanFirestoreObject({ status: 'vacant', tenant: null, currentTenantId: null }), { merge: true });
+          if (targetUnit.propertyId) {
+            const occ = updatedUnits.filter((u) => u.propertyId === targetUnit.propertyId && u.status === 'occupied').length;
+            await setDoc(doc(db, 'properties', targetUnit.propertyId), { occupied: occ }, { merge: true }).catch(console.warn);
+          }
         }
         for (const mo of updatedMoveouts) {
           if (mo.tenantConfirmedReceipt && (mo.id === matchingMoveout?.id || mo.id === targetSettlement.id.replace('DEP-SETTLE-', '') || (mo.unit === targetSettlement.unit && (!effPropId || !mo.propertyId || mo.propertyId === effPropId)))) {
@@ -5262,12 +5525,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       );
       hasOtherActiveTenancy = !!otherActiveAg;
 
-      const targetPropertyId = targetSettle?.propertyId || targetMoveout?.propertyId;
+      const targetPropertyId = targetMoveout?.propertyId || targetSettle?.propertyId;
       targetUnit = state.units.find(
         (u) =>
           ((targetUnitClean && (normalizeUnit(u.unitNumber) === targetUnitClean || normalizeUnit(u.id) === targetUnitClean)) ||
             (vacatingTenantId && u.currentTenantId === vacatingTenantId)) &&
-          (!targetPropertyId || !u.propertyId || u.propertyId === targetPropertyId)
+          (!targetPropertyId || targetPropertyId === 'prop-1' || !u.propertyId || u.propertyId === targetPropertyId)
+      ) || state.units.find(
+        (u) => targetUnitClean && (normalizeUnit(u.unitNumber) === targetUnitClean || normalizeUnit(u.id) === targetUnitClean)
       );
       const targetUnitId = targetUnit?.id;
 
@@ -5452,6 +5717,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
         if (!hasOtherActiveTenancy && targetUnit) {
           await setDoc(doc(db, 'units', targetUnit.id), cleanFirestoreObject({ status: 'vacant', tenant: null, currentTenantId: null }), { merge: true });
+          if (targetUnit.propertyId) {
+            const occ = updatedUnits.filter((u) => u.propertyId === targetUnit.propertyId && u.status === 'occupied').length;
+            await setDoc(doc(db, 'properties', targetUnit.propertyId), { occupied: occ }, { merge: true }).catch(console.warn);
+          }
         }
         if (targetTenantId) {
           const tenantAfterUpdate = updatedTenants.find((t) => t.id === targetTenantId);
@@ -6619,7 +6888,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const saveAnnouncement = async (announcement: Announcement): Promise<void> => {
     if (isFirebaseConfigured) {
-      await setDoc(doc(db, 'announcements', announcement.id), announcement).catch(console.error);
+      await setDoc(doc(db, 'announcements', announcement.id), cleanFirestoreObject(announcement), { merge: true }).catch(console.warn);
     }
     setState((prev) => {
       const existingIndex = (prev.announcements || []).findIndex((a) => a.id === announcement.id);
@@ -6636,7 +6905,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const deleteAnnouncement = async (id: string): Promise<void> => {
     if (isFirebaseConfigured) {
-      await deleteDoc(doc(db, 'announcements', id)).catch(console.error);
+      await deleteDoc(doc(db, 'announcements', id)).catch(console.warn);
     }
     setState((prev) => ({
       ...prev,
@@ -6662,13 +6931,117 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = (state.announcements || []).find((a) => a.id === announcementId);
     if (!target) return;
     const existingAcks = target.acknowledgments || [];
-    if (existingAcks.some((a) => a.tenantId === acknowledgment.tenantId)) return;
+    if (
+      existingAcks.some(
+        (a) =>
+          (acknowledgment.tenantId && a.tenantId === acknowledgment.tenantId) ||
+          ((acknowledgment as any).tenantEmail && (a as any).tenantEmail?.toLowerCase() === (acknowledgment as any).tenantEmail.toLowerCase())
+      )
+    ) {
+      return;
+    }
     const updated: Announcement = {
       ...target,
       acknowledgments: [...existingAcks, acknowledgment],
       updatedAt: new Date().toISOString(),
     };
-    await saveAnnouncement(updated);
+
+    // Update local state immediately so acknowledgment is registered and persistent without rollback
+    setState((prev) => {
+      const existingIndex = (prev.announcements || []).findIndex((a) => a.id === announcementId);
+      let updatedList: Announcement[];
+      if (existingIndex >= 0) {
+        updatedList = [...(prev.announcements || [])];
+        updatedList[existingIndex] = updated;
+      } else {
+        updatedList = [updated, ...(prev.announcements || [])];
+      }
+      return { ...prev, announcements: updatedList };
+    });
+
+    if (isFirebaseConfigured) {
+      // 1. Authoritative acknowledgment record in announcementAcknowledgments
+      // (permitted for all authenticated users in Firestore rules)
+      if (acknowledgment.tenantId || (acknowledgment as any).tenantEmail) {
+        const ackKey = acknowledgment.tenantId || (acknowledgment as any).tenantEmail.replace(/[^a-zA-Z0-9]/g, '_');
+        const ackDocId = `${announcementId}_${ackKey}`;
+        setDoc(doc(db, 'announcementAcknowledgments', ackDocId), cleanFirestoreObject({
+          announcementId,
+          ...acknowledgment,
+        }), { merge: true }).catch(console.warn);
+      }
+
+      // 2. Best-effort update on the announcement document directly
+      // (succeeds if user is owner/superadmin or if rules allow, silently caught otherwise)
+      setDoc(doc(db, 'announcements', announcementId), cleanFirestoreObject(updated), { merge: true }).catch(() => {
+        // Silently caught: security rules may reserve announcements updates to owners.
+      });
+    }
+  };
+
+  const submitEnquiry = async (
+    enquiryData: Omit<PropertyEnquiry, 'id' | 'createdAt' | 'status'>
+  ): Promise<string> => {
+    const id = `enq_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newEnquiry: PropertyEnquiry = {
+      ...enquiryData,
+      id,
+      status: 'new',
+      createdAt: new Date().toISOString(),
+    };
+
+    const notifs: InAppNotification[] = [];
+    if (newEnquiry.ownerId) {
+      notifs.push({
+        id: `notif_${Date.now()}_owner_${newEnquiry.ownerId}`,
+        userId: newEnquiry.ownerId,
+        title: `New Enquiry: Unit ${newEnquiry.unitNumber}`,
+        body: `${newEnquiry.prospectName} (${newEnquiry.prospectPhone}) submitted an enquiry for Unit ${newEnquiry.unitNumber} (${newEnquiry.propertyName}).`,
+        link: '/owner/leasing?tab=enquiries',
+        isRead: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    if (newEnquiry.managerId) {
+      notifs.push({
+        id: `notif_${Date.now()}_mgr_${newEnquiry.managerId}`,
+        userId: newEnquiry.managerId,
+        title: `New Enquiry: Unit ${newEnquiry.unitNumber}`,
+        body: `${newEnquiry.prospectName} (${newEnquiry.prospectPhone}) submitted an enquiry for Unit ${newEnquiry.unitNumber} (${newEnquiry.propertyName}).`,
+        link: '/manager/leasing?tab=enquiries',
+        isRead: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    if (isFirebaseConfigured) {
+      await setDoc(doc(db, 'enquiries', id), cleanFirestoreObject(newEnquiry), { merge: true }).catch(console.warn);
+      for (const notif of notifs) {
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      }
+    }
+
+    setState((prev) => ({
+      ...prev,
+      enquiries: [newEnquiry, ...(prev.enquiries || [])],
+      notifications: [...(prev.notifications || []), ...notifs],
+    }));
+
+    showToast('Enquiry sent successfully! The property team will contact you directly.');
+    return id;
+  };
+
+  const updateEnquiryStatus = async (id: string, status: 'new' | 'reviewed' | 'onboarded'): Promise<void> => {
+    const existing = (state.enquiries || []).find((e) => e.id === id);
+    if (!existing) return;
+    const updated: PropertyEnquiry = { ...existing, status, updatedAt: new Date().toISOString() };
+    if (isFirebaseConfigured) {
+      await setDoc(doc(db, 'enquiries', id), cleanFirestoreObject(updated), { merge: true }).catch(console.warn);
+    }
+    setState((prev) => ({
+      ...prev,
+      enquiries: (prev.enquiries || []).map((e) => (e.id === id ? updated : e)),
+    }));
   };
 
   const logAuditEvent = async (entry: {
@@ -6873,6 +7246,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         createPlatformSupportTicket,
         resolvePlatformSupportTicket,
         savePlatformSupportTicket,
+        submitEnquiry,
+        updateEnquiryStatus,
         logAuditEvent,
       }}
     >

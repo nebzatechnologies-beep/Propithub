@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { GooglePlacesAddressPicker } from '../../components/GooglePlacesAddressPicker';
-import { Property, Unit, PropertyAddress } from '../../types';
+import { Property, Unit, PropertyAddress, PaymentTransaction } from '../../types';
 import { uploadOrCompressImage } from '../../lib/imageUploader';
 import { sanitizeCountry } from '../../lib/addressUtils';
+import { AddressDisplay } from '../../components/common/AddressDisplay';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { FloatingActionButton } from '../../components/common/FloatingActionButton';
@@ -39,9 +40,20 @@ import {
   Gauge,
   Search,
   ChevronDown,
+  ExternalLink,
 } from 'lucide-react';
-import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, GLOBAL_CURRENCIES } from '../../lib/currencyService';
-import { resolveUnitOccupancy, calculatePortfolioMetrics } from '../../lib/portfolioSelectors';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, GLOBAL_CURRENCIES, normalizeCurrencyCode } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
+import { resolveUnitOccupancy, calculatePortfolioMetrics, matchesUnitRelational } from '../../lib/portfolioSelectors';
+import { OnboardResidentModal } from '../../components/owner/OnboardResidentModal';
+import {
+  PROPERTY_TYPE_OPTIONS,
+  getPropertyCategory,
+  getDefaultPropertyStructure,
+  isSingleUnitProperty,
+  getUnitTypesForProperty,
+  PropertyStructure,
+} from '../../lib/propertyTypes';
 
 
 interface UnitDraft {
@@ -58,11 +70,23 @@ interface UnitDraft {
 }
 
 export const PropertiesPage: React.FC = () => {
-  const { state, updateState, showToast, saveProperty, saveUnit } = useAppData();
+  const {
+    state,
+    updateState,
+    showToast,
+    saveProperty,
+    saveUnit,
+    saveAgreement,
+    saveTenancyRequest,
+    saveInvoice,
+    saveTenant,
+    savePayment,
+  } = useAppData();
   const { user, isOwnerPlanActive } = useAuth();
   const navigate = useNavigate();
   const ownerId = user?.id || '';
   const isPlanActive = isOwnerPlanActive(ownerId);
+  const { viewCurrency, convert, format } = useCurrency();
 
   const myProperties = state.properties.filter((p) => Boolean(ownerId) && p.ownerId === ownerId);
   const myUnits = state.units.filter((u) => Boolean(ownerId) && u.ownerId === ownerId);
@@ -87,7 +111,6 @@ export const PropertiesPage: React.FC = () => {
     (m: any) => Boolean(ownerId) && m.ownerId === ownerId
   );
 
-  const [subTab, setSubTab] = useState<'properties' | 'directory'>('properties');
   const [isAddPropOpen, setIsAddPropOpen] = useState(false);
   // Unit Details (Read-only Modal) State
   const [viewingUnit, setViewingUnit] = useState<Unit | null>(null);
@@ -119,6 +142,11 @@ export const PropertiesPage: React.FC = () => {
   const [newUnitDeposit, setNewUnitDeposit] = useState(0);
   const [newUnitImages, setNewUnitImages] = useState<string[]>([]);
 
+  // Move-in & Vacate Synchronization State
+  const [depositHandlingOption, setDepositHandlingOption] = useState<'paid_offline' | 'pending'>('paid_offline');
+  const [vacateConfirmTarget, setVacateConfirmTarget] = useState<{ unit: Unit; updatedData: Unit } | null>(null);
+  const [isProcessingUnitAction, setIsProcessingUnitAction] = useState(false);
+
   const openUnitDetails = (u: Unit) => {
     setViewingUnit(u);
   };
@@ -126,16 +154,282 @@ export const PropertiesPage: React.FC = () => {
   const openUnitEdit = (u: Unit) => {
     setEditingUnit(u);
     setEditUnitNumber(u.unitNumber || '');
-    setEditUnitType(u.unitType || '2 BHK');
+    const parentProp = state.properties.find((p) => p.id === u.propertyId);
+    const validTypes = getUnitTypesForProperty(parentProp?.propertyType, u.unitType);
+    setEditUnitType(u.unitType || validTypes[0] || '2 BHK');
     setEditFloor(u.floor || '1st Floor');
     setEditAreaSqFt(u.areaSqFt || 1000);
     setEditFurnishing(u.furnishing || 'Semi-Furnished');
     setEditRent(u.rent || 0);
     setEditDeposit(u.deposit || 0);
-    setEditStatus(u.status || 'vacant');
+    const currentEffective = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus;
+    setEditStatus(currentEffective || u.status || 'vacant');
+    setDepositHandlingOption('paid_offline');
     setEditElectricityMeter(u.electricityMeter || '');
     setEditWaterMeter(u.waterMeter || '');
     setEditUnitImages(u.images && u.images.length > 0 ? [...u.images] : u.image ? [u.image] : []);
+  };
+
+  const executeImmediateVacate = async (unitToVacate: Unit) => {
+    setIsProcessingUnitAction(true);
+    try {
+      // 1. Terminate all active lease agreements for this specific unit
+      const matchedAgreements = (state.agreements || []).filter(
+        (a) => a.status !== 'terminated' && matchesUnitRelational(a, unitToVacate)
+      );
+      for (const ag of matchedAgreements) {
+        await saveAgreement({
+          ...ag,
+          status: 'terminated',
+          depositStatus: 'refunded',
+        });
+      }
+
+      // 2. Cancel any pending tenancy requests for this unit
+      const matchedRequests = (state.tenancyRequests || []).filter(
+        (r) => r.status === 'pending' && matchesUnitRelational(r, unitToVacate)
+      );
+      for (const req of matchedRequests) {
+        await saveTenancyRequest({
+          ...req,
+          status: 'cancelled',
+        });
+      }
+
+      // 3. Detach unit from tenant record in state.tenants
+      const targetTenantId = unitToVacate.currentTenantId;
+      const targetTenantName = unitToVacate.tenant;
+      const matchedTenant = (state.tenants || []).find(
+        (t) => (targetTenantId && t.id === targetTenantId) || (targetTenantName && t.name === targetTenantName)
+      );
+      if (matchedTenant) {
+        const remainingUnits = (matchedTenant.unitsRented || []).filter(
+          (uStr) => uStr !== unitToVacate.unitNumber && uStr !== unitToVacate.id
+        );
+        await saveTenant({
+          ...matchedTenant,
+          unit: remainingUnits[0] || '',
+          unitsRented: remainingUnits,
+          status: remainingUnits.length > 0 ? 'active' : 'past',
+        });
+      }
+
+      // 4. Save unit as vacant
+      const cleanNum = editUnitNumber.trim() || unitToVacate.unitNumber || unitToVacate.id;
+      const vacatedUnit: Unit = {
+        ...unitToVacate,
+        unitNumber: cleanNum,
+        status: 'vacant',
+        tenant: null,
+        currentTenantId: null,
+      };
+      await saveUnit(vacatedUnit);
+
+      showToast(`✓ Unit ${cleanNum} marked Vacant and lease terminated.`);
+      setVacateConfirmTarget(null);
+      setEditingUnit(null);
+      if (viewingUnit && viewingUnit.id === unitToVacate.id) {
+        setViewingUnit(vacatedUnit);
+      }
+    } catch (err: any) {
+      showToast(`⚠️ Error vacating unit: ${err?.message || 'Action failed'}`);
+    } finally {
+      setIsProcessingUnitAction(false);
+    }
+  };
+
+  const executeCancelReservation = async (unitToCancel: Unit) => {
+    setIsProcessingUnitAction(true);
+    try {
+      const cleanNum = editUnitNumber.trim() || unitToCancel.unitNumber || unitToCancel.id;
+
+      // 1. Cancel pending tenancy requests
+      const matchedRequests = (state.tenancyRequests || []).filter(
+        (r) => (r.status === 'pending' || r.status === 'accepted') && matchesUnitRelational(r, unitToCancel)
+      );
+      for (const req of matchedRequests) {
+        await saveTenancyRequest({
+          ...req,
+          status: 'cancelled',
+        });
+      }
+
+      // 2. Cancel draft or pending agreements
+      const matchedAgreements = (state.agreements || []).filter(
+        (a) =>
+          a.status !== 'terminated' &&
+          a.status !== 'rejected' &&
+          matchesUnitRelational(a, unitToCancel)
+      );
+      for (const ag of matchedAgreements) {
+        await saveAgreement({
+          ...ag,
+          status: 'terminated',
+        });
+      }
+
+      // 3. Void pending deposit invoices
+      const matchedInvoices = (state.invoices || []).filter(
+        (inv) =>
+          inv.type === 'deposit' &&
+          inv.status !== 'paid' &&
+          inv.status !== 'void' &&
+          inv.status !== 'cancelled' &&
+          matchesUnitRelational({ unit: inv.unit, propertyId: inv.propertyId }, unitToCancel)
+      );
+      for (const inv of matchedInvoices) {
+        await saveInvoice({
+          ...inv,
+          status: 'cancelled',
+        });
+      }
+
+      // 4. Save unit as vacant
+      const vacatedUnit: Unit = {
+        ...unitToCancel,
+        unitNumber: cleanNum,
+        status: 'vacant',
+        tenant: null,
+        currentTenantId: null,
+      };
+      await saveUnit(vacatedUnit);
+
+      // 5. Update local state immediately for seamless UI responsiveness
+      updateState((prev) => ({
+        ...prev,
+        units: prev.units.map((u) => (u.id === unitToCancel.id ? vacatedUnit : u)),
+        tenancyRequests: (prev.tenancyRequests || []).map((r) =>
+          matchesUnitRelational(r, unitToCancel) ? { ...r, status: 'cancelled' as const } : r
+        ),
+        agreements: (prev.agreements || []).map((a) =>
+          matchesUnitRelational(a, unitToCancel) && a.status !== 'active' ? { ...a, status: 'terminated' as const } : a
+        ),
+      }));
+
+      showToast(`✓ Reservation for Unit ${cleanNum} cancelled. Unit is now Vacant.`);
+      setEditingUnit(null);
+      if (viewingUnit && viewingUnit.id === unitToCancel.id) {
+        setViewingUnit(vacatedUnit);
+      }
+    } catch (err: any) {
+      showToast(`⚠️ Error cancelling reservation: ${err?.message || 'Action failed'}`);
+    } finally {
+      setIsProcessingUnitAction(false);
+    }
+  };
+
+  const executeFinalizeMoveIn = async (unitToOccupy: Unit, depositMode: 'paid_offline' | 'pending') => {
+    setIsProcessingUnitAction(true);
+    try {
+      const cleanNum = editUnitNumber.trim() || unitToOccupy.unitNumber || unitToOccupy.id;
+      const nowIso = new Date().toISOString();
+
+      // 1. Transition pending tenancy requests to accepted
+      const matchedRequests = (state.tenancyRequests || []).filter(
+        (r) => r.status === 'pending' && matchesUnitRelational(r, unitToOccupy)
+      );
+      for (const req of matchedRequests) {
+        await saveTenancyRequest({
+          ...req,
+          status: 'accepted',
+        });
+      }
+
+      // 2. Transition pending agreements to active
+      const matchedAgreements = (state.agreements || []).filter(
+        (a) => a.status !== 'terminated' && a.status !== 'rejected' && matchesUnitRelational(a, unitToOccupy)
+      );
+      for (const ag of matchedAgreements) {
+        await saveAgreement({
+          ...ag,
+          status: 'active',
+          depositStatus: depositMode === 'paid_offline' ? 'paid' : ag.depositStatus || 'unpaid',
+          executionMode: 'already_executed_offline',
+          approvedAt: nowIso,
+        });
+      }
+
+      // 3. Handle deposit if paid offline
+      if (depositMode === 'paid_offline' && (unitToOccupy.deposit || 0) > 0) {
+        const existingTxn = (state.payments || []).find(
+          (p) =>
+            p.type === 'deposit' &&
+            p.status === 'paid' &&
+            (p.unit === cleanNum || p.unit === unitToOccupy.id)
+        );
+        if (!existingTxn) {
+          const depositTxn: PaymentTransaction = {
+            id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
+            ownerId,
+            tenant: unitToOccupy.tenant || 'Resident',
+            tenantId: unitToOccupy.currentTenantId || '',
+            unit: cleanNum,
+            amount: unitToOccupy.deposit,
+            date: nowIso.split('T')[0],
+            dueDate: nowIso.split('T')[0],
+            status: 'paid',
+            method: 'Offline Cash / Wire',
+            type: 'deposit',
+            currency: unitToOccupy.currency || 'USD',
+            notes: `Security deposit collected upon manual move-in execution for Unit ${cleanNum}.`,
+          };
+          await savePayment(depositTxn);
+        }
+
+        const depInv = (state.invoices || []).find(
+          (i) =>
+            i.type === 'deposit' &&
+            i.status !== 'paid' &&
+            i.status !== 'void' &&
+            i.status !== 'cancelled' &&
+            matchesUnitRelational({ unit: i.unit, propertyId: i.propertyId }, unitToOccupy)
+        );
+        if (depInv) {
+          await saveInvoice({
+            ...depInv,
+            status: 'paid',
+            paidAt: nowIso,
+            paymentMethodUsed: 'Offline Cash / Wire',
+          });
+        }
+      }
+
+      // 4. Update tenant in state.tenants
+      const targetTenantId = unitToOccupy.currentTenantId;
+      const targetTenantName = unitToOccupy.tenant;
+      const matchedTenant = (state.tenants || []).find(
+        (t) => (targetTenantId && t.id === targetTenantId) || (targetTenantName && t.name === targetTenantName)
+      );
+      if (matchedTenant) {
+        const updatedUnitsRented = Array.from(new Set([...(matchedTenant.unitsRented || []), cleanNum]));
+        await saveTenant({
+          ...matchedTenant,
+          unit: cleanNum,
+          unitsRented: updatedUnitsRented,
+          status: 'active',
+          propertyId: unitToOccupy.propertyId,
+          propertyName: unitToOccupy.propertyName,
+        });
+      }
+
+      // 5. Save unit as occupied
+      const occupiedUnit: Unit = {
+        ...unitToOccupy,
+        unitNumber: cleanNum,
+        status: 'occupied',
+      };
+      await saveUnit(occupiedUnit);
+
+      showToast(`✓ Move-in finalized for Unit ${cleanNum}. Status is now Occupied.`);
+      setEditingUnit(null);
+      if (viewingUnit && viewingUnit.id === unitToOccupy.id) {
+        setViewingUnit(occupiedUnit);
+      }
+    } catch (err: any) {
+      showToast(`⚠️ Error finalizing move-in: ${err?.message || 'Action failed'}`);
+    } finally {
+      setIsProcessingUnitAction(false);
+    }
   };
 
   const handleSaveUnitEdit = async () => {
@@ -158,6 +452,40 @@ export const PropertiesPage: React.FC = () => {
       images: editUnitImages,
       image: editUnitImages[0] || undefined,
     };
+
+    const currentEffective = resolveUnitOccupancy(
+      editingUnit,
+      state.agreements,
+      state.tenancyRequests,
+      state.moveouts
+    ).effectiveStatus;
+
+    // Case A: Occupied -> Vacant with active resident -> Prompt Move-Out & Settlement
+    if (
+      editStatus === 'vacant' &&
+      (editingUnit.status === 'occupied' || currentEffective === 'occupied') &&
+      editingUnit.tenant
+    ) {
+      setVacateConfirmTarget({
+        unit: editingUnit,
+        updatedData: updatedUnit,
+      });
+      return;
+    }
+
+    // Case B: Transition to Vacant -> Cancel reservation & void pending invitation/invoices
+    if (editStatus === 'vacant') {
+      await executeCancelReservation(updatedUnit);
+      return;
+    }
+
+    // Case C: Transition to Occupied (or Occupied with resident) -> Finalize move-in & sync deposit
+    if (editStatus === 'occupied') {
+      await executeFinalizeMoveIn(updatedUnit, depositHandlingOption);
+      return;
+    }
+
+    // Standard update
     await saveUnit(updatedUnit);
     showToast(`Unit ${cleanNum} updated successfully.`);
     setEditingUnit(null);
@@ -237,21 +565,37 @@ export const PropertiesPage: React.FC = () => {
     showToast(`✓ Unit ${cleanNum} added to ${addUnitProperty.name}.`);
   };
 
-  // Tenant directory search state
-  const [dirSearchQuery, setDirSearchQuery] = useState('');
-  const [selectedTenant, setSelectedTenant] = useState<any | null>(null);
-
   // 4-Step Wizard Modal State
   const [modalStep, setModalStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Step 1: Identity & Structure
   const [propName, setPropName] = useState('');
   const [propType, setPropType] = useState('Residential Apartment Complex');
+  const [propStructure, setPropStructure] = useState<PropertyStructure>('multi_unit');
   const [propCountry, setPropCountry] = useState<string>('India');
   const [propAddress, setPropAddress] = useState<PropertyAddress | null>(null);
   const [propFloors, setPropFloors] = useState<number>(3);
   const [propYearBuilt, setPropYearBuilt] = useState<string>('2023');
   const [propAssignedManager, setPropAssignedManager] = useState<string>('');
+
+  // Single-Unit Asset Configuration (for whole house / 4BHK villa / single property lease)
+  const [singleUnitType, setSingleUnitType] = useState<string>('4 BHK');
+  const [singleUnitLabel, setSingleUnitLabel] = useState<string>('Entire House');
+  const [singleUnitAreaSqFt, setSingleUnitAreaSqFt] = useState<number>(2000);
+  const [singleUnitFurnishing, setSingleUnitFurnishing] = useState<'Unfurnished' | 'Semi-Furnished' | 'Fully Furnished'>('Semi-Furnished');
+  const [singleUnitRent, setSingleUnitRent] = useState<number>(0);
+  const [singleUnitDeposit, setSingleUnitDeposit] = useState<number>(0);
+  const [singleUnitElectricityMeter, setSingleUnitElectricityMeter] = useState<string>('');
+  const [singleUnitWaterMeter, setSingleUnitWaterMeter] = useState<string>('');
+
+  // Bulk Selection & Direct Onboarding Launch State
+  const [selectedBulkUnits, setSelectedBulkUnits] = useState<Record<string, string[]>>({});
+  const [activeOnboardConfig, setActiveOnboardConfig] = useState<{
+    isOpen: boolean;
+    propertyId?: string;
+    unitId?: string;
+    unitIds?: string[];
+  }>({ isOpen: false });
 
   const COUNTRY_OPTIONS = [
     { name: 'India', currency: '₹' },
@@ -431,18 +775,20 @@ export const PropertiesPage: React.FC = () => {
       showToast('Please select a valid Google Maps address in Step 1.');
       return;
     }
-    if (initialUnits.length === 0) {
+    if (propStructure === 'multi_unit' && initialUnits.length === 0) {
       setModalStep(3);
       showToast('Please configure at least one unit in Step 3.');
       return;
     }
 
+    const calculatedUnitCount = propStructure === 'single_unit' ? 1 : initialUnits.length;
+
     if (isPropertyLimitReached) {
       showToast(`⚠️ Property limit reached (${myProperties.length}/${maxProperties} on ${currentPlanName} tier). Please upgrade your plan to add more properties.`);
       return;
     }
-    if (maxUnits < 9999 && (myUnits.length + initialUnits.length) > maxUnits) {
-      showToast(`⚠️ Adding these units would exceed your plan's unit limit (${myUnits.length + initialUnits.length} > ${maxUnits} on ${currentPlanName} tier). Please adjust units or upgrade your plan.`);
+    if (maxUnits < 9999 && (myUnits.length + calculatedUnitCount) > maxUnits) {
+      showToast(`⚠️ Adding this property would exceed your plan's unit limit (${myUnits.length + calculatedUnitCount} > ${maxUnits} on ${currentPlanName} tier). Please adjust units or upgrade your plan.`);
       return;
     }
 
@@ -462,6 +808,9 @@ export const PropertiesPage: React.FC = () => {
         ownerId,
         name: propName.trim(),
         propertyType: propType,
+        propertyStructure: propStructure,
+        propertyCategory: getPropertyCategory(propType),
+        isSingleUnit: propStructure === 'single_unit',
         floorsCount: propFloors,
         yearBuilt: propYearBuilt ? Number(propYearBuilt) : undefined,
         assignedManagerId: propAssignedManager || undefined,
@@ -475,36 +824,67 @@ export const PropertiesPage: React.FC = () => {
           .map(([name, image]) => ({ name, image })),
         rules: propRules,
         images: sortedImages,
-        unitCount: initialUnits.length,
+        unitCount: calculatedUnitCount,
         occupied: 0,
         createdAt: new Date().toISOString(),
         country: resolvedCountry,
         currency: propCurrency,
       };
 
-      const newUnits: Unit[] = initialUnits.map((u) => ({
-        id: `unit-${propId}-${u.unitNumber}`,
-        propertyId: propId,
-        propertyName: propName.trim(),
-        country: resolvedCountry,
-        address: propAddress.formattedAddress,
-        ownerId,
-        unitNumber: u.unitNumber,
-        unitType: u.unitType,
-        floor: u.floor,
-        areaSqFt: u.areaSqFt,
-        furnishing: u.furnishing,
-        rent: u.rent,
-        deposit: u.deposit,
-        currency: propCurrency,
-        status: 'vacant',
-        isListedPublicly: true,
-        tenant: null,
-        currentTenantId: null,
-        electricityMeter: u.electricityMeter || undefined,
-        images: u.images && u.images.length > 0 ? u.images : undefined,
-        image: u.images && u.images.length > 0 ? u.images[0] : undefined,
-      }));
+      let newUnits: Unit[] = [];
+      if (propStructure === 'single_unit') {
+        newUnits = [
+          {
+            id: `unit-${propId}-main`,
+            propertyId: propId,
+            propertyName: propName.trim(),
+            country: resolvedCountry,
+            address: propAddress.formattedAddress,
+            ownerId,
+            unitNumber: singleUnitLabel.trim() || 'Entire House',
+            unitType: singleUnitType,
+            floor: 'Whole Property',
+            areaSqFt: singleUnitAreaSqFt || 0,
+            furnishing: singleUnitFurnishing,
+            rent: singleUnitRent || 0,
+            deposit: singleUnitDeposit || 0,
+            currency: propCurrency,
+            status: 'vacant',
+            isListedPublicly: true,
+            tenant: null,
+            currentTenantId: null,
+            electricityMeter: singleUnitElectricityMeter || undefined,
+            waterMeter: singleUnitWaterMeter || undefined,
+            isWholeProperty: true,
+            images: sortedImages.length > 0 ? sortedImages : undefined,
+            image: sortedImages.length > 0 ? sortedImages[0] : undefined,
+          },
+        ];
+      } else {
+        newUnits = initialUnits.map((u) => ({
+          id: `unit-${propId}-${u.unitNumber}`,
+          propertyId: propId,
+          propertyName: propName.trim(),
+          country: resolvedCountry,
+          address: propAddress.formattedAddress,
+          ownerId,
+          unitNumber: u.unitNumber,
+          unitType: u.unitType,
+          floor: u.floor,
+          areaSqFt: u.areaSqFt,
+          furnishing: u.furnishing,
+          rent: u.rent,
+          deposit: u.deposit,
+          currency: propCurrency,
+          status: 'vacant',
+          isListedPublicly: true,
+          tenant: null,
+          currentTenantId: null,
+          electricityMeter: u.electricityMeter || undefined,
+          images: u.images && u.images.length > 0 ? u.images : undefined,
+          image: u.images && u.images.length > 0 ? u.images[0] : undefined,
+        }));
+      }
 
       saveProperty(newProp, newUnits);
 
@@ -515,7 +895,11 @@ export const PropertiesPage: React.FC = () => {
       setPropImages([]);
       setPropAmenityPhotos({});
       setBulkDefaultPhoto(null);
-      showToast(`Property "${newProp.name}" with ${newUnits.length} configured units created successfully!`);
+      showToast(
+        propStructure === 'single_unit'
+          ? `Single-unit property "${newProp.name}" created successfully!`
+          : `Property "${newProp.name}" with ${newUnits.length} configured units created successfully!`
+      );
     } finally {
       setIsSubmittingProp(false);
     }
@@ -534,73 +918,23 @@ export const PropertiesPage: React.FC = () => {
     );
   };
 
-  const renderStars = (rating: number = 4.7) => {
-    const fullStars = Math.floor(rating);
-    return (
-      <span style={{ color: 'var(--brass)', letterSpacing: '1px' }}>
-        {'★'.repeat(fullStars)}
-        {rating % 1 !== 0 ? '½' : ''}
-        <span style={{ color: 'var(--ink-soft)', fontSize: '12px', marginLeft: '4px' }}>
-          ({rating.toFixed(1)})
-        </span>
-      </span>
-    );
-  };
-
-  // Filter tenants for predictive directory (scoped strictly to this owner's properties, units, and portfolio)
-  const myPropIdsSet = new Set(myProperties.map((p) => p.id));
-  const myUnitsPropIdsSet = new Set(myUnits.map((u) => u.propertyId));
-  const allDirectoryTenants = (state.tenants || []).filter(
-    (t) =>
-      (Boolean(ownerId) && Boolean(t.ownerId) && t.ownerId === ownerId) ||
-      (Boolean(t.propertyId) && (myPropIdsSet.has(t.propertyId!) || myUnitsPropIdsSet.has(t.propertyId!)))
-  );
-
-  const matchedTenants = dirSearchQuery.trim()
-    ? allDirectoryTenants.filter((t) => {
-      const q = dirSearchQuery.trim().toLowerCase();
-      const nameMatch = (t.name || '').toLowerCase().includes(q);
-      const emailMatch = (t.email || '').toLowerCase().includes(q);
-      const cleanPhone = (t.phone || '').replace(/[^0-9]/g, '');
-      const cleanQ = q.replace(/[^0-9]/g, '');
-      const phoneMatch = cleanQ.length > 0 && cleanPhone.includes(cleanQ);
-      return nameMatch || emailMatch || phoneMatch;
-    })
-    : [];
-
   return (
     <div>
-      <div className="tabs" data-tour="properties-subtabs">
-        <div
-          className={`tab ${subTab === 'properties' ? 'active' : ''}`}
-          onClick={() => setSubTab('properties')}
-        >
-          Properties
-        </div>
-        <div
-          className={`tab ${subTab === 'directory' ? 'active' : ''}`}
-          onClick={() => setSubTab('directory')}
-        >
-          Tenants
-        </div>
-      </div>
-
-      {subTab === 'properties' ? (
-        <div>
-          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px' }}>
-            <div>
-              <h3>Properties Portfolio</h3>
-              <div className="hint">
-                {myProperties.length} Properties • {myUnits.length} Units total
-              </div>
+      <div>
+        <div className="panel-head" data-tour="properties-portfolio" style={{ border: 'none', padding: '0 0 16px' }}>
+          <div>
+            <h3>Properties Portfolio</h3>
+            <div className="hint">
+              {myProperties.length} Properties • {myUnits.length} Units total
             </div>
-            <button
-              type="button"
-              data-tour="properties-add-btn"
-              className="btn brass btn-mobile-full"
-              disabled={!isPlanActive}
-              title={isPropertyLimitReached ? `Property limit reached (${maxProperties} max on ${currentPlanName} tier) - Click to upgrade` : undefined}
-              onClick={() => {
+          </div>
+          <button
+            type="button"
+            data-tour="properties-add-btn"
+            className="btn brass btn-mobile-full"
+            disabled={!isPlanActive}
+            title={isPropertyLimitReached ? `Property limit reached (${maxProperties} max on ${currentPlanName} tier) - Click to upgrade` : undefined}
+            onClick={() => {
                 checkAndRun('properties', () => setIsAddPropOpen(true));
               }}
             >
@@ -643,8 +977,13 @@ export const PropertiesPage: React.FC = () => {
           ) : (
             myProperties.map((p) => {
               const unitsInProp = myUnits.filter((u) => u.propertyId === p.id || (!u.propertyId && myProperties.length === 1));
+              const isSingle = isSingleUnitProperty(p) || (p.unitCount === 1 && unitsInProp.length === 1 && unitsInProp[0].isWholeProperty);
+              const singleUnit = isSingle ? (unitsInProp[0] || null) : null;
+              const isSingleOccupied = singleUnit
+                ? singleUnit.status === 'occupied' || Boolean(singleUnit.tenant && singleUnit.tenant !== 'Unassigned' && singleUnit.tenant !== 'Vacant')
+                : false;
               const totalUnits = unitsInProp.length > 0 ? unitsInProp.length : (p.unitCount || 1);
-              const propMetrics = calculatePortfolioMetrics(unitsInProp, state.agreements, state.tenancyRequests);
+              const propMetrics = calculatePortfolioMetrics(unitsInProp, state.agreements, state.tenancyRequests, undefined, undefined, state.moveouts);
               const occupiedCount = propMetrics.totalUnits > 0 ? propMetrics.occupiedCount : (p.occupied || 0);
               const isFull = totalUnits > 0 && occupiedCount >= totalUnits;
 
@@ -725,11 +1064,9 @@ export const PropertiesPage: React.FC = () => {
                             </span>
                           )}
                         </h3>
-                        <div className="hint" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <MapPin size={13} />{' '}
-                          {typeof p.address === 'string'
-                            ? p.address
-                            : p.address?.formattedAddress || 'Address on file'}
+                        <div className="hint" style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                          <MapPin size={13} style={{ flexShrink: 0 }} />
+                          <AddressDisplay address={p.address} fallback="Address on file" />
                         </div>
                       </div>
                     </div>
@@ -739,26 +1076,69 @@ export const PropertiesPage: React.FC = () => {
                           Manager: {myPropertyManagers.find((m: any) => m.id === p.assignedManagerId)?.name || 'Assigned'}
                         </span>
                       )}
-                      <span className={`badge ${isFull ? 'green' : occupiedCount > 0 ? 'blue' : 'grey'}`} style={{ fontWeight: 600 }}>
-                        {occupiedCount}/{totalUnits} occupied {isFull ? '• 100% Full' : ''}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn brass small btn-mobile-full"
-                        disabled={!isPlanActive}
-                        title={isUnitLimitReached ? `Unit limit reached (${maxUnits} max on ${currentPlanName} tier) - Click to upgrade` : undefined}
-                        onClick={() => {
-                          checkAndRun('units', () => {
-                            setAddUnitProperty(p);
-                            setNewUnitNumber('');
-                            setNewUnitRent(0);
-                            setNewUnitDeposit(0);
-                          });
-                        }}
-                        style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
-                      >
-                        <Plus size={13} /> Add Unit
-                      </button>
+                      {isSingle ? (
+                        <>
+                          <span className="badge" style={{ background: '#FAF0E6', color: '#8A5340', fontWeight: 600 }}>
+                            🏡 Single Property Asset
+                          </span>
+                          <span className={`badge ${isSingleOccupied ? 'green' : 'amber'}`} style={{ fontWeight: 600 }}>
+                            {isSingleOccupied ? 'Occupied' : 'Vacant'}
+                          </span>
+                          {!isSingleOccupied ? (
+                            <button
+                              type="button"
+                              className="btn brass small btn-mobile-full"
+                              disabled={!isPlanActive}
+                              onClick={() => {
+                                setActiveOnboardConfig({
+                                  isOpen: true,
+                                  propertyId: p.id,
+                                  unitId: singleUnit?.id,
+                                });
+                              }}
+                              style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                            >
+                              🔑 Lease Property
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn secondary small btn-mobile-full"
+                              onClick={() => {
+                                if (singleUnit) openUnitDetails(singleUnit);
+                              }}
+                              style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                            >
+                              <Eye size={13} /> View Lease
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <span className={`badge ${isFull ? 'green' : occupiedCount > 0 ? 'blue' : 'grey'}`} style={{ fontWeight: 600 }}>
+                            {occupiedCount}/{totalUnits} occupied {isFull ? '• 100% Full' : ''}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn brass small btn-mobile-full"
+                            disabled={!isPlanActive}
+                            title={isUnitLimitReached ? `Unit limit reached (${maxUnits} max on ${currentPlanName} tier) - Click to upgrade` : undefined}
+                            onClick={() => {
+                              checkAndRun('units', () => {
+                                setAddUnitProperty(p);
+                                setNewUnitNumber('');
+                                const validTypes = getUnitTypesForProperty(p.propertyType);
+                                setNewUnitType(validTypes[0] || '2 BHK');
+                                setNewUnitRent(0);
+                                setNewUnitDeposit(0);
+                              });
+                            }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                          >
+                            <Plus size={13} /> Add Unit
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -798,434 +1178,522 @@ export const PropertiesPage: React.FC = () => {
                       </div>
                     )}
 
-                    <div className="desktop-table-view">
-                      <div className="table-wrap">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th style={{ width: '50px' }}>Photo</th>
-                              <th>Unit</th>
-                              <th>Tenant</th>
-                              <th>Rent</th>
-                              <th>Deposit</th>
-                              <th>Status</th>
-                              <th>Listed</th>
-                              <th>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {unitsInProp.map((u) => {
-                              const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests).effectiveStatus;
-                              const unitCover = (u.images && u.images[0]) || u.image;
-                              return (
-                                <tr key={u.id}>
-                                  <td style={{ padding: '6px 8px' }}>
-                                    {unitCover ? (
-                                      <div
-                                        style={{
-                                          width: '34px',
-                                          height: '34px',
-                                          borderRadius: '4px',
-                                          overflow: 'hidden',
-                                          border: '1px solid var(--line)',
-                                          cursor: 'pointer',
-                                        }}
-                                        onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber || u.id}`, url: unitCover })}
-                                        title="Click to view photo"
-                                      >
-                                        <img src={unitCover} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                      </div>
-                                    ) : (
-                                      <div
-                                        style={{
-                                          width: '34px',
-                                          height: '34px',
-                                          borderRadius: '4px',
-                                          background: '#F0F2F5',
-                                          border: '1px dashed #CBD2D9',
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          justifyContent: 'center',
-                                          color: 'var(--ink-soft)',
-                                        }}
-                                        title="No unit photo"
-                                      >
-                                        <Camera size={14} />
-                                      </div>
-                                    )}
-                                  </td>
-                                  <td>
-                                    <b>{u.unitNumber || u.id}</b>
-                                  </td>
-                                  <td>
-                                    {u.tenant ? (
-                                      <span
-                                        style={{
-                                          color: 'var(--ledger)',
-                                          fontWeight: 500,
-                                          cursor: 'pointer',
-                                          textDecoration: 'underline',
-                                        }}
-                                        onClick={() => {
-                                          const match = state.tenants.find((t) => t.name === u.tenant);
-                                          if (match) {
-                                            setSelectedTenant(match);
-                                            setSubTab('directory');
-                                          }
-                                        }}
-                                      >
-                                        {u.tenant}
-                                      </span>
-                                    ) : (
-                                      <span style={{ color: 'var(--ink-soft)' }}>Vacant</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {getCurrencySymbol(u.currency)}
-                                    {u.rent?.toLocaleString()}
-                                  </td>
-                                  <td>
-                                    {getCurrencySymbol(u.currency)}
-                                    {u.deposit?.toLocaleString()}
-                                  </td>
-                                  <td>
-                                    <span
-                                      className={`badge ${unitEffectiveStatus === 'occupied'
-                                          ? 'green'
-                                          : unitEffectiveStatus === 'reserved'
-                                            ? 'amber'
-                                            : unitEffectiveStatus === 'maintenance'
-                                              ? 'grey'
-                                              : 'grey'
-                                        }`}
-                                    >
-                                      {unitEffectiveStatus === 'occupied'
-                                        ? 'Occupied'
-                                        : unitEffectiveStatus === 'reserved'
-                                          ? 'Reserved'
-                                          : unitEffectiveStatus === 'maintenance'
-                                            ? 'Maintenance'
-                                            : 'Vacant'}
-                                    </span>
-                                  </td>
-                                  <td>
-                                    {unitEffectiveStatus === 'vacant' ? (
-                                      <label
-                                        className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
-                                        onClick={() => {
-                                          if (!u.isListedPublicly) {
-                                            setUnitToConfirmListing(u);
-                                          } else {
-                                            handleToggleListing(u.id);
-                                          }
-                                        }}
-                                      >
-                                        <span className="track" />
-                                      </label>
-                                    ) : (
-                                      <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>—</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                      <button
-                                        type="button"
-                                        className="btn secondary small"
-                                        onClick={() => openUnitDetails(u)}
-                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                        title="View Unit Details"
-                                      >
-                                        <Eye size={12} /> Details
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="btn secondary small"
-                                        onClick={() => openUnitEdit(u)}
-                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                        title="Edit Unit"
-                                      >
-                                        <Edit3 size={12} /> Edit
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    <div className="mobile-card-view">
-                      {unitsInProp.map((u) => {
-                        const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests).effectiveStatus;
-                        const unitCover = (u.images && u.images[0]) || u.image;
-                        return (
-                          <div key={u.id} className="staff-card">
-                            <div className="staff-card-header">
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                {unitCover ? (
-                                  <div
-                                    style={{
-                                      width: '38px',
-                                      height: '38px',
-                                      borderRadius: '6px',
-                                      overflow: 'hidden',
-                                      border: '1px solid var(--line)',
-                                      flexShrink: 0,
-                                      cursor: 'pointer',
-                                    }}
-                                    onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber || u.id}`, url: unitCover })}
-                                  >
-                                    <img src={unitCover} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                  </div>
-                                ) : (
-                                  <div
-                                    style={{
-                                      width: '38px',
-                                      height: '38px',
-                                      borderRadius: '6px',
-                                      background: '#F0F2F5',
-                                      border: '1px dashed #CBD2D9',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      color: 'var(--ink-soft)',
-                                      flexShrink: 0,
-                                    }}
-                                  >
-                                    <Camera size={16} />
-                                  </div>
-                                )}
-                                <div>
-                                  <div className="staff-card-title">Unit {u.unitNumber || u.id}</div>
-                                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                                    Tenant:{' '}
-                                    {u.tenant ? (
-                                      <span
-                                        style={{ color: 'var(--ledger)', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer' }}
-                                        onClick={() => {
-                                          const match = state.tenants.find((t) => t.name === u.tenant);
-                                          if (match) {
-                                            setSelectedTenant(match);
-                                            setSubTab('directory');
-                                          }
-                                        }}
-                                      >
-                                        {u.tenant}
-                                      </span>
-                                    ) : (
-                                      'Vacant'
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                              <span
-                                className={`badge ${unitEffectiveStatus === 'occupied'
-                                    ? 'green'
-                                    : unitEffectiveStatus === 'reserved'
-                                      ? 'amber'
-                                      : unitEffectiveStatus === 'maintenance'
-                                        ? 'grey'
-                                        : 'grey'
-                                  }`}
-                              >
-                                {unitEffectiveStatus === 'occupied'
-                                  ? 'Occupied'
-                                  : unitEffectiveStatus === 'reserved'
-                                    ? 'Reserved'
-                                    : unitEffectiveStatus === 'maintenance'
-                                      ? 'Maintenance'
-                                      : 'Vacant'}
-                              </span>
-                            </div>
-                            <div className="staff-card-meta">
-                              <div className="staff-card-meta-item">
-                                <b>Rent:</b> {getCurrencySymbol(u.currency)}{u.rent?.toLocaleString()}
-                              </div>
-                              <div className="staff-card-meta-item">
-                                <b>Deposit:</b> {getCurrencySymbol(u.currency)}{u.deposit?.toLocaleString()}
-                              </div>
-                              {u.status === 'vacant' && (
-                                <div className="staff-card-meta-item" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                                  <span>Publicly Listed:</span>
-                                  <label
-                                    className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
-                                    onClick={() => {
-                                      if (!u.isListedPublicly) {
-                                        setUnitToConfirmListing(u);
-                                      } else {
-                                        handleToggleListing(u.id);
-                                      }
-                                    }}
-                                  >
-                                    <span className="track" />
-                                  </label>
-                                </div>
-                              )}
-                            </div>
-                            <div className="staff-card-footer" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                onClick={() => openUnitDetails(u)}
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
-                              >
-                                <Eye size={13} /> Details
-                              </button>
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                onClick={() => openUnitEdit(u)}
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
-                              >
-                                <Edit3 size={13} /> Edit
-                              </button>
+                    {isSingle ? (
+                      <div
+                        style={{
+                          background: 'var(--surface-sunken)',
+                          border: '1px solid var(--line)',
+                          borderRadius: 'var(--radius)',
+                          padding: '20px',
+                        }}
+                      >
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+                          <div>
+                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Asset Classification</div>
+                            <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--ink)' }}>
+                              {singleUnit?.unitType || p.propertyType || 'Single Family House'}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
+                          <div>
+                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Monthly Rent</div>
+                            <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--brass)' }}>
+                              {getCurrencySymbol(singleUnit?.currency || p.currency || DEFAULT_CURRENCY_SYMBOL)}{(singleUnit?.rent || 0).toLocaleString()} / mo
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Security Deposit</div>
+                            <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px' }}>
+                              {getCurrencySymbol(singleUnit?.currency || p.currency || DEFAULT_CURRENCY_SYMBOL)}{(singleUnit?.deposit || 0).toLocaleString()}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Carpet Area & Furnishing</div>
+                            <div style={{ fontSize: '13px', fontWeight: 500, marginTop: '2px' }}>
+                              {singleUnit?.areaSqFt ? `${singleUnit.areaSqFt} sq.ft • ` : ''}{singleUnit?.furnishing || 'Semi-Furnished'}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Lease Status</div>
+                            <div style={{ marginTop: '2px' }}>
+                              <span className={`badge ${isSingleOccupied ? 'green' : 'amber'}`}>
+                                {isSingleOccupied ? `Occupied by ${singleUnit?.tenant}` : 'Vacant (Available for Lease)'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: '14px', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                            {singleUnit?.unitNumber && singleUnit.unitNumber !== 'Entire House' ? `Unit Identifier: ${singleUnit.unitNumber} • ` : ''}
+                            Managed and leased directly as an independent single-property asset.
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {singleUnit && (
+                              <button
+                                type="button"
+                                className="btn secondary small"
+                                onClick={() => openUnitEdit(singleUnit)}
+                              >
+                                <Edit3 size={13} /> Edit Lease Specs
+                              </button>
+                            )}
+                            {!isSingleOccupied ? (
+                              <button
+                                type="button"
+                                className="btn brass small"
+                                onClick={() => setActiveOnboardConfig({ isOpen: true, propertyId: p.id, unitId: singleUnit?.id })}
+                              >
+                                🔑 Lease Property
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="btn secondary small"
+                                onClick={() => singleUnit && openUnitDetails(singleUnit)}
+                              >
+                                <Eye size={13} /> View Lease & Resident
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Multi-Unit Bulk Leasing Action Bar if units are selected */}
+                        {(() => {
+                          const currentSelected = selectedBulkUnits[p.id] || [];
+                          const vacantUnitsInProp = unitsInProp.filter((u) => u.status === 'vacant');
+                          const allVacantSelected = vacantUnitsInProp.length > 0 && vacantUnitsInProp.every((u) => currentSelected.includes(u.id));
+                          const selectedUnitsList = unitsInProp.filter((u) => currentSelected.includes(u.id));
+                          const combinedRent = selectedUnitsList.reduce((acc, u) => acc + (u.rent || 0), 0);
+                          const combinedDeposit = selectedUnitsList.reduce((acc, u) => acc + (u.deposit || 0), 0);
+
+                          return (
+                            <>
+                              {currentSelected.length > 0 && (
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    background: '#FAF8F5',
+                                    border: '1px solid var(--brass)',
+                                    borderRadius: '6px',
+                                    padding: '10px 16px',
+                                    marginBottom: '12px',
+                                    flexWrap: 'wrap',
+                                    gap: '10px',
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                                    <span className="badge brass" style={{ fontWeight: 700 }}>
+                                      ⚡ {currentSelected.length} Vacant Units Selected
+                                    </span>
+                                    <span style={{ fontSize: '13px', color: 'var(--ink)' }}>
+                                      Combined Monthly Rent: <b>{getCurrencySymbol(p.currency)}{combinedRent.toLocaleString()}</b> • Deposit: <b>{getCurrencySymbol(p.currency)}{combinedDeposit.toLocaleString()}</b>
+                                    </span>
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button
+                                      type="button"
+                                      className="btn secondary small"
+                                      onClick={() => setSelectedBulkUnits((prev) => ({ ...prev, [p.id]: [] }))}
+                                    >
+                                      Clear Selection
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn brass small"
+                                      onClick={() =>
+                                        setActiveOnboardConfig({
+                                          isOpen: true,
+                                          propertyId: p.id,
+                                          unitIds: currentSelected,
+                                        })
+                                      }
+                                    >
+                                      ⚡ Bulk Lease Selected Units
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="desktop-table-view">
+                                <div className="table-wrap">
+                                  <table>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ width: '38px', textAlign: 'center' }}>
+                                          {vacantUnitsInProp.length > 0 && (
+                                            <input
+                                              type="checkbox"
+                                              checked={allVacantSelected}
+                                              onChange={(e) => {
+                                                if (e.target.checked) {
+                                                  setSelectedBulkUnits((prev) => ({
+                                                    ...prev,
+                                                    [p.id]: vacantUnitsInProp.map((u) => u.id),
+                                                  }));
+                                                } else {
+                                                  setSelectedBulkUnits((prev) => ({ ...prev, [p.id]: [] }));
+                                                }
+                                              }}
+                                              title="Select all vacant units for bulk lease"
+                                              style={{ cursor: 'pointer' }}
+                                            />
+                                          )}
+                                        </th>
+                                        <th style={{ width: '50px' }}>Photo</th>
+                                        <th>Unit</th>
+                                        <th>Tenant</th>
+                                        <th>Rent</th>
+                                        <th>Deposit</th>
+                                        <th>Status</th>
+                                        <th>Listed</th>
+                                        <th>Action</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {unitsInProp.map((u) => {
+                                        const isUnitVacant = u.status === 'vacant';
+                                        const isChecked = (selectedBulkUnits[p.id] || []).includes(u.id);
+                                        const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus;
+                                        const unitCover = (u.images && u.images[0]) || u.image;
+                                        return (
+                                          <tr key={u.id}>
+                                            <td style={{ width: '38px', textAlign: 'center', padding: '6px 8px' }}>
+                                              {isUnitVacant ? (
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isChecked}
+                                                  onChange={() => {
+                                                    setSelectedBulkUnits((prev) => {
+                                                      const current = prev[p.id] || [];
+                                                      const next = current.includes(u.id)
+                                                        ? current.filter((x) => x !== u.id)
+                                                        : [...current, u.id];
+                                                      return { ...prev, [p.id]: next };
+                                                    });
+                                                  }}
+                                                  title="Select unit for bulk lease"
+                                                  style={{ cursor: 'pointer' }}
+                                                />
+                                              ) : (
+                                                <span style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>—</span>
+                                              )}
+                                            </td>
+                                            <td style={{ padding: '6px 8px' }}>
+                                              {unitCover ? (
+                                                <div
+                                                  style={{
+                                                    width: '34px',
+                                                    height: '34px',
+                                                    borderRadius: '4px',
+                                                    overflow: 'hidden',
+                                                    border: '1px solid var(--line)',
+                                                    cursor: 'pointer',
+                                                  }}
+                                                  onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber || u.id}`, url: unitCover })}
+                                                  title="Click to view photo"
+                                                >
+                                                  <img src={unitCover} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                </div>
+                                              ) : (
+                                                <div
+                                                  style={{
+                                                    width: '34px',
+                                                    height: '34px',
+                                                    borderRadius: '4px',
+                                                    background: '#F0F2F5',
+                                                    border: '1px dashed #CBD2D9',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    color: 'var(--ink-soft)',
+                                                  }}
+                                                  title="No unit photo"
+                                                >
+                                                  <Camera size={14} />
+                                                </div>
+                                              )}
+                                            </td>
+                                            <td>
+                                              <b>{u.unitNumber || u.id}</b>
+                                              {u.unitType && (
+                                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
+                                                  {u.unitType}
+                                                </span>
+                                              )}
+                                            </td>
+                                            <td>
+                                              {u.tenant && unitEffectiveStatus === 'occupied' ? (
+                                                <span
+                                                  style={{
+                                                    color: 'var(--ledger)',
+                                                    fontWeight: 500,
+                                                    cursor: 'pointer',
+                                                    textDecoration: 'underline',
+                                                  }}
+                                                  onClick={() => {
+                                                    navigate('/owner/tenants');
+                                                  }}
+                                                >
+                                                  {u.tenant}
+                                                </span>
+                                              ) : (
+                                                <span style={{ color: 'var(--ink-soft)' }}>Vacant</span>
+                                              )}
+                                            </td>
+                                            <td>
+                                              {getCurrencySymbol(u.currency)}
+                                              {u.rent?.toLocaleString()}
+                                              {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
+                                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
+                                                  ~{format(convert(u.rent || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)}
+                                                </span>
+                                              )}
+                                            </td>
+                                            <td>
+                                              {getCurrencySymbol(u.currency)}
+                                              {u.deposit?.toLocaleString()}
+                                              {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
+                                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
+                                                  ~{format(convert(u.deposit || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)}
+                                                </span>
+                                              )}
+                                            </td>
+                                            <td>
+                                              <span
+                                                className={`badge ${unitEffectiveStatus === 'occupied'
+                                                    ? 'green'
+                                                    : unitEffectiveStatus === 'reserved'
+                                                      ? 'amber'
+                                                      : unitEffectiveStatus === 'maintenance'
+                                                        ? 'grey'
+                                                        : 'grey'
+                                                  }`}
+                                              >
+                                                {unitEffectiveStatus === 'occupied'
+                                                  ? 'Occupied'
+                                                  : unitEffectiveStatus === 'reserved'
+                                                    ? 'Reserved'
+                                                    : unitEffectiveStatus === 'maintenance'
+                                                      ? 'Maintenance'
+                                                      : 'Vacant'}
+                                              </span>
+                                            </td>
+                                            <td>
+                                              {unitEffectiveStatus === 'vacant' ? (
+                                                <label
+                                                  className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
+                                                  onClick={() => {
+                                                    if (!u.isListedPublicly) {
+                                                      setUnitToConfirmListing(u);
+                                                    } else {
+                                                      handleToggleListing(u.id);
+                                                    }
+                                                  }}
+                                                >
+                                                  <span className="track" />
+                                                </label>
+                                              ) : (
+                                                <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>—</span>
+                                              )}
+                                            </td>
+                                            <td>
+                                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                <button
+                                                  type="button"
+                                                  className="btn secondary small"
+                                                  onClick={() => openUnitDetails(u)}
+                                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                                  title="View Unit Details"
+                                                >
+                                                  <Eye size={12} /> Details
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="btn secondary small"
+                                                  onClick={() => openUnitEdit(u)}
+                                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                                  title="Edit Unit"
+                                                >
+                                                  <Edit3 size={12} /> Edit
+                                                </button>
+                                              </div>
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+
+                              <div className="mobile-card-view">
+                                {unitsInProp.map((u) => {
+                                  const isUnitVacant = u.status === 'vacant';
+                                  const isChecked = (selectedBulkUnits[p.id] || []).includes(u.id);
+                                  const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus;
+                                  const unitCover = (u.images && u.images[0]) || u.image;
+                                  return (
+                                    <div key={u.id} className="staff-card">
+                                      <div className="staff-card-header">
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                          {isUnitVacant && (
+                                            <input
+                                              type="checkbox"
+                                              checked={isChecked}
+                                              onChange={() => {
+                                                setSelectedBulkUnits((prev) => {
+                                                  const current = prev[p.id] || [];
+                                                  const next = current.includes(u.id)
+                                                    ? current.filter((x) => x !== u.id)
+                                                    : [...current, u.id];
+                                                  return { ...prev, [p.id]: next };
+                                                });
+                                              }}
+                                              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                                            />
+                                          )}
+                                          {unitCover ? (
+                                            <div
+                                              style={{
+                                                width: '38px',
+                                                height: '38px',
+                                                borderRadius: '6px',
+                                                overflow: 'hidden',
+                                                border: '1px solid var(--line)',
+                                                flexShrink: 0,
+                                                cursor: 'pointer',
+                                              }}
+                                              onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber || u.id}`, url: unitCover })}
+                                            >
+                                              <img src={unitCover} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                            </div>
+                                          ) : (
+                                            <div
+                                              style={{
+                                                width: '38px',
+                                                height: '38px',
+                                                borderRadius: '6px',
+                                                background: '#F0F2F5',
+                                                border: '1px dashed #CBD2D9',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                color: 'var(--ink-soft)',
+                                                flexShrink: 0,
+                                              }}
+                                            >
+                                              <Camera size={16} />
+                                            </div>
+                                          )}
+                                          <div>
+                                            <div className="staff-card-title">Unit {u.unitNumber || u.id}</div>
+                                            <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                                              Tenant:{' '}
+                                              {u.tenant && unitEffectiveStatus === 'occupied' ? (
+                                                <span
+                                                  style={{ color: 'var(--ledger)', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer' }}
+                                                  onClick={() => {
+                                                    navigate('/owner/tenants');
+                                                  }}
+                                                >
+                                                  {u.tenant}
+                                                </span>
+                                              ) : (
+                                                'Vacant'
+                                              )}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <span
+                                          className={`badge ${unitEffectiveStatus === 'occupied'
+                                              ? 'green'
+                                              : unitEffectiveStatus === 'reserved'
+                                                ? 'amber'
+                                                : unitEffectiveStatus === 'maintenance'
+                                                  ? 'grey'
+                                                  : 'grey'
+                                            }`}
+                                        >
+                                          {unitEffectiveStatus === 'occupied'
+                                            ? 'Occupied'
+                                            : unitEffectiveStatus === 'reserved'
+                                              ? 'Reserved'
+                                              : unitEffectiveStatus === 'maintenance'
+                                                ? 'Maintenance'
+                                                : 'Vacant'}
+                                        </span>
+                                      </div>
+                                      <div className="staff-card-meta">
+                                        <div className="staff-card-meta-item">
+                                          <b>Rent:</b> {getCurrencySymbol(u.currency)}{u.rent?.toLocaleString()}
+                                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
+                                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginLeft: '4px' }}>
+                                              (~{format(convert(u.rent || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="staff-card-meta-item">
+                                          <b>Deposit:</b> {getCurrencySymbol(u.currency)}{u.deposit?.toLocaleString()}
+                                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
+                                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginLeft: '4px' }}>
+                                              (~{format(convert(u.deposit || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
+                                            </span>
+                                          )}
+                                        </div>
+                                        {u.status === 'vacant' && (
+                                          <div className="staff-card-meta-item" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                            <span>Publicly Listed:</span>
+                                            <label
+                                              className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
+                                              onClick={() => {
+                                                if (!u.isListedPublicly) {
+                                                  setUnitToConfirmListing(u);
+                                                } else {
+                                                  handleToggleListing(u.id);
+                                                }
+                                              }}
+                                            >
+                                              <span className="track" />
+                                            </label>
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="staff-card-footer" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                        <button
+                                          type="button"
+                                          className="btn secondary small"
+                                          onClick={() => openUnitDetails(u)}
+                                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
+                                        >
+                                          <Eye size={13} /> Details
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="btn secondary small"
+                                          onClick={() => openUnitEdit(u)}
+                                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
+                                        >
+                                          <Edit3 size={13} /> Edit
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </>
+                    )}
                   </div>
                 </div>
               );
             }))}
         </div>
-      ) : (
-        <div>
-          <div className="panel">
-            <div className="panel-body">
-              <div className="field search-wrap" style={{ position: 'relative' }}>
-                <label>Search by phone number or email</label>
-                <input
-                  type="text"
-                  placeholder="Start typing a phone number or email…"
-                  value={dirSearchQuery}
-                  onChange={(e) => {
-                    setDirSearchQuery(e.target.value);
-                  }}
-                  autoComplete="off"
-                />
-                {dirSearchQuery.trim() && (
-                  <div
-                    className="search-results show"
-                    style={{
-                      position: 'absolute',
-                      top: '100%',
-                      left: 0,
-                      right: 0,
-                      background: 'var(--surface)',
-                      border: '1px solid var(--line-strong)',
-                      borderRadius: 'var(--radius)',
-                      boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-                      zIndex: 10,
-                      marginTop: '4px',
-                    }}
-                  >
-                    {matchedTenants.length === 0 ? (
-                      <div className="search-result-item" style={{ padding: '10px 14px', color: 'var(--ink-soft)' }}>
-                        No match — this may be a new tenant.
-                      </div>
-                    ) : (
-                      matchedTenants.map((m) => (
-                        <div
-                          key={m.id}
-                          className="search-result-item"
-                          style={{
-                            padding: '10px 14px',
-                            cursor: 'pointer',
-                            borderBottom: '1px solid var(--line)',
-                          }}
-                          onClick={() => {
-                            setSelectedTenant(m);
-                            setDirSearchQuery(m.name);
-                          }}
-                        >
-                          <div style={{ fontWeight: 600 }}>{m.name}</div>
-                          <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                            {m.phone} • {m.history.length} past rental{m.history.length > 1 ? 's' : ''} •{' '}
-                            {renderStars(m.rating)}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-              <p className="hint" style={{ marginTop: '8px' }}>
-                As soon as a match is found, their name, rental history and reviews appear.
-              </p>
-            </div>
-          </div>
-
-          {selectedTenant && (
-            <div className="panel">
-              <div className="panel-head">
-                <div className="person">
-                  <div className="avatar">{selectedTenant.name.slice(0, 2).toUpperCase()}</div>
-                  <div className="who">
-                    <b>{selectedTenant.name}</b>
-                    <span>
-                      {selectedTenant.phone} • {selectedTenant.email}
-                    </span>
-                  </div>
-                </div>
-                <div>{renderStars(selectedTenant.rating)}</div>
-              </div>
-
-              <div className="panel-body">
-                <div className="section-title" style={{ marginTop: 0 }}>
-                  Rental history
-                </div>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Owner</th>
-                        <th>Property</th>
-                        <th>Period</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedTenant.history.map((h: any, idx: number) => (
-                        <tr key={idx}>
-                          <td><b>{h.owner}</b></td>
-                          <td>{h.property}</td>
-                          <td>{h.period}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="section-title">Reviews from past landlords</div>
-                {state.reviews.tenants.filter((r: any) =>
-                  selectedTenant.id ? r.tenantId === selectedTenant.id : (!r.tenantId && r.tenant === selectedTenant.name && r.ownerId === ownerId)
-                ).length === 0 ? (
-                  <p style={{ color: 'var(--ink-soft)' }}>No reviews yet.</p>
-                ) : (
-                  state.reviews.tenants
-                    .filter((r: any) =>
-                      selectedTenant.id ? r.tenantId === selectedTenant.id : (!r.tenantId && r.tenant === selectedTenant.name && r.ownerId === ownerId)
-                    )
-                    .map((r: any, idx: number) => (
-                      <div
-                        key={idx}
-                        style={{ padding: '10px 0', borderBottom: '1px solid var(--line)' }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <b>{r.by}</b>
-                          {renderStars(r.rating)}
-                        </div>
-                        <p style={{ color: 'var(--ink-soft)', marginTop: '4px' }}>{r.text}</p>
-                      </div>
-                    ))
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Unit Details Modal (Read-Only 360° View) */}
       {viewingUnit && (() => {
@@ -1380,14 +1848,8 @@ export const PropertiesPage: React.FC = () => {
                             type="button"
                             className="btn secondary small"
                             onClick={() => {
-                              if (matchedTenant) {
-                                setSelectedTenant(matchedTenant);
-                                setSubTab('directory');
-                                setViewingUnit(null);
-                              } else {
-                                setSubTab('directory');
-                                setViewingUnit(null);
-                              }
+                              setViewingUnit(null);
+                              navigate('/owner/tenants');
                             }}
                           >
                             View Tenant
@@ -1539,15 +2001,12 @@ export const PropertiesPage: React.FC = () => {
                     value={editUnitType}
                     onChange={(e) => setEditUnitType(e.target.value)}
                   >
-                    <option value="1 RK">1 RK</option>
-                    <option value="1 BHK">1 BHK</option>
-                    <option value="2 BHK">2 BHK</option>
-                    <option value="3 BHK">3 BHK</option>
-                    <option value="4 BHK">4 BHK</option>
-                    <option value="Studio">Studio</option>
-                    <option value="Penthouse">Penthouse</option>
-                    <option value="Villa">Villa</option>
-                    <option value="Commercial">Commercial Space</option>
+                    {(() => {
+                      const parentProp = state.properties.find((p) => p.id === editingUnit.propertyId);
+                      return getUnitTypesForProperty(parentProp?.propertyType, editUnitType).map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ));
+                    })()}
                   </select>
                 </div>
               </div>
@@ -1638,7 +2097,34 @@ export const PropertiesPage: React.FC = () => {
                 </select>
                 {editStatus === 'vacant' && editingUnit.tenant && (
                   <div style={{ fontSize: '11.5px', color: 'var(--amber)', marginTop: '4px' }}>
-                    ⚠️ Setting status to Vacant will detach current resident ({editingUnit.tenant}).
+                    ⚠️ Setting status to Vacant will detach current resident ({editingUnit.tenant}) and initiate Move-Out verification.
+                  </div>
+                )}
+                {editStatus === 'occupied' && (editingUnit.tenant || (editingUnit.deposit || 0) > 0 || editDeposit > 0) && (
+                  <div style={{ marginTop: '8px', padding: '10px 12px', background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: 'var(--radius)' }}>
+                    <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink)' }}>
+                      Security Deposit Settlement ({getCurrencySymbol(editingUnit.currency || DEFAULT_CURRENCY_SYMBOL)}{(editDeposit || editingUnit.deposit || 0).toLocaleString()}):
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+                        <input
+                          type="radio"
+                          name="depositHandling"
+                          checked={depositHandlingOption === 'paid_offline'}
+                          onChange={() => setDepositHandlingOption('paid_offline')}
+                        />
+                        <span><b>Deposit Collected Offline</b> (Recorded in financial ledger as paid)</span>
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+                        <input
+                          type="radio"
+                          name="depositHandling"
+                          checked={depositHandlingOption === 'pending'}
+                          onChange={() => setDepositHandlingOption('pending')}
+                        />
+                        <span><b>Deposit Due Later</b> (Remains as pending unpaid invoice for resident)</span>
+                      </label>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1776,6 +2262,75 @@ export const PropertiesPage: React.FC = () => {
                   onClick={handleSaveUnitEdit}
                 >
                   Save Unit Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Move-Out & Settlement Confirmation Dialog */}
+      {vacateConfirmTarget && (
+        <div className="modal-backdrop" onClick={() => setVacateConfirmTarget(null)}>
+          <div className="modal-card" style={{ maxWidth: '520px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ShieldCheck size={18} style={{ color: 'var(--brass)' }} />
+                Move-Out & Settlement Confirmation
+              </h3>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => setVacateConfirmTarget(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body" style={{ fontSize: '13.5px', lineHeight: '1.5' }}>
+              <p style={{ margin: '0 0 12px' }}>
+                Unit <b>{vacateConfirmTarget.unit.unitNumber || vacateConfirmTarget.unit.id}</b> currently has an active resident: <b>{vacateConfirmTarget.unit.tenant}</b>.
+              </p>
+              <div style={{ padding: '12px', background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', marginBottom: '14px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Original Security Deposit Held:</div>
+                <div style={{ fontSize: '18px', fontWeight: 700, color: 'var(--ink)', marginTop: '2px' }}>
+                  {getCurrencySymbol(vacateConfirmTarget.unit.currency || DEFAULT_CURRENCY_SYMBOL)}
+                  {(vacateConfirmTarget.unit.deposit || 0).toLocaleString()}
+                </div>
+              </div>
+              <p style={{ margin: '0 0 8px', color: 'var(--ink-soft)' }}>
+                Vacating this unit will terminate the active lease agreement. How would you like to process this move-out?
+              </p>
+            </div>
+            <div className="modal-foot" style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', padding: '14px 20px', borderTop: '1px solid var(--line)', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={() => setVacateConfirmTarget(null)}
+                disabled={isProcessingUnitAction}
+              >
+                Cancel
+              </button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  style={{ color: '#dc3545', borderColor: '#f8d7da' }}
+                  onClick={() => executeImmediateVacate(vacateConfirmTarget.updatedData)}
+                  disabled={isProcessingUnitAction}
+                >
+                  Force Vacant Immediately
+                </button>
+                <button
+                  type="button"
+                  className="btn brass"
+                  onClick={() => {
+                    setVacateConfirmTarget(null);
+                    setEditingUnit(null);
+                    navigate('/owner/vacates');
+                  }}
+                  disabled={isProcessingUnitAction}
+                >
+                  Go to Move-Out & Settlement
                 </button>
               </div>
             </div>
@@ -1935,15 +2490,104 @@ export const PropertiesPage: React.FC = () => {
                       <label style={{ fontWeight: 600, fontSize: '13px' }}>Property Type</label>
                       <select
                         value={propType}
-                        onChange={(e) => setPropType(e.target.value)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setPropType(val);
+                          const defaultStruct = getDefaultPropertyStructure(val);
+                          setPropStructure(defaultStruct);
+                          const validTypes = getUnitTypesForProperty(val);
+                          if (validTypes.length > 0) {
+                            setSingleUnitType(validTypes[0]);
+                            setBulkUnitType(validTypes[0]);
+                          }
+                        }}
                         style={{ padding: '9px 12px' }}
                       >
-                        <option value="Residential Apartment Complex">Residential Apartment Complex</option>
-                        <option value="Gated Villa Community">Gated Villa Community</option>
-                        <option value="Commercial Plaza / Office">Commercial Plaza / Office</option>
-                        <option value="Co-Living / PG / Student Housing">Co-Living / PG / Student Housing</option>
-                        <option value="Independent Multi-Unit House">Independent Multi-Unit House</option>
+                        <optgroup label="Residential — Multi-Unit">
+                          {PROPERTY_TYPE_OPTIONS.filter((o) => o.category === 'residential' && o.defaultStructure === 'multi_unit').map((o) => (
+                            <option key={o.label} value={o.label}>{o.label}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Residential — Single House / Villa">
+                          {PROPERTY_TYPE_OPTIONS.filter((o) => o.category === 'residential' && o.defaultStructure === 'single_unit').map((o) => (
+                            <option key={o.label} value={o.label}>{o.label}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Commercial">
+                          {PROPERTY_TYPE_OPTIONS.filter((o) => o.category === 'commercial').map((o) => (
+                            <option key={o.label} value={o.label}>{o.label}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Mixed-Use">
+                          {PROPERTY_TYPE_OPTIONS.filter((o) => o.category === 'mixed').map((o) => (
+                            <option key={o.label} value={o.label}>{o.label}</option>
+                          ))}
+                        </optgroup>
                       </select>
+                    </div>
+                  </div>
+
+                  {/* Property Structure & Leasing Model Selector */}
+                  <div className="field" style={{ background: 'var(--surface-sunken)', padding: '14px 16px', borderRadius: 'var(--radius)', border: '1px solid var(--line)' }}>
+                    <label style={{ fontWeight: 600, fontSize: '13px', display: 'block', marginBottom: '4px' }}>
+                      Property Structure & Leasing Model *
+                    </label>
+                    <div className="hint" style={{ fontSize: '12px', marginBottom: '10px' }}>
+                      Choose whether this asset is leased as a whole independent unit or divided into multiple rentable units.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px' }}>
+                      <label
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '10px',
+                          padding: '12px',
+                          borderRadius: '8px',
+                          border: propStructure === 'single_unit' ? '2px solid var(--brass)' : '1px solid var(--line)',
+                          background: propStructure === 'single_unit' ? '#FAF8F5' : '#fff',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="propStructure"
+                          checked={propStructure === 'single_unit'}
+                          onChange={() => setPropStructure('single_unit')}
+                          style={{ marginTop: '3px' }}
+                        />
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: '13px' }}>🏡 Single-Unit Asset</div>
+                          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '2px' }}>
+                            Entire house, standalone 4BHK villa, bungalow, or single shop leased as 1 complete property.
+                          </div>
+                        </div>
+                      </label>
+                      <label
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '10px',
+                          padding: '12px',
+                          borderRadius: '8px',
+                          border: propStructure === 'multi_unit' ? '2px solid var(--brass)' : '1px solid var(--line)',
+                          background: propStructure === 'multi_unit' ? '#FAF8F5' : '#fff',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="propStructure"
+                          checked={propStructure === 'multi_unit'}
+                          onChange={() => setPropStructure('multi_unit')}
+                          style={{ marginTop: '3px' }}
+                        />
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: '13px' }}>🏢 Multi-Unit Complex</div>
+                          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '2px' }}>
+                            Apartment building, gated villa community, or office plaza with multiple leasable units.
+                          </div>
+                        </div>
+                      </label>
                     </div>
                   </div>
 
@@ -2514,6 +3158,129 @@ export const PropertiesPage: React.FC = () => {
 
               {/* STEP 3: Units Setup & Bulk Generator */}
               {modalStep === 3 && (
+                propStructure === 'single_unit' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                    <div
+                      style={{
+                        background: '#FAF8F5',
+                        border: '1px solid var(--brass)',
+                        borderRadius: 'var(--radius)',
+                        padding: '16px 20px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                        <span className="badge brass" style={{ fontSize: '12px' }}>🏡 Single-Unit Asset Mode</span>
+                        <span style={{ fontSize: '13.5px', fontWeight: 600 }}>Lease Terms & Property Specifications</span>
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                        This entire property will be leased as a single unified asset (e.g. 4BHK house, luxury villa, standalone commercial facility) without managing internal sub-units.
+                      </div>
+                    </div>
+
+                    <div className="row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Layout / House Type *</label>
+                        <select
+                          value={singleUnitType}
+                          onChange={(e) => setSingleUnitType(e.target.value)}
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        >
+                          {getUnitTypesForProperty(propType, singleUnitType).map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Property Identifier / Unit Label</label>
+                        <input
+                          type="text"
+                          value={singleUnitLabel}
+                          onChange={(e) => setSingleUnitLabel(e.target.value)}
+                          placeholder="e.g. Entire House, Main Villa, House #12"
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Expected Monthly Rent ({propCurrency}) *</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={singleUnitRent === 0 ? '' : singleUnitRent}
+                          onChange={(e) => setSingleUnitRent(Number(e.target.value))}
+                          placeholder="e.g. 35000"
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        />
+                      </div>
+
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Security Deposit ({propCurrency})</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={singleUnitDeposit === 0 ? '' : singleUnitDeposit}
+                          onChange={(e) => setSingleUnitDeposit(Number(e.target.value))}
+                          placeholder="e.g. 70000"
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Carpet Area (Sq.Ft)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={singleUnitAreaSqFt || ''}
+                          onChange={(e) => setSingleUnitAreaSqFt(Number(e.target.value))}
+                          placeholder="e.g. 2200"
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        />
+                      </div>
+
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Furnishing State</label>
+                        <select
+                          value={singleUnitFurnishing}
+                          onChange={(e) => setSingleUnitFurnishing(e.target.value as any)}
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        >
+                          <option value="Unfurnished">Unfurnished</option>
+                          <option value="Semi-Furnished">Semi-Furnished</option>
+                          <option value="Fully Furnished">Fully Furnished</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Electricity Meter # (Optional)</label>
+                        <input
+                          type="text"
+                          value={singleUnitElectricityMeter}
+                          onChange={(e) => setSingleUnitElectricityMeter(e.target.value)}
+                          placeholder="e.g. EB-887711"
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        />
+                      </div>
+
+                      <div className="field">
+                        <label style={{ fontSize: '12.5px', fontWeight: 600 }}>Water Meter # (Optional)</label>
+                        <input
+                          type="text"
+                          value={singleUnitWaterMeter}
+                          onChange={(e) => setSingleUnitWaterMeter(e.target.value)}
+                          placeholder="e.g. WTR-4422"
+                          style={{ width: '100%', padding: '9px 12px', fontSize: '13px' }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
                   {/* Stats Bar & Mode Toggles */}
                   <div
@@ -2538,6 +3305,11 @@ export const PropertiesPage: React.FC = () => {
                         <b>
                           {propCurrency}
                           {initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0).toLocaleString()}
+                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(propCurrency) && (
+                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
+                              (~{format(convert(initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0), propCurrency, viewCurrency), viewCurrency)})
+                            </span>
+                          )}
                         </b>
                       </div>
                     </div>
@@ -2618,14 +3390,9 @@ export const PropertiesPage: React.FC = () => {
                             onChange={(e) => setBulkUnitType(e.target.value)}
                             style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
                           >
-                            <option value="Studio">Studio</option>
-                            <option value="1 BHK">1 BHK</option>
-                            <option value="2 BHK">2 BHK</option>
-                            <option value="3 BHK">3 BHK</option>
-                            <option value="4 BHK">4 BHK</option>
-                            <option value="Penthouse">Penthouse</option>
-                            <option value="Commercial Office">Commercial Office</option>
-                            <option value="Shop / Retail">Shop / Retail</option>
+                            {getUnitTypesForProperty(propType, bulkUnitType).map((t) => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
                           </select>
                         </div>
                         <div>
@@ -2877,14 +3644,9 @@ export const PropertiesPage: React.FC = () => {
                                     }}
                                     style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
                                   >
-                                    <option value="Studio">Studio</option>
-                                    <option value="1 BHK">1 BHK</option>
-                                    <option value="2 BHK">2 BHK</option>
-                                    <option value="3 BHK">3 BHK</option>
-                                    <option value="4 BHK">4 BHK</option>
-                                    <option value="Penthouse">Penthouse</option>
-                                    <option value="Commercial Office">Office</option>
-                                    <option value="Shop / Retail">Shop</option>
+                                    {getUnitTypesForProperty(propType, u.unitType).map((t) => (
+                                      <option key={t} value={t}>{t}</option>
+                                    ))}
                                   </select>
                                 </td>
                                 <td style={{ padding: '6px 8px' }}>
@@ -3030,6 +3792,7 @@ export const PropertiesPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
+                )
               )}
 
               {/* STEP 4: Media, Photos & Review */}
@@ -3246,6 +4009,29 @@ export const PropertiesPage: React.FC = () => {
                   )}
 
                   {/* Configured Units Showcase in Review */}
+                  {propStructure === 'single_unit' ? (
+                    <div
+                      style={{
+                        background: '#FAFAF7',
+                        border: '1px solid var(--line)',
+                        borderRadius: 'var(--radius)',
+                        padding: '16px',
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: '13.5px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Building2 size={15} color="var(--ledger)" />
+                        <span>Single-Unit Asset Configuration</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px', fontSize: '12.5px' }}>
+                        <div><b>Layout:</b> {singleUnitType}</div>
+                        <div><b>Identifier:</b> {singleUnitLabel || 'Entire House'}</div>
+                        <div><b>Monthly Rent:</b> {propCurrency}{singleUnitRent.toLocaleString()}/mo</div>
+                        <div><b>Deposit:</b> {propCurrency}{singleUnitDeposit.toLocaleString()}</div>
+                        <div><b>Area:</b> {singleUnitAreaSqFt} sq.ft</div>
+                        <div><b>Furnishing:</b> {singleUnitFurnishing}</div>
+                      </div>
+                    </div>
+                  ) : (
                   <div
                     style={{
                       background: '#FAFAF7',
@@ -3301,6 +4087,7 @@ export const PropertiesPage: React.FC = () => {
                       ))}
                     </div>
                   </div>
+                  )}
 
                   {/* Comprehensive Review Card */}
                   <div
@@ -3347,6 +4134,11 @@ export const PropertiesPage: React.FC = () => {
                         <b>
                           {propCurrency}
                           {initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0).toLocaleString()}
+                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(propCurrency) && (
+                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
+                              (~{format(convert(initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0), propCurrency, viewCurrency), viewCurrency)})
+                            </span>
+                          )}
                         </b>
                       </div>
                       <div>
@@ -3410,7 +4202,7 @@ export const PropertiesPage: React.FC = () => {
                           return;
                         }
                       }
-                      if (modalStep === 3 && initialUnits.length === 0) {
+                      if (modalStep === 3 && propStructure === 'multi_unit' && initialUnits.length === 0) {
                         showToast('Please add at least one unit before proceeding.');
                         return;
                       }
@@ -3430,7 +4222,7 @@ export const PropertiesPage: React.FC = () => {
                     <ButtonProcessing
                       loading={isSubmittingProp}
                       loadingText="Creating Property..."
-                      defaultText={`✓ Create Property & ${initialUnits.length} Units`}
+                      defaultText={propStructure === 'single_unit' ? '✓ Create Single Property' : `✓ Create Property & ${initialUnits.length} Units`}
                     />
                   </button>
                 )}
@@ -3465,13 +4257,9 @@ export const PropertiesPage: React.FC = () => {
                 <div className="field">
                   <label>Type</label>
                   <select value={newUnitType} onChange={(e) => setNewUnitType(e.target.value)}>
-                    <option value="1 RK">1 RK</option>
-                    <option value="1 BHK">1 BHK</option>
-                    <option value="2 BHK">2 BHK</option>
-                    <option value="3 BHK">3 BHK</option>
-                    <option value="4+ BHK">4+ BHK</option>
-                    <option value="Studio">Studio</option>
-                    <option value="Commercial">Commercial</option>
+                    {getUnitTypesForProperty(addUnitProperty.propertyType, newUnitType).map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="field">
@@ -3665,6 +4453,24 @@ export const PropertiesPage: React.FC = () => {
         disabled={!isPlanActive}
         mobileOnly={true}
       />
+
+      {/* Direct Onboarding / Bulk Leasing Modal */}
+      {activeOnboardConfig.isOpen && (
+        <OnboardResidentModal
+          isOpen={activeOnboardConfig.isOpen}
+          onClose={() => setActiveOnboardConfig({ isOpen: false })}
+          preselectedPropertyId={activeOnboardConfig.propertyId}
+          preselectedUnitId={activeOnboardConfig.unitId}
+          preselectedUnitIds={activeOnboardConfig.unitIds}
+          onSuccess={(tenantName, unitLabel) => {
+            showToast(`✓ Tenancy setup initiated for ${tenantName} (${unitLabel}).`);
+            setActiveOnboardConfig({ isOpen: false });
+            if (activeOnboardConfig.propertyId) {
+              setSelectedBulkUnits((prev) => ({ ...prev, [activeOnboardConfig.propertyId!]: [] }));
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

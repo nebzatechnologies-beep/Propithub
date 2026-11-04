@@ -7,6 +7,7 @@ import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { getCleanAddressText } from '../../lib/addressUtils';
 
 export const TeamPage: React.FC = () => {
   const { state, updateState, recordManagerPayout, saveManager, deleteManager, reassignManagerProperty, showToast } = useAppData();
@@ -288,7 +289,7 @@ export const TeamPage: React.FC = () => {
                         </div>
                         <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
                           <span className="k" style={{ color: 'var(--ink-soft)' }}>Assigned Property</span>
-                          <span style={{ fontWeight: 500 }}>{assignedProp?.name || 'All Properties'}</span>
+                          <span style={{ fontWeight: 500, color: assignedProp ? 'var(--ink)' : 'var(--amber, #D97706)' }}>{assignedProp?.name || 'Unassigned (No Scope)'}</span>
                         </div>
                         <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
                           <span className="k" style={{ color: 'var(--ink-soft)' }}>Phone</span>
@@ -762,6 +763,33 @@ export const TeamPage: React.FC = () => {
               <p className="hint" style={{ marginBottom: '16px' }}>
                 Record monthly fee or commission disbursement to your property manager. This creates an auditable record in your management ledger.
               </p>
+
+              <div className="field" style={{ marginBottom: '16px' }}>
+                <label style={{ fontWeight: 600, color: 'var(--ink)' }}>Select Property Manager</label>
+                <select
+                  value={payingManager?.id || ''}
+                  onChange={(e) => {
+                    const sel = myManagers.find((m: any) => String(m.id) === String(e.target.value));
+                    if (sel) {
+                      setPayingManager(sel);
+                      if (sel.monthlySalary || sel.compensationAmount) {
+                        setPayAmount(Number(sel.monthlySalary || sel.compensationAmount));
+                      }
+                    }
+                  }}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', border: '1px solid var(--line-strong)', background: 'var(--surface)', fontWeight: 500 }}
+                >
+                  {myManagers.map((m: any) => {
+                    const assignedProp = myProperties.find((p) => p.id === m.assignedPropertyId || p.name === m.assignedProperty);
+                    const propCurr = getCurrencySymbol(assignedProp?.currency || myProperties[0]?.currency) || DEFAULT_CURRENCY_SYMBOL;
+                    return (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.email}) — Property: {m.assignedProperty || assignedProp?.name || 'Unassigned'} ({propCurr})
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
               <div className="row">
                 <div className="field">
                   <label>Payout Month / Period</label>
@@ -863,11 +891,14 @@ export const TeamPage: React.FC = () => {
                   }
                 >
                   <option value="">— None (Unassigned / Floating Manager) —</option>
-                  {myProperties.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.address ? (typeof p.address === 'string' ? p.address : p.address.city || p.address.formattedAddress) : 'Property'})
-                    </option>
-                  ))}
+                  {myProperties.map((p) => {
+                    const cleanAddr = getCleanAddressText(p.address, '').text;
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {cleanAddr ? `(${cleanAddr})` : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 

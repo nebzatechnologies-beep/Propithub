@@ -493,6 +493,21 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
 
   // Scoped payments - strictly isolated to current tenant
   const tenantPayments = useMemo(() => {
+    const myPropertyIds = new Set<string>();
+    if (activeUnit?.propertyId) myPropertyIds.add(activeUnit.propertyId);
+    if (activeAgreement?.propertyId) myPropertyIds.add(activeAgreement.propertyId);
+    if (tenantRecord?.propertyId) myPropertyIds.add(tenantRecord.propertyId);
+    (state.agreements || []).forEach((ag) => {
+      if ((user?.id && ag.tenantId === user.id) || (tenantEmail && ag.tenantEmail?.toLowerCase() === tenantEmail)) {
+        if (ag.propertyId) myPropertyIds.add(ag.propertyId);
+      }
+    });
+    (state.units || []).forEach((u) => {
+      if (u.currentTenantId === user?.id || (tenantEmail && u.tenant?.toLowerCase() === tenantEmail)) {
+        if (u.propertyId) myPropertyIds.add(u.propertyId);
+      }
+    });
+
     const rawList = state.payments.filter((p) => {
       // 1. Direct tenant identity checks strictly by unique IDs
       const matchesAuthId = Boolean(user?.id && p.tenantId === user.id);
@@ -516,6 +531,9 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
         return false;
       }
       if ((p as any).tenantEmail && tenantEmail && (p as any).tenantEmail.toLowerCase().trim() !== tenantEmail) {
+        return false;
+      }
+      if (p.propertyId && !myPropertyIds.has(p.propertyId)) {
         return false;
       }
 

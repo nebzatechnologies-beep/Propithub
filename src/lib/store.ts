@@ -33,6 +33,7 @@ import {
   CommunicationLog,
   Announcement,
   AgreementTemplate,
+  PropertyEnquiry,
 } from '../types';
 import { isFirebaseConfigured } from './firebase';
 import { sanitizeCountry } from './addressUtils';
@@ -85,6 +86,7 @@ export interface AppState {
   cashClaims: CashHandoverClaim[];
   communicationLogs: CommunicationLog[];
   announcements: Announcement[];
+  enquiries: PropertyEnquiry[];
 }
 
 export const INITIAL_STATE: AppState = {
@@ -166,60 +168,7 @@ export const INITIAL_STATE: AppState = {
   notifications: [],
   auditLog: [],
   platformSupport: [],
-  announcements: [
-    {
-      id: 'ann-1',
-      ownerId: 'owner',
-      authorName: 'Management Office',
-      title: 'Scheduled Water Tank Cleaning & Pressure Maintenance',
-      body: 'Please be advised that annual domestic water tank cleaning and overhead pump servicing will occur this Thursday between 10:00 AM and 2:00 PM. Water supply may experience low pressure or brief interruptions during this period.',
-      category: 'maintenance',
-      priority: 'important',
-      status: 'published',
-      targetScope: {
-        allProperties: true,
-        propertyIds: [],
-        targetRoles: ['tenant'],
-      },
-      isPinned: true,
-      requireAcknowledgment: true,
-      acknowledgments: [
-        {
-          tenantId: 'demo-tenant-1',
-          tenantName: 'Sarah Jenkins',
-          unitNumber: '102',
-          propertyName: 'Sunset Heights',
-          acknowledgedAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-        }
-      ],
-      publishedAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-      viewsCount: 18,
-      createdAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-      updatedAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-    },
-    {
-      id: 'ann-2',
-      ownerId: 'owner',
-      authorName: 'Property Admin',
-      title: 'Updated Building Waste Segregation & Recycling Guidelines',
-      body: 'In accordance with municipal environmental policies, all residents are requested to segregate dry recyclables and organic wet waste into designated color-coded bins located in the basement disposal room.',
-      category: 'policy',
-      priority: 'normal',
-      status: 'published',
-      targetScope: {
-        allProperties: true,
-        propertyIds: [],
-        targetRoles: ['tenant', 'staff'],
-      },
-      isPinned: false,
-      requireAcknowledgment: false,
-      acknowledgments: [],
-      publishedAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-      viewsCount: 29,
-      createdAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-      updatedAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-    }
-  ],
+  announcements: [],
 
   landingConfig: {
     brandName: 'propit',
@@ -703,6 +652,7 @@ export const INITIAL_STATE: AppState = {
   cashClaims: [],
   communicationLogs: [],
   agreementTemplates: [],
+  enquiries: [],
 };
 
 export const LANDING_CONFIG_CACHE_KEY = 'propithub_landing_config_v1';
@@ -864,6 +814,10 @@ export function loadState(): AppState {
       ? parsed.tenants.filter((t: TenantRecord) => t.id !== 'ZdhK3dD848N3kxcwsziXdhC8bVw1')
       : [];
 
+    let announcementList: Announcement[] = Array.isArray(parsed.announcements)
+      ? parsed.announcements.filter((a: Announcement) => a.id !== 'ann-1' && a.id !== 'ann-2' && a.ownerId !== 'owner')
+      : [];
+
     const cleanedOwnerSettings = { ...(parsed.ownerSettings || {}) };
     delete cleanedOwnerSettings['usr-owner-1'];
 
@@ -978,7 +932,7 @@ export function loadState(): AppState {
       depositSettlements: parsed.depositSettlements || [],
       cashClaims: parsed.cashClaims || [],
       communicationLogs: parsed.communicationLogs || [],
-      announcements: parsed.announcements || INITIAL_STATE.announcements || [],
+      announcements: announcementList,
     };
   } catch (err) {
     console.error('Failed to parse stored state, reverting to clean production state:', err);

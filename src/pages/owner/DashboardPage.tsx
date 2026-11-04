@@ -11,6 +11,7 @@ import {
   Building,
   ArrowRight,
   TrendingUp,
+  ExternalLink,
 } from 'lucide-react';
 import { PaymentTransaction, Property, InAppNotification } from '../../types';
 import { getOwnerReminders } from '../../lib/reminders';
@@ -18,6 +19,7 @@ import { DashboardReminderHub } from '../../components/dashboard/DashboardRemind
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { resolveUnitOccupancy, calculatePortfolioMetrics } from '../../lib/portfolioSelectors';
+import { AddressDisplay } from '../../components/common/AddressDisplay';
 
 // Helper to normalize any currency code or symbol into canonical code and display symbol
 const normalizeCurrency = (raw?: string): { code: string; symbol: string; label: string } => {
@@ -733,7 +735,7 @@ export const OwnerDashboardPage: React.FC = () => {
                     filteredProperties.map((p) => {
                       const curr = getPropertyCurrency(p);
                       const propUnits = myUnits.filter((u) => u.propertyId === p.id || (!u.propertyId && myProperties.length === 1));
-                      const propMetrics = calculatePortfolioMetrics(propUnits, state.agreements, state.tenancyRequests);
+                      const propMetrics = calculatePortfolioMetrics(propUnits, state.agreements, state.tenancyRequests, undefined, undefined, state.moveouts);
                       const totalUnits = propMetrics.totalUnits > 0 ? propMetrics.totalUnits : (p.unitCount || 1);
                       const occupiedCount = propMetrics.totalUnits > 0 ? propMetrics.occupiedCount : (p.occupied || 0);
                       const isFull = totalUnits > 0 && occupiedCount >= totalUnits;
@@ -744,7 +746,9 @@ export const OwnerDashboardPage: React.FC = () => {
                           <td>
                             <b>{p.name}</b>
                           </td>
-                          <td style={{ color: 'var(--ink-soft)' }}>{p.address.formattedAddress}</td>
+                          <td style={{ color: 'var(--ink-soft)' }}>
+                            <AddressDisplay address={p.address} fallback="—" />
+                          </td>
                           <td>
                             <span
                               className={`badge ${curr.code === 'USD' ? 'amber' : curr.code === 'GBP' ? 'red' : 'green'}`}
@@ -785,7 +789,7 @@ export const OwnerDashboardPage: React.FC = () => {
               filteredProperties.map((p) => {
                 const curr = getPropertyCurrency(p);
                 const propUnits = myUnits.filter((u) => u.propertyId === p.id || (!u.propertyId && myProperties.length === 1));
-                const propMetrics = calculatePortfolioMetrics(propUnits, state.agreements, state.tenancyRequests);
+                const propMetrics = calculatePortfolioMetrics(propUnits, state.agreements, state.tenancyRequests, undefined, undefined, state.moveouts);
                 const totalUnits = propMetrics.totalUnits > 0 ? propMetrics.totalUnits : (p.unitCount || 1);
                 const occupiedCount = propMetrics.totalUnits > 0 ? propMetrics.occupiedCount : (p.occupied || 0);
                 const isFull = totalUnits > 0 && occupiedCount >= totalUnits;
@@ -797,7 +801,7 @@ export const OwnerDashboardPage: React.FC = () => {
                       <div>
                         <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--ink)' }}>{p.name}</div>
                         <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                          {p.address.formattedAddress}
+                          <AddressDisplay address={p.address} fallback="—" />
                         </div>
                       </div>
                       <span

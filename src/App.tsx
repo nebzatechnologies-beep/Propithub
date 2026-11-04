@@ -7,6 +7,7 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 
 // Public Pages
 import { LandingPage } from './pages/public/LandingPage';
+import { ListingsPage } from './pages/public/ListingsPage';
 import { LoginPage } from './pages/public/LoginPage';
 import { AdminLoginPage } from './pages/public/AdminLoginPage';
 import { RegisterOwnerPage } from './pages/public/RegisterOwnerPage';
@@ -53,6 +54,7 @@ const LeaseAgreementPage = lazyNamed(() => import('./pages/tenant/LeaseAgreement
 const PaymentsHistoryPage = lazyNamed(() => import('./pages/tenant/PaymentsHistoryPage'), 'PaymentsHistoryPage');
 const SupportTicketsPage = lazyNamed(() => import('./pages/tenant/SupportTicketsPage'), 'SupportTicketsPage');
 const ReviewsDisputesPage = lazyNamed(() => import('./pages/tenant/ReviewsDisputesPage'), 'ReviewsDisputesPage');
+const TenantFindHomeBrowsePage = lazyNamed(() => import('./pages/tenant/FindHomeBrowsePage'), 'TenantFindHomeBrowsePage');
 
 // Manager Pages
 const ManagerDashboardPage = lazyNamed(() => import('./pages/manager/DashboardPage'), 'ManagerDashboardPage');
@@ -85,6 +87,7 @@ export const App: React.FC = () => {
               <Routes>
               {/* Public Routes */}
               <Route path="/" element={<LandingPage />} />
+              <Route path="/listings" element={<ListingsPage />} />
               <Route path="/terms" element={<LegalPolicyPage type="terms" />} />
               <Route path="/privacy" element={<LegalPolicyPage type="privacy" />} />
               <Route path="/refund" element={<LegalPolicyPage type="refund" />} />
@@ -138,6 +141,7 @@ export const App: React.FC = () => {
                 <Route path="/tenant" element={<ProtectedRoute allowedRoles={['tenant']} />}>
                   <Route index element={<Navigate to="/tenant/dashboard" replace />} />
                   <Route path="dashboard" element={<TenantDashboardPage />} />
+                  <Route path="find-home" element={<TenantFindHomeBrowsePage />} />
                   <Route path="lease" element={<LeaseAgreementPage />} />
                   <Route path="payments" element={<PaymentsHistoryPage />} />
                   <Route path="moveout" element={<Navigate to="/tenant/payments?tab=deposit" replace />} />

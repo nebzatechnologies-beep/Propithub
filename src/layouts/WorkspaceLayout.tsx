@@ -36,6 +36,7 @@ import {
   Menu,
   X,
   HelpCircle,
+  Compass,
 } from 'lucide-react';
 import { GameGuidedTour } from '../components/tour/GameGuidedTour';
 
@@ -264,6 +265,9 @@ export const WorkspaceLayout: React.FC = () => {
               <NavLink to="/tenant/dashboard" data-tour="tenant-nav-overview" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Home size={16} /> Overview
               </NavLink>
+              <NavLink to="/tenant/find-home" data-tour="tenant-nav-find-home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                <Compass size={16} /> Find a Home
+              </NavLink>
               <NavLink to="/tenant/lease" data-tour="tenant-nav-lease" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <FileText size={16} /> My Lease
               </NavLink>
@@ -274,7 +278,7 @@ export const WorkspaceLayout: React.FC = () => {
             <div className="nav-group">
               <div className="nav-label">SUPPORT</div>
               <NavLink to="/tenant/support" data-tour="tenant-nav-support" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Wrench size={16} /> Maintenance &amp; Tickets
+                <Wrench size={16} /> Support
               </NavLink>
               <NavLink to="/tenant/trust" data-tour="tenant-nav-trust" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Award size={16} /> Landlord Reviews
@@ -310,7 +314,7 @@ export const WorkspaceLayout: React.FC = () => {
             <div className="nav-group">
               <div className="nav-label">MAIN MENU</div>
               <NavLink to="/staff/dashboard" data-tour="staff-nav-overview" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Wrench size={16} /> Overview & Queue
+                <Wrench size={16} /> Jobs
               </NavLink>
               <NavLink to="/staff/payments" data-tour="staff-nav-payments" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <CreditCard size={16} /> Task Fees

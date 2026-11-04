@@ -865,6 +865,25 @@ export const getOwnerReminders = (
     });
   }
 
+  // New Inquiries for Available Listings
+  const newOwnerEnquiries = (state.enquiries || []).filter(
+    (e: any) => e.status === 'new' && (e.ownerId === ownerId || myPropertyIds.has(e.propertyId))
+  );
+  if (newOwnerEnquiries.length > 0) {
+    const firstEnq = newOwnerEnquiries[0];
+    reminders.push({
+      id: `owner_new_enquiry_${firstEnq.id}`,
+      title: `Action Required: New Enquiry - Unit ${firstEnq.unitNumber}`,
+      description: `${firstEnq.prospectName} (${firstEnq.prospectPhone}) submitted an enquiry for Unit ${firstEnq.unitNumber}. Direct contact required.`,
+      severity: 'urgent',
+      icon: 'bell',
+      actionLabel: 'View Enquiries',
+      actionScreen: 'leasing_hub',
+      category: 'occupancy',
+      unitNumber: firstEnq.unitNumber,
+    });
+  }
+
   return reminders.sort((a, b) => priorityOrder[a.severity] - priorityOrder[b.severity]);
 };
 
@@ -923,6 +942,28 @@ export const getManagerReminders = (
       category: 'approval',
     });
   });
+
+  // New Inquiries for Managed Units
+  const newManagerEnquiries = (state.enquiries || []).filter((e: any) => {
+    if (e.status !== 'new') return false;
+    if (e.managerId && e.managerId === user.id) return true;
+    if (e.ownerId && ownerId && e.ownerId === ownerId) return true;
+    return false;
+  });
+  if (newManagerEnquiries.length > 0) {
+    const firstEnq = newManagerEnquiries[0];
+    reminders.push({
+      id: `manager_new_enquiry_${firstEnq.id}`,
+      title: `Action Required: New Enquiry - Unit ${firstEnq.unitNumber}`,
+      description: `${firstEnq.prospectName} (${firstEnq.prospectPhone}) submitted an enquiry for Unit ${firstEnq.unitNumber}. Direct contact required.`,
+      severity: 'urgent',
+      icon: 'bell',
+      actionLabel: 'View Enquiries',
+      actionScreen: 'manager_lease_documents',
+      category: 'occupancy',
+      unitNumber: firstEnq.unitNumber,
+    });
+  }
 
   return reminders.sort((a, b) => priorityOrder[a.severity] - priorityOrder[b.severity]);
 };

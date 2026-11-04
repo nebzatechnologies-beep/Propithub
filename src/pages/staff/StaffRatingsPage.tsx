@@ -130,7 +130,7 @@ export const StaffRatingsPage: React.FC = () => {
                       {'★'.repeat(ticketRating)}
                     </span>
                   </div>
-                  <p style={{ color: 'var(--ink)', marginTop: '8px', fontSize: '13px', lineHeight: '1.5', background: 'var(--surface-sunken)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--line)' }}>
+                  <p style={{ color: 'var(--ink)', marginTop: '8px', fontSize: '13px', lineHeight: '1.5', background: 'var(--surface-sunken)', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--line)', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                     {t.completionNotes || `Issue resolved: ${t.issue}`}
                   </p>
                 </div>

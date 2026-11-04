@@ -176,17 +176,18 @@ export function usePlanLimits(explicitOwnerId?: string) {
       : (hasPaidInvoice ? false : dynamicTrialDays === 0)
   );
 
-  // Authoritative plan name: paid invoice takes first priority, then ownerSettings, then user plan
+  // Authoritative plan name: ownerSettings takes first priority (active account config / admin assignment),
+  // then latest paid invoice, then user profile plan
   const activePlanCandidate =
-    (hasActivePaidSubscription ? (latestPaidInvoice?.planName || ownerSettings?.planName) : undefined) ||
     ownerSettings?.planName ||
+    (hasActivePaidSubscription ? (latestPaidInvoice?.planName || ownerSettings?.planName) : undefined) ||
     (ownerUserFromState?.plan && ownerUserFromState.plan !== 'Free Trial' ? ownerUserFromState.plan : undefined) ||
     (!isSubordinate && user?.plan && user.plan !== 'Free Trial' ? user.plan : undefined) ||
     state.ownerPlan;
 
   const currentPlan = findMatchingPlan(
     state.plans,
-    latestPaidInvoice?.planId || ownerSettings?.planId,
+    ownerSettings?.planId || latestPaidInvoice?.planId,
     activePlanCandidate || (isTrial ? 'Free Trial' : 'Starter'),
     isTrial
   );

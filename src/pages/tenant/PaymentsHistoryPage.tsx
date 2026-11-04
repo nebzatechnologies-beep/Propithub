@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { Agreement, Invoice, PaymentTransaction, TenantRecord, DepositSettlement } from '../../types';
 import { buildRentSchedule, RentScheduleResult, RentCycleItem } from '../../lib/rentScheduleUtils';
-import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
 import { downloadCashHandoverReceiptPdf, downloadSingleInvoicePDF } from '../../lib/pdf';
 import { compressImage } from '../../lib/imageUploader';
 import { generateTransactionId, generateInvoiceId, generateReceiptId } from '../../lib/idGenerators';
@@ -69,7 +69,7 @@ export const PaymentsHistoryPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('tab');
 
-  const { convert, format } = useCurrency();
+  const { viewCurrency, convert, format } = useCurrency();
   const [isConfirmingRefundReceipt, setIsConfirmingRefundReceipt] = useState(false);
   const [confirmedSettlementIds, setConfirmedSettlementIds] = useState<Set<string>>(() => {
     try {
@@ -144,36 +144,16 @@ export const PaymentsHistoryPage: React.FC = () => {
   const hasAssignedUnit = Boolean(resolvedUnit && resolvedUnit !== 'Unassigned');
   const resolvedOwnerId = tenantRecord?.ownerId || '';
 
-  // All payments scoped for this tenant
-  const myPayments = useMemo(() => {
-    const rawList = (state.payments || []).filter((p) => {
-      if (user?.id && p.tenantId === user.id) return true;
-      if (tenantRecord?.id && p.tenantId === tenantRecord.id) return true;
-      if (tenantEmail && ((p as any).tenantEmail?.toLowerCase() === tenantEmail || p.tenant?.toLowerCase() === tenantEmail)) return true;
-      if (hasAssignedUnit && p.unit === resolvedUnit && (!p.tenantId || p.tenantId === user?.id || p.tenantId === tenantRecord?.id)) return true;
-      return false;
-    });
+  // 1. Gather all authorized unique IDs for this tenant
+  const myTenantIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (user?.id) ids.add(user.id);
+    if ((user as any)?.uid) ids.add((user as any).uid);
+    if (tenantRecord?.id) ids.add(tenantRecord.id);
+    return ids;
+  }, [user, tenantRecord]);
 
-    const seen = new Set<string>();
-    return rawList.filter((p) => {
-      const dedupKey = p.invoiceId || p.id;
-      if (seen.has(dedupKey)) return false;
-      seen.add(dedupKey);
-      return true;
-    });
-  }, [state.payments, user, tenantRecord, tenantEmail, hasAssignedUnit, resolvedUnit]);
-
-  // Cash claims submitted by me pending owner action
-  const pendingInflowClaimsSubmittedByMe = useMemo(() => {
-    return (state.cashClaims || []).filter(
-      (c: any) =>
-        c.status === 'pending_confirmation' &&
-        c.claimedByRole === 'tenant' &&
-        (c.tenantId === user?.id || (tenantEmail && c.tenantEmail?.toLowerCase() === tenantEmail))
-    );
-  }, [state.cashClaims, user, tenantEmail]);
-
-  // All agreements strictly scoped for this resident
+  // 2. All agreements strictly scoped for this resident
   const myAgreements = useMemo(() => {
     return (state.agreements || []).filter((a) => {
       if (user?.id && a.tenantId === user.id) return true;
@@ -186,44 +166,156 @@ export const PaymentsHistoryPage: React.FC = () => {
     });
   }, [state.agreements, user, tenantRecord, tenantEmail]);
 
-  // All deposit invoices strictly scoped for this resident
+  // 3. All properties strictly belonging to this tenant's tenancies
+  const myPropertyIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (tenantRecord?.propertyId) ids.add(tenantRecord.propertyId);
+    myAgreements.forEach((a) => {
+      if (a.propertyId) ids.add(a.propertyId);
+    });
+    (state.moveouts || []).forEach((m) => {
+      const isMyMoveout = (user?.id && m.tenantId === user.id) || (tenantEmail && (m.tenant?.toLowerCase() === tenantEmail || (m as any).tenantEmail?.toLowerCase() === tenantEmail));
+      if (isMyMoveout && m.propertyId) ids.add(m.propertyId);
+    });
+    (state.depositSettlements || []).forEach((s) => {
+      const isMySettle = (user?.id && s.tenantId === user.id) || (tenantRecord?.id && s.tenantId === tenantRecord.id) || (tenantEmail && s.tenantEmail?.toLowerCase() === tenantEmail);
+      if (isMySettle && s.propertyId) ids.add(s.propertyId);
+    });
+    (state.units || []).forEach((u) => {
+      if (
+        (user?.id && u.currentTenantId === user.id) ||
+        (tenantRecord?.id && u.currentTenantId === tenantRecord.id) ||
+        (tenantEmail && u.tenant?.toLowerCase() === tenantEmail)
+      ) {
+        if (u.propertyId) ids.add(u.propertyId);
+      }
+    });
+    return ids;
+  }, [tenantRecord, myAgreements, state.moveouts, state.depositSettlements, state.units, user, tenantEmail]);
+
+  // 4. Cash claims submitted by me pending owner action
+  const pendingInflowClaimsSubmittedByMe = useMemo(() => {
+    return (state.cashClaims || []).filter(
+      (c: any) =>
+        c.status === 'pending_confirmation' &&
+        c.claimedByRole === 'tenant' &&
+        (c.tenantId === user?.id || (tenantEmail && c.tenantEmail?.toLowerCase() === tenantEmail))
+    );
+  }, [state.cashClaims, user, tenantEmail]);
+
+  // 5. All deposit invoices strictly scoped for this resident
   const myDepositInvoices = useMemo(() => {
     return state.invoices.filter((inv) => {
-      if (inv.invoiceType !== 'deposit') return false;
+      const isDepositType = inv.invoiceType === 'deposit' || (inv as any).type === 'deposit';
+      if (!isDepositType) return false;
+      // Foreign property isolation
+      if (inv.propertyId && !myPropertyIds.has(inv.propertyId)) return false;
+      // Foreign tenant isolation
+      if (inv.tenantId && !myTenantIds.has(inv.tenantId)) return false;
+
       if (user?.id && inv.tenantId === user.id) return true;
       if (tenantRecord?.id && inv.tenantId === tenantRecord.id) return true;
       if (tenantEmail && (inv.tenantEmail?.toLowerCase() === tenantEmail || inv.tenant?.toLowerCase() === tenantEmail)) return true;
+      if (inv.leaseAgreementId && myAgreements.some((a) => a.id === inv.leaseAgreementId)) return true;
       return false;
     });
-  }, [state.invoices, user, tenantRecord, tenantEmail]);
+  }, [state.invoices, user, tenantRecord, tenantEmail, myPropertyIds, myTenantIds, myAgreements]);
 
-  // All move-outs strictly scoped for this resident
+  // 6. All move-outs strictly scoped for this resident
   const myMoveOuts = useMemo(() => {
     return (state.moveouts || []).filter((m) => {
+      if (m.propertyId && !myPropertyIds.has(m.propertyId)) return false;
       if (user?.id && m.tenantId === user.id) return true;
       if (tenantEmail && (m.tenant?.toLowerCase() === tenantEmail || (m as any).tenantEmail?.toLowerCase() === tenantEmail)) return true;
+      if ((m as any).agreementId && myAgreements.some((a) => a.id === (m as any).agreementId)) return true;
       return false;
     });
-  }, [state.moveouts, user, tenantEmail]);
+  }, [state.moveouts, user, tenantEmail, myPropertyIds, myAgreements]);
 
-  // All deposit settlements strictly scoped for this resident
+  // 7. All deposit settlements strictly scoped for this resident
   const mySettlements = useMemo(() => {
     return (state.depositSettlements || []).filter((s) => {
+      if (s.propertyId && !myPropertyIds.has(s.propertyId)) return false;
+      if (s.tenantId && !myTenantIds.has(s.tenantId)) return false;
       if (user?.id && s.tenantId === user.id) return true;
       if (tenantRecord?.id && s.tenantId === tenantRecord.id) return true;
       if (tenantEmail && s.tenantEmail && s.tenantEmail.toLowerCase() === tenantEmail) return true;
-
-      if (
-        hasAssignedUnit &&
-        s.unit === resolvedUnit &&
-        (!s.propertyId || !tenantRecord?.propertyId || s.propertyId === tenantRecord.propertyId) &&
-        (!s.tenantId || s.tenantId === user?.id || s.tenantId === tenantRecord?.id)
-      ) {
-        return true;
-      }
+      if (s.agreementId && myAgreements.some((a) => a.id === s.agreementId)) return true;
       return false;
     });
-  }, [state.depositSettlements, user, tenantRecord, tenantEmail, hasAssignedUnit, resolvedUnit]);
+  }, [state.depositSettlements, user, tenantRecord, tenantEmail, myPropertyIds, myTenantIds, myAgreements]);
+
+  // 8. All payments strictly scoped for this tenant
+  const myPayments = useMemo(() => {
+    // Unique invoice IDs belonging strictly to this tenant
+    const myInvoiceIds = new Set<string>();
+    state.invoices.forEach((inv) => {
+      const isMyInvoice =
+        (inv.tenantId && myTenantIds.has(inv.tenantId)) ||
+        (tenantEmail && (inv.tenantEmail?.toLowerCase() === tenantEmail || inv.tenant?.toLowerCase() === tenantEmail)) ||
+        (inv.leaseAgreementId && myAgreements.some((a) => a.id === inv.leaseAgreementId));
+      if (isMyInvoice) {
+        myInvoiceIds.add(inv.id);
+      }
+    });
+
+    const cleanUnit = (u?: string) => (u || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+    const cleanResidentUnit = cleanUnit(resolvedUnit);
+
+    const rawList = (state.payments || []).filter((p) => {
+      // Negative Guard 1: Cross-property isolation
+      // If a payment is tagged with a propertyId that doesn't belong to this tenant, REJECT IT IMMEDIATELY
+      if (p.propertyId && !myPropertyIds.has(p.propertyId)) {
+        return false;
+      }
+
+      // Negative Guard 2: Cross-tenant isolation
+      // If a payment is tagged with a different tenantId, REJECT IT IMMEDIATELY
+      if (p.tenantId && !myTenantIds.has(p.tenantId)) {
+        return false;
+      }
+
+      // Rule 1: Explicit unique tenant ID match
+      if (p.tenantId && myTenantIds.has(p.tenantId)) return true;
+
+      // Rule 2: Explicit invoice ID match (linked to one of this tenant's invoices)
+      if (p.invoiceId && myInvoiceIds.has(p.invoiceId)) return true;
+
+      // Rule 3: Tenant email match (strictly scoped to this tenant's property if propertyId exists)
+      if (tenantEmail && ((p as any).tenantEmail?.toLowerCase() === tenantEmail || p.tenant?.toLowerCase() === tenantEmail)) {
+        return true;
+      }
+
+      // Rule 4: Scoped lease match (Strict: requires propertyId === currentTenancy.propertyId AND matching unit)
+      const pUnitClean = cleanUnit(p.unit);
+      const isUnitMatch =
+        (hasAssignedUnit && pUnitClean === cleanResidentUnit) ||
+        myAgreements.some((a) => cleanUnit(a.unit) === pUnitClean && (!p.propertyId || a.propertyId === p.propertyId));
+
+      const hasMatchingProperty = Boolean(p.propertyId && myPropertyIds.has(p.propertyId));
+
+      if (hasMatchingProperty && isUnitMatch) {
+        // Only accept if tenantId is either this tenant's ID or empty with matching/empty tenant name
+        if (!p.tenantId) {
+          const tenantNameClean = (tenantRecord?.name || user?.displayName || '').toLowerCase().trim();
+          const pTenantClean = (p.tenant || '').toLowerCase().trim();
+          if (!pTenantClean || (tenantNameClean && pTenantClean === tenantNameClean)) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    });
+
+    const seen = new Set<string>();
+    return rawList.filter((p) => {
+      const dedupKey = p.invoiceId || p.id;
+      if (seen.has(dedupKey)) return false;
+      seen.add(dedupKey);
+      return true;
+    });
+  }, [state.payments, state.invoices, myTenantIds, myPropertyIds, myAgreements, tenantEmail, hasAssignedUnit, resolvedUnit, tenantRecord, user]);
 
   // Unified multi-property Security Deposit records
   const unifiedDepositRecords = useMemo(() => {
@@ -524,7 +616,7 @@ export const PaymentsHistoryPage: React.FC = () => {
   const pendingDepositRecord = useMemo(() => {
     return (
       unifiedDepositRecords.find(
-        (r) => r.status === 'due' || (r.statusCategory === 'due' && r.status !== 'paid')
+        (r) => r.status === 'due' && r.statusCategory === 'due'
       ) || null
     );
   }, [unifiedDepositRecords]);
@@ -1069,10 +1161,14 @@ export const PaymentsHistoryPage: React.FC = () => {
   };
 
   const myTenantInvoices = state.invoices.filter((inv) => {
+    // Negative Guards
+    if (inv.propertyId && !myPropertyIds.has(inv.propertyId)) return false;
+    if (inv.tenantId && !myTenantIds.has(inv.tenantId)) return false;
+
     if (user?.id && inv.tenantId === user.id) return true;
     if (tenantRecord?.id && inv.tenantId === tenantRecord.id) return true;
     if (tenantEmail && (inv.tenantEmail?.toLowerCase() === tenantEmail || inv.tenant?.toLowerCase() === tenantEmail)) return true;
-    if (hasAssignedUnit && inv.unit === resolvedUnit && inv.tenantId === user?.id) return true;
+    if (inv.leaseAgreementId && myAgreements.some((a) => a.id === inv.leaseAgreementId)) return true;
     return false;
   });
 
@@ -1188,9 +1284,27 @@ export const PaymentsHistoryPage: React.FC = () => {
     );
   }, [currentDueItem, effectiveAgreements]);
 
-  const m = (resolvedOwnerId && state.ownerSettings[resolvedOwnerId]?.paymentMethods) || state.ownerPaymentMethods || {};
+  const currentInvoiceOwnerId = useMemo(() => {
+    return (
+      activePayingInvoice?.ownerId ||
+      (activePayingInvoice?.propertyId ? state.properties.find((p) => p.id === activePayingInvoice.propertyId)?.ownerId : '') ||
+      activeAgreement?.ownerId ||
+      (activeAgreement?.propertyId ? state.properties.find((p) => p.id === activeAgreement.propertyId)?.ownerId : '') ||
+      currentDueAgreement?.ownerId ||
+      (currentDueItem?.propertyId ? state.properties.find((p) => p.id === currentDueItem.propertyId)?.ownerId : '') ||
+      resolvedOwnerId ||
+      ''
+    );
+  }, [activePayingInvoice, activeAgreement, currentDueAgreement, currentDueItem, resolvedOwnerId, state.properties]);
 
-  // Dynamically resolve all available payment gateways configured by the landlord
+  const m = useMemo(() => {
+    if (currentInvoiceOwnerId && state.ownerSettings[currentInvoiceOwnerId]?.paymentMethods) {
+      return state.ownerSettings[currentInvoiceOwnerId].paymentMethods;
+    }
+    return state.ownerPaymentMethods || {};
+  }, [currentInvoiceOwnerId, state.ownerSettings, state.ownerPaymentMethods]);
+
+  // Dynamically resolve all available payment gateways configured strictly by the property owner
   const availableGateways = useMemo(() => {
     const list: Array<{
       key: 'razorpay' | 'stripe' | 'paypal' | 'easebuzz' | 'upi' | 'bank' | 'cash';
@@ -1203,10 +1317,8 @@ export const PaymentsHistoryPage: React.FC = () => {
       isDefault: boolean;
     }> = [];
 
-    // 0. Easebuzz (Full live production gateway)
-    const isEbOwner = m.easebuzz?.enabled !== false && m.easebuzz?.merchantKey;
-    const isEbPlatform = state.platformGateways.easebuzz?.enabled !== false && state.platformGateways.easebuzz?.merchantKey;
-    if (isEbOwner || isEbPlatform || m.easebuzz?.enabled) {
+    // 0. Easebuzz (Live production gateway strictly configured by owner)
+    if (m.easebuzz?.enabled === true && m.easebuzz?.merchantKey?.trim() && m.easebuzz?.salt?.trim()) {
       list.push({
         key: 'easebuzz',
         name: 'Easebuzz (UPI, Cards, 50+ Banks Netbanking)',
@@ -1219,13 +1331,13 @@ export const PaymentsHistoryPage: React.FC = () => {
       });
     }
 
-    // 1. UPI Direct
-    if (m.upi?.enabled !== false) {
+    // 1. UPI Direct (Strictly enabled by owner)
+    if (m.upi?.enabled === true) {
       list.push({
         key: 'upi',
         name: 'UPI Direct',
         shortTitle: 'UPI Direct',
-        icon: '',
+        icon: '📱',
         badge: 'Instant QR',
         badgeClass: 'brass',
         subtitle: m.upi?.upiId || 'Direct UPI / QR Transfer',
@@ -1233,13 +1345,13 @@ export const PaymentsHistoryPage: React.FC = () => {
       });
     }
 
-    // 2. Razorpay
-    if (m.razorpay?.enabled !== false && (m.razorpay?.enabled || state.platformGateways.razorpay?.enabled)) {
+    // 2. Razorpay (Strictly enabled and configured by owner)
+    if (m.razorpay?.enabled === true && m.razorpay?.keyId?.trim()) {
       list.push({
         key: 'razorpay',
         name: 'Razorpay',
         shortTitle: 'Razorpay',
-        icon: '',
+        icon: '💳',
         badge: 'Instant SSL',
         badgeClass: 'brass',
         subtitle: 'Cards, Netbanking & Wallets',
@@ -1247,13 +1359,13 @@ export const PaymentsHistoryPage: React.FC = () => {
       });
     }
 
-    // 3. Stripe
-    if (m.stripe?.enabled !== false && (m.stripe?.enabled || state.platformGateways.stripe?.enabled)) {
+    // 3. Stripe (Strictly enabled and configured by owner)
+    if (m.stripe?.enabled === true && m.stripe?.pubKey?.trim()) {
       list.push({
         key: 'stripe',
-        name: 'Credit / Debit Card',
+        name: 'Credit / Debit Card (Stripe)',
         shortTitle: 'Credit / Debit Card',
-        icon: '',
+        icon: '💳',
         badge: 'Global Card',
         badgeClass: 'brass',
         subtitle: 'Visa, Mastercard, Amex',
@@ -1261,13 +1373,13 @@ export const PaymentsHistoryPage: React.FC = () => {
       });
     }
 
-    // 4. PayPal
-    if (m.paypal?.enabled !== false && (m.paypal?.enabled || state.platformGateways.paypal?.enabled)) {
+    // 4. PayPal (Strictly enabled and configured by owner)
+    if (m.paypal?.enabled === true && (m.paypal?.clientId?.trim() || m.paypal?.email?.trim())) {
       list.push({
         key: 'paypal',
         name: 'PayPal',
         shortTitle: 'PayPal',
-        icon: '',
+        icon: '🅿️',
         badge: 'PayPal Wallet',
         badgeClass: 'brass',
         subtitle: m.paypal?.email || 'International Checkout',
@@ -1275,13 +1387,13 @@ export const PaymentsHistoryPage: React.FC = () => {
       });
     }
 
-    // 5. Direct Bank Wire
-    if (m.bank?.enabled !== false) {
+    // 5. Direct Bank Wire (Strictly enabled by owner)
+    if (m.bank?.enabled === true) {
       list.push({
         key: 'bank',
-        name: 'Bank Transfer',
+        name: 'Bank Transfer (NEFT / IMPS / Wire)',
         shortTitle: 'Bank Transfer',
-        icon: '',
+        icon: '🏦',
         badge: 'Wire Transfer',
         badgeClass: 'brass',
         subtitle: m.bank?.accountNumber ? `${m.bank.bankName ? m.bank.bankName + ' • ' : ''}A/c: ${m.bank.accountNumber}` : 'Direct Bank / NEFT / IMPS Transfer',
@@ -1289,13 +1401,13 @@ export const PaymentsHistoryPage: React.FC = () => {
       });
     }
 
-    // 6. Direct Cash Handover
-    if (m.cash?.enabled !== false) {
+    // 6. Direct Cash Handover (Strictly enabled by owner)
+    if (m.cash?.enabled === true) {
       list.push({
         key: 'cash',
-        name: 'Cash',
+        name: 'Cash Handover',
         shortTitle: 'Cash',
-        icon: '',
+        icon: '💵',
         badge: 'Handover',
         badgeClass: 'amber',
         subtitle: 'In-person physical voucher handover',
@@ -1304,11 +1416,11 @@ export const PaymentsHistoryPage: React.FC = () => {
     }
 
     return list;
-  }, [m, state.platformGateways]);
+  }, [m]);
 
   // First available active gateway option
-  const ownerActiveGateway: 'stripe' | 'razorpay' | 'paypal' | 'upi' | 'bank' | 'cash' = (() => {
-    return (availableGateways[0]?.key || 'upi') as any;
+  const ownerActiveGateway: 'stripe' | 'razorpay' | 'paypal' | 'easebuzz' | 'upi' | 'bank' | 'cash' = (() => {
+    return (availableGateways[0]?.key || 'cash') as any;
   })();
 
   // Synchronize selected method with available gateways
@@ -1683,21 +1795,17 @@ export const PaymentsHistoryPage: React.FC = () => {
     // Live Easebuzz Flow (Full production gateway)
     if (selectedMethod === 'easebuzz') {
       setIsProcessing(true);
-      const ebKey = (m.easebuzz?.merchantKey && m.easebuzz?.enabled)
-        ? m.easebuzz.merchantKey
-        : (state.platformGateways.easebuzz?.merchantKey || '');
-      const ebSalt = (m.easebuzz?.salt && m.easebuzz?.enabled)
-        ? m.easebuzz.salt
-        : (state.platformGateways.easebuzz?.salt || '');
-      const ebSub = m.easebuzz?.subMerchantId || state.platformGateways.easebuzz?.subMerchantId;
+      const ebKey = (m.easebuzz?.enabled && m.easebuzz?.merchantKey) || '';
+      const ebSalt = (m.easebuzz?.enabled && m.easebuzz?.salt) || '';
+      const ebSub = m.easebuzz?.subMerchantId;
 
       if (!ebKey || !ebSalt) {
         setIsProcessing(false);
-        showToast('⚠️ Easebuzz live credentials are not configured by landlord or platform administrator.');
+        showToast('⚠️ Easebuzz live credentials are not configured by your landlord.');
         return;
       }
 
-      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || resolvedOwnerId;
+      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || currentInvoiceOwnerId;
       const targetUnit = activePayingInvoice?.unit || activeAgreement?.unit || resolvedUnit;
 
       await launchEasebuzzPayment({
@@ -1728,15 +1836,13 @@ export const PaymentsHistoryPage: React.FC = () => {
     // Live Razorpay Flow
     if (selectedMethod === 'razorpay') {
       setIsProcessing(true);
-      const rzpKey = (m.razorpay?.keyId && m.razorpay?.enabled)
-        ? m.razorpay.keyId
-        : (state.platformGateways.razorpay?.keyId || '');
+      const rzpKey = (m.razorpay?.enabled && m.razorpay?.keyId) || '';
       if (!rzpKey) {
         setIsProcessing(false);
-        showToast('⚠️ Razorpay payment gateway is not configured by landlord or platform administrator.');
+        showToast('⚠️ Razorpay payment gateway is not configured by your landlord.');
         return;
       }
-      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || resolvedOwnerId;
+      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || currentInvoiceOwnerId;
       const targetUnit = activePayingInvoice?.unit || activeAgreement?.unit || resolvedUnit;
       await launchRazorpayPayment({
         keyId: rzpKey,
@@ -1764,15 +1870,13 @@ export const PaymentsHistoryPage: React.FC = () => {
     // Live Stripe Flow
     if (selectedMethod === 'stripe') {
       setIsProcessing(true);
-      const stripePub = (m.stripe?.pubKey && m.stripe?.enabled)
-        ? m.stripe.pubKey
-        : (state.platformGateways.stripe?.pubKey || '');
+      const stripePub = (m.stripe?.enabled && m.stripe?.pubKey) || '';
       if (!stripePub) {
         setIsProcessing(false);
-        showToast('⚠️ Stripe payment gateway is not configured by landlord or platform administrator.');
+        showToast('⚠️ Stripe payment gateway is not configured by your landlord.');
         return;
       }
-      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || resolvedOwnerId;
+      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || currentInvoiceOwnerId;
       await launchStripePayment({
         publishableKey: stripePub,
         amount: payAmount,
@@ -1796,13 +1900,16 @@ export const PaymentsHistoryPage: React.FC = () => {
     // Live PayPal Flow
     if (selectedMethod === 'paypal') {
       setIsProcessing(true);
-      const paypalClientId = (m.paypal?.clientId && m.paypal?.enabled)
-        ? m.paypal.clientId
-        : (state.platformGateways.paypal?.clientId || '');
+      const paypalClientId = (m.paypal?.enabled && m.paypal?.clientId) || '';
+      if (!paypalClientId && !(m.paypal?.enabled && m.paypal?.email)) {
+        setIsProcessing(false);
+        showToast('⚠️ PayPal checkout is not configured by your landlord.');
+        return;
+      }
 
       const invCurr = (activePayingInvoice?.currency || tenantRecord?.currency || 'INR').toUpperCase();
       const paypalAmount = Math.max(1, Math.round(convert(payAmount, invCurr, 'USD')));
-      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || resolvedOwnerId;
+      const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || currentInvoiceOwnerId;
       const targetUnit = activePayingInvoice?.unit || activeAgreement?.unit || resolvedUnit;
 
       await launchPayPalPayment({
@@ -2099,9 +2206,16 @@ export const PaymentsHistoryPage: React.FC = () => {
                     </span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', margin: '0 0 6px 0' }}>
-                    <h2 style={{ fontSize: '26px', fontWeight: 800, margin: 0, color: 'var(--ink)' }}>
-                      {getCurrencySymbol(pendingDepositRecord.currency) || resolvedCurrency}{pendingDepositRecord.amount.toLocaleString('en-IN')}
-                    </h2>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' }}>
+                      <h2 style={{ fontSize: '26px', fontWeight: 800, margin: 0, color: 'var(--ink)' }}>
+                        {getCurrencySymbol(pendingDepositRecord.currency) || resolvedCurrency}{pendingDepositRecord.amount.toLocaleString('en-IN')}
+                      </h2>
+                      {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(pendingDepositRecord.currency || resolvedCurrency) && (
+                        <span style={{ fontSize: '15px', color: 'var(--ink-soft)', fontWeight: 600 }}>
+                          (~{format(convert(pendingDepositRecord.amount, pendingDepositRecord.currency || resolvedCurrency, viewCurrency), viewCurrency)})
+                        </span>
+                      )}
+                    </div>
                     <CurrencyConverterTrigger
                       amount={pendingDepositRecord.amount}
                       currency={pendingDepositRecord.currency || resolvedCurrency}
@@ -2283,9 +2397,16 @@ export const PaymentsHistoryPage: React.FC = () => {
                     )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', margin: '0 0 6px 0' }}>
-                    <h2 style={{ fontSize: '26px', fontWeight: 800, margin: 0, color: 'var(--ink)' }}>
-                      {getCurrencySymbol(currentDueItem.currency) || resolvedCurrency}{currentDueItem.amount.toLocaleString('en-IN')}
-                    </h2>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' }}>
+                      <h2 style={{ fontSize: '26px', fontWeight: 800, margin: 0, color: 'var(--ink)' }}>
+                        {getCurrencySymbol(currentDueItem.currency) || resolvedCurrency}{currentDueItem.amount.toLocaleString('en-IN')}
+                      </h2>
+                      {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(currentDueItem.currency || resolvedCurrency) && (
+                        <span style={{ fontSize: '15px', color: 'var(--ink-soft)', fontWeight: 600 }}>
+                          (~{format(convert(currentDueItem.amount, currentDueItem.currency || resolvedCurrency, viewCurrency), viewCurrency)})
+                        </span>
+                      )}
+                    </div>
                     <CurrencyConverterTrigger
                       amount={currentDueItem.amount}
                       currency={currentDueItem.currency || resolvedCurrency}
@@ -4579,13 +4700,13 @@ export const PaymentsHistoryPage: React.FC = () => {
             : 'Pay Monthly Rent';
 
         const hasMethodCredentials = (methodKey: string) => {
-          if (methodKey === 'cash') return true;
-          if (methodKey === 'upi') return !!(m.upi?.upiId);
-          if (methodKey === 'bank') return !!(m.bank?.accountNumber);
-          if (methodKey === 'easebuzz') return !!((m.easebuzz?.merchantKey && m.easebuzz?.salt) || (state.platformGateways.easebuzz?.merchantKey && state.platformGateways.easebuzz?.salt));
-          if (methodKey === 'paypal') return !!(m.paypal?.email || m.paypal?.clientId || state.platformGateways.paypal?.clientId);
-          if (methodKey === 'razorpay') return !!(m.razorpay?.keyId || state.platformGateways.razorpay?.keyId);
-          if (methodKey === 'stripe') return !!(m.stripe?.pubKey || state.platformGateways.stripe?.pubKey);
+          if (methodKey === 'cash') return m.cash?.enabled === true;
+          if (methodKey === 'upi') return m.upi?.enabled === true;
+          if (methodKey === 'bank') return m.bank?.enabled === true;
+          if (methodKey === 'easebuzz') return !!(m.easebuzz?.enabled && m.easebuzz?.merchantKey && m.easebuzz?.salt);
+          if (methodKey === 'paypal') return !!(m.paypal?.enabled && (m.paypal?.email || m.paypal?.clientId));
+          if (methodKey === 'razorpay') return !!(m.razorpay?.enabled && m.razorpay?.keyId);
+          if (methodKey === 'stripe') return !!(m.stripe?.enabled && m.stripe?.pubKey);
           return true;
         };
 
@@ -4673,72 +4794,66 @@ export const PaymentsHistoryPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Dynamic Multi-Gateway Payment Choices */}
+                {/* Payment Gateway / Channel Selector (Full-Width Dropdown) */}
                 <div style={{ marginTop: '14px', marginBottom: '14px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label
+                    htmlFor="payment-method-select"
+                    style={{
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: '8px',
+                    }}
+                  >
                     <span>Choose Payment Gateway / Channel</span>
                     <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 500 }}>
                       {availableGateways.length} active settlement option{availableGateways.length === 1 ? '' : 's'}
                     </span>
                   </label>
 
-                  {/* Interactive Dynamic Gateway Cards Grid */}
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: availableGateways.length > 2 ? 'repeat(auto-fill, minmax(145px, 1fr))' : 'repeat(2, 1fr)',
-                      gap: '10px',
-                      marginBottom: '10px',
-                    }}
-                  >
-                    {availableGateways.map((gw) => {
-                      const isSelected = selectedMethod === gw.key;
-                      return (
-                        <div
-                          key={gw.key}
-                          onClick={() => setSelectedMethod(gw.key)}
-                          style={{
-                            padding: '10px 12px',
-                            borderRadius: '8px',
-                            border: isSelected ? '2px solid var(--primary)' : '1px solid var(--line)',
-                            background: isSelected ? 'rgba(47, 93, 80, 0.06)' : 'var(--bg)',
-                            cursor: 'pointer',
-                            transition: 'all 0.15s ease',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            justifyContent: 'space-between',
-                          }}
-                        >
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px', gap: '4px' }}>
-                              <span style={{ fontSize: '12.5px', fontWeight: 700, color: isSelected ? 'var(--primary)' : 'var(--ink)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                <span>{gw.icon}</span> {gw.shortTitle}
-                              </span>
-                              <span className={`badge ${gw.badgeClass}`} style={{ fontSize: '9px', padding: '1px 5px', flexShrink: 0 }}>
-                                {gw.badge}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', lineHeight: 1.3 }}>
-                              {gw.subtitle}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Synchronized Select Dropdown */}
-                  <select
-                    value={selectedMethod}
-                    onChange={(e) => setSelectedMethod(e.target.value)}
-                    style={{ fontWeight: 600, fontSize: '13px', padding: '9px 12px' }}
-                  >
-                    {availableGateways.map((gw) => (
-                      <option key={gw.key} value={gw.key}>
-                        {gw.icon} {gw.name}
-                      </option>
-                    ))}
-                  </select>
+                  {availableGateways.length > 0 ? (
+                    <select
+                      id="payment-method-select"
+                      value={selectedMethod}
+                      onChange={(e) => setSelectedMethod(e.target.value)}
+                      style={{
+                        width: '100%',
+                        boxSizing: 'border-box',
+                        fontWeight: 600,
+                        fontSize: '13.5px',
+                        padding: '12px 14px',
+                        borderRadius: '8px',
+                        border: '1.5px solid var(--line, #CBD5E1)',
+                        background: 'var(--surface, #FFFFFF)',
+                        color: 'var(--ink, #0F172A)',
+                        cursor: 'pointer',
+                        outline: 'none',
+                        transition: 'border-color 0.15s ease',
+                      }}
+                    >
+                      {availableGateways.map((gw) => (
+                        <option key={gw.key} value={gw.key}>
+                          {gw.icon ? `${gw.icon}  ` : ''}{gw.name} ({gw.badge})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div
+                      style={{
+                        padding: '12px 14px',
+                        borderRadius: '8px',
+                        background: '#FEF3C7',
+                        border: '1px solid #F59E0B',
+                        color: '#92400E',
+                        fontSize: '12.5px',
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      <b>No Active Payment Methods:</b> The property owner has not enabled any payment gateways or collection methods for this property. Please contact your property manager to arrange settlement.
+                    </div>
+                  )}
                 </div>
 
                 {/* Conditional UI based on Selection */}
@@ -5080,6 +5195,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                   onClick={handleConfirmPay}
                   disabled={
                     isProcessing ||
+                    availableGateways.length === 0 ||
                     (selectedMethod === 'cash' && !offlineRef.trim()) ||
                     ((selectedMethod === 'upi' || selectedMethod === 'bank') && !offlineRef.trim()) ||
                     !hasMethodCredentials(selectedMethod)
@@ -5089,7 +5205,9 @@ export const PaymentsHistoryPage: React.FC = () => {
                     loading={isProcessing}
                     loadingText="Connecting & Processing..."
                     defaultText={
-                      selectedMethod === 'cash'
+                      availableGateways.length === 0
+                        ? 'No Active Payment Methods'
+                        : selectedMethod === 'cash'
                         ? `Submit Cash Handover Claim (${effectiveCurrency}${effectiveAmount.toLocaleString('en-IN')})`
                         : selectedMethod === 'upi'
                         ? `Submit UPI Remittance (${effectiveCurrency}${effectiveAmount.toLocaleString('en-IN')})`
@@ -5294,7 +5412,7 @@ export const PaymentsHistoryPage: React.FC = () => {
         <div className="modal-backdrop" onClick={() => setSelectedDepositRecordForView(null)}>
           <div
             className="modal-card"
-            style={{ maxWidth: '720px', maxHeight: '90vh', overflowY: 'auto' }}
+            style={{ maxWidth: '720px', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="modal-head">
@@ -6011,7 +6129,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                   style={{ marginTop: '3px' }}
                 />
                 <span>
-                  I authorize automatic monthly rent payments of <strong>{activeAgreement.currency || '₹'}{(activeAgreement.rent || 0).toLocaleString()}</strong> on my rent due date (day {activeAgreement.rentDueDay || 1}). You can pause or cancel anytime.
+                  I authorize automatic monthly rent payments of <strong>{getCurrencySymbol(activeAgreement.currency)}{(activeAgreement.rent || 0).toLocaleString()}</strong> on my rent due date (day {activeAgreement.rentDueDay || 1}). You can pause or cancel anytime.
                 </span>
               </label>
 

@@ -42,6 +42,7 @@ import { TenantLeaseScreen } from '../screens/TenantLeaseScreen';
 import { TenantPaymentsScreen } from '../screens/TenantPaymentsScreen';
 import { TenantMaintenanceScreen } from '../screens/TenantMaintenanceScreen';
 import { TenantLandlordReviewsScreen } from '../screens/TenantLandlordReviewsScreen';
+import { TenantFindHomeScreen } from '../screens/TenantFindHomeScreen';
 
 // Manager Screens
 import { ManagerOperationsScreen } from '../screens/ManagerOperationsScreen';
@@ -135,7 +136,8 @@ const ROLE_MORE_ITEMS: Record<UserRole, MoreMenuItem[]> = {
     { key: 'account_settings',       label: 'Settings',            sublabel: 'Profile & preferences',            icon: 'settings',    iconLib: 'feather', color: '#334155' },
   ],
   tenant: [
-    { key: 'tenant_maintenance',     label: 'Maintenance',         sublabel: 'Repairs & work orders',           icon: 'tool',        iconLib: 'feather', color: '#059669' },
+    { key: 'tenant_find_home',        label: 'Find a Home',         sublabel: 'Browse available listings',       icon: 'search',      iconLib: 'feather', color: '#10B981' },
+    { key: 'tenant_maintenance',     label: 'Support',             sublabel: 'Repairs & tickets',               icon: 'tool',        iconLib: 'feather', color: '#059669' },
     { key: 'tenant_landlord_reviews',label: 'Reviews',              sublabel: 'Verified reviews & feedback',     icon: 'award',       iconLib: 'feather', color: '#D97706' },
     { key: 'notifications_center',   label: 'Notifications',         sublabel: 'Rent reminders & alerts',         icon: 'bell',        iconLib: 'feather', color: '#475569' },
     { key: 'account_settings',       label: 'Settings',            sublabel: 'Profile & preferences',           icon: 'settings',    iconLib: 'feather', color: '#334155' },
@@ -424,6 +426,13 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
         );
       case 'tenant_landlord_reviews':
         return <TenantLandlordReviewsScreen />;
+      case 'tenant_find_home':
+        return (
+          <TenantFindHomeScreen
+            onBack={() => navigate('dashboard')}
+            onProfilePress={() => setShowMoreMenu(true)}
+          />
+        );
 
       // ── Manager ────────────────────────────────────────────────────────────
       case 'manager_operations':

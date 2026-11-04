@@ -7,7 +7,6 @@ import {
   ScrollView,
   TouchableOpacity,
   SafeAreaView,
-  StatusBar,
   TextInput,
   Alert,
 } from 'react-native';
@@ -16,33 +15,60 @@ import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
-import { MobileInvoice } from '../types';
+import { MobileInvoice, MobileInvoiceItem } from '../types';
 
-export const RentalInvoiceStudioScreen: React.FC<{ onBack?: () => void; onSuccess?: () => void }> = ({
-  onBack,
-  onSuccess,
-}) => {
+export const DEFAULT_RENT_TERMS = `1. Payment is due strictly on or before the due date specified on this invoice.
+2. Cheques / online NEFT / RTGS / UPI transfers are subject to bank clearance.
+3. Late payments will incur a recurring late fee penalty as specified in the lease.
+4. Any billing discrepancies must be reported to the landlord office within 3 days.`;
+
+export const DEFAULT_DEPOSIT_TERMS = `1. Security Deposit Classification: 100% Refundable Security Deposit held in trust custody.
+2. Custody & Non-Income Status: Funds remain trust assets and do not constitute rental income.
+3. Move-Out Inspection: Deductions are strictly limited to verified unpaid arrears or damages.
+4. Refund Disbursement: Remitted to tenant within 14 business days of checkout clearance.`;
+
+export const RentalInvoiceStudioScreen: React.FC<{
+  onBack?: () => void;
+  onSuccess?: () => void;
+  initialType?: 'rent' | 'deposit';
+}> = ({ onBack, onSuccess, initialType = 'rent' }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const { state, saveInvoice } = useMobileAppData();
   const { user } = useMobileAuth();
   const { format, getSymbol, viewCurrency } = useMobileCurrency();
 
+  // Mode: 'rent' or 'deposit'
+  const [invoiceType, setInvoiceType] = useState<'rent' | 'deposit'>(initialType);
+
+  // Active Tab: 'edit' or 'preview' (1-to-1 Web Parity)
+  const [activeTab, setActiveTab] = useState<'edit' | 'preview'>('edit');
+
   const myProperties = useMemo(() => {
     return new Set(state.properties.filter((p) => p.ownerId === user.id).map((p) => p.id));
   }, [state.properties, user.id]);
 
   const occupiedUnits = useMemo(() => {
-    return state.units.filter(
+    const list = state.units.filter(
       (u) =>
-        u.status === 'occupied' &&
         (u.ownerId === user.id || (u.propertyId && myProperties.has(u.propertyId)))
     );
+    return list.length > 0 ? list : state.units;
   }, [state.units, user.id, myProperties]);
 
   const [selectedUnitId, setSelectedUnitId] = useState(occupiedUnits[0]?.id || '');
   const selectedUnit = occupiedUnits.find((u) => u.id === selectedUnitId) || occupiedUnits[0] || null;
-  const unitCurrency = selectedUnit?.currency || viewCurrency;
+
+  // Selected property
+  const selectedProp = useMemo(() => {
+    if (!selectedUnit) return null;
+    return state.properties.find((p) => p.id === selectedUnit.propertyId || p.name === selectedUnit.propertyName) || null;
+  }, [selectedUnit, state.properties]);
+
+  // Automatic currency resolution synced to property / unit, with manual override option
+  const autoCurrency = selectedUnit?.currency || selectedProp?.currency || viewCurrency;
+  const [customCurrency, setCustomCurrency] = useState<string | null>(null);
+  const effectiveCurrency = customCurrency || autoCurrency;
 
   const matchedTenant = useMemo(() => {
     if (!selectedUnit) return null;
@@ -53,20 +79,30 @@ export const RentalInvoiceStudioScreen: React.FC<{ onBack?: () => void; onSucces
     );
   }, [state.tenants, selectedUnit]);
 
-  // Line items & sub-meters
-  const [baseRent, setBaseRent] = useState(selectedUnit ? selectedUnit.rent.toString() : (viewCurrency === 'INR' ? '28000' : '2200'));
+  // Pricing & Items
+  const [baseRent, setBaseRent] = useState(
+    selectedUnit ? selectedUnit.rent.toString() : (effectiveCurrency === 'INR' ? '28000' : '2200')
+  );
+  const [depositAmount, setDepositAmount] = useState(
+    selectedUnit?.deposit ? selectedUnit.deposit.toString() : (selectedUnit?.rent ? (selectedUnit.rent * 2).toString() : '50000')
+  );
   const [societyDues, setSocietyDues] = useState('1500');
   const [waterCharges, setWaterCharges] = useState('350');
   const [parkingFee, setParkingFee] = useState('500');
   const [lateFee, setLateFee] = useState('0');
+
+  // Additional customizable line items
+  const [extraItems, setExtraItems] = useState<MobileInvoiceItem[]>([]);
+  const [newDesc, setNewDesc] = useState('');
+  const [newAmt, setNewAmt] = useState('');
 
   // Electricity Sub-Meter
   const [prevReading, setPrevReading] = useState('1420');
   const [currReading, setCurrReading] = useState('1610');
   const [ratePerKwh, setRatePerKwh] = useState('9.5');
 
-  const [dueDate, setDueDate] = useState('2024-11-05');
-  const [notes, setNotes] = useState('Rent & sub-meter utilities for November 2024 billing cycle.');
+  const [dueDate, setDueDate] = useState('2026-11-10');
+  const [notes, setNotes] = useState('Thank you for your prompt tenancy settlement.');
 
   // Computations
   const prevNum = parseFloat(prevReading) || 0;
@@ -76,16 +112,74 @@ export const RentalInvoiceStudioScreen: React.FC<{ onBack?: () => void; onSucces
   const electricityTotal = Math.round(unitsConsumed * rateNum);
 
   const rentNum = parseInt(baseRent, 10) || 0;
+  const depositNum = parseInt(depositAmount, 10) || 0;
   const societyNum = parseInt(societyDues, 10) || 0;
   const waterNum = parseInt(waterCharges, 10) || 0;
   const parkingNum = parseInt(parkingFee, 10) || 0;
   const lateFeeNum = parseInt(lateFee, 10) || 0;
+  const extraTotal = extraItems.reduce((sum, item) => sum + (item.amount || 0), 0);
 
-  const grandTotal = rentNum + societyNum + waterNum + parkingNum + electricityTotal + lateFeeNum;
+  const grandTotal =
+    invoiceType === 'deposit'
+      ? depositNum + extraTotal
+      : rentNum + societyNum + waterNum + parkingNum + electricityTotal + lateFeeNum + extraTotal;
+
+  // Compiled items list
+  const compiledItemsList = useMemo<MobileInvoiceItem[]>(() => {
+    if (invoiceType === 'deposit') {
+      return [
+        {
+          description: `100% Refundable Security Deposit — Unit ${selectedUnit?.unitNumber || 'Premises'}`,
+          amount: depositNum,
+        },
+        ...extraItems,
+      ];
+    }
+    const list: MobileInvoiceItem[] = [
+      { description: `Base Monthly Rent (${selectedUnit?.unitNumber || 'Unit'})`, amount: rentNum },
+      { description: `Electricity (${unitsConsumed} kWh @ ${getSymbol(effectiveCurrency)}${rateNum}/unit)`, amount: electricityTotal },
+      { description: 'Society Maintenance Charges', amount: societyNum },
+      { description: 'Water & Sewage Sub-charges', amount: waterNum },
+      { description: 'Dedicated Parking Space', amount: parkingNum },
+    ];
+    if (lateFeeNum > 0) {
+      list.push({ description: 'Late Payment Penalty Surcharge', amount: lateFeeNum });
+    }
+    return [...list, ...extraItems];
+  }, [
+    invoiceType,
+    selectedUnit,
+    depositNum,
+    rentNum,
+    unitsConsumed,
+    effectiveCurrency,
+    rateNum,
+    electricityTotal,
+    societyNum,
+    waterNum,
+    parkingNum,
+    lateFeeNum,
+    extraItems,
+  ]);
+
+  const handleAddExtraItem = () => {
+    if (!newDesc.trim()) {
+      Alert.alert('Required', 'Please enter a description for the line item.');
+      return;
+    }
+    const amt = parseFloat(newAmt) || 0;
+    if (amt <= 0) {
+      Alert.alert('Required', 'Please enter a valid amount.');
+      return;
+    }
+    setExtraItems((prev) => [...prev, { description: newDesc.trim(), amount: amt }]);
+    setNewDesc('');
+    setNewAmt('');
+  };
 
   const handleGenerateInvoice = () => {
     if (!selectedUnit) {
-      Alert.alert('No Unit Selected', 'Please select a valid occupied unit to issue an invoice.');
+      Alert.alert('No Unit Selected', 'Please select a valid unit to issue an invoice.');
       return;
     }
 
@@ -93,22 +187,13 @@ export const RentalInvoiceStudioScreen: React.FC<{ onBack?: () => void; onSucces
     if (!tenantName || tenantName.trim().toLowerCase() === 'resident') {
       Alert.alert(
         'Tenant Required',
-        'Cannot dispatch invoice without an assigned tenant name. Please verify the resident details for this unit before issuing an invoice.'
+        'Cannot dispatch invoice without an assigned tenant name. Please verify resident details before issuing.'
       );
       return;
     }
 
-    const invId = `INV-${Date.now().toString().slice(-6)}`;
-    const itemsList = [
-      { description: `Base Monthly Rent (${selectedUnit.unitNumber})`, amount: rentNum },
-      { description: `Electricity (${unitsConsumed} kWh @ ${getSymbol(unitCurrency)}${rateNum}/unit)`, amount: electricityTotal },
-      { description: 'Society Maintenance Charges', amount: societyNum },
-      { description: 'Water & Sewage Sub-charges', amount: waterNum },
-      { description: 'Dedicated Parking Space', amount: parkingNum },
-    ];
-    if (lateFeeNum > 0) {
-      itemsList.push({ description: 'Late Payment Penalty Surcharge', amount: lateFeeNum });
-    }
+    const isDep = invoiceType === 'deposit';
+    const invId = isDep ? `DEP-${Date.now().toString().slice(-6)}` : `INV-${Date.now().toString().slice(-6)}`;
 
     const newInvoice: MobileInvoice = {
       id: invId,
@@ -121,28 +206,31 @@ export const RentalInvoiceStudioScreen: React.FC<{ onBack?: () => void; onSucces
       unit: selectedUnit.unitNumber,
       propertyName: selectedUnit.propertyName,
       propertyId: selectedUnit.propertyId,
-      amount: rentNum,
+      amount: isDep ? depositNum : rentNum,
       tax: 0,
       total: grandTotal,
       due: dueDate,
       status: 'sent',
-      currency: unitCurrency,
-      type: 'rent',
-      lateFeeApplied: lateFeeNum,
-      items: itemsList,
-      meterReadings: {
-        electricityCurrent: currNum,
-        electricityPrevious: prevNum,
-        ratePerKwh: rateNum,
-        waterCharges: waterNum,
-      },
+      currency: effectiveCurrency,
+      type: invoiceType,
+      invoiceType: invoiceType,
+      lateFeeApplied: isDep ? 0 : lateFeeNum,
+      items: compiledItemsList,
+      meterReadings: isDep
+        ? undefined
+        : {
+            electricityCurrent: currNum,
+            electricityPrevious: prevNum,
+            ratePerKwh: rateNum,
+            waterCharges: waterNum,
+          },
       createdAt: new Date().toISOString(),
     };
 
     saveInvoice(newInvoice);
     Alert.alert(
-      'Invoice Dispatched! 💳',
-      `Invoice ${invId} for ${format(grandTotal, unitCurrency)} has been sent to ${newInvoice.tenant}.`
+      isDep ? 'Deposit Voucher Dispatched! 🛡️' : 'Invoice Dispatched! 💳',
+      `${isDep ? 'Security Deposit Voucher' : 'Invoice'} ${invId} for ${format(grandTotal, effectiveCurrency)} has been sent to ${newInvoice.tenant}.`
     );
     if (onSuccess) onSuccess();
     else if (onBack) onBack();
@@ -150,9 +238,6 @@ export const RentalInvoiceStudioScreen: React.FC<{ onBack?: () => void; onSucces
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      {/* StatusBar managed globally */}
-
-      {/* Real Screen Status Bar */}
       <ScreenStatusBar />
 
       {/* Screen Header */}
@@ -161,429 +246,960 @@ export const RentalInvoiceStudioScreen: React.FC<{ onBack?: () => void; onSucces
           <TouchableOpacity onPress={onBack} style={styles.backBtn} activeOpacity={0.7}>
             <Ionicons name="arrow-back" size={20} color={colors.navy} />
           </TouchableOpacity>
-          <View style={styles.logoBadge}>
-            <Feather name="credit-card" size={18} color="#FFFFFF" />
+          <View style={[styles.logoBadge, { backgroundColor: invoiceType === 'deposit' ? '#D97706' : '#10B981' }]}>
+            <Feather name={invoiceType === 'deposit' ? 'shield' : 'file-text'} size={18} color="#FFFFFF" />
           </View>
           <View>
-            <Text style={styles.headerTitle}>Invoice Studio</Text>
+            <Text style={styles.headerTitle}>
+              {invoiceType === 'deposit' ? 'Security Deposit Studio' : 'Rental Invoice Studio'}
+            </Text>
+            <Text style={{ fontSize: 11, color: colors.inkSoft }}>
+              {selectedProp?.name || 'Property Portfolio'} • {effectiveCurrency}
+            </Text>
           </View>
         </View>
       </View>
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>1. Target Resident & Apartment</Text>
+      {/* Tab Switcher: 1-to-1 Web Parity (Edit vs Official Document Preview & Voucher) */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'edit' && styles.tabItemActive]}
+          onPress={() => setActiveTab('edit')}
+          activeOpacity={0.8}
+        >
+          <Feather name="edit-3" size={14} color={activeTab === 'edit' ? colors.primary : colors.inkSoft} style={{ marginRight: 6 }} />
+          <Text style={[styles.tabText, activeTab === 'edit' && styles.tabTextActive]}>
+            1. Configure Details
+          </Text>
+        </TouchableOpacity>
 
-          <Text style={styles.inputLabel}>Select Occupied Unit</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginVertical: 6 }}>
-            {state.units.map((u) => {
-              const isSelected = u.id === selectedUnit?.id;
-              return (
-                <TouchableOpacity
-                  key={u.id}
-                  style={[styles.unitChip, isSelected && styles.unitChipActive]}
-                  onPress={() => {
-                    setSelectedUnitId(u.id);
-                    setBaseRent(u.rent.toString());
-                  }}
-                >
-                  <Text style={[styles.unitChipTitle, isSelected && styles.unitChipTitleActive]}>
-                    Unit {u.unitNumber}
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'preview' && styles.tabItemActive]}
+          onPress={() => setActiveTab('preview')}
+          activeOpacity={0.8}
+        >
+          <Feather name="eye" size={14} color={activeTab === 'preview' ? colors.primary : colors.inkSoft} style={{ marginRight: 6 }} />
+          <Text style={[styles.tabText, activeTab === 'preview' && styles.tabTextActive]}>
+            2. Document Preview & Voucher
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === 'edit' ? (
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          {/* Category Selector: Rent vs Deposit Voucher */}
+          <View style={styles.categoryRow}>
+            <TouchableOpacity
+              style={[styles.categoryBtn, invoiceType === 'rent' && styles.categoryBtnActive]}
+              onPress={() => setInvoiceType('rent')}
+            >
+              <MaterialCommunityIcons name="receipt" size={16} color={invoiceType === 'rent' ? '#059669' : colors.inkSoft} style={{ marginRight: 5 }} />
+              <Text style={[styles.categoryBtnText, invoiceType === 'rent' && styles.categoryBtnTextActive]}>
+                Rent Invoice
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.categoryBtn, invoiceType === 'deposit' && styles.categoryBtnDepositActive]}
+              onPress={() => setInvoiceType('deposit')}
+            >
+              <MaterialCommunityIcons name="shield-check" size={16} color={invoiceType === 'deposit' ? '#D97706' : colors.inkSoft} style={{ marginRight: 5 }} />
+              <Text style={[styles.categoryBtnText, invoiceType === 'deposit' && { color: '#B45309', fontWeight: '700' }]}>
+                Security Deposit Voucher
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <Text style={styles.cardTitle}>1. Target Resident & Apartment</Text>
+              {/* Currency Selector Chips */}
+              <View style={{ flexDirection: 'row', gap: 4 }}>
+                {['₹', '$', '€', '£', 'AED'].map((sym) => (
+                  <TouchableOpacity
+                    key={sym}
+                    style={[
+                      styles.currChip,
+                      effectiveCurrency === sym && styles.currChipActive,
+                    ]}
+                    onPress={() => setCustomCurrency(sym)}
+                  >
+                    <Text style={[styles.currChipText, effectiveCurrency === sym && styles.currChipTextActive]}>
+                      {sym}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <Text style={styles.inputLabel}>Select Unit</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginVertical: 6 }}>
+              {occupiedUnits.map((u) => {
+                const isSelected = u.id === selectedUnit?.id;
+                return (
+                  <TouchableOpacity
+                    key={u.id}
+                    style={[styles.unitChip, isSelected && styles.unitChipActive]}
+                    onPress={() => {
+                      setSelectedUnitId(u.id);
+                      setBaseRent(u.rent.toString());
+                      if (u.deposit) setDepositAmount(u.deposit.toString());
+                      setCustomCurrency(null); // auto-adopt unit property currency
+                    }}
+                  >
+                    <Text style={[styles.unitChipTitle, isSelected && styles.unitChipTitleActive]}>
+                      Unit {u.unitNumber}
+                    </Text>
+                    <Text style={[styles.unitChipSub, isSelected && styles.unitChipSubActive]}>
+                      {u.tenant || 'Vacant'} • {u.propertyName} ({u.currency || '₹'})
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.residentBox}>
+              <Ionicons name="person-circle-outline" size={24} color={invoiceType === 'deposit' ? '#D97706' : '#10B981'} />
+              <View style={{ flex: 1, marginLeft: 8 }}>
+                <Text style={styles.residentName}>{matchedTenant?.name || selectedUnit?.tenant || 'Resident'}</Text>
+                <Text style={styles.residentSub}>
+                  {selectedUnit?.propertyName} • Unit {selectedUnit?.unitNumber} ({selectedUnit?.unitType})
+                </Text>
+              </View>
+            </View>
+
+            {invoiceType === 'deposit' ? (
+              <>
+                <View style={styles.divider} />
+                <Text style={styles.cardTitle}>2. Security Deposit Custody Terms</Text>
+                <View style={[styles.depositNotice, { backgroundColor: isDark ? colors.surfaceSunken : '#FEF3C7', borderColor: isDark ? colors.line : '#FDE68A' }]}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#92400E' }}>
+                    100% Refundable Security Deposit
                   </Text>
-                  <Text style={[styles.unitChipSub, isSelected && styles.unitChipSubActive]}>
-                    {u.tenant || 'Vacant'} • {u.propertyName}
+                  <Text style={{ fontSize: 11.5, color: '#B45309', marginTop: 3 }}>
+                    Held in fiduciary trust custody. Non-taxable trust asset refundable within 14 business days of checkout clearance.
                   </Text>
+                </View>
+
+                <Text style={styles.inputLabel}>Security Deposit Amount ({getSymbol(effectiveCurrency)})</Text>
+                <TextInput
+                  style={styles.input}
+                  value={depositAmount}
+                  onChangeText={setDepositAmount}
+                  keyboardType="numeric"
+                />
+              </>
+            ) : (
+              <>
+                <View style={styles.divider} />
+                <Text style={styles.cardTitle}>2. Electricity Sub-Meter Computation</Text>
+
+                <View style={styles.meterContainer}>
+                  <View style={styles.meterHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <MaterialCommunityIcons name="lightning-bolt" size={18} color="#F59E0B" />
+                      <Text style={styles.meterTitle}>Sub-Meter: {selectedUnit?.electricityMeter || 'MTR-101'}</Text>
+                    </View>
+                    <Text style={styles.unitsPill}>{unitsConsumed} kWh Consumed</Text>
+                  </View>
+
+                  <View style={styles.grid3}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLabel}>Prev (kWh)</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={prevReading}
+                        onChangeText={setPrevReading}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLabel}>Current (kWh)</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={currReading}
+                        onChangeText={setCurrReading}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.inputLabel}>Rate/kWh ({effectiveCurrency})</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={ratePerKwh}
+                        onChangeText={setRatePerKwh}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.meterResultRow}>
+                    <Text style={styles.meterResultText}>
+                      {unitsConsumed} kWh × {getSymbol(effectiveCurrency)}{rateNum}
+                    </Text>
+                    <Text style={styles.meterResultTotal}>
+                      = {format(electricityTotal, effectiveCurrency)}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.divider} />
+                <Text style={styles.cardTitle}>3. Recurring Charges</Text>
+
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Base Rent ({getSymbol(effectiveCurrency)})</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={baseRent}
+                      onChangeText={setBaseRent}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Society Dues</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={societyDues}
+                      onChangeText={setSocietyDues}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Water Charges</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={waterCharges}
+                      onChangeText={setWaterCharges}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Dedicated Parking</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={parkingFee}
+                      onChangeText={setParkingFee}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Late Fee Surcharge ({getSymbol(effectiveCurrency)})</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={lateFee}
+                      onChangeText={setLateFee}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Payment Due Date</Text>
+                    <TextInput style={styles.input} value={dueDate} onChangeText={setDueDate} />
+                  </View>
+                </View>
+              </>
+            )}
+
+            <View style={styles.divider} />
+            <Text style={styles.cardTitle}>4. Additional Itemized Charges</Text>
+
+            {extraItems.map((item, idx) => (
+              <View key={idx} style={styles.extraItemRow}>
+                <Text style={styles.extraItemDesc}>{item.description}</Text>
+                <Text style={styles.extraItemAmt}>+{format(item.amount, effectiveCurrency)}</Text>
+                <TouchableOpacity onPress={() => setExtraItems((prev) => prev.filter((_, i) => i !== idx))}>
+                  <Ionicons name="trash-outline" size={16} color="#EF4444" style={{ marginLeft: 6 }} />
                 </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-
-          <View style={styles.residentBox}>
-            <Ionicons name="person-circle-outline" size={24} color="#10B981" />
-            <View style={{ flex: 1, marginLeft: 8 }}>
-              <Text style={styles.residentName}>{matchedTenant?.name || selectedUnit?.tenant || 'Resident'}</Text>
-              <Text style={styles.residentSub}>
-                {selectedUnit?.propertyName} • Unit {selectedUnit?.unitNumber} ({selectedUnit?.unitType})
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-          <Text style={styles.cardTitle}>2. Electricity Sub-Meter Computation</Text>
-
-          <View style={styles.meterContainer}>
-            <View style={styles.meterHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <MaterialCommunityIcons name="lightning-bolt" size={18} color="#F59E0B" />
-                <Text style={styles.meterTitle}>Sub-Meter: {selectedUnit?.electricityMeter || 'MTR-101'}</Text>
               </View>
-              <Text style={styles.unitsPill}>{unitsConsumed} kWh Consumed</Text>
-            </View>
+            ))}
 
-            <View style={styles.grid3}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Prev (kWh)</Text>
+            <View style={styles.grid2}>
+              <View style={{ flex: 2 }}>
                 <TextInput
                   style={styles.input}
-                  value={prevReading}
-                  onChangeText={setPrevReading}
-                  keyboardType="numeric"
+                  placeholder="e.g. Move-in Cleaning, Wi-Fi"
+                  placeholderTextColor={colors.inkSoft}
+                  value={newDesc}
+                  onChangeText={setNewDesc}
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Current (kWh)</Text>
                 <TextInput
                   style={styles.input}
-                  value={currReading}
-                  onChangeText={setCurrReading}
-                  keyboardType="numeric"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Rate/kWh ({unitCurrency})</Text>
-                <TextInput
-                  style={styles.input}
-                  value={ratePerKwh}
-                  onChangeText={setRatePerKwh}
+                  placeholder="Amount"
+                  placeholderTextColor={colors.inkSoft}
+                  value={newAmt}
+                  onChangeText={setNewAmt}
                   keyboardType="numeric"
                 />
               </View>
             </View>
+            <TouchableOpacity style={styles.addItemBtn} onPress={handleAddExtraItem} activeOpacity={0.8}>
+              <Ionicons name="add" size={16} color="#FFFFFF" style={{ marginRight: 4 }} />
+              <Text style={styles.addItemBtnText}>+ Add Line Item</Text>
+            </TouchableOpacity>
 
-            <View style={styles.meterResultRow}>
-              <Text style={styles.meterResultText}>
-                {unitsConsumed} kWh × {getSymbol(unitCurrency)}{rateNum}
+            {/* Grand Total Summary Box */}
+            <View style={styles.totalBox}>
+              <View>
+                <Text style={styles.totalLabel}>
+                  {invoiceType === 'deposit' ? 'TOTAL DEPOSIT DUE' : 'TOTAL INVOICE PAYABLE'}
+                </Text>
+                <Text style={styles.totalSub}>
+                  {invoiceType === 'deposit' ? '100% refundable escrow trust deposit' : 'Itemized rent + metered power + dues'}
+                </Text>
+              </View>
+              <Text style={styles.totalAmount}>
+                {format(grandTotal, effectiveCurrency)}
               </Text>
-              <Text style={styles.meterResultTotal}>
-                = {format(electricityTotal, unitCurrency)}
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+              <TouchableOpacity
+                style={styles.previewNavBtn}
+                onPress={() => setActiveTab('preview')}
+                activeOpacity={0.85}
+              >
+                <Feather name="eye" size={15} color={colors.navy} style={{ marginRight: 5 }} />
+                <Text style={styles.previewNavBtnText}>Preview Voucher</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.dispatchBtn, { flex: 2, backgroundColor: invoiceType === 'deposit' ? '#D97706' : '#10B981' }]}
+                onPress={handleGenerateInvoice}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.dispatchBtnText}>
+                  ✓ Dispatch ({format(grandTotal, effectiveCurrency)})
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+      ) : (
+        /* OFFICIAL DOCUMENT & VOUCHER PREVIEW (1-to-1 Web Parity) */
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          <View style={[styles.voucherSheet, { backgroundColor: colors.surface }]}>
+            {/* Voucher Header */}
+            <View style={styles.voucherTop}>
+              <View>
+                <Text style={styles.voucherIssuer}>{selectedProp?.name || 'PROPERTY MANAGEMENT'}</Text>
+                <Text style={styles.voucherSubIssuer}>Verified Property Administration</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <View style={[styles.voucherBadge, { backgroundColor: invoiceType === 'deposit' ? '#FEF3C7' : '#DCFCE7' }]}>
+                  <Text style={[styles.voucherBadgeText, { color: invoiceType === 'deposit' ? '#92400E' : '#166534' }]}>
+                    {invoiceType === 'deposit' ? 'SECURITY DEPOSIT VOUCHER' : 'TAX INVOICE'}
+                  </Text>
+                </View>
+                <Text style={styles.voucherIdText}>OFFICIAL RECEIPT DRAFT</Text>
+              </View>
+            </View>
+
+            {/* Recipient & Schedule Box */}
+            <View style={styles.voucherInfoGrid}>
+              <View style={styles.voucherInfoCol}>
+                <Text style={styles.voucherMetaLabel}>BILLED TO (RESIDENT):</Text>
+                <Text style={styles.voucherMetaVal}>{matchedTenant?.name || selectedUnit?.tenant || 'Resident'}</Text>
+                <Text style={styles.voucherMetaSub}>
+                  Unit {selectedUnit?.unitNumber} • {selectedUnit?.propertyName}
+                </Text>
+                {matchedTenant?.email && <Text style={styles.voucherMetaSub}>{matchedTenant.email}</Text>}
+              </View>
+
+              <View style={styles.voucherInfoCol}>
+                <Text style={styles.voucherMetaLabel}>INVOICE TIMELINE:</Text>
+                <Text style={styles.voucherMetaVal}>Due: {dueDate}</Text>
+                <Text style={styles.voucherMetaSub}>Issue Date: {new Date().toISOString().split('T')[0]}</Text>
+                <Text style={styles.voucherMetaSub}>Status: Official Sent</Text>
+              </View>
+            </View>
+
+            {/* Items Table */}
+            <View style={styles.voucherTable}>
+              <View style={styles.voucherTableHead}>
+                <Text style={styles.voucherTableHeadText}>DESCRIPTION / ITEM DETAILS</Text>
+                <Text style={styles.voucherTableHeadText}>AMOUNT ({effectiveCurrency})</Text>
+              </View>
+
+              {compiledItemsList.map((it, idx) => (
+                <View key={idx} style={styles.voucherTableRow}>
+                  <Text style={styles.voucherItemDesc}>{it.description}</Text>
+                  <Text style={styles.voucherItemAmt}>{format(it.amount, effectiveCurrency)}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Totals */}
+            <View style={styles.voucherTotalsWrap}>
+              <View style={styles.voucherTotalRow}>
+                <Text style={styles.voucherTotalLabel}>Subtotal:</Text>
+                <Text style={styles.voucherTotalVal}>{format(grandTotal, effectiveCurrency)}</Text>
+              </View>
+              <View style={[styles.voucherTotalRow, styles.voucherNetDueRow]}>
+                <Text style={styles.voucherNetDueLabel}>Net Amount Due:</Text>
+                <Text style={styles.voucherNetDueVal}>{format(grandTotal, effectiveCurrency)}</Text>
+              </View>
+            </View>
+
+            {/* Terms and Conditions */}
+            <View style={styles.voucherTermsBox}>
+              <Text style={styles.voucherTermsTitle}>TERMS & CONDITIONS:</Text>
+              <Text style={styles.voucherTermsText}>
+                {invoiceType === 'deposit' ? DEFAULT_DEPOSIT_TERMS : DEFAULT_RENT_TERMS}
               </Text>
             </View>
-          </View>
 
-          <View style={styles.divider} />
-          <Text style={styles.cardTitle}>3. Itemized Charges</Text>
+            {/* Bottom Actions */}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
+              <TouchableOpacity
+                style={styles.previewNavBtn}
+                onPress={() => setActiveTab('edit')}
+                activeOpacity={0.8}
+              >
+                <Feather name="arrow-left" size={15} color={colors.navy} style={{ marginRight: 5 }} />
+                <Text style={styles.previewNavBtnText}>Edit Details</Text>
+              </TouchableOpacity>
 
-          <View style={styles.grid2}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Base Rent ({getSymbol(unitCurrency)})</Text>
-              <TextInput
-                style={styles.input}
-                value={baseRent}
-                onChangeText={setBaseRent}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Society Dues</Text>
-              <TextInput
-                style={styles.input}
-                value={societyDues}
-                onChangeText={setSocietyDues}
-                keyboardType="numeric"
-              />
+              <TouchableOpacity
+                style={[styles.dispatchBtn, { flex: 2, backgroundColor: invoiceType === 'deposit' ? '#D97706' : '#10B981' }]}
+                onPress={handleGenerateInvoice}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.dispatchBtnText}>
+                  ✓ Save & Dispatch Voucher
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
-
-          <View style={styles.grid2}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Water Charges</Text>
-              <TextInput
-                style={styles.input}
-                value={waterCharges}
-                onChangeText={setWaterCharges}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Dedicated Parking</Text>
-              <TextInput
-                style={styles.input}
-                value={parkingFee}
-                onChangeText={setParkingFee}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          <View style={styles.grid2}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Late Fee Surcharge ({getSymbol(unitCurrency)})</Text>
-              <TextInput
-                style={styles.input}
-                value={lateFee}
-                onChangeText={setLateFee}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Payment Due Date</Text>
-              <TextInput
-                style={styles.input}
-                value={dueDate}
-                onChangeText={setDueDate}
-              />
-            </View>
-          </View>
-
-          {/* Grand Total Summary Box */}
-          <View style={styles.totalBox}>
-            <View>
-              <Text style={styles.totalLabel}>TOTAL INVOICE PAYABLE</Text>
-              <Text style={styles.totalSub}>Itemized rent + metered power + dues</Text>
-            </View>
-            <Text style={styles.totalAmount}>
-              {format(grandTotal, unitCurrency)}
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.dispatchBtn}
-            onPress={handleGenerateInvoice}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.dispatchBtnText}>
-              ✓ Dispatch Invoice ({format(grandTotal, unitCurrency)})
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 };
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  logoBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  headerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  headerSub: {
-    fontSize: 11,
-    color: colors.inkSoft,
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-    marginBottom: 8,
-  },
-  inputLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.inkSoft,
-    marginBottom: 4,
-    marginTop: 8,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 13,
-    color: colors.navy,
-    backgroundColor: colors.surface,
-  },
-  unitChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginRight: 8,
-  },
-  unitChipActive: {
-    backgroundColor: '#ECFDF5',
-    borderColor: '#10B981',
-  },
-  unitChipTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  unitChipTitleActive: {
-    color: '#059669',
-  },
-  unitChipSub: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  unitChipSubActive: {
-    color: '#059669',
-  },
-  residentBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginTop: 6,
-  },
-  residentName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  residentSub: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    marginVertical: 14,
-  },
-  meterContainer: {
-    backgroundColor: '#FFFBEB',
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-  },
-  meterHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  meterTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#92400E',
-    marginLeft: 4,
-  },
-  unitsPill: {
-    backgroundColor: '#F59E0B',
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '700',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  grid2: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  grid3: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  meterResultRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#FEF3C7',
-  },
-  meterResultText: {
-    fontSize: 11,
-    color: '#92400E',
-  },
-  meterResultTotal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  totalBox: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 10,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginTop: 16,
-    marginBottom: 14,
-  },
-  totalLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-  },
-  totalSub: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  totalAmount: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#10B981',
-  },
-  dispatchBtn: {
-    backgroundColor: '#10B981',
-    paddingVertical: 13,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  dispatchBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-});
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      backgroundColor: colors.surface,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    headerLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    backBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 10,
+    },
+    logoBadge: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 10,
+    },
+    headerTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    tabBar: {
+      flexDirection: 'row',
+      backgroundColor: colors.surface,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    tabItem: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 11,
+      borderBottomWidth: 2,
+      borderBottomColor: 'transparent',
+    },
+    tabItemActive: {
+      borderBottomColor: colors.primary,
+    },
+    tabText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    tabTextActive: {
+      color: colors.primary,
+      fontWeight: '700',
+    },
+    scroll: {
+      flex: 1,
+    },
+    content: {
+      padding: 16,
+      paddingBottom: 36,
+    },
+    categoryRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 12,
+    },
+    categoryBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 10,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    categoryBtnActive: {
+      borderColor: '#059669',
+      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+    },
+    categoryBtnDepositActive: {
+      borderColor: '#D97706',
+      backgroundColor: isDark ? 'rgba(217, 119, 6, 0.15)' : '#FEF3C7',
+    },
+    categoryBtnText: {
+      fontSize: 12.5,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    categoryBtnTextActive: {
+      color: '#059669',
+      fontWeight: '700',
+    },
+    card: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    cardTitle: {
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: colors.navy,
+      marginBottom: 8,
+    },
+    currChip: {
+      paddingHorizontal: 7,
+      paddingVertical: 3,
+      borderRadius: 5,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    currChipActive: {
+      borderColor: '#059669',
+      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.2)' : '#ECFDF5',
+    },
+    currChipText: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    currChipTextActive: {
+      color: '#059669',
+      fontWeight: '700',
+    },
+    inputLabel: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.inkSoft,
+      marginTop: 8,
+      marginBottom: 4,
+    },
+    input: {
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      fontSize: 13,
+      color: colors.navy,
+      backgroundColor: isDark ? colors.surfaceSunken : '#FAFAFA',
+    },
+    unitChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      marginRight: 8,
+    },
+    unitChipActive: {
+      borderColor: '#059669',
+      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+    },
+    unitChipTitle: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    unitChipTitleActive: {
+      color: '#059669',
+    },
+    unitChipSub: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    unitChipSubActive: {
+      color: '#059669',
+    },
+    residentBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      padding: 10,
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      marginTop: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    residentName: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    residentSub: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    depositNotice: {
+      padding: 12,
+      borderRadius: 8,
+      borderWidth: 1,
+      marginBottom: 10,
+    },
+    divider: {
+      height: 1,
+      backgroundColor: colors.line,
+      marginVertical: 14,
+    },
+    meterContainer: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#FFFBEB',
+      borderWidth: 1,
+      borderColor: isDark ? colors.line : '#FDE68A',
+      borderRadius: 8,
+      padding: 12,
+    },
+    meterHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    meterTitle: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.navy,
+      marginLeft: 4,
+    },
+    unitsPill: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: '#D97706',
+    },
+    grid2: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 6,
+    },
+    grid3: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 6,
+    },
+    meterResultRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginTop: 6,
+      paddingTop: 6,
+      borderTopWidth: 1,
+      borderTopColor: isDark ? colors.line : '#FDE68A',
+    },
+    meterResultText: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+    },
+    meterResultTotal: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: '#D97706',
+    },
+    extraItemRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingVertical: 6,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    extraItemDesc: {
+      fontSize: 12,
+      color: colors.navy,
+      flex: 1,
+    },
+    extraItemAmt: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#059669',
+    },
+    addItemBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#059669',
+      paddingVertical: 7,
+      borderRadius: 6,
+      marginTop: 4,
+      marginBottom: 10,
+    },
+    addItemBtnText: {
+      color: '#FFFFFF',
+      fontSize: 11.5,
+      fontWeight: '700',
+    },
+    totalBox: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: 12,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F0FDF4',
+      borderWidth: 1,
+      borderColor: isDark ? colors.line : '#BBF7D0',
+      borderRadius: 8,
+      marginTop: 10,
+    },
+    totalLabel: {
+      fontSize: 11,
+      fontWeight: '800',
+      color: '#166534',
+    },
+    totalSub: {
+      fontSize: 10,
+      color: '#15803D',
+      marginTop: 2,
+    },
+    totalAmount: {
+      fontSize: 16,
+      fontWeight: '800',
+      color: '#166534',
+    },
+    previewNavBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 12,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    previewNavBtnText: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    dispatchBtn: {
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    dispatchBtnText: {
+      color: '#FFFFFF',
+      fontSize: 13,
+      fontWeight: '700',
+    },
+
+    /* VOUCHER PREVIEW STYLES */
+    voucherSheet: {
+      borderRadius: 12,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    voucherTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      borderBottomWidth: 2,
+      borderBottomColor: colors.line,
+      paddingBottom: 12,
+      marginBottom: 12,
+    },
+    voucherIssuer: {
+      fontSize: 15,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    voucherSubIssuer: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    voucherBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 4,
+    },
+    voucherBadgeText: {
+      fontSize: 9.5,
+      fontWeight: '800',
+    },
+    voucherIdText: {
+      fontSize: 9.5,
+      color: colors.inkSoft,
+      marginTop: 3,
+      fontWeight: '600',
+    },
+    voucherInfoGrid: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      padding: 10,
+      borderRadius: 8,
+      marginBottom: 12,
+    },
+    voucherInfoCol: {
+      flex: 1,
+    },
+    voucherMetaLabel: {
+      fontSize: 9,
+      fontWeight: '800',
+      color: colors.inkSoft,
+      marginBottom: 2,
+    },
+    voucherMetaVal: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    voucherMetaSub: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    voucherTable: {
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 6,
+      overflow: 'hidden',
+      marginBottom: 12,
+    },
+    voucherTableHead: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    voucherTableHeadText: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: colors.inkSoft,
+    },
+    voucherTableRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+    },
+    voucherItemDesc: {
+      fontSize: 11.5,
+      color: colors.navy,
+      flex: 2,
+    },
+    voucherItemAmt: {
+      fontSize: 11.5,
+      fontWeight: '700',
+      color: colors.navy,
+      textAlign: 'right',
+      flex: 1,
+    },
+    voucherTotalsWrap: {
+      alignItems: 'flex-end',
+      marginBottom: 12,
+    },
+    voucherTotalRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      width: 180,
+      paddingVertical: 3,
+    },
+    voucherTotalLabel: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+    },
+    voucherTotalVal: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    voucherNetDueRow: {
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      paddingTop: 6,
+      marginTop: 4,
+    },
+    voucherNetDueLabel: {
+      fontSize: 12.5,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    voucherNetDueVal: {
+      fontSize: 14,
+      fontWeight: '800',
+      color: '#059669',
+    },
+    voucherTermsBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      padding: 10,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    voucherTermsTitle: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: colors.inkSoft,
+      marginBottom: 4,
+    },
+    voucherTermsText: {
+      fontSize: 9.5,
+      color: colors.inkSoft,
+      lineHeight: 14,
+    },
+  });

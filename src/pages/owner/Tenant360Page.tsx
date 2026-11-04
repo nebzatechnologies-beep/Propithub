@@ -5,7 +5,7 @@ import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { TenantRecord, UserProfile, TenancyRequest, Agreement, Invoice, Unit, RequiredIdItem } from '../../types';
-import { Plus, Search, Send, Clock, CheckCircle, XCircle, UserCheck, UserPlus, Mail, Phone, Building, Key, Eye, EyeOff, Upload, FileCheck, ArrowRight, ShieldCheck, Trash2 } from 'lucide-react';
+import { Plus, Send, Clock, CheckCircle, XCircle, UserCheck, UserPlus, Mail, Phone, Building, Key, Eye, EyeOff, Upload, FileCheck, ArrowRight, ShieldCheck, Trash2 } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { OnboardResidentModal } from '../../components/owner/OnboardResidentModal';
 import {
@@ -48,7 +48,6 @@ export const Tenant360Page: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'active' | 'requests'>('active');
   const [selectedTenant, setSelectedTenant] = useState<TenantRecord | null>(null);
-  const [directorySearch, setDirectorySearch] = useState('');
   const [isSubmittingProv, setIsSubmittingProv] = useState(false);
 
   // Unified Onboard Resident Modal state
@@ -77,8 +76,8 @@ export const Tenant360Page: React.FC = () => {
   const activeCurrencyCode = viewCurrency || 'USD';
 
   const formatMoney = (amount: number, curr?: string) => {
-    const fromCode = curr ? normalizeCurrencyCode(curr) : 'USD';
-    const converted = convert(amount || 0, fromCode, activeCurrencyCode);
+    const fromCode = curr ? normalizeCurrencyCode(curr) : activeCurrencyCode;
+    const converted = fromCode === activeCurrencyCode ? (amount || 0) : convert(amount || 0, fromCode, activeCurrencyCode);
     return formatCurrencyAmount(converted, activeCurrencyCode);
   };
 
@@ -620,41 +619,9 @@ export const Tenant360Page: React.FC = () => {
       </div>
 
       {/* TAB 1: Active Tenants Directory */}
-      {activeTab === 'active' && (() => {
-        const filteredTenants = directorySearch.trim()
-          ? myTenants.filter((t) => {
-            const q = directorySearch.trim().toLowerCase();
-            const cleanPhone = (t.phone || '').replace(/[^0-9]/g, '');
-            const cleanQ = q.replace(/[^0-9]/g, '');
-            return (
-              t.name.toLowerCase().includes(q) ||
-              t.email.toLowerCase().includes(q) ||
-              (cleanQ.length > 2 && cleanPhone.includes(cleanQ)) ||
-              (t.unit || '').toLowerCase().includes(q)
-            );
-          })
-          : myTenants;
-
-        return (
-          <div className="panel">
-            <div className="panel-body">
-              <div style={{ marginBottom: '14px' }}>
-                <div style={{ position: 'relative' }}>
-                  <Search size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-soft)', pointerEvents: 'none' }} />
-                  <input
-                    type="text"
-                    placeholder="Search tenants by name, email, phone, or unit…"
-                    value={directorySearch}
-                    onChange={(e) => setDirectorySearch(e.target.value)}
-                    style={{ paddingLeft: '34px', width: '100%', boxSizing: 'border-box' }}
-                  />
-                </div>
-                {directorySearch.trim() && (
-                  <div className="hint" style={{ marginTop: '6px' }}>
-                    {filteredTenants.length} of {myTenants.length} tenants match &quot;{directorySearch}&quot;
-                  </div>
-                )}
-              </div>
+      {activeTab === 'active' && (
+        <div className="panel">
+          <div className="panel-body">
               {/* Desktop Table View */}
               <div className="desktop-table-view">
                 <div className="table-wrap">
@@ -679,23 +646,12 @@ export const Tenant360Page: React.FC = () => {
                               No active tenants
                             </div>
                             <div style={{ fontSize: '12.5px' }}>
-                              Use the "+ Add Tenant" button above to add a tenant or send a lease invitation.
-                            </div>
-                          </td>
-                        </tr>
-                      ) : filteredTenants.length === 0 ? (
-                        <tr>
-                          <td colSpan={8} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
-                            <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
-                              No tenants match &quot;{directorySearch}&quot;
-                            </div>
-                            <div style={{ fontSize: '12.5px' }}>
-                              Try a different name, email, phone number, or unit number.
+                              Use the "+ Onboard Tenant" button above to add a tenant or send a lease invitation.
                             </div>
                           </td>
                         </tr>
                       ) : (
-                        filteredTenants.map((t) => (
+                        myTenants.map((t) => (
                           <tr key={t.id}>
                             <td>
                               <div className="person">
@@ -757,20 +713,11 @@ export const Tenant360Page: React.FC = () => {
                       No active tenants
                     </div>
                     <div style={{ fontSize: '12.5px' }}>
-                      Use the "+ Add Tenant" button above to add a tenant or send a lease invitation.
-                    </div>
-                  </div>
-                ) : filteredTenants.length === 0 ? (
-                  <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
-                    <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
-                      No tenants match &quot;{directorySearch}&quot;
-                    </div>
-                    <div style={{ fontSize: '12.5px' }}>
-                      Try a different name, email, phone number, or unit number.
+                      Use the "+ Onboard Tenant" button above to add a tenant or send a lease invitation.
                     </div>
                   </div>
                 ) : (
-                  filteredTenants.map((t) => (
+                  myTenants.map((t) => (
                     <div key={t.id} className="staff-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
                         <div className="person">
@@ -824,8 +771,7 @@ export const Tenant360Page: React.FC = () => {
               </div>
             </div>
           </div>
-        );
-      })()}
+        )}
 
       {/* TAB 2: Sent Tenancy Requests & Invitations */}
       {activeTab === 'requests' && (

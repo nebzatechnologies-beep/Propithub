@@ -27,6 +27,7 @@ import { RentalInvoiceDocument } from '../components/RentalInvoiceDocument';
 import { pickSingleImage } from '../lib/nativePicker';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
+import { getCleanAddressText } from '../lib/addressUtils';
 
 interface FinancialLedgerScreenProps {
   onProfilePress?: () => void;
@@ -960,8 +961,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
   const resolvePropAddressString = (addr?: string | any): string => {
     if (!addr) return '';
-    if (typeof addr === 'string') return addr;
-    return [addr.line1, addr.city, addr.state, addr.country].filter(Boolean).join(', ');
+    return getCleanAddressText(addr, '').text;
   };
 
   // Invoice Template Form State (1-to-1 Web Parity)

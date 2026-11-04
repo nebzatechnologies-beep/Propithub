@@ -9,24 +9,26 @@ import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { FloatingActionButton } from '../../components/common/FloatingActionButton';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { Wrench, Plus, UserPlus } from 'lucide-react';
-import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
 
 export const MaintenancePage: React.FC = () => {
   const { state, updateState, createOwnerMaintenanceTicket, saveTicket, saveStaff, deleteStaff, showToast } = useAppData();
   const { user, provisionUser } = useAuth();
   const navigate = useNavigate();
+  const { viewCurrency, convert, format } = useCurrency();
   const ownerId = user?.id || '';
 
   const [subTab, setSubTab] = useState<'staff' | 'tickets' | 'payments'>('tickets');
 
   // Manual owner ticket modal state
   const [isNewTicketOpen, setIsNewTicketOpen] = useState(false);
-  const [newTicketUnit, setNewTicketUnit] = useState('A-101');
+  const [newTicketUnit, setNewTicketUnit] = useState('');
   const [newTicketIssue, setNewTicketIssue] = useState('');
   const [newTicketCategory, setNewTicketCategory] = useState('Plumbing');
   const [newTicketPriority, setNewTicketPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
   const [newTicketAssignee, setNewTicketAssignee] = useState('');
-  const [newTicketCost, setNewTicketCost] = useState(1200);
+  const [newTicketCost, setNewTicketCost] = useState(0);
 
   // Onboard staff modal
   const [isOnboardOpen, setIsOnboardOpen] = useState(false);
@@ -686,7 +688,19 @@ export const MaintenancePage: React.FC = () => {
                               <td><b>{t.id}</b></td>
                               <td>{t.assignedTo}</td>
                               <td style={{ textTransform: 'capitalize' }}>{t.payment.payer}</td>
-                              <td>{t.payment?.amount ? `${resolveTicketCurrency(t)}${(t.payment.amount ?? 0).toLocaleString()}` : '—'}</td>
+                              <td>
+                                {t.payment?.amount ? `${resolveTicketCurrency(t)}${(t.payment.amount ?? 0).toLocaleString()}` : '—'}
+                              {t.payment?.amount && viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(resolveTicketCurrency(t)) && (
+                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '4px' }}>
+                                  (~{format(convert(t.payment.amount, resolveTicketCurrency(t), viewCurrency), viewCurrency)})
+                                </span>
+                              )}
+                                {t.payment?.amount && viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(resolveTicketCurrency(t)) && (
+                                  <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
+                                    ~{format(convert(t.payment.amount, resolveTicketCurrency(t), viewCurrency), viewCurrency)}
+                                  </span>
+                                )}
+                              </td>
                               <td>{t.payment.method || '—'}</td>
                               <td>
                                 <span
@@ -766,7 +780,12 @@ export const MaintenancePage: React.FC = () => {
                           </div>
                           <div>
                             <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Amount</div>
-                            <b style={{ color: 'var(--ledger)' }}>{t.payment?.amount ? `${resolveTicketCurrency(t)}${(t.payment.amount ?? 0).toLocaleString()}` : '—'}</b>
+                            <b style={{ color: 'var(--ledger)' }}>{t.payment?.amount ? `${resolveTicketCurrency(t)}${(t.payment.amount ?? 0).toLocaleString()}` : '—'}
+                              {t.payment?.amount && viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(resolveTicketCurrency(t)) && (
+                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '4px' }}>
+                                  (~{format(convert(t.payment.amount, resolveTicketCurrency(t), viewCurrency), viewCurrency)})
+                                </span>
+                              )}</b>
                           </div>
                           <div style={{ gridColumn: '1 / -1' }}>
                             <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Payment Method</div>
@@ -997,6 +1016,130 @@ export const MaintenancePage: React.FC = () => {
                 onClick={() => setStaffCredentialsModal(null)}
               >
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Raise Maintenance Ticket Modal */}
+      {isNewTicketOpen && (
+        <div className="modal-backdrop" onClick={() => setIsNewTicketOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Wrench size={18} color="var(--brass)" />
+                <h3 style={{ margin: 0 }}>Raise Maintenance Ticket</h3>
+              </div>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => setIsNewTicketOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="form-grid">
+                <div className="field">
+                  <label>Select Unit / Residence</label>
+                  <select
+                    value={newTicketUnit}
+                    onChange={(e) => setNewTicketUnit(e.target.value)}
+                  >
+                    {myUnits.length === 0 ? (
+                      <option value="">No units found</option>
+                    ) : (
+                      myUnits.map((u) => (
+                        <option key={u.id} value={u.unitNumber || u.id}>
+                          Unit {u.unitNumber || u.id} ({u.propertyName || 'Property'}) — {u.tenant || 'Vacant'}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label>Issue Category</label>
+                  <select
+                    value={newTicketCategory}
+                    onChange={(e) => setNewTicketCategory(e.target.value)}
+                  >
+                    <option value="Plumbing">Plumbing (Leaks, Pipes, Faucets)</option>
+                    <option value="Electrical">Electrical (Wiring, Breakers, Outlets)</option>
+                    <option value="HVAC">HVAC (Heating & Air Conditioning)</option>
+                    <option value="Carpentry">Carpentry & Structural</option>
+                    <option value="Appliance">Appliance Breakdown</option>
+                    <option value="Painting">Painting & Surface</option>
+                    <option value="Pest Control">Pest Control</option>
+                    <option value="General">General Maintenance</option>
+                  </select>
+                </div>
+
+                <div className="field full">
+                  <label>Issue Description</label>
+                  <textarea
+                    rows={3}
+                    placeholder="Describe the maintenance issue, required repair, or inspection notes..."
+                    value={newTicketIssue}
+                    onChange={(e) => setNewTicketIssue(e.target.value)}
+                  />
+                </div>
+
+                <div className="field">
+                  <label>Priority Level</label>
+                  <select
+                    value={newTicketPriority}
+                    onChange={(e) => setNewTicketPriority(e.target.value as any)}
+                  >
+                    <option value="Low">Low (Routine upkeep)</option>
+                    <option value="Medium">Medium (Attention needed)</option>
+                    <option value="High">High (Urgent / Critical)</option>
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label>Assign Staff / Technician (Optional)</label>
+                  <select
+                    value={newTicketAssignee}
+                    onChange={(e) => setNewTicketAssignee(e.target.value)}
+                  >
+                    <option value="">Unassigned (Queue dispatch)</option>
+                    {myStaff.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} ({s.role})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label>Estimated Repair Cost</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="50"
+                    placeholder="0"
+                    value={newTicketCost || ''}
+                    onChange={(e) => setNewTicketCost(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="modal-foot" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', padding: '14px 20px', borderTop: '1px solid var(--line)' }}>
+              <button
+                type="button"
+                className="btn secondary btn-mobile-full"
+                onClick={() => setIsNewTicketOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn brass btn-mobile-full"
+                onClick={handleCreateTicket}
+              >
+                Create Maintenance Ticket
               </button>
             </div>
           </div>

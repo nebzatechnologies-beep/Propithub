@@ -44,8 +44,8 @@ export const TOUR_STEPS_BY_ROLE: Record<UserRole, TourStep[]> = {
 
     // Chapter 2: Real Estate Vault
     {
-      id: 'properties-subtabs',
-      selector: '[data-tour="properties-subtabs"]',
+      id: 'properties-portfolio',
+      selector: '[data-tour="properties-portfolio"]',
       route: '/owner/properties',
       chapter: 'Chapter 2: Real Estate Vault',
       stationNumber: 2,
@@ -273,8 +273,8 @@ export const TOUR_STEPS_BY_ROLE: Record<UserRole, TourStep[]> = {
       chapter: 'Service Desk',
       stationNumber: 4,
       totalInChapter: 5,
-      badge: 'Maintenance',
-      title: 'Submit Repair & Service Requests',
+      badge: 'Support',
+      title: 'Submit Support & Service Requests',
       dialogue: 'Need a plumbing, electrical, or appliance repair? File tickets with photos and priority ratings directly to on-site technicians.',
       capabilities: [
         'Photo uploads for fast problem diagnosis',
@@ -436,7 +436,7 @@ export const TOUR_STEPS_BY_ROLE: Record<UserRole, TourStep[]> = {
       dialogue: 'Get pinged immediately when a property manager or resident assigns an urgent repair task to you.',
       capabilities: [
         'Instant sound & banner dispatch notifications',
-        'Work schedule & availability status settings',
+        'Direct maintenance queue & work order inspection',
         'Theme and mobile display controls',
       ],
       preferredPlacement: 'bottom',

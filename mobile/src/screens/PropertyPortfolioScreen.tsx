@@ -13,6 +13,7 @@ import {
   Alert,
   ActivityIndicator,
   LayoutAnimation,
+  Linking,
 } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -27,6 +28,9 @@ import { usePlanLimits, ResourceQuotaType } from '../hooks/usePlanLimits';
 import { PlanLimitModal } from '../components/PlanLimitModal';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
+import { AddressDisplay } from '../components/AddressDisplay';
+import { getCleanAddressText } from '../lib/addressUtils';
+import { getUnitTypesForProperty } from '../lib/propertyTypes';
 
 interface PropertyPortfolioScreenProps {
   onProfilePress?: () => void;
@@ -43,7 +47,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
 }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
-  const { state, planUsage, saveUnit, deleteUnit, saveProperty } = useMobileAppData();
+  const { state, planUsage, saveUnit, deleteUnit, saveProperty, updateTenancyRequest, updateAgreement } = useMobileAppData();
   const { user } = useMobileAuth();
   const { format, getSymbol, viewCurrency } = useMobileCurrency();
   const { usage, currentPlanName } = usePlanLimits();
@@ -76,6 +80,21 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
   const [editUnitImages, setEditUnitImages] = useState<string[]>([]);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [openEditDropdown, setOpenEditDropdown] = useState<'type' | 'furnishing' | 'status' | null>(null);
+  const [openAddDropdown, setOpenAddDropdown] = useState<'type' | null>(null);
+
+  const availableAddUnitTypes = useMemo(() => {
+    if (!targetProperty) return [];
+    return getUnitTypesForProperty(targetProperty.propertyType || (targetProperty as any).category, newUnitType);
+  }, [targetProperty, newUnitType]);
+
+  const editingProperty = useMemo(() => {
+    if (!editingUnit) return null;
+    return state.properties.find((p) => p.id === editingUnit.propertyId || p.name === editingUnit.propertyName) || null;
+  }, [editingUnit, state.properties]);
+
+  const availableEditUnitTypes = useMemo(() => {
+    return getUnitTypesForProperty(editingProperty?.propertyType || (editingProperty as any)?.category, editUnitType);
+  }, [editingProperty, editUnitType]);
 
   // Dynamically scope to authenticated owner
   const myProperties = useMemo(() => {
@@ -95,7 +114,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
   const filteredProperties = myProperties.filter((p) => {
     const q = searchQuery.toLowerCase();
     const nameMatch = p.name.toLowerCase().includes(q);
-    const addr = typeof p.address === 'string' ? p.address : p.address.formattedAddress;
+    const addr = getCleanAddressText(p.address, '').text;
     const addrMatch = addr.toLowerCase().includes(q);
     return nameMatch || addrMatch;
   });
@@ -180,9 +199,51 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
     );
   };
 
+  const getUnitStatusBadge = (status?: string) => {
+    switch (status) {
+      case 'occupied':
+        return { badge: styles.unitOccupiedBadge, text: styles.unitOccupiedBadgeText, label: 'OCCUPIED' };
+      case 'reserved':
+        return { badge: styles.unitReservedBadge, text: styles.unitReservedBadgeText, label: 'RESERVED' };
+      case 'maintenance':
+        return { badge: styles.unitMaintenanceBadge, text: styles.unitMaintenanceBadgeText, label: 'MAINTENANCE' };
+      case 'vacant':
+      default:
+        return { badge: styles.unitVacantBadge, text: styles.unitVacantBadgeText, label: 'VACANT' };
+    }
+  };
+
   const handleSaveUnitEdit = () => {
     if (!editingUnit) return;
     const cleanNum = editUnitNumber.trim() || editingUnit.unitNumber || editingUnit.id;
+    const isBecomingVacant = editStatus === 'vacant';
+
+    // Cascade cancellation when changing unit status to vacant
+    if (isBecomingVacant) {
+      const cleanTarget = cleanNum.toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+      const propId = editingUnit.propertyId;
+
+      // 1. Cancel any pending or accepted tenancy requests for this unit
+      (state.tenancyRequests || []).forEach((r) => {
+        const rUnit = (r.unitNumber || r.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+        const matchesUnit = (rUnit === cleanTarget || r.unitId === editingUnit.id);
+        const matchesProp = !r.propertyId || !propId || r.propertyId === propId;
+        if (matchesUnit && matchesProp && (r.status === 'pending' || r.status === 'accepted')) {
+          updateTenancyRequest(r.id, 'cancelled');
+        }
+      });
+
+      // 2. Terminate draft / pending agreements for this unit
+      (state.agreements || []).forEach((a) => {
+        const aUnit = (a.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+        const matchesUnit = (aUnit === cleanTarget || a.unitId === editingUnit.id);
+        const matchesProp = !a.propertyId || !propId || a.propertyId === propId;
+        if (matchesUnit && matchesProp && a.status !== 'terminated' && a.status !== 'cancelled') {
+          updateAgreement(a.id, { status: 'terminated' });
+        }
+      });
+    }
+
     const updated: MobileUnit = {
       ...editingUnit,
       unitNumber: cleanNum,
@@ -195,8 +256,8 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
       status: editStatus,
       electricityMeter: editElectricityMeter.trim() || undefined,
       waterMeter: editWaterMeter.trim() || undefined,
-      tenant: editStatus === 'vacant' ? null : editingUnit.tenant,
-      currentTenantId: editStatus === 'vacant' ? null : editingUnit.currentTenantId,
+      tenant: isBecomingVacant ? null : editingUnit.tenant,
+      currentTenantId: isBecomingVacant ? null : editingUnit.currentTenantId,
       images: editUnitImages,
       image: editUnitImages[0] || undefined,
     };
@@ -407,9 +468,11 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                       <View style={styles.propertyTitleRow}>
                         <View style={{ flex: 1 }}>
                           <Text style={[styles.propertyTitle, { color: colors.navy }]}>{prop.name}</Text>
-                          <Text style={[styles.propertySub, { color: colors.inkSoft }]}>
-                            {typeof prop.address === 'string' ? prop.address : prop.address.formattedAddress}
-                          </Text>
+                          <AddressDisplay
+                            address={prop.address}
+                            fallback="Address on file"
+                            textStyle={[styles.propertySub, { color: colors.inkSoft }]}
+                          />
                         </View>
                         <View style={[styles.occupiedBadge, occupancyRate === 100 && styles.occupiedBadgeFull]}>
                           <Text style={styles.occupiedBadgeText}>
@@ -463,11 +526,14 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                           </View>
 
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <View style={u.status === 'occupied' ? styles.unitOccupiedBadge : styles.unitVacantBadge}>
-                              <Text style={u.status === 'occupied' ? styles.unitOccupiedBadgeText : styles.unitVacantBadgeText}>
-                                {u.status.toUpperCase()}
-                              </Text>
-                            </View>
+                            {(() => {
+                              const badge = getUnitStatusBadge(u.status);
+                              return (
+                                <View style={badge.badge}>
+                                  <Text style={badge.text}>{badge.label}</Text>
+                                </View>
+                              );
+                            })()}
 
                             <TouchableOpacity
                               style={styles.editUnitIconBtn}
@@ -513,11 +579,14 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                       {u.unitType} • {u.floor} • {u.areaSqFt ? `${u.areaSqFt} sq.ft` : ''}
                     </Text>
                   </View>
-                  <View style={u.status === 'occupied' ? styles.unitOccupiedBadge : styles.unitVacantBadge}>
-                    <Text style={u.status === 'occupied' ? styles.unitOccupiedBadgeText : styles.unitVacantBadgeText}>
-                      {u.status.toUpperCase()}
-                    </Text>
-                  </View>
+                  {(() => {
+                    const badge = getUnitStatusBadge(u.status);
+                    return (
+                      <View style={badge.badge}>
+                        <Text style={badge.text}>{badge.label}</Text>
+                      </View>
+                    );
+                  })()}
                 </View>
 
                 <View style={styles.dirFinancialRow}>
@@ -605,12 +674,45 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                 <View style={styles.grid2}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.modalLabel}>Unit Type</Text>
-                    <TextInput
-                      style={styles.modalInput}
-                      value={newUnitType}
-                      onChangeText={setNewUnitType}
-                      placeholderTextColor={colors.inkSoft}
-                    />
+                    <TouchableOpacity
+                      style={[
+                        styles.editDropdownBtn,
+                        openAddDropdown === 'type' && styles.editDropdownBtnActive,
+                      ]}
+                      onPress={() => setOpenAddDropdown((prev) => (prev === 'type' ? null : 'type'))}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.editDropdownBtnText}>{newUnitType || 'Select Type'}</Text>
+                      <Feather
+                        name={openAddDropdown === 'type' ? 'chevron-up' : 'chevron-down'}
+                        size={16}
+                        color={colors.inkSoft}
+                      />
+                    </TouchableOpacity>
+                    {openAddDropdown === 'type' && (
+                      <View style={styles.editDropdownList}>
+                        <ScrollView nestedScrollEnabled style={{ maxHeight: 160 }}>
+                          {availableAddUnitTypes.map((type) => (
+                            <TouchableOpacity
+                              key={type}
+                              style={[
+                                styles.editDropdownOption,
+                                newUnitType === type && styles.editDropdownOptionActive,
+                              ]}
+                              onPress={() => {
+                                setNewUnitType(type);
+                                setOpenAddDropdown(null);
+                              }}
+                            >
+                              <Text style={[styles.editDropdownOptionText, newUnitType === type && styles.editDropdownOptionTextActive]}>
+                                {type}
+                              </Text>
+                              {newUnitType === type && <Ionicons name="checkmark" size={14} color="#059669" />}
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    )}
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.modalLabel}>Floor Level</Text>
@@ -756,17 +858,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                 {openEditDropdown === 'type' && (
                   <View style={styles.editDropdownList}>
                     <ScrollView nestedScrollEnabled style={{ maxHeight: 180 }}>
-                      {[
-                        '1 RK',
-                        '1 BHK',
-                        '2 BHK',
-                        '3 BHK',
-                        '4 BHK',
-                        'Studio',
-                        'Penthouse',
-                        'Villa',
-                        'Commercial',
-                      ].map((type) => {
+                      {availableEditUnitTypes.map((type) => {
                         const isSelected = editUnitType === type;
                         return (
                           <TouchableOpacity
@@ -1461,24 +1553,46 @@ const createStyles = (colors: any, isDark: boolean) =>
   unitOccupiedBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
-    backgroundColor: colors.surfaceSunken,
+    backgroundColor: isDark ? '#064E3B' : '#ECFDF5',
     borderRadius: 6,
   },
   unitOccupiedBadgeText: {
     fontSize: 10,
     fontWeight: '700',
-    color: colors.ink,
+    color: isDark ? '#6EE7B7' : '#059669',
   },
   unitVacantBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
-    backgroundColor: isDark ? '#2D1B06' : '#FEF3C7',
+    backgroundColor: colors.surfaceSunken,
     borderRadius: 6,
   },
   unitVacantBadgeText: {
     fontSize: 10,
     fontWeight: '700',
-    color: isDark ? '#FBBF24' : '#D97706',
+    color: colors.inkSoft,
+  },
+  unitReservedBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: isDark ? '#451A03' : '#FEF3C7',
+    borderRadius: 6,
+  },
+  unitReservedBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: isDark ? '#FCD34D' : '#D97706',
+  },
+  unitMaintenanceBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: isDark ? '#1E1B4B' : '#EEF2FF',
+    borderRadius: 6,
+  },
+  unitMaintenanceBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: isDark ? '#A5B4FC' : '#4F46E5',
   },
   editUnitIconBtn: {
     padding: 6,

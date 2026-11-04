@@ -13,7 +13,9 @@ import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencySe
 import { uploadDocumentFile } from '../../lib/imageUploader';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { TenancyRequest, Agreement, TenantRecord, UserProfile, RequiredIdItem, Invoice } from '../../types';
+import { TenancyRequest, Agreement, TenantRecord, UserProfile, RequiredIdItem, Invoice, PaymentTransaction } from '../../types';
+import { isSingleUnitProperty } from '../../lib/propertyTypes';
+import { getCleanAddressText } from '../../lib/addressUtils';
 import {
   UserPlus,
   UserCheck,
@@ -33,8 +35,13 @@ export interface OnboardResidentModalProps {
   onClose: () => void;
   entryContext?: 'tenants' | 'leasing';
   preselectedUnitId?: string;
+  preselectedUnitIds?: string[];
+  preselectedPropertyId?: string;
   draftAgreementId?: string | null;
   initialStep?: 1 | 2 | 3;
+  prefilledTenantName?: string;
+  prefilledTenantPhone?: string;
+  prefilledTenantEmail?: string;
   onSuccess?: (tenantName: string, unitLabel: string) => void;
 }
 
@@ -43,8 +50,13 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
   onClose,
   entryContext = 'tenants',
   preselectedUnitId,
+  preselectedUnitIds,
+  preselectedPropertyId,
   draftAgreementId,
   initialStep,
+  prefilledTenantName,
+  prefilledTenantPhone,
+  prefilledTenantEmail,
   onSuccess,
 }) => {
   const {
@@ -56,10 +68,20 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
     saveUnit,
     saveInvoice,
     saveTenant,
+    savePayment,
     saveTenancyRequest,
   } = useAppData();
   const { user, provisionUser } = useAuth();
-  const ownerId = user?.id || '';
+
+  const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
+    (m: any) =>
+      (user?.id && String(m.id) === user.id) ||
+      (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const effectiveOwnerId = user?.role === 'manager'
+    ? (user?.ownerId || (managerRecord as any)?.ownerId || '')
+    : (user?.id || '');
+  const ownerId = effectiveOwnerId;
 
   const {
     usage,
@@ -81,12 +103,28 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
 
   // --- Step 2: Property & Unit State ---
   const myProperties = useMemo(() => {
+    if (user?.role === 'manager') {
+      const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
+      return state.properties.filter((p) => {
+        const matchOwner = Boolean(effectiveOwnerId) && p.ownerId === effectiveOwnerId;
+        if (!matchOwner) return false;
+        if (assignedPropertyId) return p.id === assignedPropertyId || p.assignedManagerId === user?.id;
+        if (p.assignedManagerId === user?.id) return true;
+        return true;
+      });
+    }
     return state.properties.filter((p) => Boolean(ownerId) && p.ownerId === ownerId);
-  }, [state.properties, ownerId]);
+  }, [state.properties, ownerId, user?.role, user?.id, managerRecord, effectiveOwnerId]);
 
   const defaultOwnerCurrency = getCurrencySymbol(
     myProperties.find((p) => p.currency)?.currency || myProperties[0]?.currency || DEFAULT_CURRENCY_SYMBOL
   );
+
+  const isBulkMode = Boolean(preselectedUnitIds && preselectedUnitIds.length > 1);
+  const bulkUnits = useMemo(() => {
+    if (!preselectedUnitIds || preselectedUnitIds.length === 0) return [];
+    return state.units.filter((u) => preselectedUnitIds.includes(u.id));
+  }, [preselectedUnitIds, state.units]);
 
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>('');
   const [selectedUnitId, setSelectedUnitId] = useState<string>('');
@@ -95,6 +133,14 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
   const [dueDay, setDueDay] = useState<number>(1);
   const [leaseStart, setLeaseStart] = useState<string>(getNextMonthFirstDateString());
   const [leaseEnd, setLeaseEnd] = useState<string>(getOneYearLaterDateString(getNextMonthFirstDateString()));
+
+  const targetProperty = useMemo(() => {
+    return state.properties.find((p) => p.id === selectedPropertyId);
+  }, [state.properties, selectedPropertyId]);
+
+  const isSingleProperty = useMemo(() => {
+    return isSingleUnitProperty(targetProperty);
+  }, [targetProperty]);
 
   // Filter available units for chosen property
   const vacantUnits = useMemo(() => {
@@ -191,10 +237,48 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       }
 
       setCurrentStep(1);
-      setSelectedTenant(null);
+      if (prefilledTenantName) {
+        setSelectedTenant({
+          id: '',
+          name: prefilledTenantName,
+          phone: prefilledTenantPhone || '',
+          email: prefilledTenantEmail || '',
+          isNew: true,
+        });
+      } else {
+        setSelectedTenant(null);
+      }
+
+      // Handle Bulk Preselection
+      if (preselectedUnitIds && preselectedUnitIds.length > 0) {
+        const matchingUnits = state.units.filter((u) => preselectedUnitIds.includes(u.id));
+        if (matchingUnits.length > 0) {
+          const first = matchingUnits[0];
+          setSelectedPropertyId(first.propertyId);
+          setSelectedUnitId(first.id);
+          const totalRent = matchingUnits.reduce((acc, u) => acc + (u.rent || 0), 0);
+          const totalDeposit = matchingUnits.reduce((acc, u) => acc + (u.deposit || 0), 0);
+          setRent(totalRent);
+          setDeposit(totalDeposit);
+          setDueDay(1);
+          setLeaseStart(getNextMonthFirstDateString());
+          setLeaseEnd(getOneYearLaterDateString(getNextMonthFirstDateString()));
+          setExecutionMode('digital_dispatch');
+          setOfflineDepositCollected(true);
+          setOfflineDepositRef('Cash / Bank Wire Settled');
+          setAgreementSource('upload');
+          setAgreementFileName('');
+          setAgreementFileData(null);
+          setAgreementFileSize(null);
+          setSelectedTemplateId('');
+          setRequireIds(false);
+          setIdList([{ id: `req_id_${Date.now()}`, name: 'Government Photo ID' }]);
+          return;
+        }
+      }
 
       const firstProp = myProperties[0] || null;
-      const initialPropId = firstProp?.id || '';
+      const initialPropId = preselectedPropertyId || firstProp?.id || '';
       setSelectedPropertyId(initialPropId);
 
       // Find initial unit strictly from non-occupied, non-reserved units
@@ -219,8 +303,12 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
         return !isOccupiedOrReserved;
       });
 
+      const targetP = myProperties.find((p) => p.id === initialPropId);
+      const isTargetSingle = isSingleUnitProperty(targetP);
       const initialUnit = preselectedUnitId
         ? state.units.find((u) => u.id === preselectedUnitId)
+        : isTargetSingle
+        ? state.units.find((u) => u.propertyId === initialPropId) || candidateUnits[0] || null
         : candidateUnits[0] || null;
 
       if (initialUnit) {
@@ -344,8 +432,12 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       }
       setCurrentStep(2);
     } else if (currentStep === 2) {
-      if (!selectedUnitId) {
+      if (!isBulkMode && !selectedUnitId) {
         showToast('Please select a unit.');
+        return;
+      }
+      if (isBulkMode && bulkUnits.length === 0) {
+        showToast('Please select at least one unit for bulk leasing.');
         return;
       }
       if (rent <= 0) {
@@ -430,8 +522,13 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       setCurrentStep(1);
       return;
     }
-    if (!selectedUnitId) {
+    if (!isBulkMode && !selectedUnitId) {
       showToast('Vacant unit selection is missing.');
+      setCurrentStep(2);
+      return;
+    }
+    if (isBulkMode && bulkUnits.length === 0) {
+      showToast('No units selected for bulk lease.');
       setCurrentStep(2);
       return;
     }
@@ -455,12 +552,15 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       const cleanPhone = selectedTenant.phone?.trim() || '';
       const tempPassword = selectedTenant.tempPassword || 'Welcome@123';
 
-      const targetUnit = state.units.find((u) => u.id === selectedUnitId);
+      const targetUnit = state.units.find((u) => u.id === selectedUnitId) || (isBulkMode ? bulkUnits[0] : undefined);
       const targetProperty = state.properties.find((p) => p.id === (targetUnit?.propertyId || selectedPropertyId));
-      const unitLabel = targetUnit?.unitNumber || targetUnit?.id || 'Unit';
+      const unitLabel = isBulkMode
+        ? bulkUnits.map((u) => u.unitNumber).join(', ')
+        : (targetUnit?.unitNumber || targetUnit?.id || 'Unit');
       const propName = targetProperty?.name || 'Property';
       const propCurrency = targetUnit?.currency || targetProperty?.currency || defaultOwnerCurrency;
       const nowIso = new Date().toISOString();
+      const unitsToProcess = isBulkMode && bulkUnits.length > 0 ? bulkUnits : (targetUnit ? [targetUnit] : []);
 
       // 1. Resolve or provision tenant UserProfile ID
       const existingUser = state.users.find((u) => u.email?.toLowerCase() === cleanEmail);
@@ -520,31 +620,57 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           propertyName: propName,
           unitId: targetUnit?.id || selectedUnitId,
           unitNumber: unitLabel,
+          isBulkLease: isBulkMode,
+          bulkUnitIds: isBulkMode ? bulkUnits.map((u) => u.id) : undefined,
+          bulkUnitNumbers: isBulkMode ? bulkUnits.map((u) => u.unitNumber) : undefined,
           rent,
           deposit,
           currency: propCurrency,
           leaseStart,
           leaseEnd,
-          message: `Welcome to your new home at ${propName}! Please review the attached lease agreement for Unit ${unitLabel}, accept, sign, and upload your signed copy to proceed to security deposit settlement.`,
+          message: `Welcome to your new home at ${propName}! Please review the attached lease agreement for ${isBulkMode ? `Units ${unitLabel}` : `Unit ${unitLabel}`}, accept, sign, and upload your signed copy to proceed${offlineDepositCollected ? ' (security deposit noted as collected offline).' : ' to security deposit settlement.'}`,
           agreementFileName: agreementFileName || 'Rental_Agreement.pdf',
           agreementFileData: uploadedAgreementUrl,
           agreementFileSize: agreementFileSize || undefined,
           requireTenantId: requireIds,
           requiredIdList: requireIds ? idList.filter((i) => i.name.trim()) : [],
           requiredIdTypes: requireIds ? idList.map((i) => i.name.trim()).filter(Boolean) : [],
+          offlineDepositCollected,
+          offlineDepositRef: offlineDepositCollected ? offlineDepositRef : undefined,
+          depositStatus: offlineDepositCollected ? 'paid' : 'unpaid',
           status: 'pending',
           createdAt: nowIso,
         };
 
-        // Unit is reserved pending digital signature
-        if (targetUnit) {
+        if (offlineDepositCollected && deposit > 0) {
+          const depTx: PaymentTransaction = {
+            id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
+            ownerId,
+            propertyId: targetProperty?.id || 'prop-1',
+            tenant: cleanName,
+            tenantId,
+            unit: unitLabel,
+            amount: deposit,
+            date: new Date().toISOString().split('T')[0],
+            dueDate: leaseStart,
+            status: 'paid',
+            method: offlineDepositRef || 'Offline Cash/Wire',
+            type: 'deposit',
+            currency: propCurrency,
+            notes: `Security deposit collected offline as confirmed during invitation dispatch.`,
+          };
+          savePayment(depTx);
+        }
+
+        // Units reserved pending digital signature
+        for (const u of unitsToProcess) {
           saveUnit({
-            ...targetUnit,
+            ...u,
             status: 'reserved',
             tenant: cleanName,
             currentTenantId: tenantId,
-            rent: rent || targetUnit.rent,
-            deposit: deposit || targetUnit.deposit,
+            rent: isBulkMode ? u.rent : (rent || u.rent),
+            deposit: isBulkMode ? u.deposit : (deposit || u.deposit),
           });
         }
 
@@ -553,7 +679,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           id: `notif_${Date.now()}`,
           userId: tenantId,
           title: `Tenancy Offer & Lease Agreement from ${user?.displayName || 'Property Owner'}`,
-          body: `You have received a tenancy invitation with attached lease agreement for Unit ${unitLabel} at ${propName} (${propCurrency}${rent.toLocaleString()}/mo). Please inspect and accept on your dashboard.`,
+          body: `You have received a tenancy invitation with attached lease agreement for ${isBulkMode ? `Units ${unitLabel}` : `Unit ${unitLabel}`} at ${propName} (${propCurrency}${rent.toLocaleString()}/mo). Please inspect and accept on your dashboard.`,
           link: '/tenant/dashboard',
           isRead: false,
           createdAt: nowIso,
@@ -563,18 +689,18 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
 
         // Update local state
         updateState((prev) => {
-          const updatedUnits = prev.units.map((u) =>
-            u.id === targetUnit?.id
-              ? {
-                  ...u,
-                  status: 'reserved' as const,
-                  tenant: cleanName,
-                  currentTenantId: tenantId,
-                  rent: rent || u.rent,
-                  deposit: deposit || u.deposit,
-                }
-              : u
-          );
+          const updatedUnits = prev.units.map((u) => {
+            const isTarget = unitsToProcess.some((tp) => tp.id === u.id);
+            if (!isTarget) return u;
+            return {
+              ...u,
+              status: 'reserved' as const,
+              tenant: cleanName,
+              currentTenantId: tenantId,
+              rent: isBulkMode ? u.rent : (rent || u.rent),
+              deposit: isBulkMode ? u.deposit : (deposit || u.deposit),
+            };
+          });
 
           // For pending online invitation, record invited user profile without placing them into active tenants directory
           const newProfile: UserProfile = {
@@ -624,6 +750,10 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           ownerId,
           propertyId: targetProperty?.id || 'prop-1',
           unit: unitLabel,
+          unitId: targetUnit?.id || selectedUnitId,
+          isBulkLease: isBulkMode,
+          bulkUnitIds: isBulkMode ? bulkUnits.map((u) => u.id) : undefined,
+          bulkUnitNumbers: isBulkMode ? bulkUnits.map((u) => u.unitNumber) : undefined,
           tenant: cleanName,
           tenantId,
           tenantEmail: cleanEmail,
@@ -662,15 +792,15 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           requiredIdType: requireIds && idList.length > 0 ? idList[0].name.trim() : undefined,
         };
 
-        // Mark unit occupied immediately
-        if (targetUnit) {
+        // Mark units occupied immediately
+        for (const u of unitsToProcess) {
           saveUnit({
-            ...targetUnit,
+            ...u,
             status: 'occupied',
             tenant: cleanName,
             currentTenantId: tenantId,
-            rent: rent || targetUnit.rent,
-            deposit: deposit || targetUnit.deposit,
+            rent: isBulkMode ? u.rent : (rent || u.rent),
+            deposit: isBulkMode ? u.deposit : (deposit || u.deposit),
           });
         }
 
@@ -728,18 +858,18 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
 
         // Update local state with occupied unit and active lease
         updateState((prev) => {
-          const updatedUnits = prev.units.map((u) =>
-            u.id === targetUnit?.id
-              ? {
-                  ...u,
-                  status: 'occupied' as const,
-                  tenant: cleanName,
-                  currentTenantId: tenantId,
-                  rent: rent || u.rent,
-                  deposit: deposit || u.deposit,
-                }
-              : u
-          );
+          const updatedUnits = prev.units.map((u) => {
+            const isTarget = unitsToProcess.some((tp) => tp.id === u.id);
+            if (!isTarget) return u;
+            return {
+              ...u,
+              status: 'occupied' as const,
+              tenant: cleanName,
+              currentTenantId: tenantId,
+              rent: isBulkMode ? u.rent : (rent || u.rent),
+              deposit: isBulkMode ? u.deposit : (deposit || u.deposit),
+            };
+          });
 
           const updatedProperties = prev.properties.map((p) => {
             if (p.id === targetProperty?.id) {
@@ -989,14 +1119,13 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
                     value={selectedPropertyId}
                     onChange={(e) => handlePropertyChange(e.target.value)}
                     style={{ width: '100%' }}
+                    disabled={isBulkMode}
                   >
                     {myProperties.map((p) => {
-                      const addr = typeof p.address === 'string'
-                        ? p.address
-                        : (p.address?.formattedAddress || p.address?.city || '');
+                      const addrText = getCleanAddressText(p.address, '').text;
                       return (
                         <option key={p.id} value={p.id}>
-                          {p.name} {addr ? `(${addr})` : ''}
+                          {p.name} {addrText ? `(${addrText})` : ''}
                         </option>
                       );
                     })}
@@ -1004,25 +1133,73 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>
-                    Select Unit *
-                  </label>
-                  <select
-                    className="input"
-                    value={selectedUnitId}
-                    onChange={(e) => handleUnitChange(e.target.value)}
-                    style={{ width: '100%' }}
-                  >
-                    {vacantUnits.length === 0 ? (
-                      <option value="">No vacant units available in this property</option>
-                    ) : (
-                      vacantUnits.map((u) => (
-                        <option key={u.id} value={u.id}>
-                          Unit {u.unitNumber} {u.unitType ? `• ${u.unitType} ` : ''}• {defaultOwnerCurrency}{u.rent?.toLocaleString()}/mo
-                        </option>
-                      ))
-                    )}
-                  </select>
+                  {isBulkMode ? (
+                    <div>
+                      <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>
+                        ⚡ Bulk Leasing ({bulkUnits.length} Units Selected)
+                      </label>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '6px',
+                          padding: '8px 10px',
+                          background: 'var(--surface-sunken)',
+                          borderRadius: '6px',
+                          border: '1px solid var(--line)',
+                          maxHeight: '84px',
+                          overflowY: 'auto',
+                        }}
+                      >
+                        {bulkUnits.map((u) => (
+                          <span key={u.id} className="badge brass" style={{ fontSize: '11.5px', padding: '3px 8px' }}>
+                            Unit {u.unitNumber} {u.unitType ? `• ${u.unitType}` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : isSingleProperty ? (
+                    <div>
+                      <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>
+                        🏡 Leasing Model
+                      </label>
+                      <div
+                        style={{
+                          padding: '9px 12px',
+                          background: 'var(--surface-sunken)',
+                          borderRadius: '6px',
+                          border: '1px solid var(--line)',
+                          fontSize: '13px',
+                          fontWeight: 500,
+                          color: 'var(--ink)',
+                        }}
+                      >
+                        Whole Property / Single-Unit Asset
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>
+                        Select Unit *
+                      </label>
+                      <select
+                        className="input"
+                        value={selectedUnitId}
+                        onChange={(e) => handleUnitChange(e.target.value)}
+                        style={{ width: '100%' }}
+                      >
+                        {vacantUnits.length === 0 ? (
+                          <option value="">No vacant units available in this property</option>
+                        ) : (
+                          vacantUnits.map((u) => (
+                            <option key={u.id} value={u.id}>
+                              Unit {u.unitNumber} {u.unitType ? `• ${u.unitType} ` : ''}• {defaultOwnerCurrency}{u.rent?.toLocaleString()}/mo
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1201,7 +1378,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
               </div>
 
               {/* Offline Deposit Options */}
-              {executionMode === 'already_executed_offline' && (
+              {deposit > 0 && (
                 <div
                   style={{
                     background: 'var(--teal-light)',

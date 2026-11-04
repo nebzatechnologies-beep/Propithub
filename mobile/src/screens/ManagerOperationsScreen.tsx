@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -30,8 +30,12 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
 }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
-  const { state } = useMobileAppData();
+  const { state, acknowledgeAnnouncement } = useMobileAppData();
   const { user } = useMobileAuth();
+
+  // Bulletin acknowledgment & smooth dismissal state
+  const [justAckedIds, setJustAckedIds] = useState<Set<string>>(new Set());
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
 
   const ownerId = user?.ownerId || '';
   const ownerName = user?.ownerName || 'Portfolio Owner';
@@ -72,9 +76,6 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
   const activeAgreements = myAgreements.filter((a) => a.status === 'active');
 
   // 2. Operational Metrics
-  const occupiedUnits = myUnits.filter((u) => u.status === 'occupied').length;
-  const vacantUnits = myUnits.filter((u) => u.status === 'vacant').length;
-  const occupancyRate = myUnits.length > 0 ? Math.round((occupiedUnits / myUnits.length) * 100) : 0;
   const activeTickets = myTickets.filter((t) => t.status !== 'resolved');
   const highPriorityTickets = activeTickets.filter(
     (t) => t.priority === 'High' || t.priority === 'Emergency'
@@ -85,16 +86,72 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
     return getManagerReminders(state, user);
   }, [state, user]);
 
-  // 4. Targeted Manager Bulletins
+  const managerOwnerIds = useMemo(() => {
+    const set = new Set<string>();
+    if (ownerId) set.add(ownerId);
+    if (user?.ownerId) set.add(user.ownerId);
+    myProperties.forEach((p) => {
+      if (p.ownerId) set.add(p.ownerId);
+    });
+    return set;
+  }, [ownerId, user?.ownerId, myProperties]);
+
+  // 4. Targeted Manager Bulletins with strict landlord isolation, property scoping, and acknowledgment filtering
   const managerBulletins = useMemo(() => {
     return (state.announcements || [])
-      .filter((a) => a.status === 'published' && (!a.targetRoles || a.targetRoles.includes('manager')))
+      .filter((a) => {
+        if (a.status !== 'published') return false;
+        if (dismissedNoticeIds.has(a.id)) return false;
+
+        const targetRoles = a.targetRoles || (a as any).targetScope?.targetRoles || [];
+        if (targetRoles.length > 0 && !targetRoles.includes('manager')) return false;
+
+        const isSystem = a.ownerId === 'system' || a.ownerId === 'superadmin' || ((a as any).category as string) === 'system';
+        // Strict landlord isolation: Block if manager has no owner association or if announcement belongs to another landlord
+        if (!isSystem && (managerOwnerIds.size === 0 || !managerOwnerIds.has(a.ownerId))) {
+          return false;
+        }
+
+        // Specific people targeting
+        const targetScope = (a as any).targetScope;
+        if (targetScope?.mode === 'specific_people' || (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)) {
+          const targets = targetScope.targetUserIds || [];
+          if (!targets.includes(user.id)) return false;
+        }
+
+        // Property-level scoping
+        if (targetScope && !targetScope.allProperties && targetScope.propertyIds && targetScope.propertyIds.length > 0) {
+          if (myPropertyIds.size > 0 && !targetScope.propertyIds.some((pId: string) => myPropertyIds.has(pId))) {
+            return false;
+          }
+        }
+
+        // Acknowledgment check: hide if already acknowledged (unless in 1.2s grace window)
+        const isAckedByArr = (a.acknowledgedBy || []).includes(user.id);
+        const isAckedByObj = ((a as any).acknowledgments || []).some(
+          (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+        );
+        const hasAcked = isAckedByArr || isAckedByObj;
+        if (hasAcked && !justAckedIds.has(a.id)) {
+          return false;
+        }
+
+        return true;
+      })
       .sort((a, b) => {
         if (a.isPinned && !b.isPinned) return -1;
         if (!a.isPinned && b.isPinned) return 1;
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
-  }, [state.announcements]);
+  }, [state.announcements, user, managerOwnerIds, myPropertyIds, dismissedNoticeIds, justAckedIds]);
+
+  const handleAcknowledgeBulletin = (id: string, requireAck?: boolean) => {
+    acknowledgeAnnouncement(id, user.id);
+    setJustAckedIds((prev) => new Set(prev).add(id));
+    setTimeout(() => {
+      setDismissedNoticeIds((prev) => new Set(prev).add(id));
+    }, 1200);
+  };
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
@@ -136,7 +193,12 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
               </View>
             </View>
 
-            {managerReminders.map((rem) => {
+            <ScrollView
+              style={managerReminders.length > 2 ? { maxHeight: 220 } : undefined}
+              nestedScrollEnabled={true}
+              showsVerticalScrollIndicator={managerReminders.length > 2}
+            >
+              {managerReminders.map((rem) => {
               const isUrgent = rem.severity === 'urgent';
               return (
                 <View
@@ -188,6 +250,7 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
                 </View>
               );
             })}
+            </ScrollView>
           </View>
         )}
 
@@ -203,32 +266,76 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
               </View>
             </View>
 
-            {managerBulletins.slice(0, 3).map((b) => (
-              <View key={b.id} style={[styles.bulletinCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <View style={styles.bulletinCardTop}>
-                  <View style={styles.bulletinBadge}>
-                    <Text style={styles.bulletinBadgeText}>{b.category.toUpperCase()}</Text>
-                  </View>
-                  {b.isPinned && (
-                    <View style={styles.pinnedBadge}>
-                      <Ionicons name="pin" size={10} color="#92400E" style={{ marginRight: 2 }} />
-                      <Text style={styles.pinnedBadgeText}>Pinned</Text>
+            <ScrollView
+              style={{ maxHeight: 155 }}
+              nestedScrollEnabled
+              showsVerticalScrollIndicator={true}
+            >
+              {managerBulletins.map((b) => {
+                const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
+                const isAckedByObj = ((b as any).acknowledgments || []).some(
+                  (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+                );
+                const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(b.id);
+                const requireAck = Boolean(b.requireAck || b.requireAcknowledgment || (b as any).requiresAcknowledgment);
+
+                return (
+                  <View key={b.id} style={[styles.bulletinCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <View style={styles.bulletinCardTop}>
+                      <View style={styles.bulletinBadge}>
+                        <Text style={styles.bulletinBadgeText}>{b.category.toUpperCase()}</Text>
+                      </View>
+                      {b.isPinned && (
+                        <View style={styles.pinnedBadge}>
+                          <Ionicons name="pin" size={10} color="#92400E" style={{ marginRight: 2 }} />
+                          <Text style={styles.pinnedBadgeText}>Pinned</Text>
+                        </View>
+                      )}
+                      <Text style={[styles.bulletinDate, { color: colors.inkSoft }]}>
+                        {new Date(b.createdAt).toLocaleDateString([], {
+                          month: 'short',
+                          day: 'numeric',
+                        })}
+                      </Text>
                     </View>
-                  )}
-                  <Text style={[styles.bulletinDate, { color: colors.inkSoft }]}>
-                    {new Date(b.createdAt).toLocaleDateString([], {
-                      month: 'short',
-                      day: 'numeric',
-                    })}
-                  </Text>
-                </View>
-                <Text style={[styles.bulletinTitle, { color: colors.navy }]}>{b.title}</Text>
-                <Text style={[styles.bulletinBody, { color: colors.inkSoft }]} numberOfLines={3}>
-                  {b.body}
-                </Text>
-                <Text style={[styles.bulletinAuthor, { color: colors.inkSoft }]}>Notice from {b.propertyName || 'Property Management'}</Text>
-              </View>
-            ))}
+                    <Text style={[styles.bulletinTitle, { color: colors.navy }]}>{b.title}</Text>
+                    <Text style={[styles.bulletinBody, { color: colors.inkSoft }]} numberOfLines={3}>
+                      {b.body}
+                    </Text>
+
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.line }}>
+                      <Text style={[styles.bulletinAuthor, { color: colors.inkSoft, flex: 1, marginRight: 8 }]} numberOfLines={1}>
+                        Notice from {b.propertyName || 'Property Management'}
+                      </Text>
+
+                      {hasAcked ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: isDark ? 'rgba(5,150,105,0.2)' : '#DCFCE7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }}>
+                          <Ionicons name="checkmark-circle" size={13} color="#15803D" />
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#15803D' }}>
+                            {requireAck ? 'Acknowledged' : 'Marked as read'}
+                          </Text>
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={{
+                            backgroundColor: requireAck ? '#C59A45' : '#059669',
+                            paddingHorizontal: 12,
+                            paddingVertical: 5,
+                            borderRadius: 20,
+                          }}
+                          onPress={() => handleAcknowledgeBulletin(b.id, requireAck)}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF' }}>
+                            {requireAck ? 'Read & Acknowledge' : 'Mark as Read'}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
           </View>
         )}
 
@@ -242,21 +349,10 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
         <View style={[styles.statsStripCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
           <TouchableOpacity
             style={styles.statColumn}
-            onPress={() => onNavigate?.('manager_lease_documents')}
-            activeOpacity={0.75}
-          >
-            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Active Leases</Text>
-            <Text style={[styles.statColValue, { color: colors.navy }]}>{activeAgreements.length}</Text>
-          </TouchableOpacity>
-
-          <View style={[styles.statDivider, { backgroundColor: colors.line }]} />
-
-          <TouchableOpacity
-            style={styles.statColumn}
             onPress={() => onNavigate?.('manager_repair_dispatch')}
             activeOpacity={0.75}
           >
-            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Work Orders</Text>
+            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Open Repairs</Text>
             <Text
               style={[
                 styles.statColValue,
@@ -271,10 +367,21 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
 
           <TouchableOpacity
             style={styles.statColumn}
+            onPress={() => onNavigate?.('manager_properties')}
+            activeOpacity={0.75}
+          >
+            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Buildings</Text>
+            <Text style={[styles.statColValue, { color: colors.navy }]}>{myProperties.length}</Text>
+          </TouchableOpacity>
+
+          <View style={[styles.statDivider, { backgroundColor: colors.line }]} />
+
+          <TouchableOpacity
+            style={styles.statColumn}
             onPress={() => onNavigate?.('manager_repair_dispatch')}
             activeOpacity={0.75}
           >
-            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Technicians</Text>
+            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Support Team</Text>
             <Text style={[styles.statColValue, { color: colors.navy }]}>{myStaff.length}</Text>
           </TouchableOpacity>
         </View>
@@ -329,53 +436,6 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
                     <Text style={[styles.assignedToLabel, { color: colors.inkSoft }]}>Assigned To</Text>
                     <Text style={[styles.assignedToText, { color: colors.navy }]} numberOfLines={1}>
                       {t.assignedStaffName || 'Unassigned'}
-                    </Text>
-                  </View>
-                </View>
-              );
-            })
-          )}
-        </View>
-
-        {/* 6. Managed Buildings Snapshot (Exact match to Web Section) */}
-        <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-          <View style={styles.sectionCardHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.sectionCardTitle, { color: colors.navy }]}>Managed Buildings</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.viewAllBtn}
-              onPress={() => onNavigate?.('manager_properties')}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.viewAllBtnText}>Details</Text>
-              <Feather name="arrow-right" size={12} color="#059669" />
-            </TouchableOpacity>
-          </View>
-
-          {myProperties.length === 0 ? (
-            <View style={styles.emptyTicketsBox}>
-              <Text style={[styles.emptyTicketsSub, { color: colors.inkSoft }]}>
-                No buildings assigned to this management portfolio.
-              </Text>
-            </View>
-          ) : (
-            myProperties.slice(0, 4).map((p) => {
-              const unitsInProp = myUnits.filter((u) => u.propertyId === p.id);
-              const occupiedInProp = unitsInProp.filter((u) => u.status === 'occupied').length;
-              const occPercent = unitsInProp.length > 0 ? Math.round((occupiedInProp / unitsInProp.length) * 100) : 0;
-
-              return (
-                <View key={p.id} style={[styles.buildingRow, { borderBottomColor: colors.line }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.buildingName, { color: colors.navy }]}>{p.name}</Text>
-                    <Text style={[styles.buildingSub, { color: colors.inkSoft }]}>
-                      {typeof p.address === 'string' ? p.address : p.address?.city || 'Local Region'} • {unitsInProp.length} units
-                    </Text>
-                  </View>
-                  <View style={styles.buildingOccBadge}>
-                    <Text style={styles.buildingOccBadgeText}>
-                      {occupiedInProp}/{unitsInProp.length} Occ. ({occPercent}%)
                     </Text>
                   </View>
                 </View>
@@ -493,9 +553,9 @@ const createStyles = (colors: any, isDark: boolean) =>
     borderColor: colors.line,
     borderLeftWidth: 4,
     borderLeftColor: '#059669',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 6,
   },
   bulletinCardTop: {
     flexDirection: 'row',

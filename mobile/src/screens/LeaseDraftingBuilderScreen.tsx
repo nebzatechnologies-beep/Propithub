@@ -11,12 +11,13 @@ import {
   TextInput,
   Alert,
 } from 'react-native';
-import { Ionicons, Feather } from '@expo/vector-icons';
+import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { MobileAgreement } from '../types';
+import { isSingleUnitProperty } from '../lib/propertyTypes';
 
 export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSuccess?: () => void }> = ({
   onBack,
@@ -44,7 +45,11 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
     );
     return !hasActiveAg;
   });
-  const [selectedUnitNum, setSelectedUnitNum] = useState(unitsInProp[0]?.unitNumber || '');
+  const isSingleAsset = selectedProperty ? isSingleUnitProperty(selectedProperty) : false;
+  const [leaseScope, setLeaseScope] = useState<'unit' | 'master'>(isSingleAsset ? 'master' : 'unit');
+  const [selectedUnitNum, setSelectedUnitNum] = useState(
+    isSingleAsset ? 'Entire Property (Master Tenancy)' : (unitsInProp[0]?.unitNumber || '')
+  );
   const selectedUnit = unitsInProp.find((u) => u.unitNumber === selectedUnitNum) || unitsInProp[0];
 
   const [tenantName, setTenantName] = useState(selectedUnit?.tenant || '');
@@ -86,13 +91,15 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
       return;
     }
     const agrId = `AGR-${Date.now().toString().slice(-6)}`;
+    const isMaster = leaseScope === 'master';
+    const finalUnit = isMaster ? 'Entire Property (Master Tenancy)' : selectedUnitNum;
     const newAgr: MobileAgreement = {
       id: agrId,
       ownerId: user.id,
       ownerName: user.displayName || 'Property Owner',
       propertyId: selectedProperty?.id || '',
       propertyName: selectedProperty?.name || 'Property Premises',
-      unit: selectedUnitNum,
+      unit: finalUnit,
       tenant: tenantName.trim(),
       tenantId: `tenant-${Date.now().toString().slice(-4)}`,
       tenantEmail: tenantEmail.trim(),
@@ -107,7 +114,7 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
       lockInMonths: parseInt(lockInMonths, 10) || 6,
       noticePeriodDays: parseInt(noticeDays, 10) || 30,
       status: 'active',
-      executionMode: 'digital_dispatch',
+      executionMode: (isMaster ? 'master_bulk_lease' : 'digital_dispatch') as any,
       specialClauses: clauses,
       tenantSignedAt: new Date().toISOString(),
       ownerSignedAt: new Date().toISOString(),
@@ -117,7 +124,7 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
     saveAgreement(newAgr);
     Alert.alert(
       'Agreement Executed & Signed! 📄',
-      `Contract ${agrId} for Unit ${selectedUnitNum} has been recorded and unit occupancy updated.`
+      `Contract ${agrId} for ${finalUnit} has been recorded and tenancy is officially active.`
     );
     if (onSuccess) onSuccess();
     else if (onBack) onBack();
@@ -166,11 +173,21 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
                   style={[styles.pickerChip, isSelected && styles.pickerChipActive]}
                   onPress={() => {
                     setSelectedPropertyId(p.id);
+                    const isSingle = isSingleUnitProperty(p);
                     const units = state.units.filter((u) => u.propertyId === p.id);
-                    if (units[0]) {
-                      setSelectedUnitNum(units[0].unitNumber);
-                      setRent(units[0].rent.toString());
-                      setDeposit(units[0].deposit.toString());
+                    if (isSingle) {
+                      setLeaseScope('master');
+                      setSelectedUnitNum('Entire Property (Master Tenancy)');
+                      const totalRent = units.reduce((s, u) => s + (u.rent || 0), 0) || (p as any).monthlyRent || 50000;
+                      setRent(totalRent.toString());
+                      setDeposit((totalRent * 2).toString());
+                    } else {
+                      setLeaseScope('unit');
+                      if (units[0]) {
+                        setSelectedUnitNum(units[0].unitNumber);
+                        setRent(units[0].rent.toString());
+                        setDeposit(units[0].deposit.toString());
+                      }
                     }
                   }}
                 >
@@ -182,35 +199,87 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
             })}
           </View>
 
-          <Text style={styles.inputLabel}>Select Vacant Unit ({unitsInProp.length} available)</Text>
-          {unitsInProp.length === 0 ? (
-            <Text style={{ fontSize: 13, color: '#94A3B8', marginVertical: 8 }}>
-              No vacant units available in this property. All units are currently occupied.
-            </Text>
+          {/* Lease Scope: Unit vs Master / Bulk Tenancy */}
+          <View style={styles.scopeSwitcherRow}>
+            <TouchableOpacity
+              style={[styles.scopeBtn, leaseScope === 'unit' && styles.scopeBtnActive]}
+              onPress={() => {
+                setLeaseScope('unit');
+                if (unitsInProp[0]) {
+                  setSelectedUnitNum(unitsInProp[0].unitNumber);
+                  setRent(unitsInProp[0].rent.toString());
+                  setDeposit(unitsInProp[0].deposit.toString());
+                }
+              }}
+            >
+              <Ionicons name="grid-outline" size={13} color={leaseScope === 'unit' ? '#059669' : colors.inkSoft} style={{ marginRight: 4 }} />
+              <Text style={[styles.scopeBtnText, leaseScope === 'unit' && styles.scopeBtnTextActive]}>
+                Individual Unit
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.scopeBtn, leaseScope === 'master' && styles.scopeBtnActive]}
+              onPress={() => {
+                setLeaseScope('master');
+                setSelectedUnitNum('Entire Property (Master Tenancy)');
+                const totalRent = unitsInProp.reduce((s, u) => s + (u.rent || 0), 0) || 50000;
+                setRent(totalRent.toString());
+                setDeposit((totalRent * 2).toString());
+              }}
+            >
+              <MaterialCommunityIcons name="home-group" size={15} color={leaseScope === 'master' ? '#059669' : colors.inkSoft} style={{ marginRight: 4 }} />
+              <Text style={[styles.scopeBtnText, leaseScope === 'master' && styles.scopeBtnTextActive]}>
+                Master / Bulk Lease
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {leaseScope === 'master' ? (
+            <View style={[styles.masterLeaseNotice, { backgroundColor: isDark ? colors.surfaceSunken : '#F0FDF4', borderColor: isDark ? colors.line : '#BBF7D0' }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <MaterialCommunityIcons name="shield-crown" size={18} color="#059669" />
+                <Text style={{ fontSize: 13.5, fontWeight: '700', color: '#166534' }}>
+                  Bulk Master Tenancy Mode Active
+                </Text>
+              </View>
+              <Text style={{ fontSize: 12, color: '#15803D', marginTop: 4 }}>
+                Leasing {selectedProperty?.name || 'Property'} as an entire standalone asset / master corporate lease. Covers all leasable units under one overarching contract.
+              </Text>
+            </View>
           ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginVertical: 6 }}>
-              {unitsInProp.map((u) => {
-                const isSelected = u.unitNumber === selectedUnitNum;
-                return (
-                  <TouchableOpacity
-                    key={u.id}
-                    style={[styles.unitChip, isSelected && styles.unitChipActive]}
-                    onPress={() => {
-                      setSelectedUnitNum(u.unitNumber);
-                      setRent(u.rent.toString());
-                      setDeposit(u.deposit.toString());
-                    }}
-                  >
-                    <Text style={[styles.unitChipTitle, isSelected && styles.unitChipTitleActive]}>
-                      Unit {u.unitNumber}
-                    </Text>
-                    <Text style={[styles.unitChipSub, isSelected && styles.unitChipSubActive]}>
-                      {u.unitType} • Vacant
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+            <>
+              <Text style={styles.inputLabel}>Select Vacant Unit ({unitsInProp.length} available)</Text>
+              {unitsInProp.length === 0 ? (
+                <Text style={{ fontSize: 13, color: '#94A3B8', marginVertical: 8 }}>
+                  No vacant units available in this property. All units are currently occupied.
+                </Text>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginVertical: 6 }}>
+                  {unitsInProp.map((u) => {
+                    const isSelected = u.unitNumber === selectedUnitNum;
+                    return (
+                      <TouchableOpacity
+                        key={u.id}
+                        style={[styles.unitChip, isSelected && styles.unitChipActive]}
+                        onPress={() => {
+                          setSelectedUnitNum(u.unitNumber);
+                          setRent(u.rent.toString());
+                          setDeposit(u.deposit.toString());
+                        }}
+                      >
+                        <Text style={[styles.unitChipTitle, isSelected && styles.unitChipTitleActive]}>
+                          Unit {u.unitNumber}
+                        </Text>
+                        <Text style={[styles.unitChipSub, isSelected && styles.unitChipSubActive]}>
+                          {u.unitType} • Vacant
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              )}
+            </>
           )}
 
           <View style={styles.divider} />
@@ -574,5 +643,41 @@ const createStyles = (colors: any, isDark: boolean) =>
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  scopeSwitcherRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: 10,
+  },
+  scopeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+  },
+  scopeBtnActive: {
+    borderColor: '#059669',
+    backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+  },
+  scopeBtnText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: colors.inkSoft,
+  },
+  scopeBtnTextActive: {
+    color: isDark ? '#34D399' : '#059669',
+    fontWeight: '700',
+  },
+  masterLeaseNotice: {
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginVertical: 8,
   },
 });

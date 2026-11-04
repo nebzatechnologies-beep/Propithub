@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { Agreement, AgreementTemplate, RenewalItem, MoveOutRequest, Invoice, TenantRecord, UserProfile, RequiredIdItem, TenancyRequest } from '../../types';
@@ -37,6 +37,9 @@ import {
   XCircle,
   Bookmark,
   Edit,
+  Mail,
+  Phone,
+  Users,
 } from 'lucide-react';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, normalizeCurrencyCode, getCurrencySymbol } from '../../lib/currencyService';
 
@@ -45,10 +48,18 @@ export const LeasingPage: React.FC = () => {
   const { state, updateState, showToast, saveAgreement, deleteAgreement, saveAgreementTemplate, deleteAgreementTemplate, saveUnit, saveInvoice, saveTenant, saveMoveout, saveTenancyRequest, approveSignedAgreement, rejectSignedAgreement, offerLeaseRenewal, approveLeaseRenewal } = useAppData();
   const { user, isOwnerPlanActive } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const initialSubTab = searchParams.get('tab') === 'enquiries' ? 'enquiries' : 'agreements';
   const ownerId = user?.id || '';
   const isPlanActive = isOwnerPlanActive(ownerId);
 
-  const [subTab, setSubTab] = useState<'agreements' | 'renewals' | 'library' | 'drafts'>('agreements');
+  const [subTab, setSubTab] = useState<'agreements' | 'renewals' | 'library' | 'drafts' | 'enquiries'>(initialSubTab);
+  const [onboardEnquiryData, setOnboardEnquiryData] = useState<{
+    unitId?: string;
+    name?: string;
+    phone?: string;
+    email?: string;
+  } | null>(null);
   const [leaseStatusFilter, setLeaseStatusFilter] = useState<'all' | 'active' | 'pending' | 'terminated'>('all');
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -119,6 +130,14 @@ export const LeasingPage: React.FC = () => {
   const myProperties = state.properties.filter((p) => Boolean(ownerId) && p.ownerId === ownerId);
   const myPropertyIds = new Set(myProperties.map((p) => p.id));
   const defaultOwnerCurrency = getCurrencySymbol(myProperties.find((p) => p.currency)?.currency || myProperties[0]?.currency || DEFAULT_CURRENCY_SYMBOL);
+
+  const myEnquiries = useMemo(() => {
+    return (state.enquiries || []).filter((e) => {
+      if (e.ownerId && e.ownerId === ownerId) return true;
+      if (e.propertyId && myPropertyIds.has(e.propertyId)) return true;
+      return false;
+    });
+  }, [state.enquiries, ownerId, myPropertyIds]);
 
   const myTemplates: AgreementTemplate[] = useMemo(() => {
     const customTemplates = (state.agreementTemplates || []).filter(
@@ -905,6 +924,16 @@ export const LeasingPage: React.FC = () => {
           onClick={() => setSubTab('drafts')}
         >
           Drafts ({draftAgreements.length})
+        </div>
+        <div
+          className={`tab ${subTab === 'enquiries' ? 'active' : ''}`}
+          onClick={() => setSubTab('enquiries')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+        >
+          Enquiries ({myEnquiries.length})
+          {myEnquiries.some((e) => e.status === 'new') && (
+            <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
+          )}
         </div>
       </div>
 
@@ -1947,18 +1976,18 @@ export const LeasingPage: React.FC = () => {
                             const agreementTitle = cleanFileName
                               ? cleanFileName
                               : hasTenant && hasUnit
-                              ? `Lease Agreement — ${a.tenant} (Unit ${a.unit})`
-                              : hasTenant
-                              ? `Lease Agreement — ${a.tenant}`
-                              : hasUnit
-                              ? `Lease Draft — Unit ${a.unit}${propName ? ` (${propName})` : ''}`
-                              : 'New Lease Draft';
+                                ? `Lease Agreement — ${a.tenant} (Unit ${a.unit})`
+                                : hasTenant
+                                  ? `Lease Agreement — ${a.tenant}`
+                                  : hasUnit
+                                    ? `Lease Draft — Unit ${a.unit}${propName ? ` (${propName})` : ''}`
+                                    : 'New Lease Draft';
 
                             const shortDraftId = a.id.startsWith('agr_draft_')
                               ? `DFT-${a.id.slice(-6)}`
                               : a.id.length > 16
-                              ? `DFT-${a.id.slice(-6)}`
-                              : a.id;
+                                ? `DFT-${a.id.slice(-6)}`
+                                : a.id;
 
                             const hasDoc = Boolean(a.fileData || a.initialAgreementUrl || (a.fileName && a.fileName !== 'Lease_Agreement.pdf' && a.fileName.trim() !== ''));
 
@@ -2116,18 +2145,18 @@ export const LeasingPage: React.FC = () => {
                       const agreementTitle = cleanFileName
                         ? cleanFileName
                         : hasTenant && hasUnit
-                        ? `Lease Agreement — ${a.tenant} (Unit ${a.unit})`
-                        : hasTenant
-                        ? `Lease Agreement — ${a.tenant}`
-                        : hasUnit
-                        ? `Lease Draft — Unit ${a.unit}${propName ? ` (${propName})` : ''}`
-                        : 'New Lease Draft';
+                          ? `Lease Agreement — ${a.tenant} (Unit ${a.unit})`
+                          : hasTenant
+                            ? `Lease Agreement — ${a.tenant}`
+                            : hasUnit
+                              ? `Lease Draft — Unit ${a.unit}${propName ? ` (${propName})` : ''}`
+                              : 'New Lease Draft';
 
                       const shortDraftId = a.id.startsWith('agr_draft_')
                         ? `DFT-${a.id.slice(-6)}`
                         : a.id.length > 16
-                        ? `DFT-${a.id.slice(-6)}`
-                        : a.id;
+                          ? `DFT-${a.id.slice(-6)}`
+                          : a.id;
 
                       return (
                         <div key={a.id} className="staff-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -2237,6 +2266,135 @@ export const LeasingPage: React.FC = () => {
             </div>
           </div>
         </div>
+      ) : subTab === 'enquiries' ? (
+        <div>
+          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <div className="hint" style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
+                {myEnquiries.length} prospective tenant enquiry{myEnquiries.length === 1 ? '' : 'ies'} received
+              </div>
+
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-body">
+              {myEnquiries.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--ink-soft)' }}>
+                  <Users size={36} color="var(--primary)" style={{ margin: '0 auto 12px', opacity: 0.8 }} />
+                  <h4 style={{ margin: '0 0 6px', fontSize: '16px', color: 'var(--ink)' }}>No Listing Enquiries Yet</h4>
+                  <p style={{ margin: 0, fontSize: '13px', maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>
+                    When prospective tenants explore your published vacant listings on the portal and express interest, their contact details and move-in preferences will appear here.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
+                  {myEnquiries.map((enq) => {
+                    const unitObj = state.units.find((u) => u.id === enq.unitId || u.unitNumber === enq.unitNumber);
+                    const propObj = state.properties.find((p) => p.id === enq.propertyId);
+                    return (
+                      <div
+                        key={enq.id}
+                        style={{
+                          background: 'var(--surface)',
+                          border: '1px solid var(--line)',
+                          borderRadius: '12px',
+                          padding: '16px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '12px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--ink)' }}>{enq.prospectName}</div>
+                            <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                              Unit {enq.unitNumber} {propObj ? `· ${propObj.name}` : ''}
+                            </div>
+                          </div>
+                          <span
+                            className="badge"
+                            style={{
+                              background: enq.status === 'new' ? '#ecfdf5' : 'var(--surface-sunken)',
+                              color: enq.status === 'new' ? '#047857' : 'var(--ink-soft)',
+                              fontWeight: 600,
+                              fontSize: '11px',
+                              textTransform: 'capitalize',
+                            }}
+                          >
+                            {enq.status}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <Phone size={13} color="var(--primary)" />
+                            <a href={`tel:${enq.prospectPhone}`} style={{ color: 'var(--primary)', fontWeight: 600, textDecoration: 'none' }}>
+                              {enq.prospectPhone}
+                            </a>
+                          </div>
+                          {enq.prospectEmail && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <Mail size={13} color="var(--ink-soft)" />
+                              <a href={`mailto:${enq.prospectEmail}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                                {enq.prospectEmail}
+                              </a>
+                            </div>
+                          )}
+                          {enq.moveInDate && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--ink-soft)' }}>
+                              <Calendar size={13} />
+                              <span>Target Move-in: <b>{new Date(enq.moveInDate).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</b></span>
+                            </div>
+                          )}
+                        </div>
+
+                        {enq.notes && (
+                          <div
+                            style={{
+                              background: 'var(--surface-sunken)',
+                              borderRadius: '8px',
+                              padding: '8px 10px',
+                              fontSize: '12px',
+                              color: 'var(--ink)',
+                              fontStyle: 'italic',
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            "{enq.notes}"
+                          </div>
+                        )}
+
+                        <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>
+                            {new Date(enq.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn primary small"
+                            onClick={() => {
+                              setOnboardEnquiryData({
+                                unitId: unitObj?.id || enq.unitId,
+                                name: enq.prospectName,
+                                phone: enq.prospectPhone,
+                                email: enq.prospectEmail || '',
+                              });
+                              setActiveDraftId(null);
+                              setIsUploadOpen(true);
+                            }}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                          >
+                            <UserCheck size={13} /> Onboard as Tenant
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {/* Unified Onboard Resident & Lease Modal */}
@@ -2245,7 +2403,12 @@ export const LeasingPage: React.FC = () => {
         onClose={() => {
           setIsUploadOpen(false);
           setActiveDraftId(null);
+          setOnboardEnquiryData(null);
         }}
+        preselectedUnitId={onboardEnquiryData?.unitId}
+        prefilledTenantName={onboardEnquiryData?.name}
+        prefilledTenantPhone={onboardEnquiryData?.phone}
+        prefilledTenantEmail={onboardEnquiryData?.email}
         draftAgreementId={activeDraftId}
         entryContext="leasing"
       />

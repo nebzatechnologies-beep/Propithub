@@ -5,11 +5,13 @@ import { StaffMember, Ticket, UserProfile } from '../../types';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { ButtonProcessing } from '../../components/common/Spinner';
-import { DEFAULT_CURRENCY } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY, normalizeCurrencyCode } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
 
 export const MaintenanceDispatchPage: React.FC = () => {
   const { state, updateState, saveStaff, saveTicket, showToast } = useAppData();
   const { user, provisionUser } = useAuth();
+  const { viewCurrency, convert, format } = useCurrency();
   const ownerId = user?.ownerId || '';
 
   const {
@@ -40,21 +42,23 @@ export const MaintenanceDispatchPage: React.FC = () => {
   const [assignPayer, setAssignPayer] = useState<'owner' | 'tenant'>('owner');
   const [assignAmount, setAssignAmount] = useState<number | ''>(500);
 
-  const managerRecord = (state.managers || []).find(
-    (m) =>
+  const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
+    (m: any) =>
       (user?.id && String(m.id) === user.id) ||
       (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
   );
   const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
 
   const myProperties = useMemo(() => {
-    if (!ownerId) return [];
-    const props = state.properties.filter((p) => p.ownerId === ownerId);
+    let props = state.properties;
+    if (ownerId) {
+      props = props.filter((p) => p.ownerId === ownerId);
+    }
     if (assignedPropertyId) {
       return props.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id);
     }
     const explicitlyAssigned = props.filter((p) => p.assignedManagerId === user?.id);
-    return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
+    return explicitlyAssigned;
   }, [state.properties, ownerId, assignedPropertyId, user?.id]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
@@ -278,6 +282,11 @@ export const MaintenanceDispatchPage: React.FC = () => {
                                   {typeof t.payment?.amount === 'number' && t.payment.amount > 0 && (
                                     <div style={{ fontSize: '11.5px', color: 'var(--ledger)', fontWeight: 600, marginTop: '2px' }}>
                                       {getTicketCurrency(t)}{t.payment.amount.toLocaleString()}
+                                      {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(getTicketCurrency(t)) && (
+                                        <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '4px' }}>
+                                          (~{format(convert(t.payment.amount, getTicketCurrency(t), viewCurrency), viewCurrency)})
+                                        </span>
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -372,7 +381,22 @@ export const MaintenanceDispatchPage: React.FC = () => {
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Who Pays / Cost</div>
                           <b style={{ color: t.payment?.payer === 'tenant' ? 'var(--brass)' : 'var(--ink)' }}>
-                            {t.payment?.payer ? `${t.payment.payer === 'owner' ? 'Owner' : 'Tenant'}${typeof t.payment?.amount === 'number' && t.payment.amount > 0 ? ` (${getTicketCurrency(t)}${t.payment.amount.toLocaleString()})` : ''}` : 'Unassigned'}
+                            {t.payment?.payer ? (
+                              <>
+                                {t.payment.payer === 'owner' ? 'Owner' : 'Tenant'}
+                                {typeof t.payment?.amount === 'number' && t.payment.amount > 0 && (
+                                  <>
+                                    {` (${getTicketCurrency(t)}${t.payment.amount.toLocaleString()}`}
+                                    {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(getTicketCurrency(t)) && (
+                                      <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '3px' }}>
+                                        ~{format(convert(t.payment.amount, getTicketCurrency(t), viewCurrency), viewCurrency)}
+                                      </span>
+                                    )}
+                                    {')'}
+                                  </>
+                                )}
+                              </>
+                            ) : 'Unassigned'}
                           </b>
                         </div>
                       </div>

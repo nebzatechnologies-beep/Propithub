@@ -511,13 +511,13 @@ export const AdminMessagesPage: React.FC = () => {
       </div>
 
       {/* Filter Toolbar with Dedicated "Filter For His" scope */}
-      <div className="panel" style={{ marginBottom: '20px', padding: '16px' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', flex: 1, minWidth: '300px' }}>
+      <div className="panel" style={{ marginBottom: '20px', padding: '14px 16px', boxSizing: 'border-box', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', justifyContent: 'space-between', minWidth: 0, width: '100%' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', flex: '1 1 auto', minWidth: 0, maxWidth: '100%' }}>
             
             {/* Dedicated Primary Filter: Everything vs Platform/Admin Only vs Specific Owner */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase' }}>Scope:</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, maxWidth: '100%', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', flexShrink: 0 }}>Scope:</span>
               <select
                 value={scopeFilter}
                 onChange={(e) => setScopeFilter(e.target.value)}
@@ -529,6 +529,9 @@ export const AdminMessagesPage: React.FC = () => {
                   border: '1.5px solid #2563eb',
                   background: '#eff6ff',
                   color: '#1e40af',
+                  minWidth: 0,
+                  maxWidth: '100%',
+                  boxSizing: 'border-box',
                 }}
               >
                 <option value="all">All Platform Traffic (Everything)</option>
@@ -544,14 +547,14 @@ export const AdminMessagesPage: React.FC = () => {
             </div>
 
             {/* Search Box */}
-            <div style={{ position: 'relative', flex: '1 1 200px', maxWidth: '300px' }}>
+            <div style={{ position: 'relative', flex: '1 1 200px', minWidth: 0, maxWidth: '100%' }}>
               <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-soft)' }} />
               <input
                 type="text"
                 placeholder="Search recipient, SID, or text..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                style={{ width: '100%', padding: '8px 12px 8px 34px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)' }}
+                style={{ width: '100%', padding: '8px 12px 8px 34px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', boxSizing: 'border-box', minWidth: 0, maxWidth: '100%' }}
               />
             </div>
 
@@ -559,7 +562,7 @@ export const AdminMessagesPage: React.FC = () => {
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              style={{ padding: '8px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+              style={{ padding: '8px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }}
             >
               <option value="all">All Categories</option>
               <option value="rent">Rent & Billing</option>
@@ -575,7 +578,7 @@ export const AdminMessagesPage: React.FC = () => {
             <select
               value={selectedChannel}
               onChange={(e) => setSelectedChannel(e.target.value)}
-              style={{ padding: '8px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+              style={{ padding: '8px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }}
             >
               <option value="all">All Channels</option>
               <option value="sms">Twilio SMS</option>
@@ -587,7 +590,7 @@ export const AdminMessagesPage: React.FC = () => {
             <select
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
-              style={{ padding: '8px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+              style={{ padding: '8px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }}
             >
               <option value="all">All Statuses</option>
               <option value="delivered">Delivered</option>
@@ -599,7 +602,7 @@ export const AdminMessagesPage: React.FC = () => {
           {(scopeFilter !== 'all' || selectedCategory !== 'all' || selectedChannel !== 'all' || selectedStatus !== 'all' || searchQuery) && (
             <button
               type="button"
-              className="btn secondary small"
+              className="btn secondary small btn-mobile-full"
               onClick={() => {
                 setScopeFilter('all');
                 setSelectedCategory('all');
@@ -607,6 +610,7 @@ export const AdminMessagesPage: React.FC = () => {
                 setSelectedStatus('all');
                 setSearchQuery('');
               }}
+              style={{ flexShrink: 0 }}
             >
               Reset Filters
             </button>
@@ -816,51 +820,50 @@ export const AdminMessagesPage: React.FC = () => {
       {/* Technical Inspection Modal */}
       {inspectedMessage && (
         <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-            padding: '20px',
-          }}
+          className="modal-backdrop"
+          onClick={() => setInspectedMessage(null)}
+          style={{ zIndex: 1100 }}
         >
           <div
-            className="panel"
+            className="modal-card"
             style={{
               width: '100%',
               maxWidth: '720px',
-              maxHeight: '90vh',
-              overflowY: 'auto',
-              borderRadius: '8px',
-              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.2)',
+              maxHeight: '92vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxSizing: 'border-box',
             }}
+            onClick={(e) => e.stopPropagation()}
           >
             <div
+              className="modal-head"
               style={{
-                padding: '16px 20px',
+                padding: '14px 20px',
                 borderBottom: '1px solid var(--border)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
+                gap: '12px',
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Server size={18} color="#2563eb" />
-                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Outbound Dispatch Diagnostic Details</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                <Server size={18} color="#2563eb" style={{ flexShrink: 0 }} />
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, overflowWrap: 'break-word' }}>
+                  Outbound Dispatch Diagnostic Details
+                </h3>
               </div>
               <button
                 type="button"
+                className="modal-close"
                 onClick={() => setInspectedMessage(null)}
-                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--ink-soft)' }}
+                aria-label="Close"
               >
-                <X size={18} />
+                <X size={16} />
               </button>
             </div>
 
-            <div style={{ padding: '20px' }}>
+            <div className="modal-body" style={{ padding: '18px 20px', overflowY: 'auto', minWidth: 0 }}>
               {/* Diagnostic Grid */}
               <div
                 style={{
@@ -868,59 +871,82 @@ export const AdminMessagesPage: React.FC = () => {
                   padding: '14px',
                   borderRadius: '6px',
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))',
-                  gap: '12px',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))',
+                  gap: '12px 16px',
                   marginBottom: '18px',
                   fontSize: '12px',
+                  minWidth: 0,
+                  boxSizing: 'border-box',
                 }}
               >
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ color: 'var(--ink-soft)' }}>Dispatch ID</div>
-                  <div style={{ fontWeight: 600, fontFamily: 'monospace' }}>{inspectedMessage.id}</div>
+                  <div style={{ fontWeight: 600, fontFamily: 'monospace', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                    {inspectedMessage.id}
+                  </div>
                 </div>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ color: 'var(--ink-soft)' }}>Timestamp</div>
-                  <div style={{ fontWeight: 600 }}>{new Date(inspectedMessage.createdAt).toLocaleString()}</div>
+                  <div style={{ fontWeight: 600, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                    {new Date(inspectedMessage.createdAt).toLocaleString()}
+                  </div>
                 </div>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ color: 'var(--ink-soft)' }}>Recipient ({inspectedMessage.recipientRole})</div>
-                  <div style={{ fontWeight: 600 }}>{inspectedMessage.recipientName}</div>
-                  <div style={{ color: 'var(--ink-soft)' }}>{inspectedMessage.recipientContact?.phone || inspectedMessage.recipientContact?.email || 'N/A'}</div>
+                  <div style={{ fontWeight: 600, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{inspectedMessage.recipientName}</div>
+                  <div style={{ color: 'var(--ink-soft)', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                    {inspectedMessage.recipientContact?.phone || inspectedMessage.recipientContact?.email || 'N/A'}
+                  </div>
                 </div>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ color: 'var(--ink-soft)' }}>Sender ({inspectedMessage.senderRole})</div>
-                  <div style={{ fontWeight: 600 }}>{inspectedMessage.senderName} ({inspectedMessage.senderId})</div>
+                  <div style={{ fontWeight: 600, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{inspectedMessage.senderName}</div>
+                  {inspectedMessage.senderId && (
+                    <div style={{ color: 'var(--ink-soft)', fontSize: '11px', fontFamily: 'monospace', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                      ({inspectedMessage.senderId})
+                    </div>
+                  )}
                 </div>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ color: 'var(--ink-soft)' }}>Owner / Portfolio Scoping</div>
-                  <div style={{ fontWeight: 600 }}>{inspectedMessage.ownerName || inspectedMessage.ownerId || 'Platform-wide (No Owner Scoping)'}</div>
+                  <div style={{ fontWeight: 600, wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                    {inspectedMessage.ownerName || inspectedMessage.ownerId || 'Platform-wide (No Owner Scoping)'}
+                  </div>
                 </div>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ color: 'var(--ink-soft)' }}>Channels Active</div>
-                  <div style={{ fontWeight: 600, textTransform: 'uppercase' }}>{inspectedMessage.channels?.join(', ')}</div>
+                  <div style={{ fontWeight: 600, textTransform: 'uppercase', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                    {inspectedMessage.channels?.join(', ')}
+                  </div>
                 </div>
                 {inspectedMessage.smsSid && (
-                  <div>
+                  <div style={{ minWidth: 0 }}>
                     <div style={{ color: 'var(--ink-soft)' }}>Twilio Message SID</div>
-                    <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#2563eb' }}>{inspectedMessage.smsSid}</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#2563eb', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                      {inspectedMessage.smsSid}
+                    </div>
                   </div>
                 )}
                 {inspectedMessage.errorMessage && (
-                  <div style={{ gridColumn: 'span 2', color: '#dc2626' }}>
+                  <div style={{ gridColumn: '1 / -1', color: '#dc2626', minWidth: 0 }}>
                     <div style={{ fontWeight: 700 }}>Delivery Warning / Error:</div>
-                    <div style={{ fontFamily: 'monospace', fontSize: '11px' }}>{inspectedMessage.errorMessage}</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: '11px', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                      {inspectedMessage.errorMessage}
+                    </div>
                   </div>
                 )}
               </div>
 
               {/* Title / Subject */}
-              <div style={{ marginBottom: '14px' }}>
+              <div style={{ marginBottom: '14px', minWidth: 0 }}>
                 <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase' }}>Subject / Headline</label>
-                <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--ink-base)' }}>{inspectedMessage.title}</div>
+                <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--ink-base)', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                  {inspectedMessage.title}
+                </div>
               </div>
 
               {/* Body Content */}
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase' }}>Message Body (SMS / Text)</label>
                 <div
                   style={{
@@ -933,6 +959,9 @@ export const AdminMessagesPage: React.FC = () => {
                     marginTop: '4px',
                     color: '#1e293b',
                     whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    overflowWrap: 'anywhere',
+                    minWidth: 0,
                   }}
                 >
                   {inspectedMessage.body}
@@ -941,7 +970,7 @@ export const AdminMessagesPage: React.FC = () => {
 
               {/* Rendered HTML Email Preview */}
               {inspectedMessage.htmlContent && (
-                <div style={{ marginTop: '18px' }}>
+                <div style={{ marginTop: '18px', minWidth: 0 }}>
                   <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase' }}>Rendered SendGrid HTML Email Voucher</label>
                   <div
                     style={{
@@ -951,6 +980,8 @@ export const AdminMessagesPage: React.FC = () => {
                       overflow: 'hidden',
                       maxHeight: '260px',
                       overflowY: 'auto',
+                      overflowX: 'auto',
+                      maxWidth: '100%',
                     }}
                     dangerouslySetInnerHTML={{ __html: inspectedMessage.htmlContent }}
                   />
@@ -958,7 +989,7 @@ export const AdminMessagesPage: React.FC = () => {
               )}
             </div>
 
-            <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', textAlign: 'right' }}>
+            <div className="modal-foot" style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end' }}>
               <button type="button" className="btn secondary small btn-mobile-full" onClick={() => setInspectedMessage(null)}>
                 Close
               </button>

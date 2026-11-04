@@ -216,19 +216,6 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
           <Text style={[styles.documentsCountText, { color: colors.navy }]} numberOfLines={1}>
             Agreements ({myAgreements.length})
           </Text>
-          <TouchableOpacity
-            style={styles.uploadAgreementBtn}
-            onPress={() => {
-              if (myUnits.length > 0) {
-                setNewAgUnit(myUnits[0].id);
-              }
-              setShowUploadModal(true);
-            }}
-            activeOpacity={0.8}
-          >
-            <Feather name="plus" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
-            <Text style={styles.uploadAgreementBtnText}>Upload</Text>
-          </TouchableOpacity>
         </View>
 
         {/* Search Bar */}
@@ -262,10 +249,27 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
           </View>
         ) : (
           filteredAgreements.map((a) => {
-            const isSigned = a.status === 'active';
+            const isSigned = a.status === 'active' || (a.status as any) === 'signed';
+            const isPendingApproval =
+              a.status === 'pending_approval' ||
+              a.status === 'awaiting_tenant_upload' ||
+              (a.status as any) === 'awaiting_review';
+            const isPendingDeposit = a.status === 'pending_deposit';
             const isAwaiting =
               a.status === 'awaiting_tenant_signature' ||
               a.status === 'draft';
+
+            const statusText = isSigned
+              ? 'Signed'
+              : isPendingApproval
+              ? 'Pending Approval'
+              : isPendingDeposit
+              ? 'Pending Deposit'
+              : isAwaiting
+              ? 'Awaiting Signature'
+              : a.status
+              ? a.status.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+              : 'Active';
 
             return (
               <View key={a.id} style={[styles.agreementCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
@@ -282,7 +286,7 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
                       styles.statusBadge,
                       isSigned
                         ? styles.statusBadgeGreen
-                        : isAwaiting
+                        : (isPendingApproval || isAwaiting)
                         ? styles.statusBadgeAmber
                         : styles.statusBadgeGrey,
                     ]}
@@ -292,12 +296,12 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
                         styles.statusBadgeText,
                         isSigned
                           ? { color: '#059669' }
-                          : isAwaiting
+                          : (isPendingApproval || isAwaiting)
                           ? { color: '#B45309' }
                           : { color: colors.inkSoft },
                       ]}
                     >
-                      {isSigned ? 'Signed' : isAwaiting ? 'Awaiting Signature' : a.status}
+                      {statusText}
                     </Text>
                   </View>
                 </View>

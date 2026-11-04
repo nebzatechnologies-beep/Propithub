@@ -20,7 +20,7 @@ import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { getStaffReminders, DashboardReminder } from '../lib/reminders';
-import { MobileTicket, MobileStaffScheduleItem } from '../types';
+import { MobileTicket } from '../types';
 
 interface StaffJobQueueScreenProps {
   onProfilePress?: () => void;
@@ -28,11 +28,13 @@ interface StaffJobQueueScreenProps {
 
 export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProfilePress }) => {
   const { colors, isDark } = useMobileTheme();
-  const { state, updateTicket, saveStaffSchedule } = useMobileAppData();
+  const { state, updateTicket, acknowledgeAnnouncement } = useMobileAppData();
   const { user } = useMobileAuth();
   const { format, viewCurrency, currencySymbol } = useMobileCurrency();
 
-  const [activeTab, setActiveTab] = useState<'queue' | 'schedule'>('queue');
+  // Bulletin acknowledgment & smooth dismissal state
+  const [justAckedIds, setJustAckedIds] = useState<Set<string>>(new Set());
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
 
   // Job Status Update / Completion Modal
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -41,13 +43,6 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
   const [completionNotes, setCompletionNotes] = useState('');
   const [laborAmount, setLaborAmount] = useState('600');
   const [partsAmount, setPartsAmount] = useState('250');
-
-  // Work Schedule state
-  const [showAddScheduleModal, setShowAddScheduleModal] = useState(false);
-  const [schedDay, setSchedDay] = useState('Today');
-  const [schedJob, setSchedJob] = useState('');
-  const [schedUnit, setSchedUnit] = useState('');
-  const [schedTime, setSchedTime] = useState('09:00 AM - 11:00 AM');
 
   // Filter tickets assigned to current staff member
   const myTickets = useMemo(() => {
@@ -61,21 +56,6 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
     });
   }, [state.tickets, user]);
 
-  const unifiedSchedule = useMemo(() => {
-    return [
-      ...(state.staffSchedules || []).filter((s) => s.staffId === user.id),
-      ...myTickets
-        .filter((t) => t.status === 'in_progress')
-        .map((t) => ({
-          day: 'Active Dispatch',
-          job: `${t.priority.toUpperCase()}: ${t.issue}`,
-          unit: `Unit ${t.unit}`,
-          time: t.preferredTimeSlot || 'In Progress',
-          staffId: user.id,
-        })),
-    ];
-  }, [state.staffSchedules, myTickets, user.id]);
-
   const activeJobs = myTickets.filter((t) => t.status === 'open' || t.status === 'assigned' || t.status === 'in_progress');
   const resolvedJobs = myTickets.filter((t) => t.status === 'resolved');
 
@@ -84,15 +64,71 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
     return getStaffReminders(state, user);
   }, [state, user]);
 
-  // Operational Bulletins for staff
+  // Operational Bulletins for staff with strict landlord isolation, property scoping, and acknowledgment filtering
   const staffBulletins = useMemo(() => {
-    return (state.announcements || []).filter(
-      (a) =>
-        a.status === 'published' &&
-        (!user.ownerId || a.ownerId === user.ownerId) &&
-        (!a.targetRoles || a.targetRoles.includes('staff'))
-    );
-  }, [state.announcements, user.ownerId]);
+    const staffOwnerIds = new Set<string>();
+    if (user.ownerId) staffOwnerIds.add(user.ownerId);
+    myTickets.forEach((t) => {
+      if (t.ownerId) staffOwnerIds.add(t.ownerId);
+    });
+
+    const assignedPropertyIds = new Set<string>();
+    myTickets.forEach((t) => {
+      if (t.propertyId) assignedPropertyIds.add(t.propertyId);
+    });
+    if (user.assignedProperties && Array.isArray(user.assignedProperties)) {
+      user.assignedProperties.forEach((pId: string) => assignedPropertyIds.add(pId));
+    }
+
+    return (state.announcements || []).filter((b) => {
+      if (b.status !== 'published') return false;
+      if (dismissedNoticeIds.has(b.id)) return false;
+
+      // Role check
+      const targetRoles = b.targetRoles || (b as any).targetScope?.targetRoles || [];
+      if (targetRoles.length > 0 && !targetRoles.includes('staff') && !targetRoles.includes('manager')) return false;
+
+      // Landlord isolation: Block if staff has no owner association or if announcement belongs to another landlord
+      const isSystem = b.ownerId === 'system' || b.ownerId === 'superadmin' || ((b as any).category as string) === 'system';
+      if (!isSystem && (staffOwnerIds.size === 0 || !staffOwnerIds.has(b.ownerId))) {
+        return false;
+      }
+
+      // Property scoping: If targeted to specific properties, verify staff works on at least one
+      const targetScope = (b as any).targetScope;
+      if (targetScope && !targetScope.allProperties && targetScope.propertyIds && targetScope.propertyIds.length > 0) {
+        if (assignedPropertyIds.size > 0 && !targetScope.propertyIds.some((pId: string) => assignedPropertyIds.has(pId))) {
+          return false;
+        }
+      }
+
+      // Specific people targeting
+      if (targetScope?.mode === 'specific_people' || (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)) {
+        const targets = targetScope.targetUserIds || [];
+        if (!targets.includes(user.id)) return false;
+      }
+
+      // Acknowledgment check: hide if already acknowledged (unless in 1.2s grace window)
+      const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
+      const isAckedByObj = ((b as any).acknowledgments || []).some(
+        (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+      );
+      const hasAcked = isAckedByArr || isAckedByObj;
+      if (hasAcked && !justAckedIds.has(b.id)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [state.announcements, user, myTickets, dismissedNoticeIds, justAckedIds]);
+
+  const handleAcknowledgeBulletin = (id: string, requireAck?: boolean) => {
+    acknowledgeAnnouncement(id, user.id);
+    setJustAckedIds((prev) => new Set(prev).add(id));
+    setTimeout(() => {
+      setDismissedNoticeIds((prev) => new Set(prev).add(id));
+    }, 1200);
+  };
 
   const handleDialPhone = (phone?: string) => {
     if (!phone) {
@@ -146,28 +182,6 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
     setSelectedTicket(null);
   };
 
-  const handleAddScheduleEntry = () => {
-    if (!schedJob.trim() || !schedUnit.trim()) {
-      Alert.alert('Required Fields', 'Please enter a job description and unit number.');
-      return;
-    }
-
-    const newEntry: MobileStaffScheduleItem = {
-      day: schedDay,
-      job: schedJob.trim(),
-      unit: schedUnit.trim(),
-      time: schedTime.trim(),
-      staffId: user.id,
-    };
-
-    saveStaffSchedule(newEntry);
-    setShowAddScheduleModal(false);
-    setSchedJob('');
-    setSchedUnit('');
-    Alert.alert('Shift Scheduled 📅', `Added shift for ${schedDay} at ${schedUnit}.`);
-  };
-
-
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
 
@@ -203,72 +217,103 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Navigation Tabs Capsule: Ticket Queue vs Work Schedule */}
-        <TourTarget id="staff-queue-subtabs">
-        <View style={[styles.tabContainer, { backgroundColor: isDark ? colors.card : '#F1F5F9' }]}>
-          <TouchableOpacity
-            style={[styles.tabButton, activeTab === 'queue' && styles.tabButtonActive]}
-            onPress={() => setActiveTab('queue')}
-            activeOpacity={0.8}
-          >
-            <Ionicons
-              name="list"
-              size={15}
-              color={activeTab === 'queue' ? '#FFFFFF' : colors.inkSoft}
-              style={{ marginRight: 6 }}
-            />
-            <Text style={[styles.tabText, { color: colors.inkSoft }, activeTab === 'queue' && styles.tabTextActive]}>
-              Queue ({activeJobs.length})
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.tabButton, activeTab === 'schedule' && styles.tabButtonActive]}
-            onPress={() => setActiveTab('schedule')}
-            activeOpacity={0.8}
-          >
-            <Ionicons
-              name="calendar"
-              size={15}
-              color={activeTab === 'schedule' ? '#FFFFFF' : colors.inkSoft}
-              style={{ marginRight: 6 }}
-            />
-            <Text style={[styles.tabText, { color: colors.inkSoft }, activeTab === 'schedule' && styles.tabTextActive]}>
-              Schedule ({unifiedSchedule.length})
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        </TourTarget>
-
         {/* Operational Staff Bulletins (if any) */}
         {staffBulletins.length > 0 && (
           <View style={[styles.bulletinBox, isDark && { backgroundColor: '#064E3B20', borderColor: '#065F46' }]}>
             <View style={styles.bulletinHeader}>
               <Ionicons name="megaphone-outline" size={16} color="#059669" />
-              <Text style={[styles.bulletinTitle, isDark && { color: '#6EE7B7' }]}>Bulletins</Text>
+              <Text style={[styles.bulletinTitle, isDark && { color: '#6EE7B7' }]}>
+                Bulletins ({staffBulletins.length})
+              </Text>
             </View>
-            {staffBulletins.slice(0, 2).map((b) => (
-              <View key={b.id} style={styles.bulletinItem}>
-                <View style={styles.bulletinBadge}>
-                  <Text style={styles.bulletinBadgeText}>{b.category.toUpperCase()}</Text>
-                </View>
-                <Text style={[styles.bulletinText, isDark && { color: '#A7F3D0' }]} numberOfLines={2}>
-                  <Text style={{ fontWeight: '700' }}>{b.title}: </Text>
-                  {b.body}
-                </Text>
-              </View>
-            ))}
+            <ScrollView
+              style={{ maxHeight: 155 }}
+              nestedScrollEnabled
+              showsVerticalScrollIndicator={true}
+            >
+              {staffBulletins.map((b) => {
+                const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
+                const isAckedByObj = ((b as any).acknowledgments || []).some(
+                  (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+                );
+                const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(b.id);
+                const requireAck = Boolean(b.requireAck || b.requireAcknowledgment || (b as any).requiresAcknowledgment);
+
+                return (
+                  <View
+                    key={b.id}
+                    style={[
+                      styles.bulletinItem,
+                      {
+                        flexDirection: 'column',
+                        alignItems: 'stretch',
+                        gap: 6,
+                        paddingVertical: 8,
+                        borderBottomWidth: 1,
+                        borderBottomColor: isDark ? 'rgba(6,95,70,0.3)' : 'rgba(187,247,208,0.5)',
+                      },
+                    ]}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                      <View style={styles.bulletinBadge}>
+                        <Text style={styles.bulletinBadgeText}>{b.category.toUpperCase()}</Text>
+                      </View>
+                      {requireAck && (
+                        <Text style={{ fontSize: 10, color: '#DC2626', fontWeight: '700' }}>
+                          Acknowledgment Required
+                        </Text>
+                      )}
+                    </View>
+
+                    <Text style={[styles.bulletinText, isDark && { color: '#A7F3D0' }]}>
+                      <Text style={{ fontWeight: '700' }}>{b.title}: </Text>
+                      {b.body}
+                    </Text>
+
+                    {/* Action / Ack Button */}
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
+                      {hasAcked ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: isDark ? 'rgba(5,150,105,0.2)' : '#DCFCE7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }}>
+                          <Ionicons name="checkmark-circle" size={13} color="#15803D" />
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#15803D' }}>
+                            {requireAck ? 'Acknowledged' : 'Marked as read'}
+                          </Text>
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={{
+                            backgroundColor: requireAck ? '#C59A45' : '#059669',
+                            paddingHorizontal: 12,
+                            paddingVertical: 5,
+                            borderRadius: 20,
+                          }}
+                          onPress={() => handleAcknowledgeBulletin(b.id, requireAck)}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF' }}>
+                            {requireAck ? 'Read & Acknowledge' : 'Mark as Read'}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
           </View>
         )}
 
-        {/* TAB 1: TICKET QUEUE */}
-        {activeTab === 'queue' && (
-          <View>
+        {/* Ticket Queue */}
+        <View>
             {/* Priority Staff Reminders & Work Order Alert Hub */}
             {staffReminders.length > 0 && (
               <View style={{ marginBottom: 14 }}>
-                {staffReminders.map((rem) => {
+                <ScrollView
+                  style={staffReminders.length > 2 ? { maxHeight: 220 } : undefined}
+                  nestedScrollEnabled={true}
+                  showsVerticalScrollIndicator={staffReminders.length > 2}
+                >
+                  {staffReminders.map((rem) => {
                   const isUrgent = rem.severity === 'urgent';
                   const borderCol = isUrgent ? '#EF4444' : '#F59E0B';
                   const bgCol = isUrgent
@@ -346,25 +391,28 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
                     </View>
                   );
                 })}
+                </ScrollView>
               </View>
             )}
 
             {/* Hero Work Order Status Card */}
-            <View style={[styles.heroCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-              <View style={styles.heroTopRow}>
-                <Text style={[styles.heroLabel, { color: colors.inkSoft }]}>Work Order Queue</Text>
-                <View style={styles.heroPillBadge}>
-                  <Feather name="tool" size={12} color="#059669" />
-                  <Text style={styles.heroPillText}>
-                    {activeJobs.length === 0 ? 'All Clear' : `${activeJobs.length} Assigned`}
-                  </Text>
+            <TourTarget id="staff-queue-subtabs">
+              <View style={[styles.heroCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                <View style={styles.heroTopRow}>
+                  <Text style={[styles.heroLabel, { color: colors.inkSoft }]}>Work Order Queue</Text>
+                  <View style={styles.heroPillBadge}>
+                    <Feather name="tool" size={12} color="#059669" />
+                    <Text style={styles.heroPillText}>
+                      {activeJobs.length === 0 ? 'All Clear' : `${activeJobs.length} Assigned`}
+                    </Text>
+                  </View>
                 </View>
+                <Text style={[styles.heroAmount, { color: colors.navy }]}>{activeJobs.length} Active</Text>
+                <Text style={[styles.heroSubText, { color: colors.inkSoft }]}>
+                  {activeJobs.filter((t) => t.status === 'in_progress').length} in progress • {activeJobs.filter((t) => t.priority === 'Emergency' || t.priority === 'High').length} high priority
+                </Text>
               </View>
-              <Text style={[styles.heroAmount, { color: colors.navy }]}>{activeJobs.length} Active</Text>
-              <Text style={[styles.heroSubText, { color: colors.inkSoft }]}>
-                {activeJobs.filter((t) => t.status === 'in_progress').length} in progress • {activeJobs.filter((t) => t.priority === 'Emergency' || t.priority === 'High').length} high priority
-              </Text>
-            </View>
+            </TourTarget>
 
             <View style={styles.sectionHeaderRow}>
               <Text style={[styles.sectionHeading, { color: colors.navy }]}>Assigned Jobs ({activeJobs.length})</Text>
@@ -486,56 +534,7 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
               </View>
             )}
           </View>
-        )}
-
-        {/* TAB 2: WORK SCHEDULE */}
-        {activeTab === 'schedule' && (
-          <View>
-            <View style={styles.scheduleHeaderRow}>
-              <Text style={[styles.sectionHeading, { color: colors.navy }]}>Scheduled Shifts ({unifiedSchedule.length})</Text>
-              <TouchableOpacity
-                style={styles.addScheduleBtn}
-                onPress={() => setShowAddScheduleModal(true)}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="add" size={16} color="#FFFFFF" style={{ marginRight: 4 }} />
-                <Text style={styles.addScheduleBtnText}>Add Shift</Text>
-              </TouchableOpacity>
-            </View>
-
-            {unifiedSchedule.length === 0 ? (
-              <View style={{ padding: 28, alignItems: 'center', backgroundColor: colors.surface, borderRadius: 12, marginHorizontal: 16, borderWidth: 1, borderColor: colors.line }}>
-                <Ionicons name="calendar-outline" size={28} color="#94A3B8" style={{ marginBottom: 8 }} />
-                <Text style={{ color: colors.navy, fontWeight: '600', fontSize: 14 }}>No Scheduled Shifts</Text>
-                <Text style={{ color: colors.inkSoft, fontSize: 13, marginTop: 4, textAlign: 'center' }}>
-                  No scheduled shifts or active dispatches. Tap 'Add Shift' above to create a schedule slot.
-                </Text>
-              </View>
-            ) : null}
-
-            {unifiedSchedule.map((item, idx) => (
-              <View key={idx} style={[styles.scheduleCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <View style={styles.scheduleTimeRow}>
-                  <View style={[styles.scheduleDayBadge, isDark && { backgroundColor: '#312E81' }]}>
-                    <Text style={[styles.scheduleDayText, isDark && { color: '#A5B4FC' }]}>{item.day}</Text>
-                  </View>
-                  <View style={styles.scheduleTimeBadge}>
-                    <Ionicons name="time-outline" size={13} color={colors.inkSoft} style={{ marginRight: 4 }} />
-                    <Text style={[styles.scheduleTimeText, { color: colors.inkSoft }]}>{item.time}</Text>
-                  </View>
-                </View>
-
-                <Text style={[styles.scheduleJobText, { color: colors.navy }]}>{item.job}</Text>
-                <View style={styles.scheduleUnitRow}>
-                  <Ionicons name="location-outline" size={14} color={colors.inkSoft} style={{ marginRight: 4 }} />
-                  <Text style={[styles.scheduleUnitText, { color: colors.inkSoft }]}>{item.unit} • On-Site Service</Text>
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
-
-      </ScrollView>
+        </ScrollView>
 
       {/* Completion & Status Modal */}
       <Modal visible={showStatusModal} transparent animationType="slide">
@@ -612,70 +611,6 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
 
               <TouchableOpacity style={styles.saveStatusBtn} onPress={handleSaveStatus} activeOpacity={0.85}>
                 <Text style={styles.saveStatusBtnText} numberOfLines={1}>Save</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Add Work Schedule Modal */}
-      <Modal visible={showAddScheduleModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={[styles.modalTitle, { color: colors.navy }]}>Add Work Shift</Text>
-              <TouchableOpacity onPress={() => setShowAddScheduleModal(false)}>
-                <Ionicons name="close" size={24} color={colors.inkSoft} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              showsVerticalScrollIndicator={true}
-              contentContainerStyle={{ paddingBottom: 24 }}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>DAY</Text>
-              <View style={styles.daySelectorRow}>
-                {['Today', 'Tomorrow', 'Thursday', 'Friday'].map((d) => (
-                  <TouchableOpacity
-                    key={d}
-                    style={[styles.dayPill, { backgroundColor: isDark ? colors.card : '#F1F5F9' }, schedDay === d && styles.dayPillActive]}
-                    onPress={() => setSchedDay(d)}
-                  >
-                    <Text style={[styles.dayPillText, { color: colors.inkSoft }, schedDay === d && styles.dayPillTextActive]}>{d}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>JOB DESCRIPTION</Text>
-              <TextInput
-                style={[styles.singleInput, { backgroundColor: isDark ? colors.card : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                value={schedJob}
-                onChangeText={setSchedJob}
-                placeholder="e.g. Geyser Element Replacement"
-                placeholderTextColor={colors.inkSoft}
-              />
-
-              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>UNIT / LOCATION</Text>
-              <TextInput
-                style={[styles.singleInput, { backgroundColor: isDark ? colors.card : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                value={schedUnit}
-                onChangeText={setSchedUnit}
-                placeholder="e.g. Unit 201"
-                placeholderTextColor={colors.inkSoft}
-              />
-
-              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>TIME SLOT</Text>
-              <TextInput
-                style={[styles.singleInput, { backgroundColor: isDark ? colors.card : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                value={schedTime}
-                onChangeText={setSchedTime}
-                placeholder="e.g. 02:00 PM - 04:00 PM"
-                placeholderTextColor={colors.inkSoft}
-              />
-
-              <TouchableOpacity style={styles.saveStatusBtn} onPress={handleAddScheduleEntry} activeOpacity={0.85}>
-                <Text style={styles.saveStatusBtnText}>Schedule Shift</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -760,32 +695,6 @@ const createStyles = (colors: any, isDark: boolean) =>
   content: {
     padding: 16,
     paddingBottom: 40,
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 10,
-    padding: 4,
-    marginBottom: 16,
-  },
-  tabButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  tabButtonActive: {
-    backgroundColor: '#10B981',
-  },
-  tabText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  tabTextActive: {
-    color: '#FFFFFF',
   },
   // Hero Work Order Card
   heroCard: {
@@ -1062,72 +971,6 @@ const createStyles = (colors: any, isDark: boolean) =>
     color: colors.inkSoft,
     marginTop: 2,
   },
-  scheduleHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  addScheduleBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#10B981',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  addScheduleBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  scheduleCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 12,
-  },
-  scheduleTimeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  scheduleDayBadge: {
-    backgroundColor: '#EEF2FF',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  scheduleDayText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#4F46E5',
-  },
-  scheduleTimeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  scheduleTimeText: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  scheduleJobText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  scheduleUnitRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  scheduleUnitText: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.75)',
@@ -1222,36 +1065,5 @@ const createStyles = (colors: any, isDark: boolean) =>
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
-  },
-  daySelectorRow: {
-    flexDirection: 'row',
-    gap: 6,
-    flexWrap: 'wrap',
-  },
-  dayPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-  },
-  dayPillActive: {
-    backgroundColor: '#10B981',
-  },
-  dayPillText: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    fontWeight: '600',
-  },
-  dayPillTextActive: {
-    color: '#FFFFFF',
-  },
-  singleInput: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 13,
-    color: colors.navy,
   },
   });

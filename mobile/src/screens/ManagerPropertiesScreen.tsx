@@ -21,6 +21,7 @@ import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { MobileUnit } from '../types';
+import { AddressDisplay } from '../components/AddressDisplay';
 import { db, isFirebaseConfigured } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 
@@ -125,11 +126,28 @@ export const ManagerPropertiesScreen: React.FC<ManagerPropertiesScreenProps> = (
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <TourTarget id="manager-properties-list" style={styles.subHeader}>
-          <Text style={[styles.subHeaderText, { color: colors.inkSoft }]}>
-            {myProperties.length} Properties in Portfolio
-          </Text>
-        </TourTarget>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <TourTarget id="manager-properties-list" style={styles.subHeader}>
+            <Text style={[styles.subHeaderText, { color: colors.inkSoft }]}>
+              {myProperties.length} Properties in Portfolio
+            </Text>
+          </TourTarget>
+          <TouchableOpacity
+            style={{
+              backgroundColor: '#10B981',
+              flexDirection: 'row',
+              alignItems: 'center',
+              paddingHorizontal: 12,
+              paddingVertical: 7,
+              borderRadius: 8,
+            }}
+            onPress={() => onNavigate?.('property_create_wizard')}
+            activeOpacity={0.8}
+          >
+            <Feather name="plus" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
+            <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>Add Property</Text>
+          </TouchableOpacity>
+        </View>
 
         {myProperties.length === 0 ? (
           <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
@@ -151,12 +169,12 @@ export const ManagerPropertiesScreen: React.FC<ManagerPropertiesScreenProps> = (
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.propertyName, { color: colors.navy }]}>{p.name}</Text>
                     <View style={styles.addressRow}>
-                      <Ionicons name="location-outline" size={13} color={colors.inkSoft} style={{ marginRight: 4 }} />
-                      <Text style={[styles.addressText, { color: colors.inkSoft }]} numberOfLines={1}>
-                        {typeof p.address === 'string'
-                          ? p.address
-                          : p.address?.formattedAddress || p.address?.city || 'Local Region'}
-                      </Text>
+                      <Ionicons name="location-outline" size={13} color={colors.inkSoft} style={{ marginRight: 4, flexShrink: 0 }} />
+                      <AddressDisplay
+                        address={p.address}
+                        fallback="Local Region"
+                        textStyle={[styles.addressText, { color: colors.inkSoft }]}
+                      />
                     </View>
                   </View>
                   <View style={[styles.countBadge, isDark && { backgroundColor: '#1E293B' }]}>

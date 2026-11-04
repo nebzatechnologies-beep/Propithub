@@ -27,6 +27,7 @@ interface DashboardReminderHubProps {
   role: 'tenant' | 'owner' | 'manager' | 'staff' | 'superadmin';
   title?: string;
   onSendNudge?: (reminder: DashboardReminder) => void;
+  maxItemsBeforeScroll?: number;
 }
 
 export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
@@ -34,9 +35,20 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
   role,
   title = 'Action Required & Reminders',
   onSendNudge,
+  maxItemsBeforeScroll,
 }) => {
   const { showToast, updateState } = useAppData();
-  const [dismissedIds, setDismissedIds] = useState<string[]>([]);
+  const STORAGE_DISMISSED_KEY = 'propithub_dismissed_reminders';
+
+  const [dismissedIds, setDismissedIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_DISMISSED_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [snoozedIds, setSnoozedIds] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem('propithub_snoozed_reminders');
@@ -59,6 +71,21 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
     return null;
   }
 
+  const handleDismiss = (reminderId: string) => {
+    try {
+      const stored = localStorage.getItem(STORAGE_DISMISSED_KEY);
+      const parsed: string[] = stored ? JSON.parse(stored) : [];
+      if (!parsed.includes(reminderId)) {
+        parsed.push(reminderId);
+        localStorage.setItem(STORAGE_DISMISSED_KEY, JSON.stringify(parsed));
+      }
+    } catch (e) {
+      console.warn('Failed to save dismissed reminder', e);
+    }
+    setDismissedIds((prev) => [...prev, reminderId]);
+    showToast('✓ Reminder dismissed.');
+  };
+
   const handleSnooze = (reminderId: string) => {
     const expireAt = Date.now() + 24 * 60 * 60 * 1000;
     try {
@@ -69,7 +96,7 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
       setSnoozedIds((prev) => [...prev, reminderId]);
       showToast('✓ Reminder snoozed for 24 hours.');
     } catch {
-      setDismissedIds((prev) => [...prev, reminderId]);
+      handleDismiss(reminderId);
     }
   };
 
@@ -164,10 +191,12 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
     }
   };
 
+  // In-place scrolling for all roles when more than 2 items are present
+  const isScrollableInPlace = true;
   const urgentCount = activeReminders.filter((r) => r.severity === 'urgent').length;
-  // Show up to 3 reminders initially, or all if expanded
-  const displayedReminders = isExpanded ? activeReminders : activeReminders.slice(0, 3);
-  const hiddenCount = activeReminders.length - displayedReminders.length;
+  // All active reminders rendered inside the in-place scroll container (height capped to 2 items)
+  const displayedReminders = activeReminders;
+  const hiddenCount = Math.max(0, activeReminders.length - displayedReminders.length);
 
   return (
     <div
@@ -241,7 +270,7 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
           </div>
         </div>
 
-        {activeReminders.length > 3 && (
+        {!isScrollableInPlace && activeReminders.length > 3 && (
           <button
             type="button"
             onClick={() => setIsExpanded(!isExpanded)}
@@ -272,7 +301,20 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
       </div>
 
       {/* Streamlined Rows */}
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
+      <div
+        className={isScrollableInPlace && activeReminders.length > 2 ? 'reminder-hub-scroll-container' : undefined}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          ...(isScrollableInPlace && activeReminders.length > 2
+            ? {
+                maxHeight: '148px',
+                overflowY: 'auto',
+                scrollbarWidth: 'thin',
+              }
+            : {}),
+        }}
+      >
         {displayedReminders.map((reminder, idx) => {
           const pill = getSeverityPill(reminder.severity);
           const isLast = idx === displayedReminders.length - 1;
@@ -280,20 +322,15 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
           return (
             <div
               key={reminder.id}
+              className="reminder-hub-row"
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '12px 18px',
                 borderBottom: isLast ? 'none' : '1px solid var(--line)',
                 background: reminder.severity === 'urgent' ? 'var(--surface-sunken)' : 'var(--surface)',
                 transition: 'background-color 0.15s ease',
-                gap: '14px',
-                flexWrap: 'wrap',
               }}
             >
               {/* Left Column: Icon + Status Pill + Title + Description */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: '320px' }}>
+              <div className="reminder-hub-content">
                 <div
                   style={{
                     width: '30px',
@@ -305,12 +342,13 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
                     alignItems: 'center',
                     justifyContent: 'center',
                     flexShrink: 0,
+                    marginTop: '2px',
                   }}
                 >
                   {getIcon(reminder.icon, pill.color)}
                 </div>
 
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     <span
                       style={{
@@ -326,11 +364,11 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
                     >
                       {pill.label}
                     </span>
-                    <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                       {reminder.title}
                     </span>
                     {reminder.propertyName && (
-                      <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500 }}>
+                      <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                         • {reminder.propertyName} {reminder.unitNumber ? `(Unit ${reminder.unitNumber})` : ''}
                       </span>
                     )}
@@ -340,9 +378,11 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
                     style={{
                       fontSize: '12px',
                       color: 'var(--ink-soft)',
-                      margin: '2px 0 0',
+                      margin: '3px 0 0',
                       lineHeight: 1.4,
                       maxWidth: '820px',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
                     }}
                   >
                     {reminder.description}
@@ -351,7 +391,7 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
               </div>
 
               {/* Right Column: Actions */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              <div className="reminder-hub-actions">
                 {reminder.actionType === 'nudge' ? (
                   <button
                     type="button"
@@ -420,7 +460,7 @@ export const DashboardReminderHub: React.FC<DashboardReminderHubProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setDismissedIds((prev) => [...prev, reminder.id])}
+                      onClick={() => handleDismiss(reminder.id)}
                       title="Dismiss notification"
                       style={{
                         background: 'none',

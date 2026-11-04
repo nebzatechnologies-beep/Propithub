@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
-import { Agreement, TenancyRequest, Unit, DepositSettlement, Announcement, Invoice, TenantRecord } from '../../types';
+import { Agreement, TenancyRequest, Unit, DepositSettlement, Announcement, Invoice, TenantRecord, PaymentTransaction } from '../../types';
 import { downloadDepositSettlementPdf } from '../../lib/pdf';
 import { isFirebaseConfigured } from '../../lib/firebase';
 import { Spinner, ButtonProcessing } from '../../components/common/Spinner';
@@ -42,15 +42,19 @@ import {
   Wrench,
   ShieldCheck,
   Award,
+  ExternalLink,
 } from 'lucide-react';
 import { getTenantReminders } from '../../lib/reminders';
 import { DashboardReminderHub } from '../../components/dashboard/DashboardReminderHub';
 import { DepositSettlementReviewModal } from '../../components/common/DepositSettlementReviewModal';
-import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { AddressDisplay } from '../../components/common/AddressDisplay';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
 
 export const TenantDashboardPage: React.FC = () => {
   const { state, updateState, showToast, saveAgreement, saveInvoice, saveUnit, saveTenant, saveTenancyRequest, acknowledgeAnnouncement, confirmCashClaim, rejectCashClaim, confirmRefundReceipt } = useAppData();
   const { user } = useAuth();
+  const { viewCurrency, convert, format } = useCurrency();
   const navigate = useNavigate();
   const tenantEmail = user?.email?.toLowerCase().trim() || '';
   const tenantRecord = state.tenants.find(
@@ -78,7 +82,7 @@ export const TenantDashboardPage: React.FC = () => {
   const hasActiveOrPendingLease = useMemo(() => {
     const hasAssignedUnit = state.units.some(
       (u) =>
-        (u.currentTenantId === user?.id || (!isFirebaseConfigured && tenantEmail && u.tenant?.toLowerCase() === tenantEmail)) &&
+        (u.currentTenantId === user?.id || (tenantEmail && u.tenant?.toLowerCase() === tenantEmail)) &&
         (u.status === 'occupied' || u.status === 'reserved')
     );
     const hasActiveAg = state.agreements.some(
@@ -104,13 +108,13 @@ export const TenantDashboardPage: React.FC = () => {
     );
   }, [hasActiveOrPendingLease, state.moveouts, user?.id]);
 
-  // Match by tenantId (primary) or email (offline fallback only).
+  // Match by tenantId (primary) or email fallback.
   // Display-name fallback removed — two tenants sharing the same display name would
   // see each other's reviews without this guard.
   const myTenantReviews = (state.reviews?.tenants || []).filter(
     (r: any) =>
       (user?.id && r.tenantId === user.id) ||
-      (!isFirebaseConfigured && tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)
+      (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)
   );
 
   // Build a set of unitIds that have a real active agreement or invitation tied to this tenant
@@ -121,7 +125,7 @@ export const TenantDashboardPage: React.FC = () => {
         (a) =>
           a.status !== 'terminated' &&
           ((user?.id && a.tenantId === user.id) ||
-            (!isFirebaseConfigured && tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))
+            (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))
       )
       .forEach((a) => {
         const matchedUnit =
@@ -134,11 +138,11 @@ export const TenantDashboardPage: React.FC = () => {
         if (matchedUnit?.id) unitIds.add(matchedUnit.id);
       });
 
-    // Also include units from active/pending tenancy invitations
+    // Also include units from accepted tenancy invitations (strict: exclude 'pending' invitations)
     (state.tenancyRequests || [])
       .filter(
         (r) =>
-          (r.status === 'pending' || r.status === 'accepted') &&
+          r.status === 'accepted' &&
           ((user?.id && r.tenantId === user.id) ||
             (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail))
       )
@@ -161,7 +165,7 @@ export const TenantDashboardPage: React.FC = () => {
   const myUnits = state.units
     .filter((u) => {
       const byId = user?.id && u.currentTenantId === user.id;
-      const byEmail = !isFirebaseConfigured && tenantEmail && u.tenant?.toLowerCase() === tenantEmail;
+      const byEmail = Boolean(tenantEmail) && u.tenant?.toLowerCase() === tenantEmail;
       // An email-only match is only trusted if there is a real agreement or invitation for that unit
       const isTenantMatch = byId || (byEmail && myAgreementUnitIds.has(u.id));
       if (!isTenantMatch) return false;
@@ -249,10 +253,69 @@ export const TenantDashboardPage: React.FC = () => {
     });
 
   // Active Building Announcements for Tenant
+  // Strict Owner & Property Isolation:
+  // Tenants only see announcements for properties where they have an ACTIVE lease, occupied unit, or accepted request.
+  // Prospective tenants holding pending invitations or vacated tenants NEVER receive building notices.
   const myAnnouncements = useMemo(() => {
-    const propertyIds = new Set<string>();
+    const activePropertyIds = new Set<string>();
+    const activeOwnerIds = new Set<string>();
+
+    // 1. Units actively occupied by current tenant
     myUnits.forEach((u) => {
-      if (u.propertyId) propertyIds.add(u.propertyId);
+      if (u.propertyId) activePropertyIds.add(u.propertyId);
+      if (u.ownerId) activeOwnerIds.add(u.ownerId);
+      const p = (state.properties || []).find((prop) => prop.id === u.propertyId);
+      if (p?.ownerId) activeOwnerIds.add(p.ownerId);
+    });
+
+    // 2. Active, non-terminated agreements
+    (state.agreements || []).forEach((ag) => {
+      const isMe =
+        (user?.id && ag.tenantId === user.id) ||
+        (tenantEmail && (ag.tenantEmail?.toLowerCase() === tenantEmail || ag.tenant?.toLowerCase() === tenantEmail));
+      const isActive =
+        ag.status === 'active' ||
+        (ag.status as string) === 'signed' ||
+        (ag.status !== 'terminated' && (ag.status as string) !== 'cancelled' && ag.status !== 'rejected' && ag.status !== 'draft');
+      if (isMe && isActive) {
+        if (ag.propertyId) activePropertyIds.add(ag.propertyId);
+        if (ag.ownerId) activeOwnerIds.add(ag.ownerId);
+        const p = (state.properties || []).find((prop) => prop.id === ag.propertyId);
+        if (p?.ownerId) activeOwnerIds.add(p.ownerId);
+      }
+    });
+
+    // 3. Accepted tenancy requests ONLY (strictly exclude 'pending', 'declined', or 'cancelled')
+    (state.tenancyRequests || []).forEach((r) => {
+      const isMe =
+        (user?.id && r.tenantId === user.id) ||
+        (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail);
+      if (isMe && r.status === 'accepted') {
+        if (r.propertyId) activePropertyIds.add(r.propertyId);
+        if (r.ownerId) activeOwnerIds.add(r.ownerId);
+      }
+    });
+
+    // 4. Tenant records with verified active presence (not unaccepted invitee records)
+    (state.tenants || []).forEach((t) => {
+      const isMe =
+        (user?.id && (t.id === user.id || (t as any).userId === user.id)) ||
+        (tenantEmail && t.email?.toLowerCase() === tenantEmail);
+      if (isMe && t.propertyId) {
+        const hasActivePresence =
+          activePropertyIds.has(t.propertyId) ||
+          myUnits.some((u) => u.propertyId === t.propertyId) ||
+          (state.agreements || []).some(
+            (ag) =>
+              ((user?.id && ag.tenantId === user.id) || (tenantEmail && (ag.tenantEmail?.toLowerCase() === tenantEmail || ag.tenant?.toLowerCase() === tenantEmail))) &&
+              ag.propertyId === t.propertyId &&
+              (ag.status === 'active' || (ag.status as string) === 'signed')
+          );
+        if (hasActivePresence) {
+          activePropertyIds.add(t.propertyId);
+          if (t.ownerId) activeOwnerIds.add(t.ownerId);
+        }
+      }
     });
 
     const userIds = new Set<string>();
@@ -260,7 +323,7 @@ export const TenantDashboardPage: React.FC = () => {
     if ((user as any)?.uid) userIds.add((user as any).uid);
     (state.tenants || []).forEach((t) => {
       if (
-        (user?.email && t.email && t.email.toLowerCase() === user.email.toLowerCase()) ||
+        (tenantEmail && t.email && t.email.toLowerCase() === tenantEmail) ||
         (user?.id && (t.id === user.id || (t as any).userId === user.id))
       ) {
         userIds.add(t.id);
@@ -273,30 +336,62 @@ export const TenantDashboardPage: React.FC = () => {
     return (state.announcements || [])
       .filter((a: Announcement) => {
         if (a.status !== 'published') return false;
-        if (!a.targetScope.targetRoles.includes('tenant')) return false;
+        if (!a.targetScope?.targetRoles?.includes('tenant')) return false;
+
+        const isSystemAnnouncement = a.ownerId === 'system' || a.ownerId === 'superadmin' || (a.category as string) === 'system';
+
+        // Strict Owner & Residency Isolation:
+        // Platform-wide system announcements can be seen by any tenant.
+        // Landlord announcements require the tenant to have an active residency and match the landlord ID.
+        if (!isSystemAnnouncement) {
+          if (activePropertyIds.size === 0) return false;
+          if (!a.ownerId || !activeOwnerIds.has(a.ownerId)) return false;
+        }
 
         // If targeted to specific recipients, ensure current tenant is targeted
         if (
-          a.targetScope.mode === 'specific_people' ||
-          (a.targetScope.targetUserIds && a.targetScope.targetUserIds.length > 0)
+          a.targetScope?.mode === 'specific_people' ||
+          (a.targetScope?.targetUserIds && a.targetScope.targetUserIds.length > 0)
         ) {
           const targeted = a.targetScope.targetUserIds || [];
           const isTargeted = targeted.some((tid) => userIds.has(tid));
           if (!isTargeted) return false;
         }
 
-        if (a.targetScope.allProperties) return true;
-        return a.targetScope.propertyIds.some((pId) => propertyIds.has(pId));
+        // Collect all explicit property IDs targeted by this announcement
+        const targetPropIds = new Set<string>();
+        if (Array.isArray(a.targetScope?.propertyIds)) {
+          a.targetScope.propertyIds.forEach((pid) => pid && targetPropIds.add(pid));
+        }
+        if (a.propertyId && a.propertyId !== 'all') {
+          targetPropIds.add(a.propertyId);
+        }
+
+        // Strict Property Isolation:
+        // If specific properties are targeted, tenant MUST reside in at least one of those exact property IDs
+        if (targetPropIds.size > 0) {
+          return Array.from(targetPropIds).some((pId) => activePropertyIds.has(pId));
+        }
+
+        // Broadcast to all properties of this owner:
+        // Only visible if owner explicitly enabled allProperties and tenant actively resides in this owner's portfolio
+        if (a.targetScope?.allProperties) {
+          return activePropertyIds.size > 0 && activeOwnerIds.has(a.ownerId);
+        }
+
+        return false;
       })
       .sort((a: Announcement, b: Announcement) => {
         if (a.isPinned && !b.isPinned) return -1;
         if (!a.isPinned && b.isPinned) return 1;
         return new Date(b.publishedAt || b.createdAt).getTime() - new Date(a.publishedAt || a.createdAt).getTime();
       });
-  }, [state.announcements, state.tenants, myUnits, user]);
+  }, [state.announcements, state.tenants, state.agreements, state.tenancyRequests, state.properties, myUnits, user, tenantEmail]);
 
   const [respondingReqId, setRespondingReqId] = useState<string | null>(null);
   const [ackingNoticeId, setAckingNoticeId] = useState<string | null>(null);
+  const [justAckedIds, setJustAckedIds] = useState<Set<string>>(new Set());
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
 
   const handleTenantAcknowledge = async (announcementId: string) => {
     setAckingNoticeId(announcementId);
@@ -307,14 +402,21 @@ export const TenantDashboardPage: React.FC = () => {
         (selectedUnitId && myUnits.find((u) => u.id === selectedUnitId)) ||
         myUnits[0];
       await acknowledgeAnnouncement(announcementId, {
-        tenantId: user?.id || 'tenant',
+        tenantId: user?.id || '',
         tenantName,
+        tenantEmail,
         unitNumber: ackUnit?.unitNumber,
         propertyId: ackUnit?.propertyId,
         propertyName: ackUnit?.propertyName,
         acknowledgedAt: new Date().toISOString(),
       });
+      setJustAckedIds((prev) => new Set(prev).add(announcementId));
       showToast('✓ Notice acknowledged. Thank you!');
+
+      // Smoothly dismiss the acknowledged notice after a brief confirmation grace period
+      setTimeout(() => {
+        setDismissedNoticeIds((prev) => new Set(prev).add(announcementId));
+      }, 1500);
     } catch (err) {
       console.error('Failed to acknowledge announcement:', err);
       showToast('Could not register acknowledgment.');
@@ -455,7 +557,11 @@ export const TenantDashboardPage: React.FC = () => {
   // Authoritative financial values: agreement is source of truth, unit is fallback
   const activeRent = currentAgreement?.rent || currentUnit?.rent || 0;
   const activeDeposit = currentAgreement?.deposit || currentUnit?.deposit || 0;
-  const activeCurrency = getCurrencySymbol(currentAgreement?.currency || currentUnit?.currency || currentProperty?.currency || tenantRecord?.currency) || DEFAULT_CURRENCY_SYMBOL;
+  const rawContractCurrency = currentAgreement?.currency || currentUnit?.currency || currentProperty?.currency || tenantRecord?.currency || 'USD';
+  const activeCurrency = getCurrencySymbol(rawContractCurrency) || DEFAULT_CURRENCY_SYMBOL;
+  const isDifferentCurrency = Boolean(viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(rawContractCurrency));
+  const convertedRent = isDifferentCurrency ? convert(Number(activeRent) || 0, rawContractCurrency, viewCurrency) : null;
+  const convertedDeposit = isDifferentCurrency ? convert(Number(activeDeposit) || 0, rawContractCurrency, viewCurrency) : null;
 
   const myTickets = state.tickets.filter(
     (t) => (user?.id && t.tenantId === user.id) || (tenantEmail && (t as any).tenantEmail?.toLowerCase() === tenantEmail)
@@ -528,7 +634,7 @@ export const TenantDashboardPage: React.FC = () => {
       autoRenew: false,
       // Always start fresh — never inherit stale payment/signing state
       status: 'awaiting_tenant_upload',
-      depositStatus: 'unpaid',
+      depositStatus: req.offlineDepositCollected ? 'paid' : (req.depositStatus || 'unpaid'),
       depositInvoiceId: undefined,
       requireTenantId: req.requireTenantId ?? existingAg?.requireTenantId ?? false,
       requiredIdList: req.requiredIdList || (req.requiredIdTypes ? req.requiredIdTypes.map((t, idx) => ({ id: `req_id_${idx}`, name: t })) : existingAg?.requiredIdList) || [],
@@ -638,6 +744,28 @@ export const TenantDashboardPage: React.FC = () => {
         r.id === req.id ? { ...r, status: 'accepted' as const, respondedAt: new Date().toISOString() } : r
       );
 
+      const isDepositPrepaid = Boolean(req.offlineDepositCollected);
+      const updatedPayments = [...prev.payments];
+      if (isDepositPrepaid && req.deposit > 0) {
+        const depTx: PaymentTransaction = {
+          id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
+          ownerId: req.ownerId,
+          propertyId: req.propertyId,
+          tenant: user?.displayName || req.tenantName,
+          tenantId: user?.id || req.tenantId,
+          unit: req.unitNumber,
+          amount: req.deposit,
+          date: new Date().toISOString().split('T')[0],
+          dueDate: req.leaseStart || new Date().toISOString().split('T')[0],
+          status: 'paid',
+          method: req.offlineDepositRef || 'Offline Cash/Wire',
+          type: 'deposit',
+          currency: req.currency || DEFAULT_CURRENCY,
+          notes: 'Security deposit collected offline as confirmed during invitation dispatch.',
+        };
+        updatedPayments.unshift(depTx);
+      }
+
       // Persist to Firestore backend
       saveAgreement(newAgreement);
       const assignedUnit = updatedUnits.find(isTargetUnit);
@@ -654,6 +782,7 @@ export const TenantDashboardPage: React.FC = () => {
         ...prev,
         units: updatedUnits,
         tenants: updatedTenants,
+        payments: updatedPayments,
         agreements: [...prev.agreements.filter((a) => a.id !== agId), newAgreement],
         tenancyRequests: updatedRequests,
         notifications: [...(prev.notifications || []), ownerNotif],
@@ -1138,108 +1267,124 @@ export const TenantDashboardPage: React.FC = () => {
       )}
 
       {/* Building Announcements & Community Bulletins */}
-      {myAnnouncements.length > 0 && (
-        <div style={{ marginBottom: '24px' }}>
-          <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--ink-base)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Megaphone size={18} color="var(--brass, #c59b27)" />
-            Building Announcements & Community Bulletins ({myAnnouncements.length})
-          </div>
+      {(() => {
+        const visibleAnnouncements = myAnnouncements.filter((a) => {
+          if (dismissedNoticeIds.has(a.id)) return false;
+          const isAckedByArr = (a.acknowledgedBy || []).some((id) => user?.id && id === user.id);
+          const isAckedByObj = (a.acknowledgments || []).some(
+            (ack) => (user?.id && ack.tenantId === user.id) || ((ack as any).tenantEmail && tenantEmail && (ack as any).tenantEmail.toLowerCase() === tenantEmail)
+          );
+          const hasAcked = isAckedByArr || isAckedByObj;
+          if (hasAcked && !justAckedIds.has(a.id)) return false;
+          return true;
+        });
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {myAnnouncements.map((a) => {
-              const isUrgent = a.priority === 'urgent' || a.priority === 'emergency';
-              const hasAcked = (a.acknowledgments || []).some(
-                (ack) => ack.tenantId === user?.id || (user?.email && ack.tenantName === tenantName)
-              );
+        if (visibleAnnouncements.length === 0) return null;
 
-              return (
-                <div
-                  key={a.id}
-                  className="panel"
-                  style={{
-                    padding: '18px 20px',
-                    borderRadius: '8px',
-                    borderLeft: isUrgent ? '4px solid #dc2626' : a.isPinned ? '4px solid var(--brass, #c59b27)' : '4px solid var(--border)',
-                    background: isUrgent ? '#fef2f2' : 'var(--surface)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                      {a.category === 'maintenance' && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#eff6ff', color: '#1d4ed8', padding: '3px 7px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
-                          <Wrench size={12} /> Maintenance
-                        </span>
-                      )}
-                      {a.category === 'policy' && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fef3c7', color: '#b45309', padding: '3px 7px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
-                          <ShieldCheck size={12} /> Building Policy
-                        </span>
-                      )}
-                      {a.category === 'security' && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fee2e2', color: '#b91c1c', padding: '3px 7px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
-                          <AlertCircle size={12} /> Safety & Security
-                        </span>
-                      )}
-                      {isUrgent && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#dc2626', color: '#fff', padding: '2px 7px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
-                          <Flame size={11} /> Urgent
-                        </span>
-                      )}
-                      {a.isPinned && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fef3c7', color: '#92400e', padding: '2px 6px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
-                          <Pin size={10} /> Pinned
-                        </span>
-                      )}
-                    </div>
+        return (
+          <div style={{ marginBottom: '24px' }}>
+            <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--ink-base)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Megaphone size={18} color="var(--brass, #c59b27)" />
+              Building Announcements & Community Bulletins ({visibleAnnouncements.length})
+            </div>
 
-                    <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
-                      {new Date(a.publishedAt || a.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </span>
-                  </div>
+            <div className="bulletins-scroll-container">
+              {visibleAnnouncements.map((a) => {
+                const isUrgent = a.priority === 'urgent' || a.priority === 'emergency';
+                const isAckedByArr = (a.acknowledgedBy || []).some((id) => user?.id && id === user.id);
+                const isAckedByObj = (a.acknowledgments || []).some(
+                  (ack) => (user?.id && ack.tenantId === user.id) || ((ack as any).tenantEmail && tenantEmail && (ack as any).tenantEmail.toLowerCase() === tenantEmail)
+                );
+                const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(a.id);
 
-                  <h3 style={{ margin: '0 0 6px 0', fontSize: '15.5px', fontWeight: 700, color: 'var(--ink-base)' }}>
-                    {a.title}
-                  </h3>
-
-                  <div style={{ fontSize: '13px', lineHeight: '1.6', color: 'var(--ink)', marginBottom: '12px', whiteSpace: 'pre-wrap' }}>
-                    {a.body}
-                  </div>
-
-                  {a.requireAcknowledgment && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', paddingTop: '10px', borderTop: '1px solid var(--line)' }}>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                        Notice from <strong style={{ color: 'var(--ink-base)' }}>{a.authorName}</strong> • Compliance acknowledgment required
+                return (
+                  <div
+                    key={a.id}
+                    className="panel"
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      borderLeft: isUrgent ? '3px solid #dc2626' : a.isPinned ? '3px solid var(--brass, #c59b27)' : '3px solid var(--border)',
+                      background: isUrgent ? '#fef2f2' : 'var(--surface)',
+                      transition: 'all 0.3s ease',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '2px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                        {a.category === 'maintenance' && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#eff6ff', color: '#1d4ed8', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 600, lineHeight: '16px' }}>
+                            <Wrench size={10} /> Maintenance
+                          </span>
+                        )}
+                        {a.category === 'policy' && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#fef3c7', color: '#b45309', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 600, lineHeight: '16px' }}>
+                            <ShieldCheck size={10} /> Policy
+                          </span>
+                        )}
+                        {a.category === 'security' && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#fee2e2', color: '#b91c1c', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 600, lineHeight: '16px' }}>
+                            <AlertCircle size={10} /> Security
+                          </span>
+                        )}
+                        {isUrgent && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', background: '#dc2626', color: '#fff', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 700, lineHeight: '16px' }}>
+                            <Flame size={9} /> Urgent
+                          </span>
+                        )}
+                        {a.isPinned && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', background: '#fef3c7', color: '#92400e', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 700, lineHeight: '16px' }}>
+                            <Pin size={8} /> Pinned
+                          </span>
+                        )}
+                        <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: 'var(--ink-base)', display: 'inline' }}>
+                          {a.title}
+                        </h4>
                       </div>
 
-                      {hasAcked ? (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: '#16a34a', fontWeight: 700, fontSize: '12px', background: '#f0fdf4', padding: '4px 10px', borderRadius: '4px' }}>
-                          <CheckCircle2 size={14} /> You have acknowledged this notice
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className={`btn brass small ${ackingNoticeId === a.id ? 'btn-processing' : ''}`}
-                          onClick={() => handleTenantAcknowledge(a.id)}
-                          disabled={ackingNoticeId === a.id}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 700 }}
-                        >
-                          <ButtonProcessing
-                            loading={ackingNoticeId === a.id}
-                            loadingText="Recording..."
-                            defaultText="I Have Read & Acknowledge"
-                            icon={<Check size={14} />}
-                            spinnerSize="xs"
-                          />
-                        </button>
-                      )}
+                      <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)', flexShrink: 0 }}>
+                        {new Date(a.publishedAt || a.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </span>
                     </div>
-                  )}
-                </div>
-              );
-            })}
+
+                    <div style={{ fontSize: '12px', lineHeight: '1.35', color: 'var(--ink)', margin: '2px 0 4px', whiteSpace: 'pre-wrap' }}>
+                      {a.body}
+                    </div>
+
+                    {a.requireAcknowledgment && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                        <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>
+                          Notice from <strong style={{ color: 'var(--ink-base)' }}>{a.authorName}</strong> • Compliance acknowledgment required
+                        </div>
+
+                        {hasAcked ? (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', color: '#16a34a', fontWeight: 600, fontSize: '10.5px', background: '#f0fdf4', padding: '1px 7px', borderRadius: '4px', border: '1px solid #bbf7d0' }}>
+                            <CheckCircle2 size={11} /> Acknowledged
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className={`btn brass small ${ackingNoticeId === a.id ? 'btn-processing' : ''}`}
+                            onClick={() => handleTenantAcknowledge(a.id)}
+                            disabled={ackingNoticeId === a.id}
+                            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, padding: '2px 9px', borderRadius: '9999px', fontSize: '10.5px', height: '23px' }}
+                          >
+                            <ButtonProcessing
+                              loading={ackingNoticeId === a.id}
+                              loadingText="Recording..."
+                              defaultText="Read & Acknowledge"
+                              spinnerSize="xs"
+                            />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* SECTION 1: Pending Tenancy Invitations & Requests Banner */}
       {myPendingRequests.length > 0 && (
@@ -1509,13 +1654,9 @@ export const TenantDashboardPage: React.FC = () => {
                           {targetProp?.propertyType || 'Residential'}
                         </span>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--ink-soft)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--ink-soft)', flexWrap: 'wrap' }}>
                         <MapPin size={15} color="var(--brass)" style={{ flexShrink: 0 }} />
-                        <span>
-                          {typeof targetProp?.address === 'string'
-                            ? targetProp.address
-                            : targetProp?.address?.formattedAddress || 'Property Address on File'}
-                        </span>
+                        <AddressDisplay address={targetProp?.address} fallback="Property Address on File" />
                       </div>
                       {(targetProp?.floorsCount || targetProp?.yearBuilt) && (
                         <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '4px' }}>
@@ -2640,9 +2781,15 @@ export const TenantDashboardPage: React.FC = () => {
               Welcome to Propithub, {tenantName}!
             </h2>
 
-            <p style={{ fontSize: '13.5px', color: 'var(--ink-soft)', lineHeight: '1.6', marginBottom: '20px' }}>
-              Your tenant resident account is active. When a property owner sends you a tenancy invitation, it will appear right here for your review and one-click acceptance.
-            </p>
+            {myPendingRequests.length > 0 ? (
+              <p style={{ fontSize: '14px', color: 'var(--ink)', lineHeight: '1.6', marginBottom: '20px', fontWeight: 500 }}>
+                ⚡ You have <b style={{ color: 'var(--brass)' }}>{myPendingRequests.length} official tenancy invitation{myPendingRequests.length > 1 ? 's' : ''}</b> awaiting your review above! Please inspect the property details and accept the invitation to begin your lease.
+              </p>
+            ) : (
+              <p style={{ fontSize: '13.5px', color: 'var(--ink-soft)', lineHeight: '1.6', marginBottom: '20px' }}>
+                Your tenant resident account is active. When a property owner sends you a tenancy invitation, it will appear right here for your review and one-click acceptance.
+              </p>
+            )}
 
             <div
               style={{
@@ -2733,16 +2880,26 @@ export const TenantDashboardPage: React.FC = () => {
           {/* Key Metrics Grid */}
           <div className="grid grid-3">
             <div className="stat">
-              <div className="num">
-                {activeCurrency}{(Number(activeRent) || 0).toLocaleString()}
+              <div className="num" style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
+                <span>{activeCurrency}{(Number(activeRent) || 0).toLocaleString()}</span>
+                {convertedRent !== null && (
+                  <span style={{ fontSize: '12.5px', color: 'var(--ink-soft)', fontWeight: 500 }}>
+                    (~{format(convertedRent, viewCurrency)})
+                  </span>
+                )}
               </div>
               <div className="lbl">Monthly Rent</div>
               <div className="delta">Due on 1st of each month</div>
             </div>
 
             <div className="stat">
-              <div className="num">
-                {activeCurrency}{(Number(activeDeposit) || 0).toLocaleString()}
+              <div className="num" style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
+                <span>{activeCurrency}{(Number(activeDeposit) || 0).toLocaleString()}</span>
+                {convertedDeposit !== null && (
+                  <span style={{ fontSize: '12.5px', color: 'var(--ink-soft)', fontWeight: 500 }}>
+                    (~{format(convertedDeposit, viewCurrency)})
+                  </span>
+                )}
               </div>
               <div className="lbl">
                 {(() => {
@@ -2814,11 +2971,11 @@ export const TenantDashboardPage: React.FC = () => {
               </div>
               <div className="kv">
                 <span className="k">Address:</span>
-                <span>
-                  {typeof currentProperty?.address === 'string'
-                    ? currentProperty.address
-                    : currentProperty?.address?.formattedAddress || currentProperty?.address?.street || '—'}
-                </span>
+                <AddressDisplay
+                  address={currentProperty?.address}
+                  fallback="—"
+                  style={{ textAlign: 'right', wordBreak: 'break-word', overflowWrap: 'anywhere', minWidth: 0, justifyContent: 'flex-end' }}
+                />
               </div>
               <div className="kv">
                 <span className="k">Assigned Unit:</span>
@@ -2844,7 +3001,14 @@ export const TenantDashboardPage: React.FC = () => {
               {currentAgreement?.rent && (
                 <div className="kv">
                   <span className="k">Agreed Rent:</span>
-                  <b>{activeCurrency}{(Number(currentAgreement.rent) || 0).toLocaleString()} / mo</b>
+                  <b>
+                    {activeCurrency}{(Number(currentAgreement.rent) || 0).toLocaleString()} / mo
+                    {convertedRent !== null && (
+                      <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '6px' }}>
+                        (~{format(convertedRent, viewCurrency)} / mo)
+                      </span>
+                    )}
+                  </b>
                 </div>
               )}
               {(currentAgreement?.ownerId || currentAgreement?.ownerName) && (() => {

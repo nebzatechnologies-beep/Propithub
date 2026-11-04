@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useAppData } from '../../context/AppDataContext';
 import { getCurrencySymbol, DEFAULT_CURRENCY_SYMBOL } from '../../lib/currencyService';
+import { getCleanAddressText } from '../../lib/addressUtils';
 import {
   Search,
   X,
@@ -133,7 +134,7 @@ export const GlobalSearch: React.FC = () => {
         { id: 'page-tenant-dash', category: 'Pages', title: 'Resident Home & Overview', subtitle: 'My rental unit, monthly rent balance, and landlord notices', link: '/tenant/dashboard', icon: <Home size={16} /> },
         { id: 'page-tenant-lease', category: 'Pages', title: 'My Lease Agreement', subtitle: 'View digital lease terms, signed PDF documents, and dates', link: '/tenant/lease', icon: <FileText size={16} /> },
         { id: 'page-tenant-payments', category: 'Pages', title: 'Pay Rent & Transaction History', subtitle: 'Pay active rent invoices, security deposit, and payment receipts', link: '/tenant/payments', icon: <CreditCard size={16} /> },
-        { id: 'page-tenant-support', category: 'Pages', title: 'Maintenance & Repair Requests', subtitle: 'Submit tickets with photos, track technicians, and report issues', link: '/tenant/support', icon: <Wrench size={16} /> },
+        { id: 'page-tenant-support', category: 'Pages', title: 'Support & Tickets', subtitle: 'Submit tickets with photos, track technicians, and report issues', link: '/tenant/support', icon: <Wrench size={16} /> },
         { id: 'page-tenant-reviews', category: 'Pages', title: 'Landlord Reviews & Trust', subtitle: 'Rate property management and browse community landlord ratings', link: '/tenant/trust', icon: <Award size={16} /> },
         { id: 'page-tenant-settings', category: 'Pages', title: 'Account Settings', subtitle: 'Manage contact email, phone number, and password', link: '/tenant/settings', icon: <Compass size={16} /> },
       );
@@ -179,7 +180,7 @@ export const GlobalSearch: React.FC = () => {
 
       // Properties
       (state.properties || []).forEach((p) => {
-        const addr = p.address?.formattedAddress || p.address?.city || '';
+        const addr = getCleanAddressText(p.address, '').text;
         items.push({
           id: `prop-${p.id}`,
           category: 'Properties',
@@ -249,7 +250,7 @@ export const GlobalSearch: React.FC = () => {
 
       // Properties
       myProperties.forEach((p) => {
-        const addr = p.address?.formattedAddress || p.address?.city || '';
+        const addr = getCleanAddressText(p.address, '').text;
         items.push({
           id: `prop-${p.id}`,
           category: 'Properties',
@@ -371,7 +372,7 @@ export const GlobalSearch: React.FC = () => {
       });
 
       // Announcements
-      (state.announcements || []).filter((a) => !a.ownerId || ownerIdSet.has(a.ownerId) || a.ownerId === 'owner').forEach((a) => {
+      (state.announcements || []).filter((a) => a.ownerId && ownerIdSet.has(a.ownerId)).forEach((a) => {
         items.push({
           id: `ann-${a.id}`,
           category: 'Broadcasts',
@@ -396,11 +397,12 @@ export const GlobalSearch: React.FC = () => {
         .forEach((u) => {
           const prop = (state.properties || []).find((p) => p.id === u.propertyId);
           const currSym = getCurrencySymbol(u.currency || prop?.currency) || DEFAULT_CURRENCY_SYMBOL;
+          const propAddr = getCleanAddressText(prop?.address, '').text;
           items.push({
             id: `unit-${u.id}`,
             category: 'Units',
             title: `Unit ${u.unitNumber} - ${prop?.name || 'Rented Unit'}`,
-            subtitle: `${prop?.address?.formattedAddress || prop?.address?.city || ''} • Rent: ${currSym}${Number(u.rent || 0).toLocaleString()}/mo`,
+            subtitle: `${propAddr ? `${propAddr} • ` : ''}Rent: ${currSym}${Number(u.rent || 0).toLocaleString()}/mo`,
             badge: 'Active Lease',
             badgeColor: '#059669',
             link: '/tenant/dashboard',
@@ -458,9 +460,77 @@ export const GlobalSearch: React.FC = () => {
           });
         });
 
-      // Announcements for tenant
+      // Announcements strictly scoped for this tenant's active landlords & properties
+      const myTenantOwnerIds = new Set<string>();
+      const myTenantPropertyIds = new Set<string>();
+
+      (state.agreements || []).forEach((ag) => {
+        const isMe = (tenantId && ag.tenantId === tenantId) || (tenantEmailLower && (ag.tenantEmail?.toLowerCase() === tenantEmailLower || ag.tenant?.toLowerCase() === tenantEmailLower));
+        const isActiveAg =
+          ag.status === 'active' ||
+          (ag.status as string) === 'signed' ||
+          (ag.status !== 'terminated' && (ag.status as string) !== 'cancelled' && ag.status !== 'rejected' && ag.status !== 'draft');
+        if (isMe && isActiveAg) {
+          if (ag.ownerId) myTenantOwnerIds.add(ag.ownerId);
+          if (ag.propertyId) myTenantPropertyIds.add(ag.propertyId);
+          const p = (state.properties || []).find((prop) => prop.id === ag.propertyId);
+          if (p?.ownerId) myTenantOwnerIds.add(p.ownerId);
+        }
+      });
+
+      (state.units || []).forEach((u) => {
+        const isMe = (tenantId && u.currentTenantId === tenantId) || (tenantEmailLower && u.tenant?.toLowerCase() === tenantEmailLower);
+        if (isMe && u.status === 'occupied') {
+          if (u.ownerId) myTenantOwnerIds.add(u.ownerId);
+          if (u.propertyId) myTenantPropertyIds.add(u.propertyId);
+          const p = (state.properties || []).find((prop) => prop.id === u.propertyId);
+          if (p?.ownerId) myTenantOwnerIds.add(p.ownerId);
+        }
+      });
+
+      (state.tenancyRequests || []).forEach((r) => {
+        const isMe = (tenantId && r.tenantId === tenantId) || (tenantEmailLower && r.tenantEmail?.toLowerCase() === tenantEmailLower);
+        if (isMe && r.status === 'accepted') {
+          if (r.ownerId) myTenantOwnerIds.add(r.ownerId);
+          if (r.propertyId) myTenantPropertyIds.add(r.propertyId);
+        }
+      });
+
+      (state.tenants || []).forEach((t) => {
+        const isMe = (tenantId && (t.id === tenantId || (t as any).userId === tenantId)) || (tenantEmailLower && t.email?.toLowerCase() === tenantEmailLower);
+        if (isMe && t.propertyId && myTenantPropertyIds.has(t.propertyId)) {
+          if (t.ownerId) myTenantOwnerIds.add(t.ownerId);
+        }
+      });
+
       (state.announcements || [])
-        .filter((a) => a.status === 'published' && a.targetScope?.targetRoles?.includes('tenant'))
+        .filter((a) => {
+          if (a.status !== 'published') return false;
+          if (!a.targetScope?.targetRoles?.includes('tenant')) return false;
+          const isSys = a.ownerId === 'system' || a.ownerId === 'superadmin' || (a.category as string) === 'system';
+          if (!isSys) {
+            if (myTenantPropertyIds.size === 0) return false;
+            if (!a.ownerId || !myTenantOwnerIds.has(a.ownerId)) return false;
+          }
+
+          const targetPropIds = new Set<string>();
+          if (Array.isArray(a.targetScope?.propertyIds)) {
+            a.targetScope.propertyIds.forEach((pid) => pid && targetPropIds.add(pid));
+          }
+          if (a.propertyId && a.propertyId !== 'all') {
+            targetPropIds.add(a.propertyId);
+          }
+
+          if (targetPropIds.size > 0) {
+            return Array.from(targetPropIds).some((pId) => myTenantPropertyIds.has(pId));
+          }
+
+          if (a.targetScope?.allProperties) {
+            return myTenantPropertyIds.size > 0 && myTenantOwnerIds.has(a.ownerId);
+          }
+
+          return false;
+        })
         .forEach((a) => {
           items.push({
             id: `ann-${a.id}`,
@@ -477,30 +547,30 @@ export const GlobalSearch: React.FC = () => {
 
     // --- MANAGER SCOPE ---
     else if (role === 'manager') {
-      const ownerId = user?.ownerId || '';
-      const managerRecord = (state.managers || []).find(
-        (m) =>
+      const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
+        (m: any) =>
           (user?.id && String(m.id) === user.id) ||
           (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
       );
       const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
+      const ownerId = user?.ownerId || (managerRecord as any)?.ownerId || '';
 
       const myProperties = (state.properties || []).filter((p) => {
-        if (!ownerId) return true;
-        if (p.ownerId !== ownerId) return false;
+        if (ownerId && p.ownerId !== ownerId) return false;
         if (assignedPropertyId) {
           return p.id === assignedPropertyId || p.assignedManagerId === user?.id;
         }
-        return true;
+        return p.assignedManagerId === user?.id;
       });
       const myPropIds = new Set(myProperties.map((p) => p.id));
 
       myProperties.forEach((p) => {
+        const addrText = getCleanAddressText(p.address, 'Local Property').text;
         items.push({
           id: `prop-${p.id}`,
           category: 'Properties',
           title: p.name,
-          subtitle: `${p.address?.city || 'Local Property'} • Total Units: ${p.unitCount || 0}`,
+          subtitle: `${addrText} • Total Units: ${p.unitCount || 0}`,
           badge: 'Property',
           badgeColor: '#0284c7',
           link: '/manager/properties',

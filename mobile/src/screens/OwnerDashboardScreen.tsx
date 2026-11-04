@@ -9,6 +9,7 @@ import {
   StatusBar,
   Modal,
   Alert,
+  Linking,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
@@ -23,6 +24,7 @@ import { MobileProperty, MobilePaymentTransaction } from '../types';
 import { doc, setDoc } from 'firebase/firestore';
 import { getOwnerReminders, isInvoiceForVacatedTenancy, DashboardReminder } from '../lib/reminders';
 import { usePlanLimits } from '../hooks/usePlanLimits';
+import { AddressDisplay } from '../components/AddressDisplay';
 
 interface OwnerDashboardScreenProps {
   onProfilePress?: () => void;
@@ -453,26 +455,26 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
         },
         ...(unlistedVacantUnits.length > 0
           ? [
-              {
-                text: 'Publish Now ✓',
-                onPress: async () => {
-                  for (const u of unlistedVacantUnits) {
-                    await saveUnit({ ...u, isListedPublicly: true });
-                  }
-                  Alert.alert(
-                    'Units Live on Market! 🎉',
-                    `${unlistedVacantUnits.length} vacant unit(s) are now publicly listed. Prospective tenants can browse and apply.`,
-                    [
-                      {
-                        text: 'View Properties',
-                        onPress: () => onNavigate?.('property_portfolio'),
-                      },
-                      { text: 'Done', style: 'cancel' as const },
-                    ]
-                  );
-                },
+            {
+              text: 'Publish Now ✓',
+              onPress: async () => {
+                for (const u of unlistedVacantUnits) {
+                  await saveUnit({ ...u, isListedPublicly: true });
+                }
+                Alert.alert(
+                  'Units Live on Market! 🎉',
+                  `${unlistedVacantUnits.length} vacant unit(s) are now publicly listed. Prospective tenants can browse and apply.`,
+                  [
+                    {
+                      text: 'View Properties',
+                      onPress: () => onNavigate?.('property_portfolio'),
+                    },
+                    { text: 'Done', style: 'cancel' as const },
+                  ]
+                );
               },
-            ]
+            },
+          ]
           : []),
       ]
     );
@@ -647,75 +649,81 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
                 </View>
               </View>
 
-              {ownerReminders.map((rem) => {
-                const isUrgent = rem.severity === 'urgent';
-                const isSent = nudgeSentIds.includes(rem.id);
+              <ScrollView
+                style={ownerReminders.length > 2 ? { maxHeight: 220 } : undefined}
+                nestedScrollEnabled={true}
+                showsVerticalScrollIndicator={ownerReminders.length > 2}
+              >
+                {ownerReminders.map((rem) => {
+                  const isUrgent = rem.severity === 'urgent';
+                  const isSent = nudgeSentIds.includes(rem.id);
 
-                return (
-                  <View
-                    key={rem.id}
-                    style={[
-                      styles.reminderCard,
-                      { backgroundColor: colors.surface, borderColor: colors.line },
-                      isUrgent && (isDark ? { backgroundColor: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.3)' } : styles.reminderCardUrgent),
-                    ]}
-                  >
-                    <View style={styles.reminderCardLeft}>
-                      <View
-                        style={[
-                          styles.reminderIconBox,
-                          isUrgent ? styles.iconBoxUrgent : styles.iconBoxWarning,
-                        ]}
-                      >
-                        <Feather
-                          name={isUrgent ? 'alert-circle' : 'zap'}
-                          size={15}
-                          color={isUrgent ? '#DC2626' : '#D97706'}
-                        />
-                      </View>
-                      <View style={{ flex: 1, paddingRight: 8 }}>
-                        <Text style={[styles.reminderTitle, { color: colors.navy }]} numberOfLines={1}>
-                          {rem.title}
-                        </Text>
-                        <Text style={[styles.reminderDesc, { color: colors.inkSoft }]} numberOfLines={1}>
-                          {rem.description.replace(/Rent payment of [^.]+settle immediately through your Propithub portal\./i, 'Overdue payment settlement pending')}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <TouchableOpacity
+                  return (
+                    <View
+                      key={rem.id}
                       style={[
-                        styles.reminderActionBtn,
-                        isUrgent && { backgroundColor: '#DC2626' },
-                        isSent && { backgroundColor: '#10B981' },
+                        styles.reminderCard,
+                        { backgroundColor: colors.surface, borderColor: colors.line },
+                        isUrgent && (isDark ? { backgroundColor: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.3)' } : styles.reminderCardUrgent),
                       ]}
-                      onPress={() => {
-                        if (rem.actionType === 'nudge') {
-                          handleSendNudge(rem);
-                        } else if (rem.actionType === 'publish_units' || rem.id.startsWith('owner_unlisted_units')) {
-                          handlePublishUnits(rem);
-                        } else if (rem.actionScreen) {
-                          onNavigate?.(rem.actionScreen);
-                        }
-                      }}
-                      disabled={isSent}
-                      activeOpacity={0.8}
                     >
-                      <Text style={styles.reminderActionBtnText}>
-                        {isSent ? 'Sent ✓' : rem.actionLabel}
-                      </Text>
-                      {!isSent && (
-                        <Feather
-                          name="arrow-right"
-                          size={11}
-                          color="#FFFFFF"
-                          style={{ marginLeft: 4 }}
-                        />
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                );
-              })}
+                      <View style={styles.reminderCardLeft}>
+                        <View
+                          style={[
+                            styles.reminderIconBox,
+                            isUrgent ? styles.iconBoxUrgent : styles.iconBoxWarning,
+                          ]}
+                        >
+                          <Feather
+                            name={isUrgent ? 'alert-circle' : 'zap'}
+                            size={15}
+                            color={isUrgent ? '#DC2626' : '#D97706'}
+                          />
+                        </View>
+                        <View style={{ flex: 1, paddingRight: 8 }}>
+                          <Text style={[styles.reminderTitle, { color: colors.navy }]} numberOfLines={1}>
+                            {rem.title}
+                          </Text>
+                          <Text style={[styles.reminderDesc, { color: colors.inkSoft }]} numberOfLines={1}>
+                            {rem.description.replace(/Rent payment of [^.]+settle immediately through your Propithub portal\./i, 'Overdue payment settlement pending')}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.reminderActionBtn,
+                          isUrgent && { backgroundColor: '#DC2626' },
+                          isSent && { backgroundColor: '#10B981' },
+                        ]}
+                        onPress={() => {
+                          if (rem.actionType === 'nudge') {
+                            handleSendNudge(rem);
+                          } else if (rem.actionType === 'publish_units' || rem.id.startsWith('owner_unlisted_units')) {
+                            handlePublishUnits(rem);
+                          } else if (rem.actionScreen) {
+                            onNavigate?.(rem.actionScreen);
+                          }
+                        }}
+                        disabled={isSent}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.reminderActionBtnText}>
+                          {isSent ? 'Sent ✓' : rem.actionLabel}
+                        </Text>
+                        {!isSent && (
+                          <Feather
+                            name="arrow-right"
+                            size={11}
+                            color="#FFFFFF"
+                            style={{ marginLeft: 4 }}
+                          />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
+              </ScrollView>
             </View>
           )}
 
@@ -907,7 +915,11 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
                   <View style={styles.propertyCardTop}>
                     <View style={{ flex: 1, paddingRight: 8 }}>
                       <Text style={[styles.propertyNameText, { color: colors.navy }]}>{p.name}</Text>
-                      <Text style={[styles.propertyAddressText, { color: colors.inkSoft }]}>{formattedAddress}</Text>
+                      <AddressDisplay
+                        address={p.address}
+                        fallback="Address on file"
+                        textStyle={[styles.propertyAddressText, { color: colors.inkSoft }]}
+                      />
                     </View>
                     <View style={[styles.currBadge, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.3)' }]}>
                       <Text style={[styles.currBadgeText, isDark && { color: '#34D399' }]}>
@@ -927,8 +939,8 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
                           isFull
                             ? styles.occupancyBadgeGreen
                             : occupiedPropCount > 0
-                            ? styles.occupancyBadgeBlue
-                            : styles.occupancyBadgeAmber,
+                              ? styles.occupancyBadgeBlue
+                              : styles.occupancyBadgeAmber,
                         ]}
                       >
                         <Text
@@ -937,8 +949,8 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
                             isFull
                               ? { color: '#059669' }
                               : occupiedPropCount > 0
-                              ? { color: '#2563EB' }
-                              : { color: '#B45309' },
+                                ? { color: '#2563EB' }
+                                : { color: '#B45309' },
                           ]}
                         >
                           {occupiedPropCount}/{totalUnits} occupied ({occupancyPercent}%)

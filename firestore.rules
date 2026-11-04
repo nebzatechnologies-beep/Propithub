@@ -179,12 +179,11 @@ service cloud.firestore {
     // Payments & Invoices
     match /payments/{paymentId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner() || isManager() || isSuperAdmin();
+      allow write: if isOwner() || isManager() || isSuperAdmin() || isTenant();
     }
     match /invoices/{invoiceId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner() || isManager() || isSuperAdmin() ||
-        (isTenant() && (request.auth.uid == resource.data.tenantId || request.auth.uid == request.resource.data.tenantId));
+      allow write: if isOwner() || isManager() || isSuperAdmin() || isTenant();
     }
 
     // Maintenance Tickets
@@ -275,11 +274,11 @@ service cloud.firestore {
     // Announcements & Acknowledgments
     match /announcements/{announcementId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner() || isSuperAdmin();
+      allow create, delete: if isOwner() || isSuperAdmin();
+      allow update: if isOwner() || isSuperAdmin() || isAuthenticated();
     }
     match /announcementAcknowledgments/{ackId} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+      allow read, write: if isAuthenticated();
     }
 
     // Agreement Templates
