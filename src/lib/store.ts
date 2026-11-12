@@ -36,6 +36,7 @@ import {
   PropertyEnquiry,
   ListingBoostPlan,
 } from '../types';
+import { SMS_EVENT_DEFAULTS } from './smsEvents';
 import { isFirebaseConfigured } from './firebase';
 import { sanitizeCountry } from './addressUtils';
 
@@ -626,6 +627,7 @@ export const INITIAL_STATE: AppState = {
   },
 
   notificationToggles: {
+    ...SMS_EVENT_DEFAULTS,
     'Rent due reminder': true,
     'Payment received': true,
     'Late fee applied': true,

@@ -433,11 +433,63 @@ async function birdPost(
 /**
  * Production Twilio SMS Dispatcher
  */
+/**
+ * SMS is reserved for major transactions; everything else goes by email only.
+ * Each event has an on/off switch (Superadmin > Integrations > Platform Event Triggers),
+ * stored in platformConfig/notifications.notificationToggles under the key below.
+ * Keep these defaults in sync with src/lib/smsEvents.ts.
+ */
+export const SMS_EVENT_DEFAULTS: Record<string, boolean> = {
+  'SMS: Welcome message': false,
+  'SMS: Final deletion warning': true,
+  'SMS: Trial ending notice': false,
+  'SMS: Autopay advance notice': false,
+  'SMS: Autopay failed': true,
+  'SMS: Late fee applied': true,
+  'SMS: Rent reminder': false,
+  'SMS: Lease expiry warning': false,
+  'SMS: New rent invoice': false,
+  'SMS: Rent payment received': true,
+  'SMS: Lease signature request': false,
+  'SMS: Lease signed and active': true,
+  'SMS: Deposit statement': false,
+  'SMS: Deposit refund': true,
+  'SMS: Emergency ticket': true,
+  'SMS: Ticket updates': false,
+  'SMS: Announcement': true,
+  'SMS: Cash claim': false,
+  'SMS: Cash confirmed': true,
+};
+
+export async function isSmsEnabledForEvent(eventKey: string): Promise<boolean> {
+  try {
+    const snap = await db.collection('platformConfig').doc('notifications').get();
+    const t = snap.exists ? snap.data()?.notificationToggles : null;
+    if (t && typeof t[eventKey] === 'boolean') return t[eventKey];
+  } catch (err) {
+    functions.logger.warn(`Could not read SMS switch "${eventKey}":`, err);
+  }
+  return SMS_EVENT_DEFAULTS[eventKey] ?? true;
+}
+
+/** Sends an SMS only if that event's SMS switch is on; otherwise reports it as skipped. */
+export async function sendEventSms(
+  eventKey: string,
+  toPhone: string,
+  message: string,
+  overrideComms?: any
+): Promise<{ success: boolean; sid?: string; error?: string; skipped?: boolean }> {
+  if (!(await isSmsEnabledForEvent(eventKey))) {
+    return { success: false, skipped: true, error: `SMS switched off for "${eventKey}" (email only).` };
+  }
+  return sendTwilioSms(toPhone, message, overrideComms);
+}
+
 export async function sendTwilioSms(
   toPhone: string,
   message: string,
   overrideComms?: any
-): Promise<{ success: boolean; sid?: string; error?: string }> {
+): Promise<{ success: boolean; sid?: string; error?: string; skipped?: boolean }> {
   if (!toPhone || !message) return { success: false, error: 'Missing destination phone or message body.' };
   const formatted = formatE164Phone(toPhone);
   if (!formatted || formatted.length < 8) return { success: false, error: `Invalid E.164 phone: ${toPhone}` };
@@ -744,8 +796,8 @@ export const setClaimsOnRequest = functions.firestore
 
           const uSms = `Propithub: Hello ${uName}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login using ${uEmail} and PIN: ${uTempPw}`;
           if (uPhone) {
-            const sRes = await sendTwilioSms(uPhone, uSms);
-            sStatus = sRes.success ? 'delivered' : 'failed';
+            const sRes = await sendEventSms('SMS: Welcome message', uPhone, uSms);
+            sStatus = sRes.skipped ? 'skipped' : sRes.success ? 'delivered' : 'failed';
             sid = sRes.sid;
           }
 
@@ -940,8 +992,8 @@ export const provisionUserAccount = functions.https.onCall(async (data, context)
 
   const welcomeSms = `Propithub: Hello ${displayName}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login using ${email} and PIN: ${tempPassword}`;
   if (phone) {
-    const smsRes = await sendTwilioSms(phone, welcomeSms);
-    smsStatus = smsRes.success ? 'delivered' : 'failed';
+    const smsRes = await sendEventSms('SMS: Welcome message', phone, welcomeSms);
+    smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
     smsSid = smsRes.sid;
   }
 
@@ -1590,7 +1642,7 @@ export const checkSubscriptionExpiry = functions.pubsub
           const ownerPhone = data.phone || data.ownerPhone;
           if (ownerPhone) {
             const alertMsg = 'Propithub Final Notice: Your free trial account and uploaded property photos will be permanently deleted tomorrow at midnight unless you activate a subscription. Visit https://propithub.com/owner/plans';
-            await sendTwilioSms(ownerPhone, alertMsg).catch(() => {});
+            await sendEventSms('SMS: Final deletion warning', ownerPhone, alertMsg).catch(() => {});
           }
         }
       }
@@ -1626,8 +1678,8 @@ export const checkSubscriptionExpiry = functions.pubsub
           }
 
           if (ownerPhone) {
-            const smsRes = await sendTwilioSms(ownerPhone, body);
-            smsStatus = smsRes.success ? 'delivered' : 'failed';
+            const smsRes = await sendEventSms('SMS: Trial ending notice', ownerPhone, body);
+            smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
           }
 
           // In-App Notification
@@ -1679,8 +1731,8 @@ export const checkSubscriptionExpiry = functions.pubsub
           }
 
           if (ownerPhone) {
-            const smsRes = await sendTwilioSms(ownerPhone, body);
-            smsStatus = smsRes.success ? 'delivered' : 'failed';
+            const smsRes = await sendEventSms('SMS: Trial ending notice', ownerPhone, body);
+            smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
           }
 
           // In-App Notification
@@ -1883,7 +1935,7 @@ export const executeScheduledRentAutopay = functions.pubsub
 
         if (tenantPhone) {
           const msg = `Propithub Notice: Your monthly rent of ${rentDisplay} for Unit ${ag.unit} will be auto-debited in 48 hours via ${autopay.activeGateway.toUpperCase()} Autopay. Please maintain sufficient balance.`;
-          await sendTwilioSms(tenantPhone, msg).catch(() => {});
+          await sendEventSms('SMS: Autopay advance notice', tenantPhone, msg).catch(() => {});
         }
 
         await agDoc.ref.update({
@@ -2089,7 +2141,7 @@ export const executeScheduledRentAutopay = functions.pubsub
           const alertMsg = nextFailCount >= 3
             ? `Propithub Alert: Rent autopay for Unit ${ag.unit} failed after 3 attempts. Please pay manually at https://propithub.com/tenant/payments`
             : `Propithub Alert: Rent autopay of ${rentDisplay} for Unit ${ag.unit} could not be debited. System will retry in 48 hours. Please maintain balance.`;
-          await sendTwilioSms(tenantPhone, alertMsg).catch(() => {});
+          await sendEventSms('SMS: Autopay failed', tenantPhone, alertMsg).catch(() => {});
         }
       }
     }
@@ -2133,7 +2185,7 @@ export const applyLateFeesDaily = functions.pubsub
 
         const lateFeeRule = await isNotificationRuleEnabled('Late fee applied');
         if (lateFeeRule && payment.tenantPhone) {
-          await sendTwilioSms(
+          await sendEventSms('SMS: Late fee applied', 
             payment.tenantPhone,
             `Propithub Notice: A late penalty fee of ₹${fee} has been assessed for overdue rent (Unit ${payment.unit}). Please settle your outstanding balance.`
           );
@@ -2219,8 +2271,8 @@ export const dispatchDailyRentReminders = functions.pubsub
           const smsText = `${baseMsg} Pay online: ${paymentUrl}`;
 
           if (tenantPhone) {
-            const smsRes = await sendTwilioSms(tenantPhone, smsText);
-            smsStatus = smsRes.success ? 'delivered' : 'failed';
+            const smsRes = await sendEventSms('SMS: Rent reminder', tenantPhone, smsText);
+            smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
             smsSid = smsRes.sid;
           }
 
@@ -2317,8 +2369,8 @@ export const dispatchDailyRentReminders = functions.pubsub
 
               // 1. Notify Tenant (SMS, Email, In-App)
               if (tenantPhone) {
-                const smsRes = await sendTwilioSms(tenantPhone, expiryMsg);
-                smsStatus = smsRes.success ? 'delivered' : 'failed';
+                const smsRes = await sendEventSms('SMS: Lease expiry warning', tenantPhone, expiryMsg);
+                smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
                 smsSid = smsRes.sid;
               }
 
@@ -4873,11 +4925,11 @@ export const onRentalInvoiceWrite = functions.firestore
           emailStatus = 'delivered';
         }
         if (tenantPhone) {
-          const smsRes = await sendTwilioSms(
+          const smsRes = await sendEventSms('SMS: New rent invoice', 
             tenantPhone,
             `Propithub Notice: New rental invoice ${invoiceId} for ₹${amount.toLocaleString()} (Unit ${unit}) is due on ${after.due || 'receipt'}. Please settle via your resident portal.`
           );
-          smsStatus = smsRes.success ? 'delivered' : 'failed';
+          smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
           smsSid = smsRes.sid;
         }
       } else {
@@ -4926,11 +4978,11 @@ export const onRentalInvoiceWrite = functions.firestore
           emailStatus = 'delivered';
         }
         if (tenantPhone) {
-          const smsRes = await sendTwilioSms(
+          const smsRes = await sendEventSms('SMS: Rent payment received', 
             tenantPhone,
             `Propithub Receipt: Payment of ₹${amount.toLocaleString()} for invoice ${invoiceId} (Unit ${unit}) is confirmed. Thank you!`
           );
-          smsStatus = smsRes.success ? 'delivered' : 'failed';
+          smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
           smsSid = smsRes.sid;
         }
       } else {
@@ -5048,8 +5100,8 @@ export const onAgreementWrite = functions.firestore
       const smsText = `Propithub: Your residential lease agreement for Unit ${unit} is ready for digital signature. Please log in to your tenant dashboard to review and sign.`;
 
       if (tenantPhone) {
-        const smsRes = await sendTwilioSms(tenantPhone, smsText);
-        smsStatus = smsRes.success ? 'delivered' : 'failed';
+        const smsRes = await sendEventSms('SMS: Lease signature request', tenantPhone, smsText);
+        smsStatus = smsRes.skipped ? 'skipped' : smsRes.success ? 'delivered' : 'failed';
         smsSid = smsRes.sid;
       }
       if (tenantEmail) {
@@ -5099,8 +5151,8 @@ export const onAgreementWrite = functions.firestore
       const tenantSmsText = `Propithub: Your lease agreement for Unit ${unit} has been finalized and is now active! You can download your signed copy anytime from your portal.`;
 
       if (tenantPhone) {
-        const res = await sendTwilioSms(tenantPhone, tenantSmsText);
-        tenantSmsStatus = res.success ? 'delivered' : 'failed';
+        const res = await sendEventSms('SMS: Lease signed and active', tenantPhone, tenantSmsText);
+        tenantSmsStatus = res.skipped ? 'skipped' : res.success ? 'delivered' : 'failed';
         tenantSmsSid = res.sid;
       }
       if (tenantEmail) {
@@ -5152,8 +5204,8 @@ export const onAgreementWrite = functions.firestore
       const ownerSmsText = `Propithub: Tenant ${tenantName || ''} has digitally signed the lease agreement for Unit ${unit}. Tenancy is now active.`;
 
       if (ownerPhone) {
-        const res = await sendTwilioSms(ownerPhone, ownerSmsText);
-        ownerSmsStatus = res.success ? 'delivered' : 'failed';
+        const res = await sendEventSms('SMS: Lease signed and active', ownerPhone, ownerSmsText);
+        ownerSmsStatus = res.skipped ? 'skipped' : res.success ? 'delivered' : 'failed';
       }
       if (ownerEmail) {
         const ownerHtml = renderPropithubEmail(
@@ -5232,8 +5284,8 @@ export const onDepositSettlementWrite = functions.firestore
 
       if (isEnabled) {
         if (tenantPhone) {
-          const res = await sendTwilioSms(tenantPhone, smsText);
-          smsStatus = res.success ? 'delivered' : 'failed';
+          const res = await sendEventSms('SMS: Deposit statement', tenantPhone, smsText);
+          smsStatus = res.skipped ? 'skipped' : res.success ? 'delivered' : 'failed';
           smsSid = res.sid;
         }
         if (tenantEmail) {
@@ -5292,8 +5344,8 @@ export const onDepositSettlementWrite = functions.firestore
 
       if (isEnabled) {
         if (tenantPhone) {
-          const res = await sendTwilioSms(tenantPhone, smsText);
-          smsStatus = res.success ? 'delivered' : 'failed';
+          const res = await sendEventSms('SMS: Deposit refund', tenantPhone, smsText);
+          smsStatus = res.skipped ? 'skipped' : res.success ? 'delivered' : 'failed';
           smsSid = res.sid;
         }
         if (tenantEmail) {
@@ -5378,8 +5430,8 @@ export const onTicketWrite = functions.firestore
       const alertMsg = `EMERGENCY ALERT [Propithub]: Unit ${unit} reported urgent repair: "${title}". Immediate dispatch required.`;
       if (isEnabled) {
         if (managerPhone) {
-          const res = await sendTwilioSms(managerPhone, alertMsg);
-          smsStatus = res.success ? 'delivered' : 'failed';
+          const res = await sendEventSms('SMS: Emergency ticket', managerPhone, alertMsg);
+          smsStatus = res.skipped ? 'skipped' : res.success ? 'delivered' : 'failed';
           smsSid = res.sid;
         }
         if (managerEmail) {
@@ -5446,8 +5498,8 @@ export const onTicketWrite = functions.firestore
 
       if (isEnabled) {
         if (tenantPhone) {
-          const res = await sendTwilioSms(tenantPhone, resolveMsg);
-          smsStatus = res.success ? 'delivered' : 'failed';
+          const res = await sendEventSms('SMS: Ticket updates', tenantPhone, resolveMsg);
+          smsStatus = res.skipped ? 'skipped' : res.success ? 'delivered' : 'failed';
           smsSid = res.sid;
         }
         if (tenantEmail) {
@@ -5518,7 +5570,7 @@ export const onTicketWrite = functions.firestore
         // 1. Notify Technician
         const techSms = `Propithub Dispatch: Work order #${ticketId} at Unit ${unit} assigned to you. Issue: "${title}". Resident: ${tenantName} (${tenantPhone || 'Portal'}).`;
         if (staffPhone) {
-          await sendTwilioSms(staffPhone, techSms);
+          await sendEventSms('SMS: Ticket updates', staffPhone, techSms);
         }
         if (staffEmail) {
           const techHtml = renderPropithubEmail(
@@ -5541,7 +5593,7 @@ export const onTicketWrite = functions.firestore
         // 2. Notify Tenant
         const tenantSms = `Propithub Update: Technician ${staffName} has been assigned to your repair request #${ticketId} (Unit ${unit}). They will coordinate service with you.`;
         if (tenantPhone) {
-          await sendTwilioSms(tenantPhone, tenantSms);
+          await sendEventSms('SMS: Ticket updates', tenantPhone, tenantSms);
         }
         if (tenantEmail) {
           const tenantHtml = renderPropithubEmail(
@@ -5585,7 +5637,7 @@ export const onTicketWrite = functions.firestore
       }
       if (tenantPhone) {
         const inProgressSms = `Propithub Update: Work has started on maintenance ticket #${ticketId} at Unit ${unit}. The technician is currently on-site.`;
-        await sendTwilioSms(tenantPhone, inProgressSms);
+        await sendEventSms('SMS: Ticket updates', tenantPhone, inProgressSms);
       }
     }
   });
@@ -5662,7 +5714,7 @@ export const onAnnouncementWrite = functions.firestore
           sentEmailCount++;
         }
         if (shouldSendSms && r.phone) {
-          await sendTwilioSms(r.phone, smsText);
+          await sendEventSms('SMS: Announcement', r.phone, smsText);
           sentSmsCount++;
         }
       }
@@ -5740,7 +5792,7 @@ export const onCashHandoverClaimWrite = functions.firestore
       if (ownerContact) {
         const smsMsg = `Propithub Cash Claim: Tenant ${tenantName} reported cash payment of ₹${amount.toLocaleString()} for Unit ${unit}. Please verify & confirm in your portal: https://propithub.web.app/owner/payments`;
         if (ownerContact.phone) {
-          await sendTwilioSms(ownerContact.phone, smsMsg);
+          await sendEventSms('SMS: Cash claim', ownerContact.phone, smsMsg);
         }
         if (ownerContact.email) {
           const emailHtml = renderPropithubEmail(
@@ -5769,7 +5821,7 @@ export const onCashHandoverClaimWrite = functions.firestore
       if (tenantContact) {
         const confirmMsg = `Propithub Receipt: Your cash payment of ₹${amount.toLocaleString()} for Unit ${unit} has been verified and confirmed by management. Thank you!`;
         if (tenantContact.phone) {
-          await sendTwilioSms(tenantContact.phone, confirmMsg);
+          await sendEventSms('SMS: Cash confirmed', tenantContact.phone, confirmMsg);
         }
         if (tenantContact.email) {
           const emailHtml = renderPropithubEmail(

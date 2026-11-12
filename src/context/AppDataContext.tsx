@@ -5,6 +5,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { httpsCallable } from 'firebase/functions';
 import { db, isFirebaseConfigured, auth, functions } from '../lib/firebase';
 import { compressImage } from '../lib/imageUploader';
+import { SMS_EVENT_DEFAULTS } from '../lib/smsEvents';
 import { sanitizeCountry, isInvalidCountry } from '../lib/addressUtils';
 import { generateTransactionId, generateDepositVoucherId } from '../lib/idGenerators';
 import { toast, ToastType, ToastOptions } from '../lib/toast';
@@ -1202,7 +1203,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (data && data.notificationToggles) {
           setState((prev) => ({
             ...prev,
-            notificationToggles: data.notificationToggles,
+            notificationToggles: { ...SMS_EVENT_DEFAULTS, ...data.notificationToggles },
           }));
         }
       }
