@@ -1037,12 +1037,12 @@ export const getSuperadminReminders = (
     });
   }
 
-  const isTwilioConfigured = state.commsConfig?.twilioConnected || state.commsConfig?.twilioAuthToken;
+  const isTwilioConfigured = state.commsConfig?.birdConnected || state.commsConfig?.twilioConnected || state.commsConfig?.twilioAuthToken;
   if (!isTwilioConfigured) {
     reminders.push({
       id: 'superadmin_comms_unconnected',
       title: 'SMS Gateway Credentials Incomplete',
-      description: 'Configure Twilio API keys to enable live automated SMS dispatch to tenants and landlords.',
+      description: 'Connect your Bird API key (or Twilio) to enable live automated SMS and email dispatch to tenants and landlords.',
       severity: 'info',
       icon: 'bell',
       actionLabel: 'Configure Gateway',

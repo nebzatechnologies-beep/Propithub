@@ -1176,6 +1176,13 @@ export interface CommsConfig {
   sendgridConnected: boolean;
   sendgridFrom: string;
 
+  // Bird (bird.com): one key for email + SMS
+  birdApiKey?: string;
+  birdConnected?: boolean;
+  birdEmailFrom?: string;
+  birdSmsSender?: string;
+  birdReplyTo?: string;
+
   // WhatsApp Cloud API
   whatsappPhoneNumberId?: string;
   whatsappWabaId?: string;

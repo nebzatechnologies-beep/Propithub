@@ -1072,6 +1072,7 @@ export interface MobileCommsConfig {
   sendgridKey: string;
   sendgridConnected: boolean;
   sendgridFrom: string;
+  birdConnected?: boolean;
 }
 
 export interface MobilePropertyEnquiry {
