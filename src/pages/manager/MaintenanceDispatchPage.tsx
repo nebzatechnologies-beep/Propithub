@@ -7,6 +7,7 @@ import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { DEFAULT_CURRENCY, normalizeCurrencyCode } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 
 export const MaintenanceDispatchPage: React.FC = () => {
   const { state, updateState, saveStaff, saveTicket, showToast } = useAppData();
@@ -58,7 +59,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
       return props.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id);
     }
     const explicitlyAssigned = props.filter((p) => p.assignedManagerId === user?.id);
-    return explicitlyAssigned;
+    return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
   }, [state.properties, ownerId, assignedPropertyId, user?.id]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
@@ -68,11 +69,44 @@ export const MaintenanceDispatchPage: React.FC = () => {
     return (t as any).currency || state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency || state.properties.find((p) => p.id === t.propertyId)?.currency || myProperties[0]?.currency || DEFAULT_CURRENCY;
   };
 
-  const myStaff = ownerId ? state.staff.filter((s) => s.ownerId === ownerId) : [];
+  const myStaff = useMemo(() => {
+    if (!ownerId) return [];
+    const directStaff = state.staff.filter((s) => s.ownerId === ownerId);
+    // Include staff users registered under this owner in state.users who may not have a dedicated staff document yet
+    const userStaff: StaffMember[] = (state.users || [])
+      .filter(
+        (u) =>
+          u.role === 'staff' &&
+          u.ownerId === ownerId &&
+          !directStaff.some((ds) => ds.id === u.id || (ds.email && ds.email.toLowerCase() === u.email.toLowerCase()))
+      )
+      .map((u) => ({
+        id: u.id,
+        name: u.displayName || u.email.split('@')[0],
+        role: (u as any).staffRole || 'Technician',
+        ownerId: u.ownerId || ownerId,
+        ownerName: u.ownerName || '',
+        phone: u.phone || '',
+        email: u.email || '',
+        activeTickets: 0,
+        rating: (u as any).rating || 5.0,
+        completed: (u as any).completed || 0,
+        paymentDetails: {
+          method: 'bank',
+          bank: { accountName: u.displayName || u.email.split('@')[0], accountNumber: '', country: 'India', routing: '' },
+          upi: { upiId: '', qrImage: null },
+          paypalEmail: '',
+        },
+      }));
+    return [...directStaff, ...userStaff];
+  }, [state.staff, state.users, ownerId]);
 
   const myTickets = useMemo(() => {
-    if (!ownerId) return [];
-    return state.tickets.filter((t) => t.ownerId === ownerId && (!t.propertyId || myPropertyIds.has(t.propertyId)));
+    if (!ownerId && myPropertyIds.size === 0) return [];
+    return state.tickets.filter((t) => {
+      if (t.ownerId && ownerId && t.ownerId !== ownerId) return false;
+      return !t.propertyId || myPropertyIds.has(t.propertyId);
+    });
   }, [state.tickets, ownerId, myPropertyIds]);
 
   const handleOnboardStaff = async () => {
@@ -234,7 +268,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
                           <th>Issue</th>
                           <th>Priority</th>
                           <th>Assigned to</th>
-                          <th>Payer &amp; Cost</th>
+                          <th>{getTableCurrencyHeader('Payer & Cost', viewCurrency)}</th>
                           <th>Status</th>
                           <th>Action</th>
                         </tr>
@@ -281,12 +315,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
                                   </span>
                                   {typeof t.payment?.amount === 'number' && t.payment.amount > 0 && (
                                     <div style={{ fontSize: '11.5px', color: 'var(--ledger)', fontWeight: 600, marginTop: '2px' }}>
-                                      {getTicketCurrency(t)}{t.payment.amount.toLocaleString()}
-                                      {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(getTicketCurrency(t)) && (
-                                        <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '4px' }}>
-                                          (~{format(convert(t.payment.amount, getTicketCurrency(t), viewCurrency), viewCurrency)})
-                                        </span>
-                                      )}
+                                      <CurrencyAmount amount={t.payment.amount} currency={getTicketCurrency(t)} />
                                     </div>
                                   )}
                                 </div>
@@ -385,15 +414,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
                               <>
                                 {t.payment.payer === 'owner' ? 'Owner' : 'Tenant'}
                                 {typeof t.payment?.amount === 'number' && t.payment.amount > 0 && (
-                                  <>
-                                    {` (${getTicketCurrency(t)}${t.payment.amount.toLocaleString()}`}
-                                    {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(getTicketCurrency(t)) && (
-                                      <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '3px' }}>
-                                        ~{format(convert(t.payment.amount, getTicketCurrency(t), viewCurrency), viewCurrency)}
-                                      </span>
-                                    )}
-                                    {')'}
-                                  </>
+                                  <> (<CurrencyAmount amount={t.payment.amount} currency={getTicketCurrency(t)} />)</>
                                 )}
                               </>
                             ) : 'Unassigned'}
@@ -448,9 +469,6 @@ export const MaintenanceDispatchPage: React.FC = () => {
           <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
             <div>
               <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--ink)' }}>Technicians &amp; Team Members</div>
-              <div className="hint" style={{ fontSize: '12.5px' }}>
-                {myStaff.length} active staff • Quota: {usage.staff.used} of {maxStaff >= 999 ? '∞' : maxStaff} used ({currentPlanName} Plan)
-              </div>
             </div>
             <button
               type="button"

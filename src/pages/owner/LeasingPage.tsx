@@ -41,24 +41,29 @@ import {
   Phone,
   Users,
 } from 'lucide-react';
-import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, normalizeCurrencyCode, getCurrencySymbol } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, normalizeCurrencyCode, getCurrencySymbol, formatCurrencyAmount } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 
 
 export const LeasingPage: React.FC = () => {
-  const { state, updateState, showToast, saveAgreement, deleteAgreement, saveAgreementTemplate, deleteAgreementTemplate, saveUnit, saveInvoice, saveTenant, saveMoveout, saveTenancyRequest, approveSignedAgreement, rejectSignedAgreement, offerLeaseRenewal, approveLeaseRenewal } = useAppData();
+  const { state, updateState, showToast, saveAgreement, deleteAgreement, saveAgreementTemplate, deleteAgreementTemplate, saveUnit, saveInvoice, saveTenant, saveMoveout, saveTenancyRequest, approveSignedAgreement, rejectSignedAgreement, offerLeaseRenewal, approveLeaseRenewal, updateEnquiryStatus } = useAppData();
   const { user, isOwnerPlanActive } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialSubTab = searchParams.get('tab') === 'enquiries' ? 'enquiries' : 'agreements';
   const ownerId = user?.id || '';
+  const { viewCurrency, convert } = useCurrency();
   const isPlanActive = isOwnerPlanActive(ownerId);
 
   const [subTab, setSubTab] = useState<'agreements' | 'renewals' | 'library' | 'drafts' | 'enquiries'>(initialSubTab);
   const [onboardEnquiryData, setOnboardEnquiryData] = useState<{
     unitId?: string;
+    propertyId?: string;
     name?: string;
     phone?: string;
     email?: string;
+    enquiryId?: string;
   } | null>(null);
   const [leaseStatusFilter, setLeaseStatusFilter] = useState<'all' | 'active' | 'pending' | 'terminated'>('all');
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
@@ -233,9 +238,11 @@ export const LeasingPage: React.FC = () => {
   };
 
   const formatMoney = (amount: number, curr?: string) => {
-    const c = getCurrencySymbol(curr || defaultOwnerCurrency);
-    const isIndian = normalizeCurrencyCode(curr || defaultOwnerCurrency) === 'INR';
-    return `${c}${(amount || 0).toLocaleString(isIndian ? 'en-IN' : 'en-US')}`;
+    const raw = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
+    const fromCode = curr ? normalizeCurrencyCode(curr) : (normalizeCurrencyCode(defaultOwnerCurrency) || 'USD');
+    const toCode = viewCurrency && viewCurrency !== 'LOCAL' && viewCurrency !== 'DEFAULT' ? normalizeCurrencyCode(viewCurrency) : fromCode;
+    const converted = fromCode === toCode ? raw : convert(raw, fromCode, toCode);
+    return formatCurrencyAmount(converted, toCode);
   };
 
   const myUnits = state.units.filter((u) => Boolean(ownerId) && (u.ownerId === ownerId || (u.propertyId && myPropertyIds.has(u.propertyId))));
@@ -1089,16 +1096,15 @@ export const LeasingPage: React.FC = () => {
                         <th>Document</th>
                         <th>Resident</th>
                         <th>Unit</th>
-                        <th>Term & Rent</th>
+                        <th>{getTableCurrencyHeader('Term & Rent', viewCurrency)}</th>
                         <th>Status</th>
-                        <th>Signed Document</th>
                         <th style={{ textAlign: 'right' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredAgreements.length === 0 ? (
                         <tr>
-                          <td colSpan={7} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
+                          <td colSpan={6} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
                             No lease agreements found{leaseStatusFilter && leaseStatusFilter !== 'all' ? ` matching "${leaseStatusFilter}"` : ''}.
                           </td>
                         </tr>
@@ -1166,44 +1172,6 @@ export const LeasingPage: React.FC = () => {
                                 ) : (
                                   <span className="badge grey">{a.status}</span>
                                 )}
-                              </td>
-                              <td>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                                  {/* Record 1: Before Tenant Sign (Landlord Pre-Signed Copy) */}
-                                  {initialDocUrl ? (
-                                    <a
-                                      className="badge grey"
-                                      href={initialDocUrl}
-                                      download={initialDocName}
-                                      style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer', width: 'fit-content', fontSize: '11px', color: 'var(--ink)' }}
-                                      title="Download initial agreement uploaded by landlord"
-                                    >
-                                      <FileText size={12} color="var(--brass)" />
-                                      <span>1. Offer Sent</span>
-                                    </a>
-                                  ) : (
-                                    <span className="badge grey" style={{ fontSize: '10.5px', width: 'fit-content' }}>
-                                      1. Initial File Missing
-                                    </span>
-                                  )}
-
-                                  {/* Record 2: After Tenant Sign (Resident Signed Copy) */}
-                                  {a.signedDocumentUrl ? (
-                                    <button
-                                      type="button"
-                                      className="btn secondary small"
-                                      onClick={() => setInspectingSignedAgreement(a)}
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', width: 'fit-content', padding: '2px 8px', fontSize: '11px' }}
-                                      title="View resident signed submission"
-                                    >
-                                      <FileCheck size={12} color="var(--ledger)" /> 2. Resident Signed Copy
-                                    </button>
-                                  ) : (
-                                    <span className="badge grey" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', width: 'fit-content', fontSize: '10.5px', color: 'var(--ink-soft)' }}>
-                                      <Clock size={11} /> 2. Resident Sign Pending
-                                    </span>
-                                  )}
-                                </div>
                               </td>
                               <td style={{ textAlign: 'right' }}>
                                 <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
@@ -1744,8 +1712,7 @@ export const LeasingPage: React.FC = () => {
         /* AGREEMENT LIBRARY TAB                                    */
         /* ======================================================== */
         <div>
-          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-            <div className="hint">{myTemplates.length} lease templates on file</div>
+          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <button
                 type="button"
@@ -1801,24 +1768,18 @@ export const LeasingPage: React.FC = () => {
               {filteredTemplates.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--ink-soft)' }}>
                   <FileText size={40} color="var(--ink-muted)" style={{ margin: '0 auto 12px' }} />
-                  <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--ink)', marginBottom: '4px' }}>
+                  <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--ink)', marginBottom: 0 }}>
                     {myTemplates.length === 0 ? 'No Lease Templates in Library' : 'No Matching Templates Found'}
                   </h4>
-                  <p style={{ fontSize: '13px', maxWidth: '420px', margin: '0 auto', lineHeight: 1.5 }}>
-                    {myTemplates.length === 0
-                      ? 'Upload your standard lease agreements, master rules, or property contract PDFs here to easily reuse them whenever adding residents.'
-                      : 'Try adjusting your search terms or property filter above.'}
-                  </p>
                 </div>
               ) : (
                 <div className="table-wrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Document & Title</th>
-                        <th>Associated Property</th>
-                        <th>File Name & Size</th>
-                        <th>Uploaded On</th>
+                        <th>Document & Details</th>
+                        <th>Applies To</th>
+                        <th>Uploaded Date</th>
                         <th>Uploaded By</th>
                         <th style={{ textAlign: 'right' }}>Actions</th>
                       </tr>
@@ -1835,11 +1796,19 @@ export const LeasingPage: React.FC = () => {
                                 </div>
                                 <div>
                                   <div style={{ fontWeight: 700, color: 'var(--ink)' }}>{t.title}</div>
-                                  {t.description && (
-                                    <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '1px' }}>
-                                      {t.description}
-                                    </div>
-                                  )}
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                                    <span style={{ fontSize: '9.5px', fontWeight: 700, padding: '1px 5px', borderRadius: '4px', background: isPdf ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)', color: isPdf ? '#DC2626' : '#2563EB' }}>
+                                      {isPdf ? 'PDF' : 'DOC'}
+                                    </span>
+                                    <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
+                                      {t.fileSizeKb ? `${t.fileSizeKb} KB` : 'Standard File'}
+                                    </span>
+                                    {t.description && (
+                                      <span style={{ fontSize: '11px', color: 'var(--ink-muted)' }}>
+                                        • {t.description}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             </td>
@@ -1847,17 +1816,6 @@ export const LeasingPage: React.FC = () => {
                               <span className="badge" style={{ background: 'var(--surface-sunken)', color: 'var(--ink-soft)', border: '1px solid var(--line)' }}>
                                 {t.propertyName || 'All Properties'}
                               </span>
-                            </td>
-                            <td>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 5px', borderRadius: '4px', background: isPdf ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)', color: isPdf ? '#DC2626' : '#2563EB' }}>
-                                  {isPdf ? 'PDF' : 'DOC'}
-                                </span>
-                                <span style={{ fontWeight: 500, fontSize: '12.5px' }}>{t.fileName}</span>
-                              </div>
-                              <div style={{ fontSize: '11px', color: 'var(--ink-muted)', marginTop: '2px' }}>
-                                {t.fileSizeKb ? `${t.fileSizeKb} KB` : 'Standard PDF'}
-                              </div>
                             </td>
                             <td>
                               <div style={{ fontSize: '12.5px', color: 'var(--ink)' }}>
@@ -1878,6 +1836,7 @@ export const LeasingPage: React.FC = () => {
                                   className="btn secondary small"
                                   style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                                   onClick={() => setPreviewingTemplate(t)}
+                                  title="Preview template"
                                 >
                                   <Eye size={13} /> Preview
                                 </button>
@@ -1886,6 +1845,7 @@ export const LeasingPage: React.FC = () => {
                                   download={t.fileName || 'agreement.pdf'}
                                   className="btn secondary small"
                                   style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+                                  title="Download template"
                                 >
                                   <Download size={13} /> Download
                                 </a>
@@ -1941,10 +1901,7 @@ export const LeasingPage: React.FC = () => {
               {draftAgreements.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--ink-soft)' }}>
                   <Bookmark size={36} color="var(--brass)" style={{ margin: '0 auto 12px', opacity: 0.8 }} />
-                  <h4 style={{ margin: '0 0 6px', fontSize: '16px', color: 'var(--ink)' }}>No Draft Leases</h4>
-                  <p style={{ margin: 0, fontSize: '13px', maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>
-                    You have no in-progress drafts. Create a draft ahead of time for any unit and assign it to an applicant when they're ready.
-                  </p>
+                  <h4 style={{ margin: 0, fontSize: '16px', color: 'var(--ink)' }}>No Draft Leases</h4>
                 </div>
               ) : (
                 <>
@@ -1957,7 +1914,7 @@ export const LeasingPage: React.FC = () => {
                             <th>Draft Agreement</th>
                             <th>Unit &amp; Property</th>
                             <th>Target Resident</th>
-                            <th>Term &amp; Rent</th>
+                            <th>{getTableCurrencyHeader('Term & Rent', viewCurrency)}</th>
                             <th>Progress</th>
                             <th>Document</th>
                             <th style={{ textAlign: 'right' }}>Actions</th>
@@ -2282,16 +2239,16 @@ export const LeasingPage: React.FC = () => {
               {myEnquiries.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--ink-soft)' }}>
                   <Users size={36} color="var(--primary)" style={{ margin: '0 auto 12px', opacity: 0.8 }} />
-                  <h4 style={{ margin: '0 0 6px', fontSize: '16px', color: 'var(--ink)' }}>No Listing Enquiries Yet</h4>
-                  <p style={{ margin: 0, fontSize: '13px', maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>
-                    When prospective tenants explore your published vacant listings on the portal and express interest, their contact details and move-in preferences will appear here.
-                  </p>
+                  <h4 style={{ margin: 0, fontSize: '16px', color: 'var(--ink)' }}>No Listing Enquiries Yet</h4>
                 </div>
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
                   {myEnquiries.map((enq) => {
-                    const unitObj = state.units.find((u) => u.id === enq.unitId || u.unitNumber === enq.unitNumber);
-                    const propObj = state.properties.find((p) => p.id === enq.propertyId);
+                    const propObj = myProperties.find((p) => p.id === enq.propertyId) || state.properties.find((p) => p.id === enq.propertyId);
+                    const unitObj =
+                      myUnits.find((u) => (enq.unitId && u.id === enq.unitId) || (enq.propertyId && u.propertyId === enq.propertyId && u.unitNumber === enq.unitNumber)) ||
+                      myUnits.find((u) => u.unitNumber === enq.unitNumber) ||
+                      (enq.unitId ? state.units.find((u) => u.id === enq.unitId) : undefined);
                     return (
                       <div
                         key={enq.id}
@@ -2315,8 +2272,8 @@ export const LeasingPage: React.FC = () => {
                           <span
                             className="badge"
                             style={{
-                              background: enq.status === 'new' ? '#ecfdf5' : 'var(--surface-sunken)',
-                              color: enq.status === 'new' ? '#047857' : 'var(--ink-soft)',
+                              background: enq.status === 'new' ? '#fef3c7' : enq.status === 'onboarded' ? '#ecfdf5' : enq.status === 'contacted' ? '#eff6ff' : 'var(--surface-sunken)',
+                              color: enq.status === 'new' ? '#b45309' : enq.status === 'onboarded' ? '#047857' : enq.status === 'contacted' ? '#1d4ed8' : 'var(--ink-soft)',
                               fontWeight: 600,
                               fontSize: '11px',
                               textTransform: 'capitalize',
@@ -2365,27 +2322,43 @@ export const LeasingPage: React.FC = () => {
                           </div>
                         )}
 
-                        <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                           <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>
                             {new Date(enq.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
                           </span>
-                          <button
-                            type="button"
-                            className="btn primary small"
-                            onClick={() => {
-                              setOnboardEnquiryData({
-                                unitId: unitObj?.id || enq.unitId,
-                                name: enq.prospectName,
-                                phone: enq.prospectPhone,
-                                email: enq.prospectEmail || '',
-                              });
-                              setActiveDraftId(null);
-                              setIsUploadOpen(true);
-                            }}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                          >
-                            <UserCheck size={13} /> Onboard as Tenant
-                          </button>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            {enq.status === 'new' && (
+                              <button
+                                type="button"
+                                className="btn brass small"
+                                onClick={() => updateEnquiryStatus(enq.id, 'contacted')}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '4px 8px', fontSize: '11.5px' }}
+                                title="Mark as Contacted"
+                              >
+                                <CheckCircle2 size={12} /> Contacted
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="btn primary small"
+                              onClick={() => {
+                                updateEnquiryStatus(enq.id, 'reviewed');
+                                setOnboardEnquiryData({
+                                  unitId: unitObj?.id || enq.unitId,
+                                  propertyId: enq.propertyId || propObj?.id || unitObj?.propertyId,
+                                  name: enq.prospectName,
+                                  phone: enq.prospectPhone,
+                                  email: enq.prospectEmail || '',
+                                  enquiryId: enq.id,
+                                });
+                                setActiveDraftId(null);
+                                setIsUploadOpen(true);
+                              }}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                            >
+                              <UserCheck size={13} /> Onboard as Tenant
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );
@@ -2406,9 +2379,11 @@ export const LeasingPage: React.FC = () => {
           setOnboardEnquiryData(null);
         }}
         preselectedUnitId={onboardEnquiryData?.unitId}
+        preselectedPropertyId={onboardEnquiryData?.propertyId}
         prefilledTenantName={onboardEnquiryData?.name}
         prefilledTenantPhone={onboardEnquiryData?.phone}
         prefilledTenantEmail={onboardEnquiryData?.email}
+        enquiryId={onboardEnquiryData?.enquiryId}
         draftAgreementId={activeDraftId}
         entryContext="leasing"
       />
@@ -2829,7 +2804,7 @@ export const LeasingPage: React.FC = () => {
                     <ButtonProcessing
                       loading={isApprovingAgreement}
                       loadingText="Approving Lease..."
-                      defaultText="Approve Signed Lease & Request Deposit"
+                      defaultText={isInspectingDepositPaid ? "Approve Signed Lease & Activate" : "Approve Signed Lease & Request Deposit"}
                       icon={<CheckCircle2 size={15} />}
                     />
                   </button>
@@ -2900,7 +2875,6 @@ export const LeasingPage: React.FC = () => {
             <div className="modal-head">
               <div>
                 <h3 style={{ margin: 0 }}>Offer Lease Renewal: Unit {renewalModalItem.unit}</h3>
-                <div className="hint" style={{ fontSize: '12px' }}>Configure renewal terms and rent increment for resident review</div>
               </div>
               <button type="button" className="btn secondary small" onClick={() => setRenewalModalItem(null)}>✕</button>
             </div>
@@ -3205,9 +3179,6 @@ export const LeasingPage: React.FC = () => {
             <div className="modal-head">
               <div>
                 <h3 style={{ margin: 0, fontSize: '17px' }}>Review Signed Renewal — Unit {inspectingSignedRenewal.unit}</h3>
-                <div className="hint" style={{ fontSize: '12px' }}>
-                  Verify resident signature and attached document to finalize renewed lease
-                </div>
               </div>
               <button type="button" className="btn secondary small" onClick={() => setInspectingSignedRenewal(null)}>✕</button>
             </div>
@@ -3378,10 +3349,6 @@ export const LeasingPage: React.FC = () => {
             </div>
             <form onSubmit={handleSaveTemplate}>
               <div className="modal-body">
-                <p className="hint" style={{ marginBottom: '14px' }}>
-                  Upload a standard master lease, rules document, or addendum. Once uploaded, you can easily select it whenever onboarding any resident without re-uploading.
-                </p>
-
                 <div className="field">
                   <label>Agreement Title / Label *</label>
                   <input

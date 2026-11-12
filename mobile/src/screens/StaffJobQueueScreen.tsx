@@ -6,58 +6,92 @@ import {
   ScrollView,
   TouchableOpacity,
   SafeAreaView,
-  StatusBar,
   TextInput,
   Modal,
   Alert,
   Linking,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
-import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
-import { getStaffReminders, DashboardReminder } from '../lib/reminders';
+import { getStaffReminders } from '../lib/reminders';
 import { MobileTicket } from '../types';
 
 interface StaffJobQueueScreenProps {
   onProfilePress?: () => void;
+  onNotificationsPress?: () => void;
 }
 
-export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProfilePress }) => {
+export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
+  onProfilePress,
+  onNotificationsPress,
+}) => {
   const { colors, isDark } = useMobileTheme();
   const { state, updateTicket, acknowledgeAnnouncement } = useMobileAppData();
   const { user } = useMobileAuth();
-  const { format, viewCurrency, currencySymbol } = useMobileCurrency();
+
+  // Filter chip state matching Web ('all' | 'active' | 'resolved')
+  const [queueFilter, setQueueFilter] = useState<'all' | 'active' | 'resolved'>('all');
 
   // Bulletin acknowledgment & smooth dismissal state
   const [justAckedIds, setJustAckedIds] = useState<Set<string>>(new Set());
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
 
-  // Job Status Update / Completion Modal
+  // Job Status Update / Completion Modal (1-to-1 with Web)
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<MobileTicket | null>(null);
   const [statusInput, setStatusInput] = useState<'in_progress' | 'resolved'>('resolved');
   const [completionNotes, setCompletionNotes] = useState('');
-  const [laborAmount, setLaborAmount] = useState('600');
-  const [partsAmount, setPartsAmount] = useState('250');
+  const [photoProofName, setPhotoProofName] = useState<string | null>(null);
 
-  // Filter tickets assigned to current staff member
+  const currentStaff = useMemo(() => {
+    return (
+      state.staff.find((s) => s.id === user.id) ||
+      (user.email
+        ? state.staff.find((s) => s.email?.toLowerCase() === user.email?.toLowerCase())
+        : undefined) ||
+      (user.displayName
+        ? state.staff.find((s) => s.name.toLowerCase() === user.displayName?.toLowerCase())
+        : undefined)
+    );
+  }, [state.staff, user]);
+
+  // Filter tickets assigned to current staff member (matching Web)
   const myTickets = useMemo(() => {
     return state.tickets.filter((t) => {
       if (user.ownerId && t.ownerId && t.ownerId !== user.ownerId) return false;
       const isDirectlyAssigned =
         t.assignedStaffId === user.id ||
-        (Boolean(user.displayName) && Boolean(t.assignedStaffName) && t.assignedStaffName!.toLowerCase().includes(user.displayName.toLowerCase()));
-      const isAssignedProperty = Boolean(user.assignedProperties?.length && t.propertyId && user.assignedProperties.includes(t.propertyId));
+        (currentStaff?.id && t.assignedStaffId === currentStaff.id) ||
+        (Boolean(user.displayName) &&
+          Boolean(t.assignedStaffName) &&
+          t.assignedStaffName!.toLowerCase().includes(user.displayName.toLowerCase()));
+      const isAssignedProperty = Boolean(
+        user.assignedProperties?.length && t.propertyId && user.assignedProperties.includes(t.propertyId)
+      );
       return isDirectlyAssigned || isAssignedProperty;
     });
-  }, [state.tickets, user]);
+  }, [state.tickets, user, currentStaff?.id]);
 
-  const activeJobs = myTickets.filter((t) => t.status === 'open' || t.status === 'assigned' || t.status === 'in_progress');
-  const resolvedJobs = myTickets.filter((t) => t.status === 'resolved');
+  const activeJobs = useMemo(
+    () => myTickets.filter((t) => t.status !== 'resolved'),
+    [myTickets]
+  );
+  const resolvedJobs = useMemo(
+    () => myTickets.filter((t) => t.status === 'resolved'),
+    [myTickets]
+  );
+
+  const filteredQueue = useMemo(() => {
+    if (queueFilter === 'active') return activeJobs;
+    if (queueFilter === 'resolved') return resolvedJobs;
+    return myTickets;
+  }, [queueFilter, activeJobs, resolvedJobs, myTickets]);
 
   // Real-time Staff Reminders & Work Order Priority Dispatch
   const staffReminders = useMemo(() => {
@@ -67,6 +101,7 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
   // Operational Bulletins for staff with strict landlord isolation, property scoping, and acknowledgment filtering
   const staffBulletins = useMemo(() => {
     const staffOwnerIds = new Set<string>();
+    if (currentStaff?.ownerId) staffOwnerIds.add(currentStaff.ownerId);
     if (user.ownerId) staffOwnerIds.add(user.ownerId);
     myTickets.forEach((t) => {
       if (t.ownerId) staffOwnerIds.add(t.ownerId);
@@ -84,34 +119,43 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
       if (b.status !== 'published') return false;
       if (dismissedNoticeIds.has(b.id)) return false;
 
-      // Role check
       const targetRoles = b.targetRoles || (b as any).targetScope?.targetRoles || [];
       if (targetRoles.length > 0 && !targetRoles.includes('staff') && !targetRoles.includes('manager')) return false;
 
-      // Landlord isolation: Block if staff has no owner association or if announcement belongs to another landlord
-      const isSystem = b.ownerId === 'system' || b.ownerId === 'superadmin' || ((b as any).category as string) === 'system';
+      const isSystem =
+        b.ownerId === 'system' || b.ownerId === 'superadmin' || ((b as any).category as string) === 'system';
       if (!isSystem && (staffOwnerIds.size === 0 || !staffOwnerIds.has(b.ownerId))) {
         return false;
       }
 
-      // Property scoping: If targeted to specific properties, verify staff works on at least one
       const targetScope = (b as any).targetScope;
-      if (targetScope && !targetScope.allProperties && targetScope.propertyIds && targetScope.propertyIds.length > 0) {
-        if (assignedPropertyIds.size > 0 && !targetScope.propertyIds.some((pId: string) => assignedPropertyIds.has(pId))) {
+      if (
+        targetScope &&
+        !targetScope.allProperties &&
+        targetScope.propertyIds &&
+        targetScope.propertyIds.length > 0
+      ) {
+        if (
+          assignedPropertyIds.size > 0 &&
+          !targetScope.propertyIds.some((pId: string) => assignedPropertyIds.has(pId))
+        ) {
           return false;
         }
       }
 
-      // Specific people targeting
-      if (targetScope?.mode === 'specific_people' || (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)) {
+      if (
+        targetScope?.mode === 'specific_people' ||
+        (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)
+      ) {
         const targets = targetScope.targetUserIds || [];
         if (!targets.includes(user.id)) return false;
       }
 
-      // Acknowledgment check: hide if already acknowledged (unless in 1.2s grace window)
       const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
       const isAckedByObj = ((b as any).acknowledgments || []).some(
-        (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+        (ack: any) =>
+          ack.tenantId === user.id ||
+          (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
       );
       const hasAcked = isAckedByArr || isAckedByObj;
       if (hasAcked && !justAckedIds.has(b.id)) {
@@ -120,14 +164,31 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
 
       return true;
     });
-  }, [state.announcements, user, myTickets, dismissedNoticeIds, justAckedIds]);
+  }, [state.announcements, user, currentStaff?.ownerId, myTickets, dismissedNoticeIds, justAckedIds]);
+
+  const unreadNotificationsCount = useMemo(() => {
+    const unreadNotifs = (state.notifications || []).filter((n) => !n.read).length;
+    return unreadNotifs + staffBulletins.length;
+  }, [state.notifications, staffBulletins.length]);
+
+  const initials = useMemo(() => {
+    if (user.displayName) {
+      return user.displayName
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase();
+    }
+    return user.email ? user.email.slice(0, 2).toUpperCase() : 'ST';
+  }, [user.displayName, user.email]);
 
   const handleAcknowledgeBulletin = (id: string, requireAck?: boolean) => {
     acknowledgeAnnouncement(id, user.id);
     setJustAckedIds((prev) => new Set(prev).add(id));
     setTimeout(() => {
       setDismissedNoticeIds((prev) => new Set(prev).add(id));
-    }, 1200);
+    }, 1500);
   };
 
   const handleDialPhone = (phone?: string) => {
@@ -150,65 +211,103 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
     });
   };
 
-  const handleStartWorkOrder = (ticket: MobileTicket) => {
-    updateTicket(ticket.id, {
-      status: 'in_progress',
-    });
-    Alert.alert('Work Order Started 🔧', `Ticket #${ticket.id} (${ticket.issue}) is now in progress. Resident notified.`);
-  };
-
   const handleOpenStatusModal = (ticket: MobileTicket) => {
     setSelectedTicket(ticket);
-    setStatusInput(ticket.status === 'in_progress' ? 'resolved' : 'in_progress');
+    setStatusInput(ticket.status === 'in_progress' ? 'in_progress' : 'resolved');
     setCompletionNotes(ticket.completionNotes || '');
+    setPhotoProofName(null);
     setShowStatusModal(true);
+  };
+
+  const handlePickPhotoProof = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.7,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        setPhotoProofName(asset.fileName || 'completion-proof.jpg');
+      }
+    } catch {
+      Alert.alert('Photo Proof', 'Could not open image library.');
+    }
   };
 
   const handleSaveStatus = () => {
     if (!selectedTicket) return;
 
-    const totalEstimate = (Number(laborAmount) || 0) + (Number(partsAmount) || 0);
     updateTicket(selectedTicket.id, {
       status: statusInput,
       completionNotes: completionNotes.trim() || undefined,
-      costEstimate: totalEstimate > 0 ? totalEstimate : selectedTicket.costEstimate,
     });
 
     setShowStatusModal(false);
     Alert.alert(
-      statusInput === 'resolved' ? 'Work Completed ✓' : 'Status Updated',
-      `Ticket #${selectedTicket.id} updated to ${statusInput === 'resolved' ? 'Resolved' : 'In Progress'}. Total job charges: ${format(totalEstimate, viewCurrency)}.`
+      'Ticket Updated',
+      `Ticket ${selectedTicket.id} updated. Tenant and owner notified.`
     );
     setSelectedTicket(null);
+    setCompletionNotes('');
+    setPhotoProofName(null);
   };
 
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
-
-
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* StatusBar managed globally */}
       <ScreenStatusBar />
 
-      {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <View style={styles.logoBadge}>
-            <Feather name="home" size={18} color="#FFFFFF" />
+      {/* Minimal Top App Bar (.topbar) */}
+      <View style={[styles.topbar, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
+        <View style={styles.topbarLeft}>
+          <View
+            style={[
+              styles.brandMark,
+              isDark && {
+                backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                borderColor: 'rgba(16, 185, 129, 0.3)',
+              },
+            ]}
+          >
+            <PropithubIcon size={18} />
           </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.navy }]}>Jobs</Text>
-          </View>
+          <Text style={[styles.topbarTitle, { color: colors.navy }]}>Work queue</Text>
         </View>
+
         <TourTarget id="staff-topbar-actions">
-        <TouchableOpacity
-          style={styles.jobBadge}
-          onPress={onProfilePress}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.jobBadgeText}>{activeJobs.length} ACTIVE</Text>
-        </TouchableOpacity>
+          <View style={styles.topbarRight}>
+            <TouchableOpacity
+              style={[styles.iconBtn, { borderColor: colors.line, backgroundColor: colors.surface }]}
+              onPress={onNotificationsPress || onProfilePress}
+              activeOpacity={0.75}
+            >
+              <Feather name="bell" size={18} color={colors.navy} />
+              {unreadNotificationsCount > 0 && (
+                <View style={styles.bellBadge}>
+                  <Text style={styles.bellBadgeText}>
+                    {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.avatarBtn,
+                {
+                  backgroundColor: isDark ? '#0F2920' : '#E6F4EE',
+                  borderColor: isDark ? '#065F46' : '#A7F3D0',
+                },
+              ]}
+              onPress={onProfilePress}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.avatarBtnText, { color: isDark ? '#34D399' : '#059669' }]}>
+                {initials}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </TourTarget>
       </View>
 
@@ -217,401 +316,445 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Operational Staff Bulletins (if any) */}
-        {staffBulletins.length > 0 && (
-          <View style={[styles.bulletinBox, isDark && { backgroundColor: '#064E3B20', borderColor: '#065F46' }]}>
-            <View style={styles.bulletinHeader}>
-              <Ionicons name="megaphone-outline" size={16} color="#059669" />
-              <Text style={[styles.bulletinTitle, isDark && { color: '#6EE7B7' }]}>
-                Bulletins ({staffBulletins.length})
-              </Text>
-            </View>
-            <ScrollView
-              style={{ maxHeight: 155 }}
-              nestedScrollEnabled
-              showsVerticalScrollIndicator={true}
+        {/* Technician Action Center & Reminders (1-to-1 with Web) */}
+        {staffReminders.map((rem) => {
+          const isUrgent = rem.severity === 'urgent';
+          return (
+            <View
+              key={rem.id}
+              style={[
+                styles.needCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.line,
+                  borderLeftColor: isUrgent ? '#DC2626' : '#D97706',
+                },
+              ]}
             >
-              {staffBulletins.map((b) => {
-                const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
-                const isAckedByObj = ((b as any).acknowledgments || []).some(
-                  (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
-                );
-                const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(b.id);
-                const requireAck = Boolean(b.requireAck || b.requireAcknowledgment || (b as any).requiresAcknowledgment);
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.needTitle, { color: colors.navy }]} numberOfLines={1}>
+                  {rem.title}
+                </Text>
+                <Text style={[styles.needSub, { color: colors.inkSoft }]} numberOfLines={2}>
+                  {rem.description}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[
+                  styles.needBtn,
+                  isUrgent && { backgroundColor: '#DC2626', borderColor: '#DC2626' },
+                ]}
+                onPress={() => {
+                  const ticketId = rem.id.replace('staff_ticket_job_', '');
+                  const matchedTicket = state.tickets.find((t) => t.id === ticketId);
+                  if (matchedTicket) {
+                    handleOpenStatusModal(matchedTicket);
+                  }
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.needBtnText, isUrgent && { color: '#FFFFFF' }]}>Inspect</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })}
 
-                return (
-                  <View
-                    key={b.id}
+        {/* Staff & Operational Bulletins (1-to-1 with Web) */}
+        {staffBulletins.map((b) => {
+          const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
+          const isAckedByObj = ((b as any).acknowledgments || []).some(
+            (ack: any) =>
+              ack.tenantId === user.id ||
+              (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+          );
+          const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(b.id);
+          const requireAck = Boolean(
+            b.requireAck || b.requireAcknowledgment || (b as any).requiresAcknowledgment
+          );
+
+          return (
+            <View
+              key={b.id}
+              style={[
+                styles.needCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.line,
+                  borderLeftColor: requireAck ? '#D97706' : '#059669',
+                },
+              ]}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.needTitle, { color: colors.navy }]}>{b.title}</Text>
+                <Text style={[styles.needSub, { color: colors.inkSoft }]}>{b.body}</Text>
+              </View>
+              {hasAcked ? (
+                <View style={styles.ackedPill}>
+                  <Ionicons name="checkmark-circle" size={14} color="#059669" />
+                  <Text style={styles.ackedPillText}>
+                    {requireAck ? 'Acknowledged' : 'Read'}
+                  </Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={styles.needBtn}
+                  onPress={() => handleAcknowledgeBulletin(b.id, requireAck)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.needBtnText}>
+                    {requireAck ? 'Read & Acknowledge' : 'Mark as Read'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          );
+        })}
+
+        {/* Filter Chips (All / Active / Resolved — matching Web 1-to-1) */}
+        <TourTarget id="staff-queue-subtabs">
+          <View style={styles.chipsRow}>
+            {[
+              { key: 'all' as const, label: `All (${myTickets.length})` },
+              { key: 'active' as const, label: `Active (${activeJobs.length})` },
+              { key: 'resolved' as const, label: `Resolved (${resolvedJobs.length})` },
+            ].map((c) => {
+              const active = queueFilter === c.key;
+              return (
+                <TouchableOpacity
+                  key={c.key}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: active ? '#059669' : colors.surface,
+                      borderColor: active ? '#059669' : colors.line,
+                    },
+                  ]}
+                  onPress={() => setQueueFilter(c.key)}
+                  activeOpacity={0.8}
+                >
+                  <Text
                     style={[
-                      styles.bulletinItem,
-                      {
-                        flexDirection: 'column',
-                        alignItems: 'stretch',
-                        gap: 6,
-                        paddingVertical: 8,
-                        borderBottomWidth: 1,
-                        borderBottomColor: isDark ? 'rgba(6,95,70,0.3)' : 'rgba(187,247,208,0.5)',
-                      },
+                      styles.chipText,
+                      { color: active ? '#FFFFFF' : colors.inkSoft },
+                      active && { fontWeight: '700' },
                     ]}
                   >
-                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
-                      <View style={styles.bulletinBadge}>
-                        <Text style={styles.bulletinBadgeText}>{b.category.toUpperCase()}</Text>
-                      </View>
-                      {requireAck && (
-                        <Text style={{ fontSize: 10, color: '#DC2626', fontWeight: '700' }}>
-                          Acknowledgment Required
-                        </Text>
-                      )}
-                    </View>
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </TourTarget>
 
-                    <Text style={[styles.bulletinText, isDark && { color: '#A7F3D0' }]}>
-                      <Text style={{ fontWeight: '700' }}>{b.title}: </Text>
-                      {b.body}
-                    </Text>
+        {/* Streamlined Job Cards (1-to-1 with Web Staff Mobile Cards) */}
+        {myTickets.length === 0 ? (
+          <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+            <Text style={[styles.emptyText, { color: colors.inkSoft }]}>
+              No tickets currently assigned to you.
+            </Text>
+          </View>
+        ) : filteredQueue.length === 0 ? (
+          <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+            <Text style={[styles.emptyText, { color: colors.inkSoft }]}>
+              No {queueFilter} tickets found.
+            </Text>
+          </View>
+        ) : (
+          filteredQueue.map((t) => {
+            const isHigh = t.priority === 'High' || t.priority === 'Emergency';
+            const isMedium = t.priority === 'Medium';
+            const isDone = t.status === 'resolved';
+            const isInProgress = t.status === 'in_progress';
+            const phone = t.tenantPhone || (t as any).tenantContact?.phone;
+            const email = t.tenantEmail || (t as any).tenantContact?.email;
 
-                    {/* Action / Ack Button */}
-                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
-                      {hasAcked ? (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: isDark ? 'rgba(5,150,105,0.2)' : '#DCFCE7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }}>
-                          <Ionicons name="checkmark-circle" size={13} color="#15803D" />
-                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#15803D' }}>
-                            {requireAck ? 'Acknowledged' : 'Marked as read'}
-                          </Text>
-                        </View>
-                      ) : (
-                        <TouchableOpacity
-                          style={{
-                            backgroundColor: requireAck ? '#C59A45' : '#059669',
-                            paddingHorizontal: 12,
-                            paddingVertical: 5,
-                            borderRadius: 20,
-                          }}
-                          onPress={() => handleAcknowledgeBulletin(b.id, requireAck)}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF' }}>
-                            {requireAck ? 'Read & Acknowledge' : 'Mark as Read'}
-                          </Text>
-                        </TouchableOpacity>
-                      )}
+            return (
+              <View
+                key={t.id}
+                style={[styles.jobCard, { backgroundColor: colors.surface, borderColor: colors.line }]}
+              >
+                {/* Header Row: Ticket ID + Priority Badge on left, Status Badge on right */}
+                <View style={styles.jobHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                    <Text style={[styles.ticketIdText, { color: colors.navy }]}>{t.id}</Text>
+                    <View
+                      style={[
+                        styles.priorityPill,
+                        isHigh
+                          ? { backgroundColor: isDark ? '#3A1818' : '#FCE8E6' }
+                          : isMedium
+                          ? { backgroundColor: isDark ? '#332510' : '#FEF3DC' }
+                          : { backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9' },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.priorityPillText,
+                          {
+                            color: isHigh
+                              ? isDark
+                                ? '#FCA5A5'
+                                : '#B3261E'
+                              : isMedium
+                              ? isDark
+                                ? '#F5B955'
+                                : '#9A5B00'
+                              : colors.inkSoft,
+                          },
+                        ]}
+                      >
+                        {t.priority}
+                      </Text>
                     </View>
                   </View>
-                );
-              })}
-            </ScrollView>
-          </View>
-        )}
 
-        {/* Ticket Queue */}
-        <View>
-            {/* Priority Staff Reminders & Work Order Alert Hub */}
-            {staffReminders.length > 0 && (
-              <View style={{ marginBottom: 14 }}>
-                <ScrollView
-                  style={staffReminders.length > 2 ? { maxHeight: 220 } : undefined}
-                  nestedScrollEnabled={true}
-                  showsVerticalScrollIndicator={staffReminders.length > 2}
-                >
-                  {staffReminders.map((rem) => {
-                  const isUrgent = rem.severity === 'urgent';
-                  const borderCol = isUrgent ? '#EF4444' : '#F59E0B';
-                  const bgCol = isUrgent
-                    ? isDark ? 'rgba(239, 68, 68, 0.12)' : '#FEF2F2'
-                    : isDark ? 'rgba(245, 158, 11, 0.12)' : '#FFFBEB';
-
-                  return (
-                    <View
-                      key={rem.id}
-                      style={{
-                        backgroundColor: bgCol,
-                        borderWidth: 1,
-                        borderColor: borderCol,
-                        borderRadius: 10,
-                        padding: 12,
-                        marginBottom: 8,
-                      }}
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      { flexShrink: 0 },
+                      isDone
+                        ? { backgroundColor: isDark ? '#0F2E1D' : '#E6F4EA' }
+                        : isInProgress
+                        ? { backgroundColor: isDark ? '#0F2920' : '#E6F4EE' }
+                        : { backgroundColor: isDark ? '#332510' : '#FEF3DC' },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusBadgeText,
+                        {
+                          color: isDone
+                            ? isDark
+                              ? '#6DD58C'
+                              : '#137333'
+                            : isInProgress
+                            ? isDark
+                              ? '#34D399'
+                              : '#059669'
+                            : isDark
+                            ? '#F5B955'
+                            : '#9A5B00',
+                        },
+                      ]}
                     >
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                        <Feather
-                          name={isUrgent ? 'alert-triangle' : 'tool'}
-                          size={15}
-                          color={isUrgent ? '#EF4444' : '#D97706'}
-                          style={{ marginRight: 6 }}
-                        />
-                        <Text
-                          style={{
-                            fontSize: 13,
-                            fontWeight: '700',
-                            color: isUrgent ? (isDark ? '#FCA5A5' : '#B91C1C') : (isDark ? '#FDE68A' : '#92400E'),
-                            flex: 1,
-                          }}
-                          numberOfLines={1}
-                        >
-                          {rem.title}
-                        </Text>
-                      </View>
-                      <Text
-                        style={{
-                          fontSize: 12,
-                          color: isDark ? '#E2E8F0' : '#475569',
-                          lineHeight: 17,
-                          marginBottom: 10,
-                        }}
-                      >
-                        {rem.description}
-                      </Text>
-                      <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-                        <TouchableOpacity
-                          style={{
-                            backgroundColor: isUrgent ? '#EF4444' : '#10B981',
-                            paddingHorizontal: 12,
-                            paddingVertical: 6,
-                            borderRadius: 6,
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                          }}
-                          onPress={() => {
-                            const ticketId = rem.id.replace('staff_ticket_job_', '');
-                            const matchedTicket = state.tickets.find((t) => t.id === ticketId);
-                            if (matchedTicket) {
-                              setSelectedTicket(matchedTicket);
-                              setStatusInput(matchedTicket.status === 'in_progress' ? 'resolved' : 'in_progress');
-                              setShowStatusModal(true);
-                            }
-                          }}
-                          activeOpacity={0.85}
-                        >
-                          <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>
-                            Inspect Work Order
-                          </Text>
-                          <Feather name="arrow-right" size={12} color="#FFFFFF" style={{ marginLeft: 4 }} />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  );
-                })}
-                </ScrollView>
-              </View>
-            )}
-
-            {/* Hero Work Order Status Card */}
-            <TourTarget id="staff-queue-subtabs">
-              <View style={[styles.heroCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <View style={styles.heroTopRow}>
-                  <Text style={[styles.heroLabel, { color: colors.inkSoft }]}>Work Order Queue</Text>
-                  <View style={styles.heroPillBadge}>
-                    <Feather name="tool" size={12} color="#059669" />
-                    <Text style={styles.heroPillText}>
-                      {activeJobs.length === 0 ? 'All Clear' : `${activeJobs.length} Assigned`}
+                      {t.status.toUpperCase()}
                     </Text>
                   </View>
                 </View>
-                <Text style={[styles.heroAmount, { color: colors.navy }]}>{activeJobs.length} Active</Text>
-                <Text style={[styles.heroSubText, { color: colors.inkSoft }]}>
-                  {activeJobs.filter((t) => t.status === 'in_progress').length} in progress • {activeJobs.filter((t) => t.priority === 'Emergency' || t.priority === 'High').length} high priority
-                </Text>
-              </View>
-            </TourTarget>
 
-            <View style={styles.sectionHeaderRow}>
-              <Text style={[styles.sectionHeading, { color: colors.navy }]}>Assigned Jobs ({activeJobs.length})</Text>
-            </View>
+                {/* Issue Description */}
+                <Text style={[styles.jobTitle, { color: colors.navy }]}>{t.issue}</Text>
 
-            {activeJobs.length === 0 ? (
-              <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <Ionicons name="checkmark-done-circle-outline" size={48} color="#10B981" />
-                <Text style={[styles.emptyTitle, { color: colors.navy }]}>Queue All Clear!</Text>
-                <Text style={[styles.emptyText, { color: colors.inkSoft }]}>
-                  No pending repair orders assigned. New tenant maintenance tickets will appear here.
-                </Text>
-              </View>
-            ) : (
-              activeJobs.map((t) => {
-                const isEmergency = t.priority === 'Emergency';
-                const isHigh = t.priority === 'High';
-                const isInProgress = t.status === 'in_progress';
+                {/* 3-Step Progress Bar (.prog from Propithub Role Simulator.html) */}
+                <View style={styles.progBar}>
+                  <View style={[styles.progSeg, styles.progSegOn]} />
+                  <View style={[styles.progSeg, (isInProgress || isDone) && styles.progSegOn]} />
+                  <View style={[styles.progSeg, isDone && styles.progSegOn]} />
+                </View>
 
-                return (
-                  <View key={t.id} style={[styles.ticketCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    <View style={styles.ticketTopRow}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={[styles.ticketId, { color: colors.navy }]}>#{t.id}</Text>
-                          <View style={[styles.categoryBadge, { backgroundColor: isDark ? colors.card : '#F1F5F9' }]}>
-                            <Text style={[styles.categoryBadgeText, { color: colors.inkSoft }]}>{t.category}</Text>
-                          </View>
-                        </View>
-                        <Text style={[styles.unitText, { color: colors.inkSoft }]}>Unit {t.unit} • {t.propertyName || 'Property'}</Text>
-                      </View>
+                {/* Meta Row: Unit + Resident */}
+                <View style={styles.metaRow}>
+                  <View style={styles.metaItem}>
+                    <Feather name="map-pin" size={13} color={colors.inkSoft} />
+                    <Text style={[styles.metaText, { color: colors.inkSoft }]}>
+                      Unit <Text style={{ color: colors.navy, fontWeight: '700' }}>{t.unit}</Text>
+                    </Text>
+                  </View>
 
-                      <View
+                  <View style={styles.metaItem}>
+                    <Text style={[styles.metaText, { color: colors.inkSoft }]}>
+                      Resident:{' '}
+                      <Text style={{ color: colors.navy, fontWeight: '700' }}>
+                        {t.tenant || 'Tenant'}
+                      </Text>
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Resident Contact Buttons (Phone & Email) */}
+                {(phone || email) && (
+                  <View style={styles.residentQuickBtns}>
+                    {phone && (
+                      <TouchableOpacity
                         style={[
-                          styles.priorityBadge,
-                          isEmergency ? styles.priorityBadgeEmergency : isHigh ? styles.priorityBadgeHigh : { backgroundColor: isDark ? colors.card : '#F1F5F9' },
+                          styles.miniContactBtn,
+                          { borderColor: colors.line, backgroundColor: colors.surface },
                         ]}
+                        onPress={() => handleDialPhone(phone)}
+                        activeOpacity={0.75}
                       >
-                        <Text
-                          style={[
-                            styles.priorityBadgeText,
-                            isEmergency && styles.priorityBadgeTextEmergency,
-                            isHigh && styles.priorityBadgeTextHigh,
-                          ]}
-                        >
-                          {t.priority.toUpperCase()}
+                        <Feather name="phone" size={12} color="#059669" />
+                        <Text style={[styles.miniContactBtnText, { color: colors.navy }]}>
+                          {phone}
                         </Text>
-                      </View>
-                    </View>
+                      </TouchableOpacity>
+                    )}
 
-                    <Text style={[styles.issueText, { color: colors.navy }]}>{t.issue}</Text>
-
-                    {/* Resident Contact Dialing Bar */}
-                    <View style={[styles.residentContactBar, { backgroundColor: isDark ? colors.card : '#F8FAFC', borderColor: colors.line }]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.residentLabel, { color: colors.inkSoft }]}>RESIDENT</Text>
-                        <Text style={[styles.residentName, { color: colors.navy }]}>{t.tenant || 'Tenant'}</Text>
-                      </View>
-
-                      <View style={styles.contactActionsRow}>
-                        <TouchableOpacity
-                          style={[styles.contactIconBtn, { backgroundColor: colors.surface, borderColor: colors.line }]}
-                          onPress={() => handleDialPhone(t.tenantPhone)}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="call" size={16} color="#059669" />
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={[styles.contactIconBtn, { backgroundColor: colors.surface, borderColor: colors.line }]}
-                          onPress={() => handleSendEmail(t.tenantEmail || 'resident@propithub.com')}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="mail" size={16} color="#2563EB" />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-
-                    {/* Action Buttons */}
-                    <View style={styles.ticketFooterRow}>
-                      {!isInProgress ? (
-                        <TouchableOpacity
-                          style={styles.startJobBtn}
-                          onPress={() => handleStartWorkOrder(t)}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="play" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
-                          <Text style={styles.startJobBtnText}>Start Job</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <TouchableOpacity
-                          style={styles.completeJobBtn}
-                          onPress={() => handleOpenStatusModal(t)}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="checkmark-done" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                          <Text style={styles.completeJobBtnText}>Update Status</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
+                    {email && (
+                      <TouchableOpacity
+                        style={[
+                          styles.miniContactBtn,
+                          { borderColor: colors.line, backgroundColor: colors.surface },
+                        ]}
+                        onPress={() => handleSendEmail(email)}
+                        activeOpacity={0.75}
+                      >
+                        <Feather name="mail" size={12} color="#059669" />
+                        <Text style={[styles.miniContactBtnText, { color: colors.navy }]}>
+                          Email
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
-                );
-              })
-            )}
+                )}
 
-            {/* Resolved History Section */}
-            {resolvedJobs.length > 0 && (
-              <View style={{ marginTop: 24 }}>
-                <Text style={[styles.sectionHeading, { color: colors.navy }]}>Resolved Today ({resolvedJobs.length})</Text>
-                {resolvedJobs.slice(0, 3).map((rj) => (
-                  <View key={rj.id} style={[styles.resolvedMiniCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.resolvedMiniTitle, { color: colors.navy }]}>Unit {rj.unit} • {rj.issue}</Text>
-                      <Text style={[styles.resolvedMiniNotes, { color: colors.inkSoft }]}>{rj.completionNotes || 'Work completed successfully'}</Text>
-                    </View>
-                    <Ionicons name="checkmark-circle" size={20} color="#10B981" />
+                {/* Action Footer (only for non-resolved tickets, matching Web) */}
+                {!isDone && (
+                  <View style={[styles.jobFooter, { borderTopColor: colors.line }]}>
+                    <TouchableOpacity
+                      style={[
+                        styles.updateTicketBtn,
+                        { borderColor: colors.line, backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC' },
+                      ]}
+                      onPress={() => handleOpenStatusModal(t)}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.updateTicketBtnText, { color: colors.navy }]}>
+                        Update Ticket Status
+                      </Text>
+                    </TouchableOpacity>
                   </View>
-                ))}
+                )}
               </View>
-            )}
-          </View>
-        </ScrollView>
+            );
+          })
+        )}
+      </ScrollView>
 
-      {/* Completion & Status Modal */}
+      {/* Update Ticket Modal (1-to-1 with Web) */}
       <Modal visible={showStatusModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+            <View style={[styles.sheetHandle, { backgroundColor: colors.line }]} />
+
             <View style={styles.modalHeaderRow}>
-              <Text style={[styles.modalTitle, { color: colors.navy }]}>Update Ticket #{selectedTicket?.id}</Text>
-              <TouchableOpacity onPress={() => setShowStatusModal(false)}>
-                <Ionicons name="close" size={24} color={colors.inkSoft} />
+              <Text style={[styles.modalTitle, { color: colors.navy }]}>
+                Update ticket {selectedTicket?.id}
+              </Text>
+              <TouchableOpacity
+                style={[
+                  styles.closeCircleBtn,
+                  { backgroundColor: isDark ? colors.surfaceSunken : '#F4F6F5' },
+                ]}
+                onPress={() => setShowStatusModal(false)}
+              >
+                <Ionicons name="close" size={18} color={colors.inkSoft} />
               </TouchableOpacity>
             </View>
 
             <ScrollView
-              showsVerticalScrollIndicator={true}
-              contentContainerStyle={{ paddingBottom: 24 }}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 20 }}
               keyboardShouldPersistTaps="handled"
             >
-              <Text style={[styles.modalSub, { color: colors.inkSoft }]}>
-                {selectedTicket?.issue} (Unit {selectedTicket?.unit})
-              </Text>
-
-              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>WORK STATUS</Text>
+              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>Status</Text>
               <View style={styles.statusToggleRow}>
                 <TouchableOpacity
-                  style={[styles.statusToggleBtn, { borderColor: colors.line }, statusInput === 'in_progress' && styles.statusToggleBtnActive]}
+                  style={[
+                    styles.statusToggleBtn,
+                    { borderColor: colors.line },
+                    statusInput === 'in_progress' && styles.statusToggleBtnActive,
+                  ]}
                   onPress={() => setStatusInput('in_progress')}
                 >
-                  <Text style={[styles.statusToggleText, { color: colors.inkSoft }, statusInput === 'in_progress' && styles.statusToggleTextActive]}>
-                    In Progress
+                  <Text
+                    style={[
+                      styles.statusToggleText,
+                      { color: colors.inkSoft },
+                      statusInput === 'in_progress' && styles.statusToggleTextActive,
+                    ]}
+                  >
+                    In progress
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.statusToggleBtn, { borderColor: colors.line }, statusInput === 'resolved' && styles.statusToggleBtnActive]}
+                  style={[
+                    styles.statusToggleBtn,
+                    { borderColor: colors.line },
+                    statusInput === 'resolved' && styles.statusToggleBtnActive,
+                  ]}
                   onPress={() => setStatusInput('resolved')}
                 >
-                  <Text style={[styles.statusToggleText, { color: colors.inkSoft }, statusInput === 'resolved' && styles.statusToggleTextActive]}>
-                    Completed & Resolved
+                  <Text
+                    style={[
+                      styles.statusToggleText,
+                      { color: colors.inkSoft },
+                      statusInput === 'resolved' && styles.statusToggleTextActive,
+                    ]}
+                  >
+                    Completed
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>COMPLETION / TECHNICIAN NOTES</Text>
+              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>Notes</Text>
               <TextInput
-                style={[styles.notesInput, { backgroundColor: isDark ? colors.card : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
+                style={[
+                  styles.notesInput,
+                  {
+                    backgroundColor: isDark ? colors.card : '#FFFFFF',
+                    borderColor: colors.line,
+                    color: colors.navy,
+                  },
+                ]}
                 multiline
                 numberOfLines={3}
                 value={completionNotes}
                 onChangeText={setCompletionNotes}
-                placeholder="Describe work completed, parts replaced, or ongoing diagnostics..."
+                placeholder="What was done…"
                 placeholderTextColor={colors.inkSoft}
               />
 
-              <View style={styles.costGridRow}>
-                <View style={{ flex: 1, marginRight: 8 }}>
-                  <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>LABOR FEE ({currencySymbol})</Text>
-                  <TextInput
-                    style={[styles.costInput, { backgroundColor: isDark ? colors.card : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                    keyboardType="numeric"
-                    value={laborAmount}
-                    onChangeText={setLaborAmount}
-                  />
-                </View>
-                <View style={{ flex: 1, marginLeft: 8 }}>
-                  <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>PARTS COST ({currencySymbol})</Text>
-                  <TextInput
-                    style={[styles.costInput, { backgroundColor: isDark ? colors.card : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                    keyboardType="numeric"
-                    value={partsAmount}
-                    onChangeText={setPartsAmount}
-                  />
-                </View>
-              </View>
-
-              <TouchableOpacity style={styles.saveStatusBtn} onPress={handleSaveStatus} activeOpacity={0.85}>
-                <Text style={styles.saveStatusBtnText} numberOfLines={1}>Save</Text>
+              <Text style={[styles.fieldLabel, { color: colors.inkSoft }]}>Photo proof</Text>
+              <TouchableOpacity
+                style={[
+                  styles.photoPickerBtn,
+                  {
+                    backgroundColor: isDark ? colors.card : '#FFFFFF',
+                    borderColor: colors.line,
+                  },
+                ]}
+                onPress={handlePickPhotoProof}
+                activeOpacity={0.8}
+              >
+                <Feather name="image" size={16} color={colors.inkSoft} />
+                <Text style={[styles.photoPickerText, { color: colors.navy }]} numberOfLines={1}>
+                  {photoProofName || 'Choose image…'}
+                </Text>
               </TouchableOpacity>
+
+              <View style={styles.modalFooterActions}>
+                <TouchableOpacity
+                  style={[
+                    styles.cancelModalBtn,
+                    { borderColor: colors.line, backgroundColor: colors.surface },
+                  ]}
+                  onPress={() => setShowStatusModal(false)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.cancelModalBtnText, { color: colors.navy }]}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.saveStatusBtn}
+                  onPress={handleSaveStatus}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.saveStatusBtnText}>Save update</Text>
+                </TouchableOpacity>
+              </View>
             </ScrollView>
           </View>
         </View>
@@ -622,448 +765,382 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({ onProf
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-  },
-  statusBarRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 6,
-    backgroundColor: colors.surface,
-  },
-  statusTime: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  statusIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  logoBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  headerSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  jobBadge: {
-    backgroundColor: '#ECFDF5',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-  },
-  jobBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  // Hero Work Order Card
-  heroCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.8)',
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.03,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  heroTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  heroLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: -0.1,
-  },
-  heroPillBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-  },
-  heroPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  heroAmount: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: colors.navy,
-    letterSpacing: -0.6,
-    marginBottom: 4,
-  },
-  heroSubText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: colors.inkSoft,
-  },
-  bulletinBox: {
-    backgroundColor: '#F0FDF4',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    marginBottom: 16,
-  },
-  bulletinHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-  },
-  bulletinTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#166534',
-  },
-  bulletinItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 4,
-  },
-  bulletinBadge: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  bulletinBadgeText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: '#15803D',
-  },
-  bulletinText: {
-    fontSize: 12,
-    color: '#166534',
-    flex: 1,
-  },
-  sectionHeaderRow: {
-    marginBottom: 12,
-  },
-  sectionHeading: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  emptyContainer: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.navy,
-    marginTop: 12,
-  },
-  emptyText: {
-    fontSize: 13,
-    color: colors.inkSoft,
-    textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 18,
-  },
-  ticketCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 12,
-  },
-  ticketTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 10,
-  },
-  ticketId: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  categoryBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  categoryBadgeText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  unitText: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  priorityBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  priorityBadgeEmergency: {
-    backgroundColor: '#FEF2F2',
-  },
-  priorityBadgeHigh: {
-    backgroundColor: '#FFFBEB',
-  },
-  priorityBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  priorityBadgeTextEmergency: {
-    color: '#DC2626',
-  },
-  priorityBadgeTextHigh: {
-    color: '#D97706',
-  },
-  issueText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.navy,
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  residentContactBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 12,
-  },
-  residentLabel: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-  },
-  residentName: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.navy,
-    marginTop: 1,
-  },
-  contactActionsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  contactIconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 6,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  ticketFooterRow: {
-    marginTop: 2,
-  },
-  startJobBtn: {
-    backgroundColor: '#3B82F6',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  startJobBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  completeJobBtn: {
-    backgroundColor: '#10B981',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  completeJobBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  resolvedMiniCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.surface,
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginTop: 8,
-  },
-  resolvedMiniTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  resolvedMiniNotes: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: 36,
-  },
-  modalHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  modalSub: {
-    fontSize: 13,
-    color: colors.inkSoft,
-    marginBottom: 16,
-  },
-  fieldLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-    marginBottom: 6,
-    marginTop: 10,
-  },
-  statusToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  statusToggleBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-  },
-  statusToggleBtnActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  statusToggleText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  statusToggleTextActive: {
-    color: '#FFFFFF',
-  },
-  notesInput: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    padding: 10,
-    fontSize: 13,
-    color: colors.navy,
-    minHeight: 70,
-    textAlignVertical: 'top',
-  },
-  costGridRow: {
-    flexDirection: 'row',
-  },
-  costInput: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  saveStatusBtn: {
-    backgroundColor: '#10B981',
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  saveStatusBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    topbar: {
+      height: 56,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      borderBottomWidth: 1,
+    },
+    topbarLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+    },
+    brandMark: {
+      width: 32,
+      height: 32,
+      borderRadius: 10,
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: 'rgba(16, 185, 129, 0.2)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    topbarTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    topbarRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    iconBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 10,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    bellBadge: {
+      position: 'absolute',
+      top: -3,
+      right: -3,
+      minWidth: 16,
+      height: 16,
+      borderRadius: 8,
+      backgroundColor: '#EF4444',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 3,
+    },
+    bellBadgeText: {
+      color: '#FFFFFF',
+      fontSize: 9.5,
+      fontWeight: '700',
+    },
+    avatarBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    avatarBtnText: {
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    scroll: {
+      flex: 1,
+    },
+    content: {
+      paddingHorizontal: 16,
+      paddingTop: 16,
+      paddingBottom: 36,
+      gap: 12,
+    },
+    needCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 12,
+      paddingVertical: 12,
+      paddingHorizontal: 14,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderLeftWidth: 4,
+    },
+    needTitle: {
+      fontSize: 13.5,
+      fontWeight: '700',
+    },
+    needSub: {
+      fontSize: 12.5,
+      marginTop: 2,
+      lineHeight: 17,
+    },
+    needBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+    },
+    needBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    ackedPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    ackedPillText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#059669',
+    },
+    chipsRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    chip: {
+      minHeight: 36,
+      paddingHorizontal: 14,
+      borderRadius: 999,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    chipText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    emptyCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      padding: 28,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyText: {
+      fontSize: 13.5,
+    },
+    jobCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      padding: 14,
+      gap: 10,
+    },
+    jobHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 8,
+      flexWrap: 'wrap',
+    },
+    ticketIdText: {
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    priorityPill: {
+      paddingHorizontal: 7,
+      paddingVertical: 2.5,
+      borderRadius: 999,
+    },
+    priorityPillText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+    },
+    statusBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 999,
+    },
+    statusBadgeText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+    },
+    jobTitle: {
+      fontSize: 15,
+      fontWeight: '600',
+      lineHeight: 20,
+    },
+    progBar: {
+      flexDirection: 'row',
+      gap: 6,
+      marginVertical: 2,
+    },
+    progSeg: {
+      flex: 1,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: isDark ? '#25352E' : '#DCE4DF',
+    },
+    progSegOn: {
+      backgroundColor: '#059669',
+    },
+    metaRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: 16,
+    },
+    metaItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+    },
+    metaText: {
+      fontSize: 13,
+    },
+    residentQuickBtns: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginTop: 2,
+    },
+    miniContactBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      paddingHorizontal: 10,
+      paddingVertical: 5.5,
+      borderRadius: 8,
+      borderWidth: 1,
+    },
+    miniContactBtnText: {
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    jobFooter: {
+      paddingTop: 10,
+      marginTop: 2,
+      borderTopWidth: 1,
+    },
+    updateTicketBtn: {
+      minHeight: 40,
+      borderRadius: 10,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 14,
+    },
+    updateTicketBtnText: {
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(11, 20, 16, 0.5)',
+      justifyContent: 'flex-end',
+    },
+    modalContent: {
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      paddingHorizontal: 20,
+      paddingTop: 10,
+      paddingBottom: 28,
+    },
+    sheetHandle: {
+      width: 40,
+      height: 5,
+      borderRadius: 3,
+      alignSelf: 'center',
+      marginBottom: 12,
+    },
+    modalHeaderRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    modalTitle: {
+      fontSize: 17,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    closeCircleBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    fieldLabel: {
+      fontSize: 12.5,
+      fontWeight: '600',
+      marginBottom: 6,
+      marginTop: 12,
+    },
+    statusToggleRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    statusToggleBtn: {
+      flex: 1,
+      minHeight: 42,
+      borderRadius: 10,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    statusToggleBtnActive: {
+      backgroundColor: '#059669',
+      borderColor: '#059669',
+    },
+    statusToggleText: {
+      fontSize: 13.5,
+      fontWeight: '600',
+    },
+    statusToggleTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    notesInput: {
+      borderWidth: 1,
+      borderRadius: 10,
+      padding: 11,
+      fontSize: 14,
+      minHeight: 76,
+      textAlignVertical: 'top',
+    },
+    photoPickerBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      borderWidth: 1,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 11,
+    },
+    photoPickerText: {
+      fontSize: 13.5,
+      flex: 1,
+    },
+    modalFooterActions: {
+      flexDirection: 'row',
+      gap: 10,
+      marginTop: 20,
+    },
+    cancelModalBtn: {
+      flex: 1,
+      minHeight: 46,
+      borderRadius: 10,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    cancelModalBtnText: {
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    saveStatusBtn: {
+      flex: 1,
+      backgroundColor: '#059669',
+      borderRadius: 10,
+      minHeight: 46,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    saveStatusBtnText: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
   });

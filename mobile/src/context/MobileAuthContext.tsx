@@ -70,15 +70,22 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           unsubUserDoc = onSnapshot(doc(db, 'users', fbUser.uid), (snap) => {
             if (snap.exists()) {
               const uData = snap.data();
+              const userRole = (uData.role as UserRole) || 'owner';
+              const isOwner = userRole === 'owner';
+              const resolvedOwnerId = isOwner
+                ? (uData.ownerId || fbUser.uid)
+                : (uData.ownerId && uData.ownerId !== fbUser.uid ? uData.ownerId : null);
+
               const profile: MobileUserProfile = {
                 id: fbUser.uid,
                 email: fbUser.email || uData.email || '',
                 displayName: uData.displayName || uData.name || fbUser.displayName || 'Propithub User',
-                role: (uData.role as UserRole) || 'owner',
+                role: userRole,
                 phone: uData.phone || '',
-                ownerId: uData.ownerId || fbUser.uid,
+                ownerId: resolvedOwnerId,
                 ownerName: uData.ownerName || null,
                 propertyId: uData.propertyId,
+                assignedProperties: uData.assignedProperties || (uData.propertyId ? [uData.propertyId] : []),
                 avatarUrl: uData.avatarUrl || null,
                 plan: uData.plan || 'pro',
                 hasCompletedTour: Boolean(uData.hasCompletedTour),
@@ -97,15 +104,22 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const userDoc = await getDoc(doc(db, 'users', fbUser.uid));
           if (userDoc.exists()) {
             const uData = userDoc.data();
+            const userRole = (uData.role as UserRole) || 'owner';
+            const isOwner = userRole === 'owner';
+            const resolvedOwnerId = isOwner
+              ? (uData.ownerId || fbUser.uid)
+              : (uData.ownerId && uData.ownerId !== fbUser.uid ? uData.ownerId : null);
+
             const profile: MobileUserProfile = {
               id: fbUser.uid,
               email: fbUser.email || uData.email || '',
               displayName: uData.displayName || uData.name || fbUser.displayName || 'Propithub User',
-              role: (uData.role as UserRole) || 'owner',
+              role: userRole,
               phone: uData.phone || '',
-              ownerId: uData.ownerId || fbUser.uid,
+              ownerId: resolvedOwnerId,
               ownerName: uData.ownerName || null,
               propertyId: uData.propertyId,
+              assignedProperties: uData.assignedProperties || (uData.propertyId ? [uData.propertyId] : []),
               avatarUrl: uData.avatarUrl || null,
               plan: uData.plan || 'pro',
               hasCompletedTour: Boolean(uData.hasCompletedTour),
@@ -113,35 +127,48 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             setCurrentUser(profile);
             setActiveRole(profile.role);
           } else {
-            // Document doesn't exist yet: check if user was invited in tenants or staff collections
+            // Document doesn't exist yet: check if user was invited in propertyManagers, tenants or staff collections
             let detectedRole: UserRole = 'owner';
-            let detectedOwnerId = fbUser.uid;
+            let detectedOwnerId: string | null = fbUser.uid;
             let detectedName = fbUser.displayName || fbUser.email?.split('@')[0] || 'User';
             let detectedPhone = '';
+            let detectedAssignedProps: string[] = [];
 
             try {
               if (fbUser.email) {
-                const cleanEmail = fbUser.email.toLowerCase();
-                const tenantSnap = await getDocs(
-                  query(collection(db, 'tenants'), where('email', '==', cleanEmail))
+                const cleanEmail = fbUser.email.toLowerCase().trim();
+                const pmSnap = await getDocs(
+                  query(collection(db, 'propertyManagers'), where('email', '==', cleanEmail))
                 );
-                if (!tenantSnap.empty) {
-                  const tData = tenantSnap.docs[0].data();
-                  detectedRole = 'tenant';
-                  detectedOwnerId = tData.ownerId || fbUser.uid;
-                  detectedName = tData.name || detectedName;
-                  detectedPhone = tData.phone || '';
+                if (!pmSnap.empty) {
+                  const pmData = pmSnap.docs[0].data();
+                  detectedRole = 'manager';
+                  detectedOwnerId = pmData.ownerId || null;
+                  detectedName = pmData.name || detectedName;
+                  detectedPhone = pmData.phone || '';
+                  detectedAssignedProps = pmData.assignedProperties || (pmData.propertyId ? [pmData.propertyId] : []);
                 } else {
-                  const staffSnap = await getDocs(
-                    query(collection(db, 'staff'), where('email', '==', cleanEmail))
+                  const tenantSnap = await getDocs(
+                    query(collection(db, 'tenants'), where('email', '==', cleanEmail))
                   );
-                  if (!staffSnap.empty) {
-                    const sData = staffSnap.docs[0].data();
-                    const sRole = (sData.role || '').toLowerCase();
-                    detectedRole = sRole.includes('manager') ? 'manager' : 'staff';
-                    detectedOwnerId = sData.ownerId || fbUser.uid;
-                    detectedName = sData.name || detectedName;
-                    detectedPhone = sData.phone || '';
+                  if (!tenantSnap.empty) {
+                    const tData = tenantSnap.docs[0].data();
+                    detectedRole = 'tenant';
+                    detectedOwnerId = tData.ownerId || null;
+                    detectedName = tData.name || detectedName;
+                    detectedPhone = tData.phone || '';
+                  } else {
+                    const staffSnap = await getDocs(
+                      query(collection(db, 'staff'), where('email', '==', cleanEmail))
+                    );
+                    if (!staffSnap.empty) {
+                      const sData = staffSnap.docs[0].data();
+                      const sRole = (sData.role || '').toLowerCase();
+                      detectedRole = sRole.includes('manager') ? 'manager' : 'staff';
+                      detectedOwnerId = sData.ownerId || null;
+                      detectedName = sData.name || detectedName;
+                      detectedPhone = sData.phone || '';
+                    }
                   }
                 }
               }
@@ -158,6 +185,7 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               ownerId: detectedOwnerId,
               ownerName: null,
               avatarUrl: null,
+              assignedProperties: detectedAssignedProps,
               plan: 'pro',
               hasCompletedTour: false,
             };
@@ -192,15 +220,21 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (userDoc.exists()) {
         const uData = userDoc.data();
         userRole = (uData.role as UserRole) || 'owner';
+        const isOwner = userRole === 'owner';
+        const resolvedOwnerId = isOwner
+          ? (uData.ownerId || cred.user.uid)
+          : (uData.ownerId && uData.ownerId !== cred.user.uid ? uData.ownerId : null);
+
         const profile: MobileUserProfile = {
           id: cred.user.uid,
           email: cred.user.email || uData.email || '',
           displayName: uData.displayName || uData.name || cred.user.displayName || 'Propithub User',
           role: userRole,
           phone: uData.phone || '',
-          ownerId: uData.ownerId || cred.user.uid,
+          ownerId: resolvedOwnerId,
           ownerName: uData.ownerName || null,
           propertyId: uData.propertyId,
+          assignedProperties: uData.assignedProperties || (uData.propertyId ? [uData.propertyId] : []),
           avatarUrl: uData.avatarUrl || null,
           plan: uData.plan || 'pro',
           hasCompletedTour: Boolean(uData.hasCompletedTour),
@@ -252,7 +286,7 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         displayName: name.trim(),
         role,
         phone: phone?.trim() || '',
-        ownerId: cred.user.uid,
+        ownerId: role === 'owner' ? cred.user.uid : null,
         ownerName: role === 'owner' ? name.trim() : null,
         avatarUrl: null,
         plan: 'starter',
@@ -278,6 +312,28 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             planStatus: isTrial ? 'trialing' : 'expired',
             trialEndsAt: isTrial ? new Date(Date.now() + trialDays * 86400000).toISOString() : null,
             isInitialTrial: isTrial,
+          },
+          { merge: true }
+        );
+      } else if (role === 'tenant') {
+        await setDoc(
+          doc(db, 'tenants', cred.user.uid),
+          {
+            id: cred.user.uid,
+            name: name.trim(),
+            email: cleanEmail,
+            phone: phone?.trim() || '',
+            unit: 'Unassigned',
+            owner: 'Unassigned',
+            ownerId: '',
+            leaseStart: '',
+            leaseEnd: '',
+            rent: 0,
+            deposit: 0,
+            rating: 5.0,
+            unitsRented: [],
+            history: [],
+            kycDocuments: [],
           },
           { merge: true }
         );

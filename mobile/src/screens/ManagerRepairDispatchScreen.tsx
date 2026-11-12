@@ -6,11 +6,11 @@ import {
   ScrollView,
   TouchableOpacity,
   SafeAreaView,
-  StatusBar,
   TextInput,
   Modal,
   Alert,
   Linking,
+  Image,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -20,26 +20,51 @@ import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
+import { usePlanLimits, ResourceQuotaType } from '../hooks/usePlanLimits';
+import { PlanLimitModal } from '../components/PlanLimitModal';
 import { MobileTicket, MobileStaffMember } from '../types';
 
 interface ManagerRepairDispatchScreenProps {
   onProfilePress?: () => void;
   onCreateTicketPress?: () => void;
+  onNavigate?: (screenKey: string) => void;
 }
 
 export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenProps> = ({
   onProfilePress,
   onCreateTicketPress,
+  onNavigate,
 }) => {
   const { colors, isDark } = useMobileTheme();
   const { state, updateTicket, addStaff } = useMobileAppData();
   const { user } = useMobileAuth();
   const { format, viewCurrency, currencySymbol } = useMobileCurrency();
 
-  const ownerId = user?.ownerId || '';
+  const managerRecord = (state.propertyManagers || []).find(
+    (m) =>
+      (user?.id && String(m.id) === user.id) ||
+      (user?.email && m.email?.toLowerCase().trim() === user.email.toLowerCase().trim())
+  );
+  const assignedPropertyId =
+    (user as any)?.propertyId ||
+    (user as any)?.assignedPropertyId ||
+    managerRecord?.propertyId ||
+    '';
+  const effectiveOwnerId =
+    user?.ownerId && user.ownerId !== user.id
+      ? user.ownerId
+      : managerRecord?.ownerId || '';
+  const assignedProps = [
+    ...(user?.assignedProperties || []),
+    ...(managerRecord?.assignedProperties || []),
+    ...(assignedPropertyId ? [assignedPropertyId] : []),
+  ];
+  const ownerId = effectiveOwnerId;
+  const { usage, currentPlanName } = usePlanLimits(ownerId);
+  const [limitModalType, setLimitModalType] = useState<ResourceQuotaType | null>(null);
 
   const [activeSubTab, setActiveSubTab] = useState<'tickets' | 'staff'>('tickets');
-  const [activePriority, setActivePriority] = useState<'all' | 'Emergency' | 'High' | 'Medium'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'Emergency' | 'High' | 'Medium' | 'resolved'>('all');
 
   // Assign Contractor Modal State
   const [assigningTicket, setAssigningTicket] = useState<MobileTicket | null>(null);
@@ -56,44 +81,67 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
   const [newStaffPassword, setNewStaffPassword] = useState('');
   const [isOnboarding, setIsOnboarding] = useState(false);
 
-  // Scoped properties, tickets, and staff matching web
+  // Lightbox for ticket photo proof
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+
+  // Scoped properties, tickets, and staff
   const myProperties = useMemo(() => {
-    if (!ownerId && !user?.assignedProperties?.length) return [];
-    return state.properties.filter((p) => {
-      if (ownerId && p.ownerId === ownerId) return true;
-      if (user?.assignedProperties?.includes(p.id)) return true;
+    return (state.properties || []).filter((p) => {
+      if (p.assignedManagerId === user?.id || (p as any).managerId === user?.id) return true;
+      if (assignedProps.includes(p.id)) return true;
+      if (assignedPropertyId && p.id === assignedPropertyId) return true;
+      if (effectiveOwnerId && p.ownerId === effectiveOwnerId) {
+        if (assignedProps.length === 0 && !assignedPropertyId) return true;
+        if (assignedProps.includes(p.id)) return true;
+      }
       return false;
     });
-  }, [state.properties, ownerId, user?.assignedProperties]);
+  }, [state.properties, effectiveOwnerId, assignedPropertyId, assignedProps, user?.id]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
 
   const myTickets = useMemo(() => {
-    return state.tickets.filter((t) => t.propertyId && myPropertyIds.has(t.propertyId));
-  }, [state.tickets, myPropertyIds]);
+    return state.tickets.filter((t) => {
+      if (t.propertyId && myPropertyIds.has(t.propertyId)) return true;
+      if (ownerId && t.ownerId === ownerId) return true;
+      return false;
+    });
+  }, [state.tickets, myPropertyIds, ownerId]);
 
   const myStaff = useMemo(() => {
     if (!ownerId) return [];
     return state.staff.filter((s) => s.ownerId === ownerId);
   }, [state.staff, ownerId]);
 
-  // Filtered tickets by priority
+  const hasOpenTickets = myTickets.some((t) => t.status === 'open');
+
+  // Filtered tickets
   const filteredTickets = useMemo(() => {
     return myTickets.filter((t) => {
-      if (activePriority === 'all') return true;
-      return t.priority === activePriority;
+      if (activeFilter === 'all') return true;
+      if (activeFilter === 'resolved') return t.status === 'resolved';
+      return t.priority === activeFilter && t.status !== 'resolved';
     });
-  }, [myTickets, activePriority]);
+  }, [myTickets, activeFilter]);
 
   const handleOpenAssignModal = (ticket: MobileTicket) => {
     setAssigningTicket(ticket);
-    setSelectedStaffId(myStaff[0]?.id || '');
-    setAssignFee(String(ticket.costEstimate || 500));
+    setSelectedStaffId(ticket.assignedStaffId || myStaff[0]?.id || '');
+    setAssignFee(
+      String(
+        typeof ticket.payment?.amount === 'number'
+          ? ticket.payment.amount
+          : ticket.costEstimate || 500
+      )
+    );
     setAssignPayer(ticket.payment?.payer || 'owner');
   };
 
   const handleConfirmAssignment = () => {
-    if (!assigningTicket || !selectedStaffId) return;
+    if (!assigningTicket || !selectedStaffId) {
+      Alert.alert('Required', 'Please select a technician first.');
+      return;
+    }
 
     const staffObj = myStaff.find((s) => s.id === selectedStaffId);
     const feeNum = Number(assignFee) || 0;
@@ -102,18 +150,15 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
       status: 'assigned',
       assignedStaffId: staffObj?.id,
       assignedStaffName: staffObj?.name,
+      assignedTo: staffObj?.name,
       payment: {
         payer: assignPayer,
         amount: feeNum,
-        method: 'Standard',
-        status: 'awaiting_payment',
+        method: assigningTicket.payment?.method || 'Standard',
+        status: feeNum > 0 ? 'awaiting_payment' : 'none',
       },
-    });
+    } as Partial<MobileTicket>);
 
-    Alert.alert(
-      'Technician Dispatched 🚀',
-      `Ticket #${assigningTicket.id} assigned to ${staffObj?.name}. Payer designated: ${assignPayer.toUpperCase()} (${format(feeNum, viewCurrency)}).`
-    );
     setAssigningTicket(null);
   };
 
@@ -121,372 +166,455 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
     updateTicket(ticketId, {
       status: 'resolved',
     });
-    Alert.alert('Ticket Resolved ✓', `Ticket #${ticketId} marked as completed & resolved.`);
   };
 
-  const handleOnboardStaffSubmit = () => {
+  const handleOpenOnboardModal = () => {
+    if (usage.staff.isFull) {
+      setLimitModalType('staff');
+      return;
+    }
+    setShowOnboardModal(true);
+  };
+
+  const handleOnboardStaffSubmit = async () => {
     if (!newStaffName.trim() || !newStaffEmail.trim()) {
-      Alert.alert('Missing Fields', 'Please enter staff name and valid email.');
+      Alert.alert('Required', 'Please enter technician name and email.');
+      return;
+    }
+    if (newStaffPassword && newStaffPassword.length < 6) {
+      Alert.alert('Invalid Password', 'Temporary password must be at least 6 characters.');
       return;
     }
 
     setIsOnboarding(true);
-    const newMember: MobileStaffMember = {
-      id: `staff-${Date.now()}`,
-      name: newStaffName.trim(),
-      role: newStaffRole.trim(),
-      phone: newStaffPhone.trim(),
-      email: newStaffEmail.trim().toLowerCase(),
-      assignedProperties: myProperties[0]?.id ? [myProperties[0].id] : [],
-      activeTickets: 0,
-      rating: 5.0,
-      status: 'available',
-      ownerId: ownerId || user.id,
-    };
+    try {
+      const newMember: MobileStaffMember = {
+        id: `staff-${Date.now()}`,
+        name: newStaffName.trim(),
+        role: newStaffRole.trim() || 'Technician',
+        phone: newStaffPhone.trim(),
+        email: newStaffEmail.trim().toLowerCase(),
+        assignedProperties: myProperties.map((p) => p.id),
+        activeTickets: 0,
+        rating: 5.0,
+        status: 'available',
+        ownerId: ownerId || user.id,
+      };
 
-    addStaff(newMember, newStaffPassword || 'Staff@123');
-    setIsOnboarding(false);
-    setShowOnboardModal(false);
-    setNewStaffName('');
-    setNewStaffPhone('');
-    setNewStaffEmail('');
-    setNewStaffPassword('');
-    Alert.alert('Staff Onboarded ✓', `${newMember.name} added to maintenance staff roster.`);
+      await addStaff(newMember, newStaffPassword.trim() || 'Staff@123');
+      setShowOnboardModal(false);
+      setNewStaffName('');
+      setNewStaffPhone('');
+      setNewStaffEmail('');
+      setNewStaffPassword('');
+    } finally {
+      setIsOnboarding(false);
+    }
   };
 
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
-
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* StatusBar managed globally */}
+    <SafeAreaView style={styles.safeArea}>
       <ScreenStatusBar />
 
-      {/* Header */}
       <Header
         title="Repairs"
-        onNotificationPress={() => { }}
+        onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
 
-      <View style={[styles.mainContainer, { backgroundColor: colors.background }]}>
-        {/* Subtabs matching Web (Tickets vs Staff Roster) */}
-        <TourTarget id="manager-maintenance-subtabs">
-        <View style={[styles.subTabContainer, { backgroundColor: isDark ? '#1E293B' : '#E2E8F0' }]}>
+      {/* Top Navigation & Primary CTA Bar */}
+      <TourTarget id="manager-maintenance-subtabs" style={styles.topSubBar}>
+        <View style={styles.subTabsLeft}>
           <TouchableOpacity
-            style={[styles.subTabButton, activeSubTab === 'tickets' && [styles.subTabButtonActive, { backgroundColor: colors.surface }]]}
+            style={[styles.subTabPill, activeSubTab === 'tickets' && styles.subTabPillActive]}
             onPress={() => setActiveSubTab('tickets')}
             activeOpacity={0.8}
           >
-            <Feather
-              name="tool"
-              size={14}
-              color={activeSubTab === 'tickets' ? '#059669' : colors.inkSoft}
-              style={{ marginRight: 6 }}
-            />
             <Text
-              style={[styles.subTabText, { color: colors.inkSoft }, activeSubTab === 'tickets' && [styles.subTabTextActive, { color: colors.navy }]]}
+              style={[
+                styles.subTabPillText,
+                activeSubTab === 'tickets' && styles.subTabPillTextActive,
+              ]}
             >
               Tickets ({myTickets.length})
             </Text>
+            {hasOpenTickets && <View style={styles.unreadDot} />}
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.subTabButton, activeSubTab === 'staff' && [styles.subTabButtonActive, { backgroundColor: colors.surface }]]}
+            style={[styles.subTabPill, activeSubTab === 'staff' && styles.subTabPillActive]}
             onPress={() => setActiveSubTab('staff')}
             activeOpacity={0.8}
           >
-            <Feather
-              name="users"
-              size={14}
-              color={activeSubTab === 'staff' ? '#059669' : colors.inkSoft}
-              style={{ marginRight: 6 }}
-            />
             <Text
-              style={[styles.subTabText, { color: colors.inkSoft }, activeSubTab === 'staff' && [styles.subTabTextActive, { color: colors.navy }]]}
+              style={[
+                styles.subTabPillText,
+                activeSubTab === 'staff' && styles.subTabPillTextActive,
+              ]}
             >
-              Staff ({myStaff.length})
+              Technicians ({myStaff.length})
             </Text>
           </TouchableOpacity>
         </View>
 
-        </TourTarget>
+        {activeSubTab === 'tickets' ? (
+          <TouchableOpacity
+            style={styles.primaryCtaBtn}
+            onPress={onCreateTicketPress}
+            activeOpacity={0.85}
+          >
+            <Feather name="plus" size={13} color="#FFFFFF" />
+            <Text style={styles.primaryCtaBtnText}>Raise Ticket</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.primaryCtaBtn}
+            onPress={handleOpenOnboardModal}
+            activeOpacity={0.85}
+          >
+            <Feather name="user-plus" size={13} color="#FFFFFF" />
+            <Text style={styles.primaryCtaBtnText}>Onboard</Text>
+          </TouchableOpacity>
+        )}
+      </TourTarget>
 
-        <ScrollView
-          style={[styles.scroll, { backgroundColor: colors.background }]}
-          contentContainerStyle={styles.content}
-          showsVerticalScrollIndicator={false}
-        >
-          {activeSubTab === 'tickets' ? (
-            <>
-              {/* Priority Filter Bar */}
-              <View style={styles.priorityFilterRow}>
-                {(['all', 'Emergency', 'High', 'Medium'] as const).map((p) => (
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
+        {activeSubTab === 'tickets' ? (
+          <>
+            {/* Filter Chips */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.chipsRow}
+            >
+              {(
+                [
+                  { key: 'all', label: 'All' },
+                  { key: 'Emergency', label: 'Emergency' },
+                  { key: 'High', label: 'High' },
+                  { key: 'Medium', label: 'Medium' },
+                  { key: 'resolved', label: 'Resolved' },
+                ] as const
+              ).map((chip) => {
+                const active = activeFilter === chip.key;
+                return (
                   <TouchableOpacity
-                    key={p}
-                    style={[
-                      styles.priorityPill,
-                      { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line },
-                      activePriority === p && styles.priorityPillActive,
-                    ]}
-                    onPress={() => setActivePriority(p)}
+                    key={chip.key}
+                    style={[styles.chip, active && styles.chipActive]}
+                    onPress={() => setActiveFilter(chip.key)}
                   >
-                    <Text
-                      style={[
-                        styles.priorityPillText,
-                        { color: colors.inkSoft },
-                        activePriority === p && styles.priorityPillTextActive,
-                      ]}
-                    >
-                      {p === 'all' ? 'All Priority' : p}
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {chip.label}
                     </Text>
                   </TouchableOpacity>
-                ))}
+                );
+              })}
+            </ScrollView>
+
+            {filteredTickets.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Ionicons name="checkmark-done-circle-outline" size={32} color="#10B981" />
+                <Text style={styles.emptyTitle}>No tickets found</Text>
               </View>
+            ) : (
+              filteredTickets.map((t) => {
+                const isResolved = t.status === 'resolved';
+                const isHigh = t.priority === 'High' || t.priority === 'Emergency';
+                const techName = t.assignedStaffName || (t as any).assignedTo || 'Unassigned';
+                const ticketPhoto = (t as any).completionPhoto || (t as any).images?.[0];
 
-              {/* Tickets List */}
-              {filteredTickets.length === 0 ? (
-                <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Ionicons name="checkmark-done-circle-outline" size={48} color="#10B981" />
-                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>Zero Work Orders</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    No maintenance tickets currently match the selected priority filter.
-                  </Text>
-                </View>
-              ) : (
-                filteredTickets.map((t) => {
-                  const isResolved = t.status === 'resolved';
-                  const isHigh = t.priority === 'High' || t.priority === 'Emergency';
-
-                  return (
-                    <View key={t.id} style={[styles.ticketCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                      <View style={styles.ticketHeaderRow}>
-                        <View style={{ flex: 1 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                            <Text style={styles.ticketId}>#{t.id}</Text>
-                            <View style={[styles.priorityBadge, isHigh && styles.priorityBadgeHigh]}>
-                              <Text style={[styles.priorityBadgeText, isHigh && styles.priorityBadgeTextHigh]}>
-                                {t.priority}
-                              </Text>
-                            </View>
-                          </View>
-                          <Text style={[styles.ticketIssue, { color: colors.navy }]}>{t.issue}</Text>
-                          <Text style={[styles.ticketSubDetails, { color: colors.inkSoft }]}>
-                            Unit {t.unit} • {t.tenant || 'Resident'} • {t.category || 'General'}
-                          </Text>
-                        </View>
-
+                return (
+                  <View key={t.id} style={styles.card}>
+                    {/* Card Top Row */}
+                    <View style={styles.cardTopRow}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                        <Text style={styles.ticketIdText}>
+                          #{t.id} · Unit {t.unit}
+                        </Text>
                         <View
                           style={[
-                            styles.statusBadge,
-                            isResolved ? styles.statusBadgeGreen : styles.statusBadgeAmber,
+                            styles.priorityPill,
+                            isHigh ? styles.priorityPillHigh : styles.priorityPillNormal,
                           ]}
                         >
                           <Text
                             style={[
-                              styles.statusBadgeText,
-                              isResolved ? { color: '#059669' } : { color: '#B45309' },
+                              styles.priorityPillText,
+                              { color: isHigh ? '#DC2626' : colors.inkSoft },
                             ]}
                           >
-                            {t.status.toUpperCase()}
+                            {t.priority}
                           </Text>
                         </View>
                       </View>
 
-                      {/* Technician Info */}
-                      <View style={[styles.technicianRow, { borderTopColor: colors.line }]}>
-                        <Text style={[styles.technicianLabel, { color: colors.inkSoft }]}>Assigned Technician:</Text>
-                        <Text style={[styles.technicianValue, { color: colors.navy }]}>
-                          {t.assignedStaffName || 'Unassigned'}
+                      <View
+                        style={[
+                          styles.statusPill,
+                          isResolved ? styles.statusPillGreen : styles.statusPillAmber,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.statusPillText,
+                            { color: isResolved ? '#059669' : '#D97706' },
+                          ]}
+                        >
+                          {t.status.replace('_', ' ').toUpperCase()}
                         </Text>
                       </View>
+                    </View>
 
-                      {/* Action Buttons */}
-                      {!isResolved ? (
-                        <View style={styles.ticketActionRow}>
-                          <TouchableOpacity
-                            style={styles.dispatchBtn}
-                            onPress={() => handleOpenAssignModal(t)}
-                            activeOpacity={0.8}
-                          >
-                            <Feather name="user-check" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
-                            <Text style={styles.dispatchBtnText}>
-                              {t.assignedStaffId ? 'Reassign Tech' : 'Dispatch Technician'}
-                            </Text>
-                          </TouchableOpacity>
-
-                          <TouchableOpacity
-                            style={styles.resolveBtn}
-                            onPress={() => handleResolveTicket(t.id)}
-                            activeOpacity={0.8}
-                          >
-                            <Feather name="check-circle" size={13} color="#059669" style={{ marginRight: 4 }} />
-                            <Text style={styles.resolveBtnText}>Resolve</Text>
-                          </TouchableOpacity>
-                        </View>
-                      ) : (
-                        <View style={styles.resolvedBadgeRow}>
-                          <Ionicons name="checkmark-circle" size={16} color="#10B981" />
-                          <Text style={styles.resolvedBadgeText}>Resolved</Text>
-                        </View>
+                    {/* Issue + Optional Photo Thumbnail */}
+                    <View style={styles.issueRow}>
+                      <Text style={styles.issueText}>{t.issue}</Text>
+                      {Boolean(ticketPhoto) && (
+                        <TouchableOpacity onPress={() => setLightboxImage(ticketPhoto)}>
+                          <Image source={{ uri: ticketPhoto }} style={styles.proofThumb} />
+                        </TouchableOpacity>
                       )}
                     </View>
-                  );
-                })
-              )}
-            </>
-          ) : (
-            <>
-              {/* Staff Roster Tab with + Onboard Staff Button */}
-              <View style={styles.staffHeaderRow}>
-                <Text style={[styles.staffSectionHeading, { color: colors.navy }]}>
-                  Team ({myStaff.length})
-                </Text>
-                <TouchableOpacity
-                  style={styles.onboardBtn}
-                  onPress={() => setShowOnboardModal(true)}
-                  activeOpacity={0.8}
-                >
-                  <Feather name="user-plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
-                  <Text style={styles.onboardBtnText}>Onboard Staff</Text>
-                </TouchableOpacity>
-              </View>
 
-              {myStaff.length === 0 ? (
-                <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Feather name="users" size={48} color={colors.inkSoft} />
-                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Technicians Onboarded</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    Onboard repair contractors and technicians to assign tickets.
-                  </Text>
-                </View>
-              ) : (
-                myStaff.map((s) => (
-                  <View key={s.id} style={[styles.staffCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    <View style={styles.staffCardHeader}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.staffName, { color: colors.navy }]}>{s.name}</Text>
-                        <Text style={[styles.staffRole, { color: colors.inkSoft }]}>{s.role}</Text>
+                    {/* 2-Column Details Grid */}
+                    <View style={styles.gridRow}>
+                      <View style={styles.gridCol}>
+                        <Text style={styles.gridLabel}>RESIDENT</Text>
+                        <Text style={styles.gridValue} numberOfLines={1}>
+                          {t.tenant || 'Resident'}
+                        </Text>
                       </View>
-                      <View style={[styles.staffWorkloadBadge, isDark && { backgroundColor: '#1E293B' }]}>
-                        <Text style={[styles.staffWorkloadText, { color: colors.inkSoft }]}>
-                          {s.activeTickets || 0} Active Tickets
+                      <View style={styles.gridCol}>
+                        <Text style={styles.gridLabel}>TECHNICIAN</Text>
+                        <Text style={styles.gridValue} numberOfLines={1}>
+                          {techName}
                         </Text>
                       </View>
                     </View>
 
-                    <View style={[styles.staffContactRow, { borderTopColor: colors.line }]}>
-                      <TouchableOpacity
-                        style={[styles.callStaffBtn, isDark && { backgroundColor: '#1E293B' }]}
-                        onPress={() => Linking.openURL(`tel:${s.phone}`)}
-                        activeOpacity={0.8}
-                      >
-                        <Feather name="phone" size={13} color="#059669" style={{ marginRight: 6 }} />
-                        <Text style={styles.callStaffBtnText}>{s.phone}</Text>
-                      </TouchableOpacity>
+                    <View style={[styles.gridRow, { marginTop: 6, paddingTop: 0, borderTopWidth: 0 }]}>
+                      <View style={styles.gridCol}>
+                        <Text style={styles.gridLabel}>WHO PAYS / COST</Text>
+                        <Text style={styles.gridSubValue} numberOfLines={1}>
+                          {t.payment?.payer
+                            ? `${t.payment.payer === 'owner' ? 'Owner' : 'Tenant'}${
+                                t.payment.amount
+                                  ? ` · ${format(t.payment.amount, (t as any).currency || viewCurrency)}`
+                                  : ''
+                              }`
+                            : '—'}
+                        </Text>
+                      </View>
+                      <View style={styles.gridCol}>
+                        <Text style={styles.gridLabel}>CATEGORY</Text>
+                        <Text style={styles.gridSubValue} numberOfLines={1}>
+                          {t.category || 'General'}
+                        </Text>
+                      </View>
+                    </View>
 
-                      <Text style={[styles.staffEmailText, { color: colors.inkSoft }]} numberOfLines={1}>
-                        {s.email}
-                      </Text>
+                    {/* Clean Footer Actions */}
+                    {!isResolved && (
+                      <View style={styles.cardFooter}>
+                        <TouchableOpacity
+                          style={styles.footerBtnPrimary}
+                          onPress={() => handleOpenAssignModal(t)}
+                        >
+                          <Text style={styles.footerBtnPrimaryText}>
+                            {t.assignedStaffId || (t as any).assignedTo
+                              ? 'Reassign Tech'
+                              : 'Dispatch Tech'}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.footerBtn}
+                          onPress={() => handleResolveTicket(t.id)}
+                        >
+                          <Text style={styles.footerBtnText}>Mark Resolved</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                );
+              })
+            )}
+          </>
+        ) : (
+          <>
+            {/* Quota Row */}
+            <View style={styles.quotaBar}>
+              <Text style={styles.quotaText}>
+                Technicians Quota: {usage.staff.used} of {usage.staff.max ?? '∞'} ({currentPlanName})
+              </Text>
+              {usage.staff.isFull && (
+                <TouchableOpacity onPress={() => setLimitModalType('staff')}>
+                  <Text style={[styles.quotaText, { color: '#EA580C', fontWeight: '700' }]}>
+                    Limit Reached
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {myStaff.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Feather name="users" size={30} color={colors.inkSoft} />
+                <Text style={styles.emptyTitle}>No technicians onboarded</Text>
+              </View>
+            ) : (
+              myStaff.map((s) => {
+                const openCount = myTickets.filter(
+                  (t) =>
+                    t.status !== 'resolved' &&
+                    (t.assignedStaffId === s.id ||
+                      t.assignedStaffName === s.name ||
+                      (t as any).assignedTo === s.name)
+                ).length;
+
+                return (
+                  <View key={s.id} style={styles.card}>
+                    <View style={styles.cardTopRow}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                        <View style={styles.avatarCircle}>
+                          <Text style={styles.avatarText}>
+                            {s.name.slice(0, 2).toUpperCase()}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.issueText} numberOfLines={1}>
+                            {s.name}
+                          </Text>
+                          <Text style={styles.quotaText}>{s.role}</Text>
+                        </View>
+                      </View>
+                      <View style={[styles.statusPill, styles.statusPillGreen]}>
+                        <Text style={[styles.statusPillText, { color: '#059669' }]}>
+                          ★ {(s.rating || 5.0).toFixed(1)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.gridRow}>
+                      <View style={styles.gridCol}>
+                        <Text style={styles.gridLabel}>OPEN TICKETS</Text>
+                        <Text style={styles.gridValue}>{openCount}</Text>
+                      </View>
+                      <View style={styles.gridCol}>
+                        <Text style={styles.gridLabel}>COMPLETED</Text>
+                        <Text style={styles.gridValue}>{(s as any).completed || 0}</Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.cardFooter}>
+                      {Boolean(s.phone) && (
+                        <TouchableOpacity
+                          style={styles.footerBtn}
+                          onPress={() => Linking.openURL(`tel:${s.phone}`)}
+                        >
+                          <Feather name="phone" size={12} color={colors.navy} />
+                          <Text style={styles.footerBtnText}>Call</Text>
+                        </TouchableOpacity>
+                      )}
+                      {Boolean(s.email) && (
+                        <TouchableOpacity
+                          style={styles.footerBtn}
+                          onPress={() => Linking.openURL(`mailto:${s.email}`)}
+                        >
+                          <Feather name="mail" size={12} color={colors.navy} />
+                          <Text style={styles.footerBtnText}>Email</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                   </View>
-                ))
-              )}
-            </>
-          )}
+                );
+              })
+            )}
+          </>
+        )}
 
-          <View style={{ height: 40 }} />
-        </ScrollView>
-      </View>
+        <View style={{ height: 32 }} />
+      </ScrollView>
 
-      {/* Dispatch Technician Modal */}
+      {/* ================================================================== */}
+      {/* DISPATCH TECHNICIAN BOTTOM SHEET                                   */}
+      {/* ================================================================== */}
       <Modal visible={Boolean(assigningTicket)} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: colors.surface, borderTopColor: colors.line }]}>
-            <View style={[styles.modalHeader, { borderBottomColor: colors.line }]}>
-              <View>
-                <Text style={[styles.modalTitle, { color: colors.navy }]}>Dispatch Technician</Text>
-                <Text style={[styles.modalSubTitle, { color: colors.inkSoft }]}>
-                  Assign work order #{assigningTicket?.id} (Unit {assigningTicket?.unit})
-                </Text>
-              </View>
+          <View style={styles.modalContent}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                Dispatch · #{assigningTicket?.id} (Unit {assigningTicket?.unit})
+              </Text>
               <TouchableOpacity onPress={() => setAssigningTicket(null)}>
                 <Ionicons name="close" size={20} color={colors.inkSoft} />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
-              {/* Select Staff */}
               <View style={styles.inputGroup}>
-                <Text style={[styles.inputLabel, { color: colors.inkSoft }]}>Select Contractor / Technician</Text>
-                {myStaff.map((s) => (
-                  <TouchableOpacity
-                    key={s.id}
-                    style={[
-                      styles.staffSelectOption,
-                      { backgroundColor: isDark ? '#1E293B' : '#F8FAFC', borderColor: colors.line },
-                      selectedStaffId === s.id && styles.staffSelectOptionActive,
-                    ]}
-                    onPress={() => setSelectedStaffId(s.id)}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.staffSelectName, { color: colors.navy }]}>{s.name}</Text>
-                      <Text style={[styles.staffSelectRole, { color: colors.inkSoft }]}>{s.role} • {s.phone}</Text>
-                    </View>
-                    {selectedStaffId === s.id && (
-                      <Ionicons name="checkmark-circle" size={18} color="#059669" />
-                    )}
-                  </TouchableOpacity>
-                ))}
+                <Text style={styles.inputLabel}>Technician *</Text>
+                {myStaff.length === 0 ? (
+                  <Text style={styles.quotaText}>
+                    No technicians onboarded yet. Switch to Technicians tab to onboard one.
+                  </Text>
+                ) : (
+                  myStaff.map((s) => {
+                    const selected = selectedStaffId === s.id;
+                    return (
+                      <TouchableOpacity
+                        key={s.id}
+                        style={[styles.staffOption, selected && styles.staffOptionSelected]}
+                        onPress={() => setSelectedStaffId(s.id)}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.gridValue}>{s.name}</Text>
+                          <Text style={styles.quotaText}>
+                            {s.role} · {s.phone || s.email}
+                          </Text>
+                        </View>
+                        {selected && (
+                          <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
               </View>
 
-              {/* Responsible Payer */}
               <View style={styles.inputGroup}>
-                <Text style={[styles.inputLabel, { color: colors.inkSoft }]}>Responsible Payer</Text>
-                <View style={[styles.payerToggleRow, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
-                  <TouchableOpacity
-                    style={[
-                      styles.payerOption,
-                      assignPayer === 'owner' && [styles.payerOptionActive, { backgroundColor: colors.surface }],
-                    ]}
-                    onPress={() => setAssignPayer('owner')}
-                  >
-                    <Text
-                      style={[
-                        styles.payerOptionText,
-                        { color: colors.inkSoft },
-                        assignPayer === 'owner' && [styles.payerOptionTextActive, { color: colors.navy }],
-                      ]}
-                    >
-                      Property Owner
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.payerOption,
-                      assignPayer === 'tenant' && [styles.payerOptionActive, { backgroundColor: colors.surface }],
-                    ]}
-                    onPress={() => setAssignPayer('tenant')}
-                  >
-                    <Text
-                      style={[
-                        styles.payerOptionText,
-                        { color: colors.inkSoft },
-                        assignPayer === 'tenant' && [styles.payerOptionTextActive, { color: colors.navy }],
-                      ]}
-                    >
-                      Resident Tenant
-                    </Text>
-                  </TouchableOpacity>
+                <Text style={styles.inputLabel}>Who Pays *</Text>
+                <View style={styles.row2}>
+                  {(
+                    [
+                      { key: 'owner', label: 'Owner Pays' },
+                      { key: 'tenant', label: 'Tenant Pays' },
+                    ] as const
+                  ).map((opt) => {
+                    const active = assignPayer === opt.key;
+                    return (
+                      <TouchableOpacity
+                        key={opt.key}
+                        style={[styles.payerPill, active && styles.payerPillActive]}
+                        onPress={() => setAssignPayer(opt.key)}
+                      >
+                        <Text style={[styles.payerPillText, active && styles.payerPillTextActive]}>
+                          {opt.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
               </View>
 
-              {/* Service Fee Amount */}
               <View style={styles.inputGroup}>
-                <Text style={[styles.inputLabel, { color: colors.inkSoft }]}>Service Fee Amount ({currencySymbol})</Text>
+                <Text style={styles.inputLabel}>Estimated Cost ({currencySymbol})</Text>
                 <TextInput
-                  style={[styles.textInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
+                  style={styles.textInput}
                   value={assignFee}
                   onChangeText={setAssignFee}
                   keyboardType="numeric"
@@ -495,27 +623,23 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
                 />
               </View>
 
-              {/* Confirm Dispatch Button */}
-              <TouchableOpacity
-                style={styles.confirmDispatchBtn}
-                onPress={handleConfirmAssignment}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.confirmDispatchBtnText}>Dispatch</Text>
+              <TouchableOpacity style={styles.primaryBtn} onPress={handleConfirmAssignment}>
+                <Text style={styles.primaryBtnText}>Assign Technician</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
         </View>
       </Modal>
 
-      {/* Onboard Staff Modal */}
+      {/* ================================================================== */}
+      {/* ONBOARD TECHNICIAN BOTTOM SHEET                                    */}
+      {/* ================================================================== */}
       <Modal visible={showOnboardModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: colors.surface, borderTopColor: colors.line }]}>
-            <View style={[styles.modalHeader, { borderBottomColor: colors.line }]}>
-              <View>
-                <Text style={[styles.modalTitle, { color: colors.navy }]}>Onboard Maintenance Staff</Text>
-              </View>
+          <View style={styles.modalContent}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Onboard Technician</Text>
               <TouchableOpacity onPress={() => setShowOnboardModal(false)}>
                 <Ionicons name="close" size={20} color={colors.inkSoft} />
               </TouchableOpacity>
@@ -523,9 +647,9 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
 
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={styles.inputGroup}>
-                <Text style={[styles.inputLabel, { color: colors.inkSoft }]}>Full Name</Text>
+                <Text style={styles.inputLabel}>Full Name *</Text>
                 <TextInput
-                  style={[styles.textInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
+                  style={styles.textInput}
                   value={newStaffName}
                   onChangeText={setNewStaffName}
                   placeholder="e.g. Ramesh Kumar"
@@ -534,55 +658,92 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
               </View>
 
               <View style={styles.inputGroup}>
-                <Text style={[styles.inputLabel, { color: colors.inkSoft }]}>Trade / Role</Text>
+                <Text style={styles.inputLabel}>Specialty / Trade *</Text>
                 <TextInput
-                  style={[styles.textInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
+                  style={styles.textInput}
                   value={newStaffRole}
                   onChangeText={setNewStaffRole}
-                  placeholder="e.g. Master Plumber, Electrician, HVAC"
+                  placeholder="Plumber, Electrician, HVAC..."
                   placeholderTextColor={colors.inkSoft}
                 />
               </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={[styles.inputLabel, { color: colors.inkSoft }]}>Email Address</Text>
-                <TextInput
-                  style={[styles.textInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                  value={newStaffEmail}
-                  onChangeText={setNewStaffEmail}
-                  keyboardType="email-address"
-                  placeholder="staff@example.com"
-                  placeholderTextColor={colors.inkSoft}
-                  autoCapitalize="none"
-                />
+              <View style={styles.row2}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>Email (Login) *</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={newStaffEmail}
+                    onChangeText={setNewStaffEmail}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    placeholder="staff@example.com"
+                    placeholderTextColor={colors.inkSoft}
+                  />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>Phone</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={newStaffPhone}
+                    onChangeText={setNewStaffPhone}
+                    keyboardType="phone-pad"
+                    placeholder="+91 98765 43210"
+                    placeholderTextColor={colors.inkSoft}
+                  />
+                </View>
               </View>
 
               <View style={styles.inputGroup}>
-                <Text style={[styles.inputLabel, { color: colors.inkSoft }]}>Phone Number</Text>
+                <Text style={styles.inputLabel}>Temporary Password</Text>
                 <TextInput
-                  style={[styles.textInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                  value={newStaffPhone}
-                  onChangeText={setNewStaffPhone}
-                  keyboardType="phone-pad"
-                  placeholder="+91 98765 43210"
+                  style={styles.textInput}
+                  value={newStaffPassword}
+                  onChangeText={setNewStaffPassword}
+                  secureTextEntry
+                  placeholder="Min. 6 characters (default: Staff@123)"
                   placeholderTextColor={colors.inkSoft}
                 />
               </View>
 
               <TouchableOpacity
-                style={styles.confirmDispatchBtn}
+                style={styles.primaryBtn}
                 onPress={handleOnboardStaffSubmit}
-                activeOpacity={0.85}
                 disabled={isOnboarding}
               >
-                <Text style={styles.confirmDispatchBtnText}>
-                  {isOnboarding ? 'Onboarding...' : 'Save & Onboard Technician'}
+                <Text style={styles.primaryBtnText}>
+                  {isOnboarding ? 'Onboarding...' : 'Add to Team'}
                 </Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
         </View>
       </Modal>
+
+      {/* Photo Proof Lightbox */}
+      <Modal visible={Boolean(lightboxImage)} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.lightboxOverlay}
+          activeOpacity={1}
+          onPress={() => setLightboxImage(null)}
+        >
+          {lightboxImage && (
+            <Image
+              source={{ uri: lightboxImage }}
+              style={{ width: '90%', height: '65%', borderRadius: 12 }}
+              resizeMode="contain"
+            />
+          )}
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Plan Quota Modal */}
+      <PlanLimitModal
+        visible={Boolean(limitModalType)}
+        resourceType={limitModalType}
+        onClose={() => setLimitModalType(null)}
+        onUpgrade={() => setLimitModalType(null)}
+      />
     </SafeAreaView>
   );
 };
@@ -593,354 +754,326 @@ const createStyles = (colors: any, isDark: boolean) =>
       flex: 1,
       backgroundColor: colors.background,
     },
-    mainContainer: {
-      flex: 1,
-      backgroundColor: colors.background,
-    },
-    subTabContainer: {
+    topSubBar: {
       flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 14,
+      paddingVertical: 8,
       backgroundColor: colors.surface,
       borderBottomWidth: 1,
       borderBottomColor: colors.line,
-      paddingHorizontal: 16,
-      paddingTop: 8,
-      gap: 8,
     },
-    subTabButton: {
-      flex: 1,
+    subTabsLeft: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
-      paddingVertical: 10,
-      borderBottomWidth: 2,
-      borderBottomColor: 'transparent',
+      gap: 6,
     },
-    subTabButtonActive: {
-      borderBottomColor: '#059669',
+    subTabPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 999,
+      backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
     },
-    subTabText: {
-      fontSize: 13,
+    subTabPillActive: {
+      backgroundColor: '#10B981',
+    },
+    subTabPillText: {
+      fontSize: 11.5,
       fontWeight: '600',
       color: colors.inkSoft,
     },
-    subTabTextActive: {
-      color: '#059669',
+    subTabPillTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    unreadDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: '#EF4444',
+    },
+    primaryCtaBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      backgroundColor: '#10B981',
+      paddingHorizontal: 11,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    primaryCtaBtnText: {
+      color: '#FFFFFF',
+      fontSize: 11.5,
       fontWeight: '700',
     },
     scroll: {
       flex: 1,
+      backgroundColor: colors.background,
     },
     content: {
-      paddingHorizontal: 16,
-      paddingTop: 12,
+      paddingHorizontal: 14,
+      paddingTop: 10,
       paddingBottom: 24,
     },
-    priorityFilterRow: {
-      flexDirection: 'row',
-      gap: 8,
-      marginBottom: 14,
+    chipsRow: {
+      gap: 6,
+      paddingBottom: 10,
     },
-    priorityPill: {
+    chip: {
       paddingHorizontal: 12,
-      paddingVertical: 6,
-      borderRadius: 20,
+      paddingVertical: 5,
+      borderRadius: 999,
       backgroundColor: colors.surface,
       borderWidth: 1,
       borderColor: colors.line,
     },
-    priorityPillActive: {
-      backgroundColor: '#059669',
-      borderColor: '#059669',
+    chipActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
     },
-    priorityPillText: {
-      fontSize: 11.5,
+    chipText: {
+      fontSize: 11,
       fontWeight: '600',
       color: colors.inkSoft,
     },
-    priorityPillTextActive: {
+    chipTextActive: {
       color: '#FFFFFF',
+      fontWeight: '700',
     },
-    emptyContainer: {
-      paddingVertical: 40,
+    emptyCard: {
+      paddingVertical: 36,
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: colors.surface,
-      borderRadius: 14,
+      borderRadius: 12,
       borderWidth: 1,
       borderColor: colors.line,
-      marginTop: 10,
+      gap: 8,
     },
     emptyTitle: {
-      fontSize: 15,
-      fontWeight: '700',
-      color: colors.navy,
-      marginTop: 10,
-      marginBottom: 4,
-    },
-    emptySub: {
-      fontSize: 12,
-      color: colors.inkSoft,
-      textAlign: 'center',
-      paddingHorizontal: 24,
-    },
-    ticketCard: {
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.line,
-      borderRadius: 12,
-      padding: 14,
-      marginBottom: 12,
-    },
-    ticketHeaderRow: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      marginBottom: 8,
-    },
-    ticketId: {
-      fontSize: 12,
-      fontWeight: '800',
-      color: '#059669',
-    },
-    priorityBadge: {
-      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-      borderRadius: 4,
-      paddingHorizontal: 6,
-      paddingVertical: 1,
-    },
-    priorityBadgeHigh: {
-      backgroundColor: '#FEE2E2',
-    },
-    priorityBadgeText: {
-      fontSize: 10,
-      fontWeight: '700',
-      color: colors.inkSoft,
-    },
-    priorityBadgeTextHigh: {
-      color: '#DC2626',
-    },
-    ticketIssue: {
-      fontSize: 14,
-      fontWeight: '700',
-      color: colors.navy,
-      marginTop: 2,
-    },
-    ticketSubDetails: {
-      fontSize: 12,
-      color: colors.inkSoft,
-      marginTop: 2,
-    },
-    statusBadge: {
-      paddingHorizontal: 8,
-      paddingVertical: 3,
-      borderRadius: 6,
-    },
-    statusBadgeGreen: {
-      backgroundColor: '#DCFCE7',
-    },
-    statusBadgeAmber: {
-      backgroundColor: '#FEF3C7',
-    },
-    statusBadgeText: {
-      fontSize: 10,
-      fontWeight: '800',
-    },
-    technicianRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
-      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-      borderRadius: 6,
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      marginVertical: 8,
-    },
-    technicianLabel: {
-      fontSize: 11,
-      color: colors.inkSoft,
-      fontWeight: '500',
-    },
-    technicianValue: {
-      fontSize: 11.5,
-      fontWeight: '700',
-      color: colors.navy,
-    },
-    ticketActionRow: {
-      flexDirection: 'row',
-      gap: 8,
-      marginTop: 6,
-    },
-    dispatchBtn: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: '#3B82F6',
-      borderRadius: 6,
-      paddingVertical: 8,
-    },
-    dispatchBtnText: {
-      color: '#FFFFFF',
-      fontSize: 12,
-      fontWeight: '700',
-    },
-    resolveBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: '#F0FDF4',
-      borderWidth: 1,
-      borderColor: '#BBF7D0',
-      borderRadius: 6,
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-    },
-    resolveBtnText: {
-      color: '#166534',
-      fontSize: 12,
-      fontWeight: '700',
-    },
-    resolvedBadgeRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
-      marginTop: 6,
-    },
-    resolvedBadgeText: {
-      fontSize: 12,
-      fontWeight: '600',
-      color: '#10B981',
-    },
-    staffHeaderRow: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: 12,
-    },
-    staffSectionHeading: {
       fontSize: 13,
-      fontWeight: '700',
-      color: colors.navy,
+      fontWeight: '600',
+      color: colors.inkSoft,
     },
-    onboardBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: '#059669',
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      borderRadius: 6,
-    },
-    onboardBtnText: {
-      color: '#FFFFFF',
-      fontSize: 11.5,
-      fontWeight: '700',
-    },
-    staffCard: {
+    card: {
       backgroundColor: colors.surface,
       borderWidth: 1,
       borderColor: colors.line,
       borderRadius: 12,
-      padding: 14,
+      padding: 12,
       marginBottom: 10,
     },
-    staffCardHeader: {
+    cardTopRow: {
       flexDirection: 'row',
       justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      marginBottom: 8,
+      alignItems: 'center',
+      gap: 8,
     },
-    staffName: {
-      fontSize: 14,
+    ticketIdText: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: '#10B981',
+    },
+    priorityPill: {
+      paddingHorizontal: 7,
+      paddingVertical: 2,
+      borderRadius: 999,
+    },
+    priorityPillHigh: {
+      backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    },
+    priorityPillNormal: {
+      backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+    },
+    priorityPillText: {
+      fontSize: 10,
+      fontWeight: '700',
+    },
+    statusPill: {
+      paddingHorizontal: 8,
+      paddingVertical: 2.5,
+      borderRadius: 999,
+    },
+    statusPillGreen: {
+      backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    },
+    statusPillAmber: {
+      backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    },
+    statusPillText: {
+      fontSize: 10,
+      fontWeight: '700',
+    },
+    issueRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginTop: 6,
+      gap: 8,
+    },
+    issueText: {
+      fontSize: 13.5,
       fontWeight: '700',
       color: colors.navy,
+      flex: 1,
     },
-    staffRole: {
-      fontSize: 12,
-      color: colors.inkSoft,
-      marginTop: 1,
-    },
-    staffWorkloadBadge: {
-      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+    proofThumb: {
+      width: 34,
+      height: 34,
       borderRadius: 6,
-      paddingHorizontal: 8,
-      paddingVertical: 3,
     },
-    staffWorkloadText: {
-      fontSize: 11,
-      fontWeight: '600',
+    gridRow: {
+      flexDirection: 'row',
+      marginTop: 9,
+      paddingTop: 9,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      gap: 10,
+    },
+    gridCol: {
+      flex: 1,
+    },
+    gridLabel: {
+      fontSize: 9.5,
+      fontWeight: '700',
       color: colors.inkSoft,
+      letterSpacing: 0.3,
     },
-    staffContactRow: {
+    gridValue: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    gridSubValue: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    cardFooter: {
+      flexDirection: 'row',
+      gap: 8,
+      marginTop: 10,
+      paddingTop: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+    },
+    footerBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      gap: 5,
+      paddingVertical: 6,
+      borderRadius: 7,
+      backgroundColor: isDark ? '#1E293B' : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    footerBtnText: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    footerBtnPrimary: {
+      flex: 1,
+      paddingVertical: 6,
+      borderRadius: 7,
+      backgroundColor: '#10B981',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    footerBtnPrimaryText: {
+      fontSize: 11.5,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    quotaBar: {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
-      borderTopWidth: 1,
-      borderTopColor: colors.line,
-      paddingTop: 8,
-      marginTop: 4,
+      marginBottom: 10,
+      paddingHorizontal: 2,
     },
-    callStaffBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
-    callStaffBtnText: {
-      fontSize: 12,
-      fontWeight: '600',
-      color: '#059669',
-    },
-    staffEmailText: {
+    quotaText: {
       fontSize: 11.5,
       color: colors.inkSoft,
-      maxWidth: 160,
+    },
+    avatarCircle: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      backgroundColor: 'rgba(16, 185, 129, 0.14)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    avatarText: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: '#10B981',
     },
     modalOverlay: {
       flex: 1,
-      backgroundColor: 'rgba(15, 23, 42, 0.75)',
+      backgroundColor: 'rgba(15, 23, 42, 0.7)',
       justifyContent: 'flex-end',
     },
     modalContent: {
       backgroundColor: colors.surface,
       borderTopLeftRadius: 20,
       borderTopRightRadius: 20,
-      padding: 20,
+      paddingHorizontal: 18,
+      paddingTop: 10,
+      paddingBottom: 24,
       maxHeight: '85%',
+    },
+    sheetHandle: {
+      width: 36,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.line,
+      alignSelf: 'center',
+      marginBottom: 12,
     },
     modalHeader: {
       flexDirection: 'row',
       justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      marginBottom: 16,
+      alignItems: 'center',
+      marginBottom: 14,
     },
     modalTitle: {
-      fontSize: 16,
+      fontSize: 15.5,
       fontWeight: '700',
       color: colors.navy,
     },
-    modalSubTitle: {
-      fontSize: 12,
-      color: colors.inkSoft,
-      marginTop: 2,
+    row2: {
+      flexDirection: 'row',
+      gap: 10,
     },
     inputGroup: {
-      marginBottom: 14,
+      marginBottom: 12,
     },
     inputLabel: {
-      fontSize: 12,
+      fontSize: 11.5,
       fontWeight: '600',
-      color: colors.ink,
-      marginBottom: 6,
+      color: colors.inkSoft,
+      marginBottom: 5,
     },
     textInput: {
-      backgroundColor: colors.surface,
+      backgroundColor: isDark ? '#1E293B' : '#F8FAFC',
       borderWidth: 1,
       borderColor: colors.line,
       borderRadius: 8,
-      paddingHorizontal: 12,
-      paddingVertical: 9,
+      paddingHorizontal: 11,
+      paddingVertical: 8,
       fontSize: 13,
       color: colors.navy,
     },
-    staffSelectOption: {
+    staffOption: {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
@@ -948,62 +1081,52 @@ const createStyles = (colors: any, isDark: boolean) =>
       borderRadius: 8,
       borderWidth: 1,
       borderColor: colors.line,
+      backgroundColor: isDark ? '#1E293B' : '#F8FAFC',
       marginBottom: 6,
-      backgroundColor: colors.surface,
     },
-    staffSelectOptionActive: {
-      borderColor: '#059669',
-      backgroundColor: '#ECFDF5',
+    staffOptionSelected: {
+      borderColor: '#10B981',
+      backgroundColor: 'rgba(16, 185, 129, 0.1)',
     },
-    staffSelectName: {
-      fontSize: 13,
-      fontWeight: '700',
-      color: colors.navy,
-    },
-    staffSelectRole: {
-      fontSize: 11.5,
-      color: colors.inkSoft,
-      marginTop: 1,
-    },
-    payerToggleRow: {
-      flexDirection: 'row',
-      gap: 8,
-    },
-    payerOption: {
+    payerPill: {
       flex: 1,
       paddingVertical: 8,
-      alignItems: 'center',
-      borderRadius: 6,
+      borderRadius: 8,
       borderWidth: 1,
       borderColor: colors.line,
-      backgroundColor: colors.surface,
+      backgroundColor: isDark ? '#1E293B' : '#F8FAFC',
+      alignItems: 'center',
     },
-    payerOptionActive: {
-      borderColor: '#059669',
-      backgroundColor: '#ECFDF5',
+    payerPillActive: {
+      borderColor: '#10B981',
+      backgroundColor: 'rgba(16, 185, 129, 0.14)',
     },
-    payerOptionText: {
+    payerPillText: {
       fontSize: 12,
       fontWeight: '600',
       color: colors.inkSoft,
     },
-    payerOptionTextActive: {
-      color: '#059669',
+    payerPillTextActive: {
+      color: '#10B981',
       fontWeight: '700',
     },
-    confirmDispatchBtn: {
-      backgroundColor: '#059669',
-      borderRadius: 8,
+    primaryBtn: {
+      backgroundColor: '#10B981',
+      borderRadius: 9,
       paddingVertical: 11,
       alignItems: 'center',
       justifyContent: 'center',
-      marginTop: 10,
-      marginBottom: 20,
+      marginTop: 6,
     },
-    confirmDispatchBtnText: {
+    primaryBtnText: {
       color: '#FFFFFF',
-      fontSize: 12.5,
+      fontSize: 13.5,
       fontWeight: '700',
-      letterSpacing: -0.2,
+    },
+    lightboxOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.88)',
+      alignItems: 'center',
+      justifyContent: 'center',
     },
   });

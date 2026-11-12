@@ -973,19 +973,36 @@ export const getManagerReminders = (
   const ownerName = user.ownerName || '';
 
   // Scoped units and properties for this manager
-  const myUnits = (state.units || []).filter((u) => (ownerId ? u.ownerId === ownerId : true));
-  const myProperties = (state.properties || []).filter((p) => (ownerId ? p.ownerId === ownerId : true));
-  const myPropertyIds = new Set(myProperties.map((p) => p.id));
+  const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
+    (m: any) =>
+      (user?.id && String(m.id) === user.id) ||
+      (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
+  let myProps = (state.properties || []).filter((p) => (ownerId ? p.ownerId === ownerId : true));
+  if (assignedPropertyId) {
+    myProps = myProps.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id);
+  } else {
+    const explicitlyAssigned = myProps.filter((p) => p.assignedManagerId === user?.id);
+    if (explicitlyAssigned.length > 0) myProps = explicitlyAssigned;
+  }
+  const myPropertyIds = new Set(myProps.map((p) => p.id));
+  const myUnits = (state.units || []).filter((u) => {
+    if (ownerId && u.ownerId && u.ownerId !== ownerId) return false;
+    return !u.propertyId || myPropertyIds.has(u.propertyId);
+  });
 
   // 1. Unassigned or Open Maintenance Tickets awaiting dispatch
   const openTickets = (state.tickets || []).filter((t) => {
     if (t.status === 'resolved') return false;
     if (ownerId && t.ownerId && t.ownerId !== ownerId) return false;
+    if (t.propertyId && myPropertyIds.size > 0 && !myPropertyIds.has(t.propertyId)) return false;
     return t.status === 'open' || !t.assignedStaffId || !t.assignedTo;
   });
 
   openTickets.forEach((t) => {
     const isHigh = t.priority === 'High';
+    const eventTime = (t as any).createdAt || t.created || new Date().toISOString();
     reminders.push({
       id: `manager_ticket_open_${t.id}`,
       title: `${isHigh ? 'Urgent ' : ''}Maintenance Dispatch: Unit ${t.unit}`,
@@ -996,6 +1013,8 @@ export const getManagerReminders = (
       actionLink: '/manager/maintenance',
       category: 'maintenance',
       unitNumber: t.unit,
+      dueDate: eventTime,
+      metadata: { eventTime, createdAt: eventTime },
     });
   });
 
@@ -1003,10 +1022,12 @@ export const getManagerReminders = (
   const urgentInProgressTickets = (state.tickets || []).filter((t) => {
     if (t.status !== 'in_progress' || t.priority !== 'High') return false;
     if (ownerId && t.ownerId && t.ownerId !== ownerId) return false;
+    if (t.propertyId && myPropertyIds.size > 0 && !myPropertyIds.has(t.propertyId)) return false;
     return true;
   });
 
   urgentInProgressTickets.forEach((t) => {
+    const eventTime = (t as any).updatedAt || (t as any).createdAt || t.created || new Date().toISOString();
     reminders.push({
       id: `manager_ticket_urgent_${t.id}`,
       title: `Critical Repair in Progress: Unit ${t.unit}`,
@@ -1017,6 +1038,8 @@ export const getManagerReminders = (
       actionLink: '/manager/maintenance',
       category: 'maintenance',
       unitNumber: t.unit,
+      dueDate: eventTime,
+      metadata: { eventTime, createdAt: eventTime },
     });
   });
 
@@ -1261,35 +1284,54 @@ export const getSuperadminReminders = (
     });
   }
 
-  // 3. Unresolved Helpdesk Disputes Escalated to Superadmin
-  const escalatedTickets = (state.platformSupport || []).filter(
-    (t: PlatformSupportTicket) => t.status !== 'resolved' && (t.priority === 'urgent' || (t as any).escalatedToAdmin)
+  // 3. Unresolved Helpdesk Tickets Awaiting Superadmin Action
+  const unresolvedTickets = (state.platformSupport || []).filter(
+    (t: PlatformSupportTicket) => t.status !== 'resolved'
   );
 
-  if (escalatedTickets.length > 0) {
+  if (unresolvedTickets.length > 0) {
+    const hasUrgent = unresolvedTickets.some((t) => t.priority === 'urgent' || (t as any).escalatedToAdmin);
     reminders.push({
-      id: `superadmin_escalated_tickets_${escalatedTickets.length}`,
-      title: `${escalatedTickets.length} Escalated Helpdesk Ticket${escalatedTickets.length > 1 ? 's' : ''} Awaiting Admin Action`,
-      description: `Platform members requested operational mediation. Resolve tickets to ensure SLA compliance.`,
-      severity: 'urgent',
+      id: `superadmin_support_tickets_${unresolvedTickets.length}`,
+      title: `${unresolvedTickets.length} Support Ticket${unresolvedTickets.length > 1 ? 's' : ''} Awaiting Admin Action`,
+      description: `Platform owners or tenants requested support. Review and reply to ensure service compliance.`,
+      severity: hasUrgent ? 'urgent' : 'warning',
       icon: 'tool',
       actionLabel: 'Open Helpdesk Console',
-      actionLink: '/superadmin/support',
+      actionLink: '/superadmin/oversight?tab=support',
       category: 'compliance',
     });
   }
 
-  // 4. API Integration Verification Warnings (Mock or Disconnected)
-  const isStripeConfigured = state.platformGateways?.stripe?.connected || state.platformGateways?.stripe?.secretKey;
-  const isTwilioConfigured = state.commsConfig?.twilioConnected || state.commsConfig?.twilioAuthToken;
-  if (!isStripeConfigured || !isTwilioConfigured) {
+  // 4. API Integration Verification Warnings (Independent Payment & SMS Gateway Checks)
+  const isPaymentConfigured =
+    state.platformGateways?.stripe?.connected ||
+    state.platformGateways?.stripe?.secretKey ||
+    state.platformGateways?.razorpay?.connected ||
+    state.platformGateways?.paypal?.connected;
+
+  if (!isPaymentConfigured) {
     reminders.push({
-      id: 'superadmin_gateway_unconnected',
-      title: 'Payment or SMS Gateways Incomplete',
-      description: 'Configure Twilio or Stripe production API keys to enable live automated SMS and gateway collections.',
+      id: 'superadmin_payment_gateway_unconnected',
+      title: 'Payment Gateway Incomplete',
+      description: 'Connect Stripe, Razorpay, or PayPal to enable live automated subscription and rent collections.',
       severity: 'info',
       icon: 'bell',
-      actionLabel: 'Configure API Keys',
+      actionLabel: 'Configure Payments',
+      actionLink: '/superadmin/connections',
+      category: 'approval',
+    });
+  }
+
+  const isTwilioConfigured = state.commsConfig?.twilioConnected || state.commsConfig?.twilioAuthToken;
+  if (!isTwilioConfigured) {
+    reminders.push({
+      id: 'superadmin_sms_gateway_unconnected',
+      title: 'Twilio SMS Gateway Incomplete',
+      description: 'Configure Twilio production API keys to enable live automated SMS notifications and receipts.',
+      severity: 'info',
+      icon: 'bell',
+      actionLabel: 'Configure SMS',
       actionLink: '/superadmin/connections',
       category: 'approval',
     });

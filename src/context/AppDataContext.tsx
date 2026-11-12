@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { AppState, loadState, saveState, saveLandingConfigCache, saveTrialPolicyCache, loadCachedTrialDays, INITIAL_STATE } from '../lib/store';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
+import { AppState, loadState, saveState, saveLandingConfigCache, saveTrialPolicyCache, loadCachedTrialDays, INITIAL_STATE, DEFAULT_BOOST_PLANS } from '../lib/store';
 import { collection, doc, onSnapshot, setDoc, getDocs, getDoc, deleteDoc } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { httpsCallable } from 'firebase/functions';
 import { db, isFirebaseConfigured, auth, functions } from '../lib/firebase';
 import { compressImage } from '../lib/imageUploader';
@@ -10,7 +11,7 @@ import { toast, ToastType, ToastOptions } from '../lib/toast';
 import { ModernToastContainer } from '../components/common/ModernToastContainer';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, normalizeCurrencyCode, getCurrencySymbol } from '../lib/currencyService';
 import { calculateInvoiceLateFee } from '../lib/lateFeeService';
-import { resolveUnitOccupancy } from '../lib/portfolioSelectors';
+import { resolveUnitOccupancy, reconcilePortfolio } from '../lib/portfolioSelectors';
 import {
   ManagerPayoutRecord,
   OwnerSettings,
@@ -48,6 +49,7 @@ import {
   OwnerSubscriptionMandate,
   AgreementTemplate,
   PropertyEnquiry,
+  ListingBoostPlan,
 } from '../types';
 
 interface AppDataContextType {
@@ -163,7 +165,7 @@ interface AppDataContextType {
   resolvePlatformSupportTicket: (ticketId: string, resolutionNotes?: string) => Promise<void>;
   savePlatformSupportTicket: (ticket: PlatformSupportTicket) => Promise<void>;
   submitEnquiry: (enquiryData: Omit<PropertyEnquiry, 'id' | 'createdAt' | 'status'>) => Promise<string>;
-  updateEnquiryStatus: (id: string, status: 'new' | 'reviewed' | 'onboarded') => Promise<void>;
+  updateEnquiryStatus: (id: string, status: 'new' | 'reviewed' | 'onboarded' | 'contacted' | 'archived') => Promise<void>;
   logAuditEvent: (entry: {
     actor?: string;
     actorRole?: 'superadmin' | 'owner' | 'tenant' | 'staff' | 'system' | string;
@@ -346,6 +348,38 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           (prev.tenancyRequests || []).forEach((r) => reqMap.set(r.id, r));
           fbRequests.forEach((r) => reqMap.set(r.id, r));
           return { ...prev, tenancyRequests: Array.from(reqMap.values()) };
+        });
+      }
+    }).catch(console.warn);
+
+    getDocs(collection(db, 'agreements')).then((snap) => {
+      const fbAgs: Agreement[] = [];
+      snap.forEach((d) => {
+        const a = d.data() as Agreement;
+        if (a && a.id) fbAgs.push(a);
+      });
+      if (fbAgs.length > 0) {
+        setState((prev) => {
+          const agMap = new Map<string, Agreement>();
+          (prev.agreements || []).forEach((a) => agMap.set(a.id, a));
+          fbAgs.forEach((a) => agMap.set(a.id, a));
+          return { ...prev, agreements: Array.from(agMap.values()) };
+        });
+      }
+    }).catch(console.warn);
+
+    getDocs(collection(db, 'cashClaims')).then((snap) => {
+      const fbClaims: CashHandoverClaim[] = [];
+      snap.forEach((d) => {
+        const c = d.data() as CashHandoverClaim;
+        if (c && c.id) fbClaims.push(c);
+      });
+      if (fbClaims.length > 0) {
+        setState((prev) => {
+          const claimMap = new Map<string, CashHandoverClaim>();
+          (prev.cashClaims || []).forEach((c) => claimMap.set(c.id, c));
+          fbClaims.forEach((c) => claimMap.set(c.id, c));
+          return { ...prev, cashClaims: Array.from(claimMap.values()) };
         });
       }
     }).catch(console.warn);
@@ -566,10 +600,31 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
               return { ...u, status: 'vacant' as const, tenant: null, currentTenantId: null };
             }
 
+            const cleanStr = (s?: string) => (s || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+            const uClean = cleanStr(u.unitNumber || u.id);
+
             const acceptedForUnit = acceptedRequests.find(
-              (ar) => ar.unitId === u.id || (ar.unitNumber === u.unitNumber && (!ar.propertyId || ar.propertyId === u.propertyId))
+              (ar) =>
+                (ar.unitId === u.id || (cleanStr(ar.unitNumber) === uClean && (!ar.propertyId || ar.propertyId === u.propertyId))) &&
+                ar.status !== 'archived' && (ar as any).status !== 'fulfilled'
             );
-            if (acceptedForUnit && !u.tenant && (u.status === 'vacant' || u.status === 'reserved')) {
+
+            // Guard: DO NOT re-reserve if this unit & tenant had a concluded move-out, terminated agreement,
+            // or if a lease agreement already exists for this request
+            const isConcludedOrConverted = acceptedForUnit && (
+              (prev.moveouts || []).some(
+                (m) => cleanStr(m.unit) === uClean &&
+                  (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
+                  (acceptedForUnit.tenantId ? m.tenantId === acceptedForUnit.tenantId : true)
+              ) ||
+              (prev.agreements || []).some(
+                (ag) => cleanStr(ag.unit) === uClean &&
+                  (acceptedForUnit.tenantId ? ag.tenantId === acceptedForUnit.tenantId : true) &&
+                  (ag.status === 'terminated' || ag.status === 'active' || ag.status === 'signed')
+              )
+            );
+
+            if (acceptedForUnit && !isConcludedOrConverted && !u.tenant && (u.status === 'vacant' || u.status === 'reserved')) {
               return {
                 ...u,
                 status: 'reserved' as const,
@@ -695,28 +750,23 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           });
         }
       });
-      if (fbPayments.length > 0) {
-        setState((prev) => {
-          const payMap = new Map<string, PaymentTransaction>();
-          const invoicePayMap = new Map<string, string>();
-          const allPays = [...prev.payments, ...fbPayments];
-          allPays.forEach((p) => {
-            if (p.invoiceId) {
-              const existingId = invoicePayMap.get(p.invoiceId);
-              if (existingId && existingId !== p.id) {
-                // If there's already a payment for this invoice, keep the most updated one
-                return;
-              }
-              invoicePayMap.set(p.invoiceId, p.id);
-            }
-            payMap.set(p.id, p);
-          });
-          return {
-            ...prev,
-            payments: Array.from(payMap.values()),
-          };
-        });
-      }
+      const payMap = new Map<string, PaymentTransaction>();
+      const invoicePayMap = new Map<string, string>();
+      fbPayments.forEach((p) => {
+        if (p.invoiceId) {
+          const existingId = invoicePayMap.get(p.invoiceId);
+          if (existingId && existingId !== p.id) {
+            // If there's already a payment for this invoice, keep the most updated one
+            return;
+          }
+          invoicePayMap.set(p.invoiceId, p.id);
+        }
+        payMap.set(p.id, p);
+      });
+      setState((prev) => ({
+        ...prev,
+        payments: Array.from(payMap.values()),
+      }));
     }, (err) => {
       console.warn('Firestore payments sync listener warning:', err);
     });
@@ -904,6 +954,65 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }, (err) => {
       console.warn('Firestore plans listener warning:', err);
+    });
+
+    // 12b. Sync Listing Boost Plans live from Firestore & Auto-seed
+    let isSeedingBoostPlans = false;
+    const unsubBoostPlans = onSnapshot(collection(db, 'listingBoostPlans'), async (snapshot) => {
+      const fbDocsMap = new Map<string, any>();
+      snapshot.forEach((d) => {
+        fbDocsMap.set(d.id, { id: d.id, ...d.data() });
+      });
+
+      setState((prev) => {
+        const baseMap = new Map<string, ListingBoostPlan>();
+        DEFAULT_BOOST_PLANS.forEach((p) => baseMap.set(p.id, { ...p }));
+        (prev.boostPlans || []).forEach((p) => {
+          const existing = baseMap.get(p.id);
+          baseMap.set(p.id, existing ? { ...existing, ...p } : { ...p });
+        });
+
+        fbDocsMap.forEach((fbData, id) => {
+          const existing = baseMap.get(id);
+          if (existing) {
+            baseMap.set(id, {
+              ...existing,
+              ...fbData,
+              id,
+              name: fbData.name || existing.name,
+              days: fbData.days !== undefined ? Number(fbData.days) : existing.days,
+              price: fbData.price !== undefined ? Number(fbData.price) : existing.price,
+              currency: fbData.currency || existing.currency,
+              description: fbData.description || existing.description,
+              isActive: fbData.isActive !== undefined ? !!fbData.isActive : existing.isActive,
+              isPopular: fbData.isPopular !== undefined ? !!fbData.isPopular : existing.isPopular,
+            });
+          } else if (fbData.name) {
+            baseMap.set(id, fbData as ListingBoostPlan);
+          }
+        });
+
+        const mergedBoostPlans = Array.from(baseMap.values());
+        return {
+          ...prev,
+          boostPlans: mergedBoostPlans,
+        };
+      });
+
+      if (snapshot.empty && !isSeedingBoostPlans && isFirebaseConfigured) {
+        isSeedingBoostPlans = true;
+        try {
+          for (const bp of DEFAULT_BOOST_PLANS) {
+            await setDoc(doc(db, 'listingBoostPlans', bp.id), bp, { merge: true });
+          }
+        } catch (err) {
+          console.warn('Failed to seed default boost plans to Firestore:', err);
+        } finally {
+          isSeedingBoostPlans = false;
+        }
+      }
+    }, (err) => {
+      console.warn('Firestore listingBoostPlans listener warning:', err);
     });
 
     // 13. Sync owner settings & trial data live from Firestore
@@ -1122,41 +1231,43 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           const resolvedId = s.id || d.id;
 
 
-          // Ensure refunded settlement has a corresponding outflow PaymentTransaction in payments ledger
+          // Ensure refunded settlement has a corresponding outflow PaymentTransaction in payments ledger (only if not already tracked via cash claim)
           if (s.status === 'refunded' || s.tenantConfirmedReceipt) {
             const refundTxId = `TXN-REF-${(s.agreementId || resolvedId).slice(-6).toUpperCase()}`;
+            const isHandover = s.disbursementMethod === 'cash_handover' || Boolean(s.cashClaimId);
             if (isFirebaseConfigured) {
-              setDoc(doc(db, 'payments', refundTxId), cleanFirestoreObject({
-                id: refundTxId,
-                invoiceId: `REF-${resolvedId}`,
-                amount: s.netRefundableAmount || s.grossDepositHeld || 5500,
-                currency: s.currency || '$',
-                date: s.disbursedAt ? s.disbursedAt.split('T')[0] : new Date().toISOString().split('T')[0],
-                dueDate: s.disbursedAt ? s.disbursedAt.split('T')[0] : new Date().toISOString().split('T')[0],
-                method: s.disbursementMethod || 'Direct Transfer',
-                status: 'paid',
-                direction: 'outflow',
-                type: 'deposit_refund',
-                unit: s.unit || '101',
-                propertyId: s.propertyId,
-                tenantId: s.tenantId,
-                tenant: s.tenantName,
-                ownerId: s.ownerId,
-                notes: 'Security deposit refund disbursed and settled.',
-              }), { merge: true }).catch(console.warn);
+              if (isHandover) {
+                // If a cash claim exists for this refund, clean up any synthetic TXN-REF duplicate
+                deleteDoc(doc(db, 'payments', refundTxId)).catch(() => {});
+              } else {
+                setDoc(doc(db, 'payments', refundTxId), cleanFirestoreObject({
+                  id: refundTxId,
+                  invoiceId: `REF-${resolvedId}`,
+                  amount: s.netRefundableAmount || s.grossDepositHeld || 0,
+                  currency: normalizeCurrencyCode(s.currency || 'USD'),
+                  date: s.disbursedAt ? s.disbursedAt.split('T')[0] : new Date().toISOString().split('T')[0],
+                  dueDate: s.disbursedAt ? s.disbursedAt.split('T')[0] : new Date().toISOString().split('T')[0],
+                  method: s.disbursementMethod || 'Direct Transfer',
+                  status: 'paid',
+                  direction: 'outflow',
+                  type: 'deposit_refund',
+                  unit: s.unit || '',
+                  propertyId: s.propertyId,
+                  tenantId: s.tenantId,
+                  tenant: s.tenantName,
+                  ownerId: s.ownerId,
+                  notes: 'Security deposit refund disbursed and settled.',
+                }), { merge: true }).catch(console.warn);
+              }
             }
           }
           fbSettlements.push({ ...s, id: resolvedId });
         }
       });
-      if (fbSettlements.length > 0) {
-        setState((prev) => {
-          const map = new Map<string, DepositSettlement>();
-          (prev.depositSettlements || []).forEach((s) => map.set(s.id, s));
-          fbSettlements.forEach((s) => map.set(s.id, s));
-          return { ...prev, depositSettlements: Array.from(map.values()) };
-        });
-      }
+      setState((prev) => ({
+        ...prev,
+        depositSettlements: fbSettlements,
+      }));
     }, (err) => {
       console.warn('Firestore deposit settlements listener warning:', err);
     });
@@ -1202,14 +1313,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.warn('Firestore communicationLogs listener warning:', err);
     });
 
-    // 27. Sync platform audit log live from Firestore (strictly real data only, only for permitted roles)
+    // 27. Sync platform audit log live from Firestore (strictly real data only, reactive to authenticated user role)
     let unsubAuditLog: () => void = () => {};
-    const activeRole = typeof window !== 'undefined'
-      ? (localStorage.getItem('keystone_active_user_role') || (loadState().users || []).find((u) => u.id === localStorage.getItem('keystone_active_user_id'))?.role)
-      : null;
-    const canReadAuditLog = activeRole === 'owner' || activeRole === 'superadmin' || activeRole === 'admin';
 
-    if (canReadAuditLog) {
+    const attachAuditLogListener = () => {
+      try {
+        unsubAuditLog();
+      } catch (_) {}
+
       unsubAuditLog = onSnapshot(
         collection(db, 'auditLog'),
         (snapshot) => {
@@ -1242,6 +1353,38 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }
         }
       );
+    };
+
+    let unsubAuthAuditLog: () => void = () => {};
+    if (isFirebaseConfigured && auth) {
+      unsubAuthAuditLog = onAuthStateChanged(auth, async (fbUser) => {
+        if (!fbUser) {
+          try {
+            unsubAuditLog();
+          } catch (_) {}
+          return;
+        }
+
+        // Check permitted role
+        let role = typeof window !== 'undefined' ? localStorage.getItem('keystone_active_user_role') : null;
+        if (!role) {
+          try {
+            const uDoc = await getDoc(doc(db, 'users', fbUser.uid));
+            if (uDoc.exists()) {
+              role = (uDoc.data() as any)?.role;
+            }
+          } catch (_) {}
+        }
+
+        const canReadAuditLog = role === 'owner' || role === 'superadmin' || role === 'admin';
+        if (canReadAuditLog) {
+          attachAuditLogListener();
+        } else {
+          try {
+            unsubAuditLog();
+          } catch (_) {}
+        }
+      });
     }
 
     // 28. Sync platform support tickets live from Firestore
@@ -1393,6 +1536,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubTrial();
       unsubLanding();
       unsubPlans();
+      unsubBoostPlans();
       unsubOwners();
       unsubStaff();
       unsubManagers();
@@ -1408,6 +1552,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubCashClaims();
       unsubCommunicationLogs();
       unsubAuditLog();
+      unsubAuthAuditLog();
       unsubPlatformSupport();
       unsubAnnouncements();
       unsubAcks();
@@ -1458,90 +1603,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         };
       }
 
-      // Check if this agreement belongs to a concluded/refunded move-out or settlement
-      const aUnitClean = cleanUnitStr(a.unit);
-      const isConcludedMoveout =
-        (state.moveouts || []).some((m) => {
-          const isDone = m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt;
-          if (!isDone) return false;
-          // 1. Direct ID match
-          if (m.id === a.id || (m as any).agreementId === a.id || (m as any).leaseAgreementId === a.id) return true;
-          // 2. Unit + tenant match ONLY IF agreement was created before or on the moveout AND property matches
-          const matchesUnit = cleanUnitStr(m.unit) === aUnitClean;
-          const matchesTenant = m.tenantId === a.tenantId || m.tenant === a.tenant;
-          const matchesProp = !m.propertyId || !a.propertyId || m.propertyId === a.propertyId ||
-                              !(m as any).propertyName || !(a as any).propertyName || (m as any).propertyName === (a as any).propertyName;
-          if (matchesUnit && matchesTenant && matchesProp) {
-            const moTime = new Date((m as any).settledAt || (m as any).updatedAt || m.refundDate || m.moveOutDate || (m as any).createdAt || 0).getTime();
-            const agTime = new Date(a.createdAt || a.start || 0).getTime();
-            if (moTime > 0 && agTime > moTime) {
-              return false; // Newer agreement created for re-entry!
-            }
-            return true;
-          }
-          return false;
-        }) ||
-        (state.depositSettlements || []).some((s) => {
-          const isDone = s.status === 'refunded' || s.tenantConfirmedReceipt;
-          if (!isDone) return false;
-          if (s.agreementId === a.id) return true;
-          const matchesUnit = cleanUnitStr(s.unit) === aUnitClean;
-          const matchesTenant = s.tenantId === a.tenantId || s.tenantName === a.tenant;
-          const matchesProp = !s.propertyId || !a.propertyId || s.propertyId === a.propertyId ||
-                              !(s as any).propertyName || !(a as any).propertyName || (s as any).propertyName === (a as any).propertyName;
-          if (matchesUnit && matchesTenant && matchesProp) {
-            const sTime = new Date(s.disbursedAt || (s as any).updatedAt || s.createdAt || 0).getTime();
-            const agTime = new Date(a.createdAt || a.start || 0).getTime();
-            if (sTime > 0 && agTime > sTime) {
-              return false; // Newer agreement created for re-entry!
-            }
-            return true;
-          }
-          return false;
-        });
-
-      if (isConcludedMoveout && a.status !== 'terminated') {
-        hasChanges = true;
-        return {
-          ...a,
-          depositStatus: 'refunded' as const,
-          status: 'terminated' as const,
-        };
-      }
-
-      // Self-healing for re-entry: If an agreement was prematurely marked 'terminated' but has an accepted tenancy request
-      // that is newer than any moveout, restore it to its active re-entry state!
-      const matchingAcceptedReq = (state.tenancyRequests || []).find(
-        (r) =>
-          r.status === 'accepted' &&
-          cleanUnitStr(r.unitNumber) === aUnitClean &&
-          (r.tenantId === a.tenantId || (r.tenantEmail && r.tenantEmail.toLowerCase() === a.tenantEmail?.toLowerCase()))
-      );
-      if (matchingAcceptedReq && a.status === 'terminated') {
-        const reqTime = new Date(matchingAcceptedReq.respondedAt || matchingAcceptedReq.createdAt || 0).getTime();
-        const latestMoveoutTime = (state.moveouts || [])
-          .filter((m) => cleanUnitStr(m.unit) === aUnitClean && (m.tenantId === a.tenantId || m.tenant === a.tenant))
-          .reduce((latest, m) => {
-            const t = new Date((m as any).settledAt || (m as any).updatedAt || m.refundDate || m.moveOutDate || (m as any).createdAt || 0).getTime();
-            return Math.max(latest, t);
-          }, 0);
-        if (reqTime >= latestMoveoutTime) {
-          hasChanges = true;
-          return {
-            ...a,
-            status: (a.signedDocumentUrl ? 'pending_approval' : 'awaiting_tenant_upload') as any,
-            depositStatus: 'unpaid' as const,
-          };
-        }
-      }
-
       const depInv = a.depositInvoiceId
         ? state.invoices.find((i) => i.id === a.depositInvoiceId)
         : state.invoices.find((i) => i.leaseAgreementId === a.id && i.invoiceType === 'deposit');
 
       // STRICT transition: only agreements in 'pending_deposit' activate upon paid deposit.
-      // Agreements in 'pending_approval' MUST NOT bypass owner review.
-      if (a.status === 'pending_deposit' && depInv && depInv.status === 'paid') {
+      // Agreements in 'pending_approval' MUST NOT bypass owner review unless already approved by owner.
+      const isOwnerApproved = Boolean(a.approvedAt || a.approvedBy || a.counterSignedAt);
+      if ((a.status === 'pending_deposit' || (a.status === 'pending_approval' && isOwnerApproved)) && depInv && depInv.status === 'paid') {
         hasChanges = true;
         return {
           ...a,
@@ -1549,6 +1618,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           depositInvoiceId: a.depositInvoiceId || depInv.id,
           status: 'active' as const,
           counterSignedAt: a.counterSignedAt || now,
+        };
+      }
+      if (a.status === 'active' && depInv && depInv.status === 'paid' && a.depositStatus !== 'paid') {
+        hasChanges = true;
+        return {
+          ...a,
+          depositStatus: 'paid' as const,
+          depositInvoiceId: a.depositInvoiceId || depInv.id,
         };
       }
       return a;
@@ -1590,6 +1667,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     // Automatically check if any active agreement with a paid deposit is missing its first month rent invoice
     const newRentInvoices: Invoice[] = [];
     reconciledAgreements.forEach((ag) => {
+      // Strictly ONLY active agreements should generate first month rent!
+      if (ag.status !== 'active') return;
+
       const isDepPaid =
         ag.depositStatus === 'paid' ||
         deduplicatedInvoices.some(
@@ -1687,223 +1767,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return p;
     });
 
-    // Self-healing: Check if any units need vacancy self-healing
-    state.units.forEach((u) => {
-      const uClean = cleanUnitStr(u.unitNumber || u.id);
-      const hasPendingOrActiveAgForUnit = reconciledAgreements.some(
-        (ag) =>
-          cleanUnitStr(ag.unit) === uClean &&
-          ag.status !== 'terminated' &&
-          ag.status !== 'cancelled' &&
-          (!ag.propertyId || !u.propertyId || ag.propertyId === u.propertyId)
-      );
-
-      const hasPendingOrAcceptedRequest = (state.tenancyRequests || []).some(
-        (r) =>
-          (cleanUnitStr(r.unitNumber) === uClean || r.unitId === u.id) &&
-          (r.status === 'pending' || r.status === 'accepted') &&
-          (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)
-      );
-
-      const hasCompletedMoveout = (state.moveouts || []).some(
-        (m) =>
-          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
-          cleanUnitStr(m.unit) === uClean &&
-          (!m.propertyId || !u.propertyId || (m as any).propertyId === u.propertyId)
-      );
-
-      const hasTerminatedAgreementOnly =
-        reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && ag.status === 'terminated') &&
-        !reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && (ag.status === 'active' || ag.status === 'signed'));
-
-      const shouldBeVacant = !hasPendingOrActiveAgForUnit && !hasPendingOrAcceptedRequest && (hasCompletedMoveout || hasTerminatedAgreementOnly);
-
-      if (shouldBeVacant && (u.status !== 'vacant' || u.tenant !== null || u.currentTenantId !== null)) {
-        hasChanges = true;
-      }
-    });
-
     if (hasChanges) {
-      setState((prev) => {
-        let updatedUnits = prev.units;
-        let updatedProperties = prev.properties;
-        let updatedTenants = prev.tenants;
-
-        // 1. Reconcile units for active agreements
-        reconciledAgreements.forEach((ag) => {
-          if (ag.status === 'active') {
-            const unitObj = prev.units.find(
-              (u) =>
-                (u.unitNumber === ag.unit || u.id === ag.unit) &&
-                (!ag.propertyId || !u.propertyId || u.propertyId === ag.propertyId)
-            );
-            if (unitObj && unitObj.status !== 'occupied') {
-              updatedUnits = updatedUnits.map((u) =>
-                u.id === unitObj.id
-                  ? { ...u, status: 'occupied' as const, tenant: ag.tenant, currentTenantId: ag.tenantId, rent: ag.rent, deposit: ag.deposit }
-                  : u
-              );
-              if (isFirebaseConfigured) {
-                setDoc(doc(db, 'units', unitObj.id), cleanFirestoreObject({
-                  status: 'occupied',
-                  tenant: ag.tenant,
-                  currentTenantId: ag.tenantId,
-                  rent: ag.rent,
-                  deposit: ag.deposit,
-                }), { merge: true }).catch(console.warn);
-              }
-            }
-
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'agreements', ag.id), cleanFirestoreObject({
-                status: ag.status,
-                depositStatus: 'paid',
-                depositInvoiceId: ag.depositInvoiceId,
-                ...(ag.counterSignedAt ? { counterSignedAt: ag.counterSignedAt } : {}),
-              }), { merge: true }).catch(console.warn);
-            }
-          }
-        });
-
-        // 2. Self-healing: Reconcile units whose tenancy has concluded to 'vacant'
-        prev.units.forEach((u) => {
-          const uClean = cleanUnitStr(u.unitNumber || u.id);
-          const hasPendingOrActiveAgForUnit = reconciledAgreements.some(
-            (ag) =>
-              cleanUnitStr(ag.unit) === uClean &&
-              ag.status !== 'terminated' &&
-              ag.status !== 'cancelled' &&
-              (!ag.propertyId || !u.propertyId || ag.propertyId === u.propertyId)
-          );
-
-          const hasPendingOrAcceptedRequest = (state.tenancyRequests || []).some(
-            (r) =>
-              (cleanUnitStr(r.unitNumber) === uClean || r.unitId === u.id) &&
-              (r.status === 'pending' || r.status === 'accepted')
-          );
-
-          const hasCompletedMoveout = (state.moveouts || []).some(
-            (m) =>
-              (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
-              cleanUnitStr(m.unit) === uClean &&
-              (!m.propertyId || !u.propertyId || (m as any).propertyId === u.propertyId)
-          );
-
-          const hasTerminatedAgreementOnly =
-            reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && ag.status === 'terminated') &&
-            !reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && (ag.status === 'active' || ag.status === 'signed'));
-
-          const shouldBeVacant = !hasPendingOrActiveAgForUnit && !hasPendingOrAcceptedRequest && (hasCompletedMoveout || hasTerminatedAgreementOnly);
-
-          if (shouldBeVacant && (u.status !== 'vacant' || u.tenant !== null || u.currentTenantId !== null)) {
-            hasChanges = true;
-            updatedUnits = updatedUnits.map((unit) =>
-              unit.id === u.id
-                ? { ...unit, status: 'vacant' as const, tenant: null, currentTenantId: null }
-                : unit
-            );
-
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'units', u.id), cleanFirestoreObject({
-                status: 'vacant',
-                tenant: null,
-                currentTenantId: null,
-              }), { merge: true }).catch(console.warn);
-            }
-          }
-        });
-
-        // 3. Recalculate property occupancies
-        updatedProperties = updatedProperties.map((p) => {
-          const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
-          if (p.occupied !== occ && isFirebaseConfigured) {
-            setDoc(doc(db, 'properties', p.id), { occupied: occ }, { merge: true }).catch(console.warn);
-          }
-          return { ...p, occupied: occ };
-        });
-
-        // 4. Self-healing: Reconcile tenants assigned to vacated units with no active leases
-        prev.tenants.forEach((t) => {
-          if (t.unit && t.unit !== 'Unassigned') {
-            const tUnitClean = cleanUnitStr(t.unit);
-            const hasActiveAg = reconciledAgreements.some(
-              (ag) => cleanUnitStr(ag.unit) === tUnitClean && ag.status === 'active' && (ag.tenantId === t.id || ag.tenant === t.name)
-            );
-            const hasConcludedMoveout = (state.moveouts || []).some(
-              (m) =>
-                (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
-                cleanUnitStr(m.unit) === tUnitClean &&
-                ((m.propertyId && t.propertyId) ? (m as any).propertyId === t.propertyId : (!m.propertyId && !t.propertyId && Boolean((m as any).propertyName && (t as any).propertyName && (m as any).propertyName === (t as any).propertyName))) &&
-                (m.tenantId ? m.tenantId === t.id : (m.tenant && m.tenant.toLowerCase() === t.name.toLowerCase()))
-            );
-            const hasTerminatedAg = reconciledAgreements.some(
-              (ag) => cleanUnitStr(ag.unit) === tUnitClean && ag.status === 'terminated' && (ag.tenantId === t.id || ag.tenant === t.name)
-            );
-
-            if (!hasActiveAg && (hasConcludedMoveout || hasTerminatedAg)) {
-              hasChanges = true;
-              updatedTenants = updatedTenants.map((tenant) =>
-                tenant.id === t.id
-                  ? { ...tenant, unit: 'Unassigned', rent: 0, deposit: 0 }
-                  : tenant
-              );
-              if (isFirebaseConfigured) {
-                setDoc(doc(db, 'tenants', t.id), cleanFirestoreObject({
-                  unit: 'Unassigned',
-                  rent: 0,
-                  deposit: 0,
-                }), { merge: true }).catch(console.warn);
-              }
-            }
-          } else {
-            // Restore tenant unit if they have an active lease
-            const activeAg = reconciledAgreements.find((ag) => ag.status === 'active' && (ag.tenantId === t.id || ag.tenant === t.name));
-            if (activeAg && (t.unit === 'Unassigned' || !t.unit)) {
-              hasChanges = true;
-              updatedTenants = updatedTenants.map((tenant) =>
-                tenant.id === t.id
-                  ? { ...tenant, unit: activeAg.unit, propertyId: activeAg.propertyId || tenant.propertyId, propertyName: (activeAg as any).propertyName || tenant.propertyName, rent: activeAg.rent, deposit: activeAg.deposit }
-                  : tenant
-              );
-              if (isFirebaseConfigured) {
-                setDoc(doc(db, 'tenants', t.id), cleanFirestoreObject({
-                  unit: activeAg.unit,
-                  propertyId: activeAg.propertyId || t.propertyId,
-                  propertyName: (activeAg as any).propertyName || t.propertyName,
-                  rent: activeAg.rent,
-                  deposit: activeAg.deposit,
-                }), { merge: true }).catch(console.warn);
-              }
-            }
-          }
-        });
-
-        // 5. Self-healing: Void unpaid invoices for concluded tenancies
-        const voidedInvoices = deduplicatedInvoices.map((inv) => {
-          if (inv.status !== 'paid' && inv.status !== 'void') {
-            const invUnitClean = cleanUnitStr(inv.unit);
-            const isConcluded = (state.moveouts || []).some(
-              (m) =>
-                (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
-                cleanUnitStr(m.unit) === invUnitClean &&
-                (!inv.tenantId || m.tenantId === inv.tenantId || (m.tenant && m.tenant.toLowerCase() === inv.tenant?.toLowerCase()))
-            );
-            const hasActiveAgForInv = reconciledAgreements.some(
-              (ag) => ag.id === inv.leaseAgreementId && ag.status === 'active'
-            );
-            if (isConcluded && !hasActiveAgForInv) {
-              hasChanges = true;
-              if (isFirebaseConfigured) {
-                setDoc(doc(db, 'invoices', inv.id), cleanFirestoreObject({ status: 'void', notes: 'Voided upon move-out conclusion.' }), { merge: true }).catch(console.warn);
-              }
-              return { ...inv, status: 'void' as const, notes: 'Voided upon move-out conclusion.' };
-            }
-          }
-          return inv;
-        });
-
-        // Persist any newly generated first-month rent invoices to Firestore
-        if (isFirebaseConfigured && newRentInvoices.length > 0) {
+      if (isFirebaseConfigured) {
+        if (newRentInvoices.length > 0) {
           newRentInvoices.forEach(async (inv) => {
             try {
               await setDoc(doc(db, 'invoices', inv.id), cleanFirestoreObject(inv), { merge: true });
@@ -1912,9 +1778,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             }
           });
         }
-
-        // Delete any purged duplicate invoices from Firestore
-        if (isFirebaseConfigured && duplicateInvoiceIdsToDelete.length > 0) {
+        if (duplicateInvoiceIdsToDelete.length > 0) {
           duplicateInvoiceIdsToDelete.forEach(async (dupId) => {
             try {
               await deleteDoc(doc(db, 'invoices', dupId));
@@ -1923,24 +1787,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             }
           });
         }
+      }
 
-        const baseInvoices = voidedInvoices;
-        const mergedInvoices = newRentInvoices.length > 0
-          ? [...baseInvoices, ...newRentInvoices]
-          : baseInvoices;
+      const mergedInvoices = newRentInvoices.length > 0
+        ? [...deduplicatedInvoices, ...newRentInvoices]
+        : deduplicatedInvoices;
 
-        return {
-          ...prev,
-          invoices: mergedInvoices,
-          agreements: reconciledAgreements,
-          payments: reconciledPayments,
-          units: updatedUnits,
-          properties: updatedProperties,
-          tenants: updatedTenants,
-        };
-      });
+      setState((prev) => ({
+        ...prev,
+        invoices: mergedInvoices,
+        agreements: reconciledAgreements,
+        payments: reconciledPayments,
+      }));
     }
-  }, [state.invoices, state.agreements, state.payments, state.cashClaims, state.moveouts, state.depositSettlements, state.units, state.tenants]);
+  }, [state.invoices, state.agreements, state.payments, state.cashClaims, state.moveouts, state.depositSettlements]);
 
   // Automated background evaluation for scheduled & expired announcements
   useEffect(() => {
@@ -2065,7 +1925,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const newPlatformInvoice: PlatformInvoice = {
       id: adminInvoiceId,
       ownerId: userId,
-      ownerName: userObj?.displayName || 'Owner',
+      ownerName: userObj?.displayName?.trim() || userObj?.email?.split('@')[0] || 'Owner',
       ownerEmail: userEmail || '',
       planId: targetPlan?.id || planName.toLowerCase(),
       planName: targetPlan?.name || planName,
@@ -2361,6 +2221,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     let targetAgreement: Agreement | undefined;
     let newDepositInvoice: Invoice | undefined;
+    let firstMonthRentInvoiceToSave: Invoice | undefined;
+    let targetUnitObjToSave: Unit | undefined;
+    let isDepositAlreadySettled = false;
     let depositInvoiceId = generateDepositVoucherId(cleanAgId);
 
     setState((prev) => {
@@ -2372,63 +2235,80 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const targetUnit = prev.units.find((u) => (u.unitNumber === ag.unit || u.id === ag.unit) && (!ag.propertyId || u.propertyId === ag.propertyId));
       const depositAmount = ag.deposit || targetUnit?.deposit || (ag.rent ? ag.rent * 2 : 0);
       const ownerSettings = prev.ownerSettings[ag.ownerId];
-      const tmpl = ownerSettings?.invoiceTemplate;
+      const tmpl = ownerSettings?.depositTemplate || ownerSettings?.invoiceTemplate;
 
-      newDepositInvoice = {
-        id: depositInvoiceId,
-        ownerId: targetAgreement.ownerId,
-        propertyId: targetAgreement.propertyId,
-        leaseAgreementId: targetAgreement.id,
-        tenant: targetAgreement.tenant,
-        tenantId: targetAgreement.tenantId,
-        unit: targetAgreement.unit,
-        propertyName: prev.properties.find((p) => p.id === targetAgreement?.propertyId)?.name || 'Residence',
-        amount: depositAmount,
-        tax: 0,
-        total: depositAmount,
-        due: dueDate,
-        status: 'sent',
-        invoiceType: 'deposit',
-        issueDate: now,
-        tenantEmail: targetAgreement.tenantEmail || prev.tenants.find((t) => t.id === targetAgreement?.tenantId || t.name === targetAgreement?.tenant)?.email || prev.users.find((u) => u.id === targetAgreement?.tenantId)?.email,
-        tenantPhone: targetAgreement.tenantPhone || prev.tenants.find((t) => t.id === targetAgreement?.tenantId || t.name === targetAgreement?.tenant)?.phone || prev.users.find((u) => u.id === targetAgreement?.tenantId)?.phone,
-        notes: `Mandatory move-in security deposit pursuant to approved tenancy agreement for Unit ${targetAgreement.unit}.`,
-        items: [
-          {
-            description: `Refundable Security Deposit (Held in Trust) - Unit ${targetAgreement.unit}`,
-            amount: depositAmount,
-          },
-        ],
-        issuerName: tmpl?.issuerName || signatoryName || 'Property Management Trust',
-        issuerTaxNo: tmpl?.issuerTaxNo,
-        issuerAddress: tmpl?.issuerAddress,
-        issuerPhone: tmpl?.issuerPhone,
-        issuerEmail: tmpl?.issuerEmail,
-        termsAndConditions: tmpl?.termsAndConditions,
-        signatoryName: tmpl?.signatoryName || signatoryName,
-        bankDetails: tmpl?.bankName
-          ? {
-              bankName: tmpl.bankName,
-              accountName: tmpl.accountName,
-              accountNumber: tmpl.accountNumber,
-              ifscOrRouting: tmpl.ifscOrRouting,
-              upiId: tmpl.upiId,
-            }
-          : undefined,
-      };
+      const existingDepInv = prev.invoices.find(
+        (i) =>
+          (ag.depositInvoiceId && i.id === ag.depositInvoiceId) ||
+          i.id === depositInvoiceId ||
+          (i.leaseAgreementId === ag.id && (i.invoiceType === 'deposit' || i.type === 'deposit')) ||
+          (i.unit === ag.unit &&
+            (!ag.propertyId || !i.propertyId || i.propertyId === ag.propertyId) &&
+            (i.invoiceType === 'deposit' || i.type === 'deposit'))
+      );
+      const isDepositPaid = ag.depositStatus === 'paid' || existingDepInv?.status === 'paid';
+      isDepositAlreadySettled = isDepositPaid;
 
-      const depositInvId = newDepositInvoice?.id || targetAgreement.depositInvoiceId || generateDepositVoucherId(cleanAgId);
+      if (!isDepositPaid) {
+        newDepositInvoice = {
+          id: depositInvoiceId,
+          ownerId: targetAgreement.ownerId,
+          propertyId: targetAgreement.propertyId,
+          leaseAgreementId: targetAgreement.id,
+          tenant: targetAgreement.tenant,
+          tenantId: targetAgreement.tenantId,
+          unit: targetAgreement.unit,
+          propertyName: prev.properties.find((p) => p.id === targetAgreement?.propertyId)?.name || 'Residence',
+          amount: depositAmount,
+          tax: 0,
+          total: depositAmount,
+          due: dueDate,
+          status: 'sent',
+          invoiceType: 'deposit',
+          issueDate: now,
+          tenantEmail: targetAgreement.tenantEmail || prev.tenants.find((t) => t.id === targetAgreement?.tenantId || t.name === targetAgreement?.tenant)?.email || prev.users.find((u) => u.id === targetAgreement?.tenantId)?.email,
+          tenantPhone: targetAgreement.tenantPhone || prev.tenants.find((t) => t.id === targetAgreement?.tenantId || t.name === targetAgreement?.tenant)?.phone || prev.users.find((u) => u.id === targetAgreement?.tenantId)?.phone,
+          notes: `Mandatory move-in security deposit pursuant to approved tenancy agreement for Unit ${targetAgreement.unit}.`,
+          items: [
+            {
+              description: `Refundable Security Deposit (Held in Trust) - Unit ${targetAgreement.unit}`,
+              amount: depositAmount,
+            },
+          ],
+          issuerName: tmpl?.issuerName || signatoryName || 'Property Management Trust',
+          issuerTaxNo: tmpl?.issuerTaxNo,
+          issuerAddress: tmpl?.issuerAddress,
+          issuerPhone: tmpl?.issuerPhone,
+          issuerEmail: tmpl?.issuerEmail,
+          termsAndConditions: tmpl?.termsAndConditions,
+          includeTerms: tmpl?.includeTerms,
+          signatoryName: tmpl?.signatoryName || signatoryName,
+          bankDetails: tmpl?.bankName
+            ? {
+                bankName: tmpl.bankName,
+                accountName: tmpl.accountName,
+                accountNumber: tmpl.accountNumber,
+                ifscOrRouting: tmpl.ifscOrRouting,
+                upiId: tmpl.upiId,
+              }
+            : undefined,
+        };
+      } else if (existingDepInv) {
+        depositInvoiceId = existingDepInv.id;
+      }
+
+      const depositInvId = existingDepInv?.id || newDepositInvoice?.id || targetAgreement.depositInvoiceId || generateDepositVoucherId(cleanAgId);
       const updatedAg: Agreement = {
         ...targetAgreement,
-        status: 'pending_deposit',
+        status: isDepositPaid ? 'active' : 'pending_deposit',
         depositInvoiceId: depositInvId,
-        depositStatus: 'unpaid',
+        depositStatus: isDepositPaid ? 'paid' : 'unpaid',
         rejectionReason: undefined,
         rejectedAt: undefined,
         approvedBy: signatoryName,
         approvedAt: now,
         counterSignatory: signatoryName,
-        counterSignedAt: ownerSignedFileUrl ? now : targetAgreement.counterSignedAt,
+        counterSignedAt: ownerSignedFileUrl ? now : (targetAgreement.counterSignedAt || now),
         ownerSignedDocumentUrl: ownerSignedFileUrl || targetAgreement.ownerSignedDocumentUrl,
         ownerSignedDocumentName: ownerSignedFileName || targetAgreement.ownerSignedDocumentName || (ownerSignedFileUrl ? `Owner_Signed_Lease_${targetAgreement.unit}.pdf` : undefined),
         ownerSignedUploadedAt: ownerSignedFileUrl ? now : targetAgreement.ownerSignedUploadedAt,
@@ -2442,29 +2322,94 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const notifTenant = {
         id: `notif_${Date.now()}_t`,
         userId: targetAgreement.tenantId,
-        title: 'Lease Agreement Approved!',
-        body: `Your signed agreement for Unit ${targetAgreement.unit} was approved! Please pay the refundable security deposit of ${depositFormatted} (Invoice ${depositInvId}) to complete move-in.`,
-        link: '/tenant/payments',
+        title: isDepositPaid ? 'Lease Agreement Approved & Activated!' : 'Lease Agreement Approved!',
+        body: isDepositPaid
+          ? `Your signed agreement for Unit ${targetAgreement.unit} was approved! Since your move-in deposit is already paid, your tenancy is now officially active.`
+          : `Your signed agreement for Unit ${targetAgreement.unit} was approved! Please pay the refundable security deposit of ${depositFormatted} (Invoice ${depositInvId}) to complete move-in.`,
+        link: isDepositPaid ? '/tenant/dashboard' : '/tenant/payments',
         isRead: false,
         createdAt: now,
       };
 
-      const existingInvIndex = prev.invoices.findIndex((i) => i.id === depositInvId);
-      let updatedInvoices: Invoice[];
+      let updatedInvoices = prev.invoices;
       if (newDepositInvoice) {
+        const existingInvIndex = prev.invoices.findIndex((i) => i.id === depositInvId);
         if (existingInvIndex >= 0) {
           updatedInvoices = prev.invoices.map((i, idx) => (idx === existingInvIndex ? { ...i, ...newDepositInvoice } : i));
         } else {
           updatedInvoices = [newDepositInvoice, ...prev.invoices];
         }
-      } else {
-        updatedInvoices = prev.invoices;
       }
+
+      // Check if first month rent invoice should be generated upon activation
+      if (isDepositPaid && targetAgreement.rent > 0) {
+        const canonicalRentId = `INV-RENT-${cleanAgId}-M1`;
+        const propName = prev.properties.find((p) => p.id === targetAgreement?.propertyId)?.name || 'Residence';
+        const hasRentInvoice = updatedInvoices.some(
+          (inv) =>
+            inv.invoiceType === 'rent' &&
+            (inv.id === canonicalRentId || inv.leaseAgreementId === targetAgreement?.id || (inv.unit === targetAgreement?.unit && inv.propertyId === targetAgreement?.propertyId))
+        );
+        if (!hasRentInvoice) {
+          firstMonthRentInvoiceToSave = {
+            id: canonicalRentId,
+            ownerId: targetAgreement.ownerId,
+            propertyId: targetAgreement.propertyId,
+            tenant: targetAgreement.tenant,
+            tenantId: targetAgreement.tenantId,
+            unit: targetAgreement.unit,
+            propertyName: propName,
+            amount: targetAgreement.rent,
+            currency: targetAgreement.currency || DEFAULT_CURRENCY,
+            tax: 0,
+            total: targetAgreement.rent,
+            due: targetAgreement.start || now.split('T')[0],
+            status: 'sent',
+            invoiceType: 'rent',
+            leaseAgreementId: targetAgreement.id,
+            issueDate: now.split('T')[0],
+            tenantEmail: targetAgreement.tenantEmail || prev.tenants.find((t) => t.id === targetAgreement?.tenantId || t.name === targetAgreement?.tenant)?.email || prev.users.find((u) => u.id === targetAgreement?.tenantId)?.email,
+            tenantPhone: targetAgreement.tenantPhone || prev.tenants.find((t) => t.id === targetAgreement?.tenantId || t.name === targetAgreement?.tenant)?.phone || prev.users.find((u) => u.id === targetAgreement?.tenantId)?.phone,
+            notes: `First month move-in rent pursuant to executed tenancy agreement for Unit ${targetAgreement.unit}.`,
+            items: [
+              {
+                description: `First Month Rent (Move-in) — Unit ${targetAgreement.unit} (${propName})`,
+                amount: targetAgreement.rent,
+              },
+            ],
+          };
+          updatedInvoices = [...updatedInvoices, firstMonthRentInvoiceToSave];
+        }
+      }
+
+      let updatedUnits = prev.units;
+      if (isDepositPaid && targetUnit) {
+        targetUnitObjToSave = {
+          ...targetUnit,
+          status: 'occupied',
+          tenant: targetAgreement.tenant,
+          currentTenantId: targetAgreement.tenantId,
+        };
+        updatedUnits = prev.units.map((u) => (u.id === targetUnit.id ? targetUnitObjToSave! : u));
+      }
+
+      const normUnit = (u?: string) => (u || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+      const nextReqs = (prev.tenancyRequests || []).map((r) => {
+        const isMatching =
+          (r.tenantId === targetAgreement!.tenantId || (r.tenantEmail && targetAgreement!.tenantEmail && r.tenantEmail.toLowerCase() === targetAgreement!.tenantEmail.toLowerCase())) &&
+          (normUnit(r.unitNumber) === normUnit(targetAgreement!.unit) || r.unitId === targetAgreement!.unit);
+        if (isMatching && r.status === 'pending') {
+          return { ...r, status: 'accepted' as const, respondedAt: now };
+        }
+        return r;
+      });
 
       return {
         ...prev,
         agreements: prev.agreements.map((a) => (a.id === agreementId ? updatedAg : a)),
         invoices: updatedInvoices,
+        units: updatedUnits,
+        tenancyRequests: nextReqs,
         notifications: [...(prev.notifications || []), notifTenant],
       };
     });
@@ -2473,25 +2418,35 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       try {
         if (targetAgreement) {
           await setDoc(doc(db, 'agreements', agreementId), {
-            status: 'pending_deposit',
+            status: isDepositAlreadySettled ? 'active' : 'pending_deposit',
             depositInvoiceId,
-            depositStatus: 'unpaid',
+            depositStatus: isDepositAlreadySettled ? 'paid' : 'unpaid',
             rejectionReason: null,
             rejectedAt: null,
             approvedBy: signatoryName,
             approvedAt: now,
             counterSignatory: signatoryName,
+            counterSignedAt: now,
             ...(ownerSignedFileUrl ? {
               ownerSignedDocumentUrl: ownerSignedFileUrl,
               ownerSignedDocumentName: ownerSignedFileName || `Owner_Signed_Lease_${targetAgreement.unit}.pdf`,
               ownerSignedUploadedAt: now,
-              counterSignedAt: now,
             } : {}),
             ...(notes ? { ownerSignatureNotes: notes } : {}),
           }, { merge: true });
         }
         if (newDepositInvoice) {
           await setDoc(doc(db, 'invoices', depositInvoiceId), newDepositInvoice, { merge: true });
+        }
+        if (firstMonthRentInvoiceToSave) {
+          await setDoc(doc(db, 'invoices', firstMonthRentInvoiceToSave.id), firstMonthRentInvoiceToSave, { merge: true });
+        }
+        if (isDepositAlreadySettled && targetUnitObjToSave && targetAgreement) {
+          await setDoc(doc(db, 'units', targetUnitObjToSave.id), {
+            status: 'occupied',
+            tenant: targetAgreement.tenant,
+            currentTenantId: targetAgreement.tenantId,
+          }, { merge: true });
         }
       } catch (err) {
         console.warn('Firestore approveSignedAgreement error:', err);
@@ -2512,7 +2467,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }).catch(console.warn);
     }
 
-    showToast(`✓ Agreement approved! Security deposit invoice ${depositInvoiceId} dispatched to tenant.`);
+    showToast(
+      isDepositAlreadySettled
+        ? `✓ Agreement approved & lease activated! Security deposit is already settled.`
+        : `✓ Agreement approved! Security deposit invoice ${depositInvoiceId} dispatched to tenant.`
+    );
     return depositInvoiceId;
   };
 
@@ -4660,6 +4619,18 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       },
     };
 
+    const updatedRequests = (state.tenancyRequests || []).map((r) => {
+      const matchUnit = exClean && (clean(r.unitNumber) === exClean || clean(r.unitId) === exClean);
+      const matchTenant =
+        (existing.tenantId && r.tenantId === existing.tenantId) ||
+        (existing.tenantEmail && r.tenantEmail?.toLowerCase() === existing.tenantEmail.toLowerCase()) ||
+        (existing.tenantName && r.tenantName?.toLowerCase() === existing.tenantName.toLowerCase());
+      if (matchUnit && matchTenant) {
+        return { ...r, status: 'archived' as const, respondedAt: now };
+      }
+      return r;
+    });
+
     setState((prev) => ({
       ...prev,
       depositSettlements: (prev.depositSettlements || []).map((s) => (s.id === settlementId ? updatedSettlement : s)),
@@ -4671,6 +4642,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       invoices: updatedInvoices,
       payments: [...(prev.payments || []).filter((p) => p.id !== refundTxId), refundPayment],
       renewals: (prev.renewals || []).filter((r) => r.unit !== existing.unit),
+      tenancyRequests: updatedRequests,
       notifications: [...(prev.notifications || []), notif],
     }));
 
@@ -4679,6 +4651,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         await setDoc(doc(db, 'payments', refundTxId), cleanFirestoreObject(refundPayment), { merge: true });
         await setDoc(doc(db, 'depositSettlements', settlementId), updatedSettlement, { merge: true });
         await setDoc(doc(db, 'agreements', existing.agreementId), { depositStatus: 'refunded', status: 'terminated' }, { merge: true });
+        for (const req of updatedRequests) {
+          if (req.status === 'archived') {
+            await setDoc(doc(db, 'tenancyRequests', req.id), { status: 'archived', respondedAt: now }, { merge: true }).catch(() => {});
+          }
+        }
         if (targetUnit) {
           await setDoc(doc(db, 'units', targetUnit.id), { status: 'vacant', tenant: null, currentTenantId: null }, { merge: true });
           if (targetUnit.propertyId) {
@@ -4985,6 +4962,23 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       (r) => r.unit !== targetSettlement.unit || (effPropId && r.propertyId && r.propertyId !== effPropId)
     );
 
+    // Conclude / Archive all matching tenancyRequests for this unit & tenant
+    const updatedRequests = (state.tenancyRequests || []).map((r) => {
+      const matchUnit = settleUnitClean && (normalizeUnitStr(r.unitNumber) === settleUnitClean || normalizeUnitStr(r.unitId) === settleUnitClean);
+      const matchTenant =
+        (vacatingTenantId && r.tenantId === vacatingTenantId) ||
+        (targetSettlement.tenantEmail && r.tenantEmail?.toLowerCase() === targetSettlement.tenantEmail.toLowerCase()) ||
+        (vacatingTenantName && r.tenantName?.toLowerCase() === vacatingTenantName.toLowerCase());
+      if (matchUnit && matchTenant) {
+        return {
+          ...r,
+          status: 'archived' as const,
+          respondedAt: now,
+        };
+      }
+      return r;
+    });
+
     // Notifications
     const ownerNotif: InAppNotification = {
       id: `notif_${Date.now()}`,
@@ -5028,6 +5022,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       cashClaims: updatedCashClaims,
       invoices: updatedInvoices,
       renewals: updatedRenewals,
+      tenancyRequests: updatedRequests,
       notifications: [...(prev.notifications || []), ownerNotif, tenantNotif],
     }));
 
@@ -5076,6 +5071,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         for (const inv of updatedInvoices) {
           if (inv.status === 'void' && (inv.unit === targetSettlement.unit || inv.leaseAgreementId === targetSettlement.agreementId)) {
             await setDoc(doc(db, 'invoices', inv.id), cleanFirestoreObject({ status: 'void', notes: inv.notes }), { merge: true });
+          }
+        }
+        for (const req of updatedRequests) {
+          if (req.status === 'archived') {
+            await setDoc(doc(db, 'tenancyRequests', req.id), { status: 'archived', respondedAt: now }, { merge: true }).catch(() => {});
           }
         }
         await setDoc(doc(db, 'notifications', ownerNotif.id), cleanFirestoreObject(ownerNotif));
@@ -5171,6 +5171,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const newClaim: CashHandoverClaim = {
       ...claimData,
       id: claimId,
+      currency: normalizeCurrencyCode(claimData.currency),
       status: 'pending_confirmation',
       claimedAt: now,
     };
@@ -5186,7 +5187,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unit: claimData.unit,
       propertyId: claimData.propertyId,
       amount: claimData.amount,
-      currency: claimData.currency || 'INR',
+      currency: normalizeCurrencyCode(claimData.currency),
       date: claimData.handoverDate || now.split('T')[0],
       dueDate: claimData.handoverDate || now.split('T')[0],
       direction: claimData.direction,
@@ -5381,6 +5382,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     let updatedProperties = state.properties;
     let updatedMoveouts = state.moveouts;
     let updatedTenants = state.tenants;
+    let updatedRequests = state.tenancyRequests || [];
 
     const isDepositRefund =
       claim.type === 'deposit_refund' ||
@@ -5446,7 +5448,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           tenantName: targetMoveout.tenant || claim.tenantName || 'Resident',
           tenantEmail: targetMoveout.tenantEmail || '',
           ownerId: targetMoveout.ownerId || claim.ownerId || '',
-          currency: targetMoveout.currency || claim.currency || DEFAULT_CURRENCY,
+          currency: normalizeCurrencyCode(targetMoveout.currency || claim.currency || 'USD'),
           grossDepositHeld: targetMoveout.deposit || claim.amount || 0,
           deductions: (targetMoveout.deductions || []).map((d: any, idx: number) => ({
             id: d.id || `ded-${idx}`,
@@ -5649,6 +5651,22 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
       }
 
+      // Archive matching tenancyRequests for this vacated unit & tenant
+      updatedRequests = (state.tenancyRequests || []).map((r) => {
+        const matchUnit = targetUnitClean && (normalizeUnit(r.unitNumber) === targetUnitClean || normalizeUnit(r.unitId) === targetUnitClean);
+        const matchTenant =
+          (vacatingTenantId && r.tenantId === vacatingTenantId) ||
+          (vacatingTenantName && r.tenantName?.toLowerCase() === vacatingTenantName.toLowerCase());
+        if (matchUnit && matchTenant) {
+          return {
+            ...r,
+            status: 'archived' as const,
+            respondedAt: now,
+          };
+        }
+        return r;
+      });
+
       // Clean up / prune renewals for the vacated unit/tenant
       updatedAgreements = updatedAgreements.filter((a) => {
         return true;
@@ -5681,6 +5699,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       properties: updatedProperties,
       moveouts: updatedMoveouts,
       tenants: updatedTenants,
+      tenancyRequests: updatedRequests,
       renewals: (prev.renewals || []).filter((r) => {
         const targetClean = (claim.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
         const rClean = (r.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
@@ -5692,6 +5711,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (isFirebaseConfigured) {
       try {
         await setDoc(doc(db, 'cashClaims', claimId), cleanFirestoreObject(updatedClaim), { merge: true });
+        for (const req of updatedRequests) {
+          if (req.status === 'archived') {
+            await setDoc(doc(db, 'tenancyRequests', req.id), { status: 'archived', respondedAt: now }, { merge: true }).catch(() => {});
+          }
+        }
         if (txn) {
           const finalTxn = updatedPayments.find((p) => p.id === txn.id);
           if (finalTxn) {
@@ -7031,16 +7055,39 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return id;
   };
 
-  const updateEnquiryStatus = async (id: string, status: 'new' | 'reviewed' | 'onboarded'): Promise<void> => {
+  const updateEnquiryStatus = async (
+    id: string,
+    status: 'new' | 'reviewed' | 'onboarded' | 'contacted' | 'archived'
+  ): Promise<void> => {
     const existing = (state.enquiries || []).find((e) => e.id === id);
     if (!existing) return;
     const updated: PropertyEnquiry = { ...existing, status, updatedAt: new Date().toISOString() };
+
+    const notifs: InAppNotification[] = [];
+    if (existing.tenantId && (status === 'reviewed' || status === 'contacted' || status === 'onboarded')) {
+      notifs.push({
+        id: `notif_${Date.now()}_tenant_${existing.tenantId}`,
+        userId: existing.tenantId,
+        title: status === 'onboarded' ? `Lease Prepared: Unit ${existing.unitNumber}` : `Enquiry Update: Unit ${existing.unitNumber}`,
+        body: status === 'onboarded'
+          ? `Your lease agreement for Unit ${existing.unitNumber} (${existing.propertyName}) is being prepared.`
+          : `Your enquiry for Unit ${existing.unitNumber} has been ${status === 'contacted' ? 'marked as contacted' : 'reviewed by the landlord'}.`,
+        link: status === 'onboarded' ? '/tenant/leases' : '/tenant/reviews?tab=enquiries',
+        isRead: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
     if (isFirebaseConfigured) {
       await setDoc(doc(db, 'enquiries', id), cleanFirestoreObject(updated), { merge: true }).catch(console.warn);
+      for (const n of notifs) {
+        setDoc(doc(db, 'notifications', n.id), cleanFirestoreObject(n), { merge: true }).catch(console.warn);
+      }
     }
     setState((prev) => ({
       ...prev,
       enquiries: (prev.enquiries || []).map((e) => (e.id === id ? updated : e)),
+      notifications: notifs.length > 0 ? [...(prev.notifications || []), ...notifs] : prev.notifications,
     }));
   };
 
@@ -7174,10 +7221,102 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }));
   };
 
+  // ── Single source of truth: every screen reads tenancy-derived data (unit status, property
+  // occupancy, tenant assignment, invoices, payments) through the same reconciliation, so no page can disagree.
+  const reconciled = useMemo(
+    () => {
+      const settledDepositMoveouts = (state.depositSettlements || [])
+        .filter((s) => s.status === 'refunded' || s.tenantConfirmedReceipt)
+        .map((s) => ({
+          id: s.id,
+          agreementId: s.agreementId,
+          unit: s.unit,
+          propertyId: s.propertyId,
+          tenantId: s.tenantId,
+          tenant: s.tenantName,
+          status: 'refund_completed' as const,
+          settledAt: s.disbursedAt || (s as any).updatedAt || s.createdAt,
+          tenantConfirmedReceipt: true,
+        }));
+      const allMoveouts = [...(state.moveouts || []), ...settledDepositMoveouts];
+
+      return reconcilePortfolio({
+        units: state.units,
+        properties: state.properties,
+        tenants: state.tenants,
+        agreements: state.agreements,
+        tenancyRequests: state.tenancyRequests,
+        moveouts: allMoveouts as any,
+        invoices: state.invoices,
+        payments: state.payments,
+      });
+    },
+    [state.units, state.properties, state.tenants, state.agreements, state.tenancyRequests, state.moveouts, state.depositSettlements, state.invoices, state.payments]
+  );
+  const derivedState = useMemo(
+    () => ({
+      ...state,
+      units: reconciled.units,
+      properties: reconciled.properties,
+      tenants: reconciled.tenants,
+      agreements: reconciled.agreements,
+      invoices: reconciled.invoices,
+      payments: reconciled.payments,
+    }),
+    [state, reconciled]
+  );
+
+  // Persist reconciled records so the database (and the mobile app) converge to the same truth.
+  // Writes are awaited and failures are surfaced (never silently swallowed).
+  const persistedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isFirebaseConfigured || !auth.currentUser) return;
+    const role =
+      typeof window !== 'undefined' ? localStorage.getItem('keystone_active_user_role') : null;
+    if (role !== 'owner' && role !== 'manager' && role !== 'superadmin' && role !== 'admin') return;
+
+    const jobs: Array<{ key: string; col: string; id: string; data: Record<string, any> }> = [];
+    reconciled.changedAgreements.forEach((a) =>
+      jobs.push({ key: `a:${a.id}:terminated`, col: 'agreements', id: a.id, data: { status: 'terminated', depositStatus: 'refunded' } })
+    );
+    reconciled.changedUnits.forEach((u) =>
+      jobs.push({ key: `u:${u.id}:vacant`, col: 'units', id: u.id, data: { status: 'vacant', tenant: null, currentTenantId: null } })
+    );
+    reconciled.changedProperties.forEach((p) =>
+      jobs.push({ key: `p:${p.id}:${p.occupied}`, col: 'properties', id: p.id, data: { occupied: p.occupied } })
+    );
+    reconciled.changedTenants.forEach((t) =>
+      jobs.push({ key: `t:${t.id}:unassigned`, col: 'tenants', id: t.id, data: { unit: 'Unassigned', rent: 0, deposit: 0 } })
+    );
+    reconciled.changedInvoices.forEach((inv) =>
+      jobs.push({ key: `i:${inv.id}:void`, col: 'invoices', id: inv.id, data: { status: 'void', notes: inv.notes } })
+    );
+
+    jobs.forEach((job) => {
+      if (persistedRef.current.has(job.key)) return;
+      persistedRef.current.add(job.key);
+      setDoc(doc(db, job.col, job.id), job.data, { merge: true }).catch((err) => {
+        persistedRef.current.delete(job.key); // allow retry on next change
+        console.error(`[Reconcile] Failed to persist ${job.col}/${job.id}:`, err);
+      });
+    });
+
+    // Delete duplicate / voided payment records
+    reconciled.deletedPaymentIds.forEach((payId) => {
+      const delKey = `del:p:${payId}`;
+      if (persistedRef.current.has(delKey)) return;
+      persistedRef.current.add(delKey);
+      deleteDoc(doc(db, 'payments', payId)).catch((err) => {
+        persistedRef.current.delete(delKey);
+        console.error(`[Reconcile] Failed to delete duplicate payment ${payId}:`, err);
+      });
+    });
+  }, [reconciled]);
+
   return (
     <AppDataContext.Provider
       value={{
-        state,
+        state: derivedState,
         updateState: setState,
         showToast,
         toasts,

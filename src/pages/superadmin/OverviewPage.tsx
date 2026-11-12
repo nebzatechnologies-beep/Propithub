@@ -24,34 +24,40 @@ export const OverviewPage: React.FC = () => {
     }).length;
   };
 
-  // MRR calculated from PlatformInvoices or estimated from active plan distribution, normalized to USD then converted to viewCurrency
-  const totalMrrInUSD = useMemo(() => {
-    let sumUSD = 0;
-    if (state.platformInvoices && state.platformInvoices.length > 0) {
-      const latestByOwner: Record<string, typeof state.platformInvoices[0]> = {};
-      for (const inv of state.platformInvoices) {
-        if (inv.status === 'paid' || inv.status === 'issued') {
-          const existing = latestByOwner[inv.ownerId];
-          if (!existing || inv.issueDate > existing.issueDate) {
-            latestByOwner[inv.ownerId] = inv;
-          }
-        }
-      }
-      for (const inv of Object.values(latestByOwner)) {
-        const curr = inv.currency || 'USD';
-        sumUSD += convert(inv.total || inv.amount || 0, curr, 'USD');
-      }
-    }
-    if (sumUSD === 0) {
-      sumUSD = state.plans.reduce(
-        (sum, p) => sum + p.price * getOwnersCountForPlan(p.name),
-        0
-      );
-    }
-    return sumUSD;
-  }, [state.platformInvoices, state.plans, ownerUsers, convert]);
+  // Reconciled owner status & MRR matching MasterUsersPage logic exactly
+  const ownerStats = useMemo(() => {
+    let activeCount = 0;
+    let trialCount = 0;
+    let sumMrrUSD = 0;
 
-  const convertedMrr = convert(totalMrrInUSD, 'USD', viewCurrency);
+    ownerUsers.forEach((u) => {
+      const ownerSettings = state.ownerSettings[u.id];
+      const hasPaid = (state.platformInvoices || []).some(
+        (inv) => inv.ownerId === u.id && inv.status === 'paid'
+      );
+      const isTrial =
+        !hasPaid &&
+        (ownerSettings?.planStatus === 'trialing' ||
+          (!ownerSettings?.planStatus && (u as any).planStatus === 'trialing') ||
+          (u.plan && u.plan.toLowerCase().includes('trial')));
+
+      if (isTrial) {
+        trialCount++;
+      } else {
+        activeCount++;
+        const activePlanName = ownerSettings?.planName || u.plan || 'Growth';
+        const planObj = state.plans.find(
+          (p) => p.name.toLowerCase() === activePlanName.toLowerCase()
+        );
+        const planPrice = planObj ? planObj.price : 79;
+        sumMrrUSD += planPrice;
+      }
+    });
+
+    return { activeCount, trialCount, totalMrrInUSD: sumMrrUSD };
+  }, [ownerUsers, state.ownerSettings, state.platformInvoices, state.plans]);
+
+  const convertedMrr = convert(ownerStats.totalMrrInUSD, 'USD', viewCurrency);
   const totalProperties = state.properties.length;
 
   const handleSendReminder = async (ownerId: string, ownerName: string) => {
@@ -135,201 +141,110 @@ export const OverviewPage: React.FC = () => {
             {format(convertedMrr, viewCurrency, { maximumFractionDigits: 0 })}
           </div>
           <div className="lbl">Monthly recurring revenue</div>
-          <div className="delta">
-            {format(convertedMrr * 12, viewCurrency, { maximumFractionDigits: 0 })} ARR run-rate (est.)
-          </div>
         </div>
         <div className="stat">
-          <div className="num">{ownerUsers.length}</div>
-          <div className="lbl">Active owner accounts</div>
-          <div className="delta">
-            {pastDueOwners.length > 0 ? `${pastDueOwners.length} past due` : '100% in good standing'}
+          <div className="num">
+            {ownerStats.activeCount}
+            {ownerStats.trialCount > 0 && (
+              <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginLeft: '6px' }}>
+                ({ownerStats.trialCount} Trial)
+              </span>
+            )}
           </div>
+          <div className="lbl">Active owner accounts</div>
         </div>
         <div className="stat">
           <div className="num">{totalProperties}</div>
           <div className="lbl">Properties on platform</div>
-          <div className="delta">
-            {state.units.length > 0 ? `${state.units.length} total units` : 'Live portfolio count'}
-          </div>
         </div>
         <div className="stat">
           <div className="num">{state.platformInvoices?.length || 0}</div>
           <div className="lbl">Platform Invoices</div>
-          <div className="delta" style={{ color: 'var(--ink-soft)' }}>
-            {state.platformInvoices?.filter((i) => i.status === 'paid').length || 0} settled
-          </div>
         </div>
       </div>
 
-      <div className="section-title">Plan distribution</div>
       <div className="panel">
-        <div className="panel-body">
-          <div className="desktop-table-view">
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Plan</th>
-                    <th>Price / mo</th>
-                    <th>Limits</th>
-                    <th>Owners on plan</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state.plans.map((p) => (
-                    <tr key={p.id}>
-                      <td>
-                        <b>{p.name}</b>
-                      </td>
-                      <td>{format(convert(p.price, 'USD', viewCurrency), viewCurrency)}</td>
-                      <td>
-                        {p.properties >= 999 ? 'Unlimited' : p.properties} properties ·{' '}
-                        {p.units >= 9999 ? 'Unlimited' : p.units} units ·{' '}
-                        {p.tenants >= 9999 ? 'Unlimited' : p.tenants} tenants
-                      </td>
-                      <td>{getOwnersCountForPlan(p.name)}</td>
-                      <td>
-                        <Link to="/superadmin/plans" className="btn secondary small">
-                          Edit
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+        <div className="panel-body" style={{ padding: '20px 24px' }}>
+          <h3 style={{ margin: '0 0 18px', fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>
+            Owners by plan
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {(() => {
+              const plansWithCounts = state.plans
+                .filter((p) => !p.isTrialOnly && p.id !== 'free_trial')
+                .map((p) => {
+                  const count = ownerUsers.filter((u) => {
+                    const ownerSettings = state.ownerSettings[u.id];
+                    const hasPaid = (state.platformInvoices || []).some(
+                      (inv) => inv.ownerId === u.id && inv.status === 'paid'
+                    );
+                    const isTrial =
+                      !hasPaid &&
+                      (ownerSettings?.planStatus === 'trialing' ||
+                        (!ownerSettings?.planStatus && (u as any).planStatus === 'trialing') ||
+                        (u.plan && u.plan.toLowerCase().includes('trial')));
+                    if (isTrial) return false;
+                    const uPlan = ownerSettings?.planName || u.plan || 'Growth';
+                    return uPlan.toLowerCase() === p.name.toLowerCase();
+                  }).length;
+                  return { id: p.id, name: p.name, price: p.price, count, isTrial: false };
+                });
 
-          <div className="mobile-card-view">
-            {state.plans.map((p) => (
-              <div key={p.id} className="staff-card" style={{ padding: '14px', marginBottom: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                  <div>
-                    <div style={{ fontWeight: 800, fontSize: '15px', color: 'var(--ink)' }}>{p.name}</div>
-                    <div style={{ fontSize: '13px', color: 'var(--brass)', fontWeight: 700 }}>
-                      {format(convert(p.price, 'USD', viewCurrency), viewCurrency)} / mo
+              if (ownerStats.trialCount > 0) {
+                plansWithCounts.push({
+                  id: 'free_trial',
+                  name: 'Free Trial',
+                  price: 0,
+                  count: ownerStats.trialCount,
+                  isTrial: true,
+                });
+              }
+
+              const totalOwners = ownerUsers.length || 1;
+
+              return plansWithCounts.map((p) => {
+                const pct = p.count > 0 ? Math.min(100, Math.round((p.count / totalOwners) * 100)) : 0;
+
+                return (
+                  <div key={p.id}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '6px',
+                      }}
+                    >
+                      <span style={{ fontSize: '13.5px', color: 'var(--ink-soft)' }}>
+                        {p.name} · {p.isTrial ? 'Free ($0/mo)' : format(convert(p.price, 'USD', viewCurrency), viewCurrency, { maximumFractionDigits: 0 })}
+                      </span>
+                      <b style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)' }}>
+                        {p.count} {p.count === 1 ? 'owner' : 'owners'}
+                      </b>
+                    </div>
+                    <div
+                      style={{
+                        width: '100%',
+                        height: '7px',
+                        borderRadius: '999px',
+                        background: 'var(--surface-sunken, #F1F5F9)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${pct}%`,
+                          height: '100%',
+                          borderRadius: '999px',
+                          background: p.isTrial ? '#94A3B8' : 'var(--primary, #10B981)',
+                          transition: 'width 0.3s ease',
+                        }}
+                      />
                     </div>
                   </div>
-                  <span className="badge grey">{getOwnersCountForPlan(p.name)} owners</span>
-                </div>
-                <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '12px', lineHeight: 1.4 }}>
-                  {p.properties >= 999 ? 'Unlimited' : p.properties} properties · {p.units >= 9999 ? 'Unlimited' : p.units} units · {p.tenants >= 9999 ? 'Unlimited' : p.tenants} tenants
-                </div>
-                <Link to="/superadmin/plans" className="btn secondary small btn-mobile-full" style={{ textAlign: 'center' }}>
-                  Edit Plan
-                </Link>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="section-title">Accounts needing attention</div>
-      <div className="panel">
-        <div className="panel-body">
-          <div className="desktop-table-view">
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Owner</th>
-                    <th>Plan</th>
-                    <th>Status</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pastDueOwners.length > 0 ? (
-                    pastDueOwners.map((o) => (
-                      <tr key={o.id}>
-                        <td>
-                          <div className="person">
-                            <div className="avatar">{getInitials(o.displayName)}</div>
-                            <div className="who">
-                              <b>{o.displayName}</b>
-                              <span>{o.email}</span>
-                            </div>
-                          </div>
-                        </td>
-                        <td>{o.plan || 'Growth'}</td>
-                        <td>
-                          <span className="badge amber">Payment past due</span>
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                            <button
-                              type="button"
-                              className="btn secondary small"
-                              disabled={o.reminded}
-                              onClick={() => handleSendReminder(o.id, o.displayName)}
-                            >
-                              {o.reminded ? 'Reminder sent' : 'Send reminder'}
-                            </button>
-                            <Link
-                              to="/superadmin/users"
-                              className="btn secondary small"
-                              style={{ textDecoration: 'none' }}
-                            >
-                              Manage →
-                            </Link>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={4} style={{ color: 'var(--ink-soft)', padding: '16px 10px' }}>
-                        All accounts in good standing.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="mobile-card-view">
-            {pastDueOwners.length > 0 ? (
-              pastDueOwners.map((o) => (
-                <div key={o.id} className="staff-card" style={{ padding: '14px', marginBottom: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-                    <div className="avatar">{getInitials(o.displayName)}</div>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>{o.displayName}</div>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>{o.email}</div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                    <span className="badge grey">{o.plan || 'Growth'}</span>
-                    <span className="badge amber">Payment past due</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      className="btn secondary small btn-mobile-full"
-                      style={{ flex: '1 1 auto' }}
-                      disabled={o.reminded}
-                      onClick={() => handleSendReminder(o.id, o.displayName)}
-                    >
-                      {o.reminded ? 'Reminder sent' : 'Send reminder'}
-                    </button>
-                    <Link
-                      to="/superadmin/users"
-                      className="btn secondary small btn-mobile-full"
-                      style={{ textDecoration: 'none', textAlign: 'center', flex: '1 1 auto' }}
-                    >
-                      Manage →
-                    </Link>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div style={{ color: 'var(--ink-soft)', padding: '16px 10px', textAlign: 'center' }}>
-                All accounts in good standing.
-              </div>
-            )}
+                );
+              });
+            })()}
           </div>
         </div>
       </div>

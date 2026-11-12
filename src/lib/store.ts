@@ -34,6 +34,7 @@ import {
   Announcement,
   AgreementTemplate,
   PropertyEnquiry,
+  ListingBoostPlan,
 } from '../types';
 import { isFirebaseConfigured } from './firebase';
 import { sanitizeCountry } from './addressUtils';
@@ -87,13 +88,48 @@ export interface AppState {
   communicationLogs: CommunicationLog[];
   announcements: Announcement[];
   enquiries: PropertyEnquiry[];
+  boostPlans?: ListingBoostPlan[];
 }
+
+export const DEFAULT_BOOST_PLANS: ListingBoostPlan[] = [
+  {
+    id: 'boost_basic',
+    name: 'Quick Spotlight',
+    days: 3,
+    price: 5,
+    currency: 'USD',
+    description: 'Boost listing to top of /homes & Landing Page for 3 days',
+    isPopular: false,
+    isActive: true,
+  },
+  {
+    id: 'boost_standard',
+    name: 'Featured Pro',
+    days: 7,
+    price: 55,
+    currency: 'USD',
+    description: '7 days guaranteed top visibility with 🔥 Popular badge',
+    isPopular: true,
+    isActive: true,
+  },
+  {
+    id: 'boost_premium',
+    name: 'Premier Dominance',
+    days: 30,
+    price: 550,
+    currency: 'USD',
+    description: 'Full 30-day maximum prominence & top search priority',
+    isPopular: false,
+    isActive: true,
+  },
+];
 
 export const INITIAL_STATE: AppState = {
   currentRole: 'owner',
   currentUserId: '',
   defaultTrialDays: 14,
   annualDiscountPercent: 20,
+  boostPlans: DEFAULT_BOOST_PLANS,
 
   users: [],
 
@@ -109,6 +145,7 @@ export const INITIAL_STATE: AppState = {
       staff: 1,
       owners: 0,
       isPopular: false,
+      popularBoostDays: 0,
     },
     {
       id: 'growth',
@@ -121,6 +158,7 @@ export const INITIAL_STATE: AppState = {
       staff: 5,
       owners: 0,
       isPopular: true,
+      popularBoostDays: 7,
     },
     {
       id: 'free_trial',
@@ -133,6 +171,7 @@ export const INITIAL_STATE: AppState = {
       staff: 1,
       owners: 0,
       isTrialOnly: true,
+      popularBoostDays: 3,
     },
     {
       id: 'enterprise',
@@ -144,6 +183,7 @@ export const INITIAL_STATE: AppState = {
       managers: 10,
       staff: 50,
       owners: 0,
+      popularBoostDays: 30,
     },
   ],
 
@@ -197,9 +237,9 @@ export const INITIAL_STATE: AppState = {
       showFooter: true,
     },
     heroKicker: 'PropTech 4.6 • Enterprise Cloud Property OS',
-    headline: 'Smart Property Management for the Modern Era',
+    headline: 'Run every rental. Find a home anywhere.',
     subheadline:
-      'Streamline leasing, automate rent collection, assign maintenance, and manage tenants from one unified cloud platform. Owned & Developed by NEBZA Technologies Private Limited.',
+      'The rental workspace for landlords, property managers, and renters across 38 countries. One platform for leases, rent collection, and vacant unit listings.',
     ctaText: 'Start 14-Day Free Trial →',
     ctaLink: '/register',
     secondaryCtaText: 'Sign In to Portal',
@@ -437,7 +477,7 @@ export const INITIAL_STATE: AppState = {
     ctaBannerSubtitle: 'Join the owners, managers, and firms already running their portfolio on propithub.',
     ctaBannerPrimaryText: 'Register as a property owner',
     ctaBannerPrimaryLink: '/register',
-    ctaBannerSecondaryText: 'Sign in to your portal',
+    ctaBannerSecondaryText: 'Sign in',
     ctaBannerSecondaryLink: '/login',
     footerBrandDescription:
       'Enterprise cloud property management platform engineered to streamline leasing, automate billing, and connect owners, tenants, and maintenance crews.',
@@ -445,6 +485,10 @@ export const INITIAL_STATE: AppState = {
     footerEmail: 'admin@propithub.com',
     footerPhone: '+1 (555) 010-0001',
     footerCopyright: '© 2026 Propithub. Owned and Developed by NEBZA Technologies Private Limited. All Rights Reserved.',
+    showAppStoreLinks: true,
+    playStoreUrl: 'https://play.google.com/store/apps',
+    appStoreUrl: 'https://apps.apple.com',
+    appStoreLabel: 'Get the mobile app',
     legalPages: {
       terms: {
         title: 'Terms of Use',
@@ -670,7 +714,7 @@ export function saveTrialPolicyCache(days: number, discountPercent?: number): vo
         : (typeof prev.annualDiscountPercent === 'number' ? prev.annualDiscountPercent : 20),
     };
     localStorage.setItem(TRIAL_POLICY_CACHE_KEY, JSON.stringify(payload));
-  } catch (_) {}
+  } catch (_) { }
 }
 
 export function saveAnnualDiscountCache(discountPercent: number): void {
@@ -683,7 +727,7 @@ export function saveAnnualDiscountCache(discountPercent: number): void {
       annualDiscountPercent: Math.min(90, Math.max(0, discountPercent)),
     };
     localStorage.setItem(TRIAL_POLICY_CACHE_KEY, JSON.stringify(payload));
-  } catch (_) {}
+  } catch (_) { }
 }
 
 export function loadCachedTrialPolicy(): { defaultTrialDays?: number; annualDiscountPercent?: number } | null {
@@ -692,7 +736,7 @@ export function loadCachedTrialPolicy(): { defaultTrialDays?: number; annualDisc
     if (raw) {
       return JSON.parse(raw);
     }
-  } catch (_) {}
+  } catch (_) { }
   return null;
 }
 
@@ -725,7 +769,7 @@ export function saveLandingConfigCache(cfg: Partial<LandingConfig>): void {
       },
     };
     localStorage.setItem(LANDING_CONFIG_CACHE_KEY, JSON.stringify(merged));
-  } catch (_) {}
+  } catch (_) { }
 }
 
 export function loadState(): AppState {
@@ -757,9 +801,12 @@ export function loadState(): AppState {
             ...(parsedLanding.legalPages || {}),
           },
         };
+        if (cachedLandingConfig.ctaBannerSecondaryText === 'Sign in to your portal') {
+          cachedLandingConfig.ctaBannerSecondaryText = 'Sign in';
+        }
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   if (isFirebaseConfigured) {
     // In live Firebase mode, Firestore and Firebase Auth are the single source of truth.
@@ -768,7 +815,7 @@ export function loadState(): AppState {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem('keystone_state_v1');
       localStorage.removeItem('keystone_active_user_id');
-    } catch (_) {}
+    } catch (_) { }
     return {
       ...INITIAL_STATE,
       defaultTrialDays: effectiveTrialDays,
@@ -832,6 +879,10 @@ export function loadState(): AppState {
       landingConfig: {
         ...INITIAL_STATE.landingConfig,
         ...(parsed.landingConfig || {}),
+        ctaBannerSecondaryText:
+          parsed.landingConfig?.ctaBannerSecondaryText === 'Sign in to your portal'
+            ? 'Sign in'
+            : (parsed.landingConfig?.ctaBannerSecondaryText || INITIAL_STATE.landingConfig.ctaBannerSecondaryText),
         sections: {
           ...INITIAL_STATE.landingConfig.sections,
           ...(parsed.landingConfig?.sections || {}),
@@ -933,6 +984,10 @@ export function loadState(): AppState {
       cashClaims: parsed.cashClaims || [],
       communicationLogs: parsed.communicationLogs || [],
       announcements: announcementList,
+      boostPlans:
+        Array.isArray(parsed.boostPlans) && parsed.boostPlans.length > 0
+          ? parsed.boostPlans
+          : DEFAULT_BOOST_PLANS,
     };
   } catch (err) {
     console.error('Failed to parse stored state, reverting to clean production state:', err);
@@ -953,5 +1008,5 @@ export function saveState(state: AppState): void {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem('keystone_state_v1');
     localStorage.removeItem('keystone_active_user_id');
-  } catch (_) {}
+  } catch (_) { }
 }

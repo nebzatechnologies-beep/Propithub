@@ -1,14 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useCurrency } from '../../context/CurrencyContext';
-import {
-  Search,
-  X,
-  Check,
-  CircleDollarSign,
-  ChevronDown,
-  ArrowLeft,
-  Sparkles,
-} from 'lucide-react';
+import { Search, X, Check } from 'lucide-react';
 
 export const CurrencyConverterModal: React.FC = () => {
   const {
@@ -20,32 +12,13 @@ export const CurrencyConverterModal: React.FC = () => {
     isLive,
   } = useCurrency();
 
-  const [selectedCode, setSelectedCode] = useState<string>(viewCurrency || 'USD');
-  const [isPicking, setIsPicking] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [feedback, setFeedback] = useState<string | null>(null);
 
-  // Sync with active viewCurrency when modal opens
   useEffect(() => {
     if (isConverterOpen) {
-      setSelectedCode(viewCurrency || 'USD');
-      setIsPicking(false);
       setSearchQuery('');
-      setFeedback(null);
     }
-  }, [isConverterOpen, viewCurrency]);
-
-  const currentMeta = useMemo(() => {
-    return (
-      currencies.find((c) => c.code === selectedCode) || {
-        code: selectedCode,
-        name: selectedCode,
-        country: '',
-        symbol: selectedCode,
-        flag: '🌐',
-      }
-    );
-  }, [currencies, selectedCode]);
+  }, [isConverterOpen]);
 
   const filteredCurrencies = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
@@ -61,18 +34,9 @@ export const CurrencyConverterModal: React.FC = () => {
 
   if (!isConverterOpen) return null;
 
-  const isCurrentActive = viewCurrency === selectedCode;
-
-  const handleSelect = (code: string) => {
-    setSelectedCode(code);
-    setIsPicking(false);
-    setSearchQuery('');
-  };
-
-  const handleSetAsAppCurrency = () => {
-    setViewCurrency(selectedCode);
-    setFeedback(`✓ ${selectedCode} is now your app currency`);
-    setTimeout(() => setFeedback(null), 2500);
+  const handleSelectCurrency = (code: string) => {
+    setViewCurrency(code);
+    closeConverter();
   };
 
   return (
@@ -80,7 +44,7 @@ export const CurrencyConverterModal: React.FC = () => {
       className="modal-backdrop"
       style={{
         zIndex: 99999,
-        background: 'rgba(0,0,0,0.55)',
+        background: 'rgba(15, 23, 42, 0.45)',
         backdropFilter: 'blur(4px)',
         position: 'fixed',
         inset: 0,
@@ -95,394 +59,253 @@ export const CurrencyConverterModal: React.FC = () => {
         className="modal-card"
         style={{
           width: '100%',
-          maxWidth: '430px',
-          maxHeight: '92vh',
+          maxWidth: '380px',
+          maxHeight: '82vh',
           display: 'flex',
           flexDirection: 'column',
           background: 'var(--surface, #FFFFFF)',
-          borderRadius: '16px',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.25)',
+          borderRadius: '14px',
+          boxShadow: '0 20px 45px rgba(15, 23, 42, 0.18)',
           border: '1px solid var(--line, #E2E8F0)',
           overflow: 'hidden',
-          animation: 'fadeIn 0.2s ease',
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Modal Header */}
+        {/* Minimal Header */}
         <div
           style={{
-            padding: '16px 20px',
+            padding: '14px 16px',
             borderBottom: '1px solid var(--line, #E2E8F0)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            background: 'var(--surface-sunken, #F8FAFC)',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            {isPicking ? (
-              <button
-                type="button"
-                className="btn secondary small"
-                onClick={() => {
-                  setIsPicking(false);
-                  setSearchQuery('');
-                }}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontWeight: 600, fontSize: '14.5px', color: 'var(--ink, #0F172A)' }}>
+              Display Currency
+            </span>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '11px',
+                color: 'var(--ink-soft, #64748B)',
+                background: 'var(--surface-sunken, #F8FAFC)',
+                padding: '2px 8px',
+                borderRadius: '999px',
+                border: '1px solid var(--line, #E2E8F0)',
+              }}
+            >
+              <span
                 style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  padding: '6px 10px',
-                  borderRadius: '8px',
-                  fontSize: '12px',
-                  fontWeight: 600,
+                  width: '5px',
+                  height: '5px',
+                  borderRadius: '50%',
+                  background: isLive ? '#10B981' : '#F59E0B',
                 }}
-              >
-                <ArrowLeft size={14} /> Back
-              </button>
-            ) : (
-              <div
-                style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '8px',
-                  background: 'var(--teal-primary, #10B981)',
-                  color: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <CircleDollarSign size={18} />
-              </div>
-            )}
-            <div>
-              <div style={{ fontWeight: 800, fontSize: '15px', color: 'var(--ink, #0F172A)' }}>
-                {isPicking ? 'Select Currency' : 'App Currency'}
-              </div>
-              <div
-                style={{
-                  fontSize: '11px',
-                  color: 'var(--ink-soft, #64748B)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  marginTop: '1px',
-                }}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: '6px',
-                    height: '6px',
-                    borderRadius: '50%',
-                    background: isLive ? '#10B981' : '#F59E0B',
-                  }}
-                />
-                <span>{isLive ? 'Live Central Bank Rates' : 'Standard Baseline Rates'}</span>
-              </div>
-            </div>
+              />
+              {isLive ? 'Live rates' : 'Standard'}
+            </span>
           </div>
+
           <button
             type="button"
-            className="btn secondary small"
+            className="modal-close"
             onClick={closeConverter}
-            style={{ padding: '6px', borderRadius: '8px' }}
+            style={{ width: '28px', height: '28px', minWidth: '28px' }}
             aria-label="Close"
           >
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
-        {/* ── View 1: Searchable Currency Picker ────────────────────────── */}
-        {isPicking ? (
-          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-            {/* Search Input */}
-            <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--line, #E2E8F0)' }}>
-              <div style={{ position: 'relative' }}>
-                <Search
-                  size={16}
-                  style={{
-                    position: 'absolute',
-                    left: '12px',
-                    top: '50%',
-                    transform: 'translateY(-50%)',
-                    color: 'var(--ink-soft, #64748B)',
-                  }}
-                />
-                <input
-                  type="text"
-                  autoFocus
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by country (e.g. India, UAE, UK) or currency (EUR, USD)..."
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px 9px 36px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--line, #CBD5E1)',
-                    background: 'var(--surface-sunken, #F8FAFC)',
-                    color: 'var(--ink, #0F172A)',
-                    fontSize: '13px',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    style={{
-                      position: 'absolute',
-                      right: '10px',
-                      top: '50%',
-                      transform: 'translateY(-50%)',
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--ink-soft, #64748B)',
-                      cursor: 'pointer',
-                      padding: '2px',
-                    }}
-                  >
-                    <X size={14} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Currency List */}
-            <div
+        {/* Clean Search Bar */}
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line, #E2E8F0)' }}>
+          <div style={{ position: 'relative' }}>
+            <Search
+              size={14}
               style={{
-                flex: 1,
-                overflowY: 'auto',
-                padding: '10px 18px 16px',
-                maxHeight: '400px',
+                position: 'absolute',
+                left: '11px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: 'var(--ink-soft, #64748B)',
+                pointerEvents: 'none',
+              }}
+            />
+            <input
+              type="text"
+              autoFocus
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search currency or country..."
+              style={{
+                width: '100%',
+                padding: '7px 28px 7px 32px',
+                borderRadius: '8px',
+                border: '1px solid var(--line, #E2E8F0)',
+                background: 'var(--surface-sunken, #F8FAFC)',
+                color: 'var(--ink, #0F172A)',
+                fontSize: '13px',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                style={{
+                  position: 'absolute',
+                  right: '8px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--ink-soft, #64748B)',
+                  cursor: 'pointer',
+                  padding: '2px',
+                  display: 'flex',
+                }}
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Smooth Currency List */}
+        <div
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '8px 10px',
+            maxHeight: '340px',
+          }}
+        >
+          {(!searchQuery || 'default'.includes(searchQuery.toLowerCase()) || 'local'.includes(searchQuery.toLowerCase())) && (
+            <button
+              type="button"
+              onClick={() => handleSelectCurrency('LOCAL')}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px',
+                padding: '9px 12px',
+                borderRadius: '8px',
+                border: (!viewCurrency || viewCurrency === 'LOCAL') ? '1px solid var(--teal-primary, #10B981)' : '1px dashed var(--line, #CBD5E1)',
+                background: (!viewCurrency || viewCurrency === 'LOCAL') ? 'rgba(16, 185, 129, 0.08)' : 'transparent',
+                color: 'var(--ink, #0F172A)',
+                cursor: 'pointer',
+                textAlign: 'left',
+                marginBottom: '8px',
+                transition: 'all 0.12s ease',
               }}
             >
-              {filteredCurrencies.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '36px 12px', color: 'var(--ink-soft)' }}>
-                  No currencies found matching &quot;{searchQuery}&quot;
-                </div>
-              ) : (
-                filteredCurrencies.map((c) => {
-                  const isCurrent = c.code === selectedCode;
-
-                  return (
-                    <div
-                      key={c.code}
-                      onClick={() => handleSelect(c.code)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        padding: '10px 12px',
-                        borderRadius: '10px',
-                        border: isCurrent
-                          ? '1.5px solid var(--teal-primary, #10B981)'
-                          : '1px solid var(--line, #E2E8F0)',
-                        background: isCurrent
-                          ? 'rgba(16, 185, 129, 0.08)'
-                          : 'var(--surface, #FFFFFF)',
-                        marginBottom: '6px',
-                        cursor: 'pointer',
-                        transition: 'all 0.15s ease',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!isCurrent) {
-                          e.currentTarget.style.borderColor = 'var(--teal-primary, #10B981)';
-                          e.currentTarget.style.background = 'var(--surface-sunken, #F8FAFC)';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isCurrent) {
-                          e.currentTarget.style.borderColor = 'var(--line, #E2E8F0)';
-                          e.currentTarget.style.background = 'var(--surface, #FFFFFF)';
-                        }
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span style={{ fontSize: '22px', lineHeight: 1 }}>{c.flag}</span>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ fontWeight: 800, fontSize: '13.5px', color: 'var(--ink, #0F172A)' }}>
-                              {c.country || c.name}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: '11px',
-                                fontWeight: 700,
-                                padding: '1px 5px',
-                                borderRadius: '4px',
-                                background: 'var(--surface-sunken, #F1F5F9)',
-                                color: 'var(--ink-soft, #475569)',
-                              }}
-                            >
-                              {c.code} ({c.symbol})
-                            </span>
-                          </div>
-                          <div style={{ fontSize: '11px', color: 'var(--ink-soft, #64748B)', marginTop: '1px' }}>
-                            {c.name}
-                          </div>
-                        </div>
-                      </div>
-
-                      {isCurrent && (
-                        <span
-                          style={{
-                            fontSize: '10px',
-                            fontWeight: 700,
-                            padding: '2px 7px',
-                            borderRadius: '4px',
-                            background: 'var(--teal-primary, #10B981)',
-                            color: '#fff',
-                          }}
-                        >
-                          SELECTED
-                        </span>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        ) : (
-          /* ── View 2: Clean Single-Field Currency Selection ─────────────── */
-          <div style={{ padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div>
-              <label
-                style={{
-                  display: 'block',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  color: 'var(--ink-soft, #64748B)',
-                  marginBottom: '8px',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                }}
-              >
-                App Currency
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsPicking(true);
-                  setSearchQuery('');
-                }}
-                style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '8px',
-                  padding: '14px 16px',
-                  borderRadius: '12px',
-                  border: '1.5px solid var(--teal-primary, #10B981)',
-                  background: 'rgba(16, 185, 129, 0.05)',
-                  color: 'var(--ink, #0F172A)',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  transition: 'all 0.15s ease',
-                  boxSizing: 'border-box',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'rgba(16, 185, 129, 0.05)';
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-                  <span style={{ fontSize: '28px', lineHeight: 1 }}>{currentMeta.flag}</span>
-                  <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                    <div
-                      style={{
-                        fontWeight: 800,
-                        fontSize: '15px',
-                        color: 'var(--teal-dark, #059669)',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {currentMeta.code} ({currentMeta.symbol})
-                    </div>
-                    <div
-                      style={{
-                        fontSize: '12px',
-                        color: 'var(--ink-soft, #64748B)',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        marginTop: '1px',
-                      }}
-                    >
-                      {currentMeta.country ? `${currentMeta.country} • ${currentMeta.name}` : currentMeta.name}
-                    </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '17px', lineHeight: 1 }}>🌐</span>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '13px', color: (!viewCurrency || viewCurrency === 'LOCAL') ? 'var(--teal-primary, #10B981)' : 'var(--ink)' }}>
+                    Default / Local Currency
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
+                    Show native contract currency for each unit
                   </div>
                 </div>
-                <ChevronDown size={18} color="#059669" style={{ flexShrink: 0 }} />
-              </button>
+              </div>
+              {(!viewCurrency || viewCurrency === 'LOCAL') && (
+                <Check size={16} color="var(--teal-primary, #10B981)" style={{ flexShrink: 0 }} />
+              )}
+            </button>
+          )}
+
+          {filteredCurrencies.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '28px 12px', fontSize: '13px', color: 'var(--ink-soft)' }}>
+              No currencies matching &ldquo;{searchQuery}&rdquo;
             </div>
+          ) : (
+            filteredCurrencies.map((c) => {
+              const isActive = c.code === viewCurrency;
 
-            {/* Set as App Currency Action Button */}
-            <div style={{ marginTop: '4px' }}>
-              <button
-                type="button"
-                onClick={handleSetAsAppCurrency}
-                disabled={isCurrentActive}
-                style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                  padding: '13px 16px',
-                  borderRadius: '10px',
-                  fontSize: '14px',
-                  fontWeight: 700,
-                  cursor: isCurrentActive ? 'default' : 'pointer',
-                  transition: 'all 0.2s ease',
-                  border: isCurrentActive
-                    ? '1.5px solid var(--teal-primary, #10B981)'
-                    : 'none',
-                  background: isCurrentActive
-                    ? 'rgba(16, 185, 129, 0.08)'
-                    : 'var(--teal-primary, #10B981)',
-                  color: isCurrentActive
-                    ? 'var(--teal-dark, #059669)'
-                    : '#FFFFFF',
-                }}
-              >
-                {isCurrentActive ? (
-                  <>
-                    <Check size={18} color="#059669" />
-                    <span>{selectedCode} is your active app currency</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={16} />
-                    <span>Set {selectedCode} as App Currency</span>
-                  </>
-                )}
-              </button>
-
-              {feedback && (
-                <div
+              return (
+                <button
+                  key={c.code}
+                  type="button"
+                  onClick={() => handleSelectCurrency(c.code)}
                   style={{
-                    marginTop: '8px',
-                    textAlign: 'center',
-                    fontSize: '12.5px',
-                    fontWeight: 700,
-                    color: 'var(--teal-dark, #059669)',
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '10px',
+                    padding: '9px 10px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: isActive ? 'var(--surface-sunken, #F1F5F9)' : 'transparent',
+                    color: 'var(--ink, #0F172A)',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    transition: 'background 0.12s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isActive) {
+                      e.currentTarget.style.background = 'var(--surface-sunken, #F8FAFC)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isActive) {
+                      e.currentTarget.style.background = 'transparent';
+                    }
                   }}
                 >
-                  {feedback}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                    <div
+                      style={{
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '7px',
+                        background: isActive ? 'var(--primary, #0D9488)' : 'var(--surface-sunken, #F1F5F9)',
+                        color: isActive ? '#FFFFFF' : 'var(--ink, #0F172A)',
+                        border: isActive ? 'none' : '1px solid var(--line, #E2E8F0)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '12.5px',
+                        fontWeight: 700,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {c.symbol}
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontWeight: 600, fontSize: '13.5px', color: 'var(--ink, #0F172A)' }}>
+                          {c.code}
+                        </span>
+                        <span style={{ fontSize: '12.5px', color: 'var(--ink-soft, #64748B)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {c.name}
+                        </span>
+                      </div>
+                      {c.country && (
+                        <div style={{ fontSize: '11px', color: 'var(--ink-soft, #94A3B8)', marginTop: '1px' }}>
+                          {c.country}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {isActive && (
+                    <Check size={16} style={{ color: 'var(--primary, #0D9488)', flexShrink: 0 }} />
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
       </div>
     </div>
   );

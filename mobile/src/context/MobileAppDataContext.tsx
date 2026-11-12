@@ -1,7 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
+import { reconcilePortfolio } from '../lib/portfolioReconcile';
+import { normalizeCurrencyCode } from '../lib/currencyService';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, deleteDoc, getDocs, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions, isFirebaseConfigured, createSecondaryAuthUser } from '../lib/firebase';
 import { useMobileAuth } from './MobileAuthContext';
@@ -235,6 +237,7 @@ interface MobileAppDataContextType {
   sendTenancyRequest: (req: MobileTenancyRequest) => void;
   updateTenancyRequest: (id: string, status: 'accepted' | 'declined' | 'cancelled') => void;
   submitEnquiry?: (enquiry: Omit<MobilePropertyEnquiry, 'id' | 'createdAt' | 'status'>) => Promise<void>;
+  updateEnquiryStatus?: (id: string, status: 'new' | 'reviewed' | 'onboarded' | 'contacted' | 'archived') => Promise<void>;
   saveTicket: (ticket: MobileTicket) => void;
   updateTicket: (ticketId: string, updates: Partial<MobileTicket>) => void;
   sendStaffPaymentReminder: (ticketId: string) => void;
@@ -336,21 +339,86 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   const [selectedTenantUnitId, setSelectedTenantUnitId] = useState<string | null>(null);
 
 
-  // Live real-time sync with all Firestore collections
+  const handleSyncError = (name: string, err: any) => {
+    if (err?.code === 'permission-denied') {
+      // Role is restricted by Firestore security rules or unauthenticated.
+      // Suppress noisy warning in mobile console to prevent React Native LogBox popups.
+      return;
+    }
+    console.warn(`Firestore ${name} sync error:`, err);
+  };
+
+  // 1. Universally readable public Firestore collections (always active)
   useEffect(() => {
     if (!isFirebaseConfigured) return;
+
+    const unsubReviews = onSnapshot(collection(db, 'reviews'), (snap) => {
+      const items: MobileTenantReview[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileTenantReview));
+      setState((prev) => ({ ...prev, reviews: items }));
+    }, (err) => handleSyncError('reviews', err));
+
+    const unsubPlans = onSnapshot(collection(db, 'plans'), (snap) => {
+      const items: MobilePlan[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePlan));
+      if (items.length > 0) {
+        setState((prev) => ({ ...prev, plans: items }));
+      }
+    }, (err) => handleSyncError('plans', err));
+
+    const unsubGateways = onSnapshot(doc(db, 'platformConfig', 'gateways'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data && data.platformGateways) {
+          setState((prev) => ({
+            ...prev,
+            platformGateways: {
+              ...prev.platformGateways,
+              ...data.platformGateways,
+            },
+          }));
+        }
+      }
+    }, (err) => handleSyncError('gateways', err));
+
+    const unsubTrial = onSnapshot(doc(db, 'platformConfig', 'trialPolicy'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        const hasDays = typeof data.defaultTrialDays === 'number';
+        const hasDiscount = typeof data.annualDiscountPercent === 'number';
+        if (hasDays || hasDiscount) {
+          setState((prev) => ({
+            ...prev,
+            ...(hasDays ? { defaultTrialDays: Math.max(0, data.defaultTrialDays) } : {}),
+            ...(hasDiscount ? { annualDiscountPercent: Math.min(90, Math.max(0, data.annualDiscountPercent)) } : {}),
+          }));
+        }
+      }
+    }, (err) => handleSyncError('trialPolicy', err));
+
+    return () => {
+      unsubReviews();
+      unsubPlans();
+      unsubGateways();
+      unsubTrial();
+    };
+  }, []);
+
+  // 2. Authenticated real-time sync with protected Firestore collections (only active when signed in)
+  useEffect(() => {
+    if (!isFirebaseConfigured || !isAuthenticated || !user) return;
 
     const unsubProps = onSnapshot(collection(db, 'properties'), (snap) => {
       const items: MobileProperty[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileProperty));
       setState((prev) => ({ ...prev, properties: items }));
-    }, (err) => console.warn('Firestore properties sync error:', err));
+    }, (err) => handleSyncError('properties', err));
 
     const unsubUnits = onSnapshot(collection(db, 'units'), (snap) => {
       const items: MobileUnit[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileUnit));
       setState((prev) => ({ ...prev, units: items }));
-    }, (err) => console.warn('Firestore units sync error:', err));
+    }, (err) => handleSyncError('units', err));
 
     const unsubTenants = onSnapshot(collection(db, 'tenants'), (snap) => {
       const items: MobileTenantRecord[] = [];
@@ -371,7 +439,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         dedupedTenants.push(t);
       });
       setState((prev) => ({ ...prev, tenants: dedupedTenants }));
-    }, (err) => console.warn('Firestore tenants sync error:', err));
+    }, (err) => handleSyncError('tenants', err));
 
     const unsubAgreements = onSnapshot(collection(db, 'agreements'), (snap) => {
       const items: MobileAgreement[] = [];
@@ -408,19 +476,19 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       });
 
       setState((prev) => ({ ...prev, agreements: items }));
-    }, (err) => console.warn('Firestore agreements sync error:', err));
+    }, (err) => handleSyncError('agreements', err));
 
     const unsubTemplates = onSnapshot(collection(db, 'agreementTemplates'), (snap) => {
       const items: MobileAgreementTemplate[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileAgreementTemplate));
       setState((prev) => ({ ...prev, agreementTemplates: items }));
-    }, (err) => console.warn('Firestore agreementTemplates sync error:', err));
+    }, (err) => handleSyncError('agreementTemplates', err));
 
     const unsubInvoices = onSnapshot(collection(db, 'invoices'), (snap) => {
       const items: MobileInvoice[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileInvoice));
       setState((prev) => ({ ...prev, invoices: items }));
-    }, (err) => console.warn('Firestore invoices sync error:', err));
+    }, (err) => handleSyncError('invoices', err));
 
     const unsubPayments = onSnapshot(collection(db, 'payments'), (snap) => {
       const items: MobilePaymentTransaction[] = [];
@@ -439,19 +507,19 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         payMap.set(p.id, p);
       });
       setState((prev) => ({ ...prev, payments: Array.from(payMap.values()) }));
-    }, (err) => console.warn('Firestore payments sync error:', err));
+    }, (err) => handleSyncError('payments', err));
 
     const unsubTickets = onSnapshot(collection(db, 'tickets'), (snap) => {
       const items: MobileTicket[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileTicket));
       setState((prev) => ({ ...prev, tickets: items }));
-    }, (err) => console.warn('Firestore tickets sync error:', err));
+    }, (err) => handleSyncError('tickets', err));
 
     const unsubStaff = onSnapshot(collection(db, 'staff'), (snap) => {
       const items: MobileStaffMember[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileStaffMember));
       setState((prev) => ({ ...prev, staff: items }));
-    }, (err) => console.warn('Firestore staff sync error:', err));
+    }, (err) => handleSyncError('staff', err));
 
     const unsubAnnouncements = onSnapshot(collection(db, 'announcements'), (snap) => {
       const items: MobileAnnouncement[] = [];
@@ -466,7 +534,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         });
         return { ...prev, announcements: merged };
       });
-    }, (err) => console.warn('Firestore announcements sync error:', err));
+    }, (err) => handleSyncError('announcements', err));
 
     const unsubAcks = onSnapshot(collection(db, 'announcementAcknowledgments'), (snap) => {
       const acksByAnnId = new Map<string, string[]>();
@@ -501,11 +569,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         });
         return changed ? { ...prev, announcements: merged } : prev;
       });
-    }, (err) => {
-      if (err.code !== 'permission-denied') {
-        console.warn('Firestore announcementAcknowledgments sync error:', err);
-      }
-    });
+    }, (err) => handleSyncError('announcementAcknowledgments', err));
 
     const unsubTenancyRequests = onSnapshot(collection(db, 'tenancyRequests'), (snap) => {
       const items: MobileTenancyRequest[] = [];
@@ -514,7 +578,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         ...prev,
         tenancyRequests: items
       }));
-    }, (err) => console.warn('Firestore tenancyRequests sync error:', err));
+    }, (err) => handleSyncError('tenancyRequests', err));
 
     const unsubEnquiries = onSnapshot(collection(db, 'enquiries'), (snap) => {
       const items: MobilePropertyEnquiry[] = [];
@@ -523,7 +587,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         ...prev,
         enquiries: items,
       }));
-    }, (err) => console.warn('Firestore enquiries sync error:', err));
+    }, (err) => handleSyncError('enquiries', err));
 
     const unsubRenewals = onSnapshot(collection(db, 'renewals'), (snap) => {
       const items: MobileRenewalItem[] = [];
@@ -540,7 +604,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       });
       setState((prev) => ({ ...prev, renewals: Array.from(map.values()) }));
-    }, (err) => console.warn('Firestore renewals sync error:', err));
+    }, (err) => handleSyncError('renewals', err));
 
     const unsubMoveouts = onSnapshot(collection(db, 'moveouts'), (snap) => {
       const items: MobileMoveOut[] = [];
@@ -553,7 +617,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         items.push({ id: d.id, ...data, status: normalizedStatus } as MobileMoveOut);
       });
       setState((prev) => ({ ...prev, moveOuts: items }));
-    }, (err) => console.warn('Firestore moveouts sync error:', err));
+    }, (err) => handleSyncError('moveouts', err));
 
     const unsubSettlements = onSnapshot(collection(db, 'depositSettlements'), (snap) => {
       const items: MobileDepositSettlement[] = [];
@@ -562,64 +626,50 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         items.push({ id: d.id, ...data } as MobileDepositSettlement);
       });
       setState((prev) => ({ ...prev, depositSettlements: items }));
-    }, (err) => console.warn('Firestore depositSettlements sync error:', err));
+    }, (err) => handleSyncError('depositSettlements', err));
 
     const unsubManagers = onSnapshot(collection(db, 'propertyManagers'), (snap) => {
       const items: MobilePropertyManager[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePropertyManager));
       setState((prev) => ({ ...prev, propertyManagers: items }));
-    }, (err) => console.warn('Firestore propertyManagers sync error:', err));
+    }, (err) => handleSyncError('propertyManagers', err));
 
     const unsubManagerPayouts = onSnapshot(collection(db, 'managerPayouts'), (snap) => {
       const items: MobileManagerPayout[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileManagerPayout));
       setState((prev) => ({ ...prev, managerPayouts: items }));
-    }, (err) => console.warn('Firestore managerPayouts sync error:', err));
+    }, (err) => handleSyncError('managerPayouts', err));
 
     const unsubStaffSchedules = onSnapshot(collection(db, 'staffSchedules'), (snap) => {
       const items: MobileStaffScheduleItem[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as unknown as MobileStaffScheduleItem));
       setState((prev) => ({ ...prev, staffSchedules: items }));
-    }, (err) => console.warn('Firestore staffSchedules sync error:', err));
+    }, (err) => handleSyncError('staffSchedules', err));
 
     const unsubCashClaims = onSnapshot(collection(db, 'cashClaims'), (snap) => {
       const items: MobileCashHandoverClaim[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileCashHandoverClaim));
       setState((prev) => ({ ...prev, cashClaims: items }));
-    }, (err) => console.warn('Firestore cashClaims sync error:', err));
+    }, (err) => handleSyncError('cashClaims', err));
 
 
     const unsubNotifications = onSnapshot(collection(db, 'notifications'), (snap) => {
       const items: MobileInAppNotification[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileInAppNotification));
       setState((prev) => ({ ...prev, notifications: items }));
-    }, (err) => console.warn('Firestore notifications sync error:', err));
+    }, (err) => handleSyncError('notifications', err));
 
     const unsubPlatformSupport = onSnapshot(collection(db, 'platformSupport'), (snap) => {
       const items: MobilePlatformSupportTicket[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePlatformSupportTicket));
       setState((prev) => ({ ...prev, platformSupport: items }));
-    }, (err) => console.warn('Firestore platformSupport sync error:', err));
-
-    const unsubReviews = onSnapshot(collection(db, 'reviews'), (snap) => {
-      const items: MobileTenantReview[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileTenantReview));
-      setState((prev) => ({ ...prev, reviews: items }));
-    }, (err) => console.warn('Firestore reviews sync error:', err));
-
-    const unsubPlans = onSnapshot(collection(db, 'plans'), (snap) => {
-      const items: MobilePlan[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePlan));
-      if (items.length > 0) {
-        setState((prev) => ({ ...prev, plans: items }));
-      }
-    }, (err) => console.warn('Firestore plans sync error:', err));
+    }, (err) => handleSyncError('platformSupport', err));
 
     const unsubPlatformInvoices = onSnapshot(collection(db, 'platformInvoices'), (snap) => {
       const items: MobilePlatformInvoice[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePlatformInvoice));
       setState((prev) => ({ ...prev, platformInvoices: items }));
-    }, (err) => console.warn('Firestore platformInvoices sync error:', err));
+    }, (err) => handleSyncError('platformInvoices', err));
 
     const unsubOwners = onSnapshot(collection(db, 'owners'), (snap) => {
       const ownerMap: Record<string, MobileOwnerSettings> = {};
@@ -640,43 +690,13 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
           .map((s) => s.paymentMethods)
           .find((m) => m && Object.keys(m).length > 0) || prev.paymentMethods,
       }));
-    }, (err) => console.warn('Firestore owners sync error:', err));
-
-    const unsubGateways = onSnapshot(doc(db, 'platformConfig', 'gateways'), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        if (data && data.platformGateways) {
-          setState((prev) => ({
-            ...prev,
-            platformGateways: {
-              ...prev.platformGateways,
-              ...data.platformGateways,
-            },
-          }));
-        }
-      }
-    }, (err) => console.warn('Firestore gateways sync error:', err));
-
-    const unsubTrial = onSnapshot(doc(db, 'platformConfig', 'trialPolicy'), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        const hasDays = typeof data.defaultTrialDays === 'number';
-        const hasDiscount = typeof data.annualDiscountPercent === 'number';
-        if (hasDays || hasDiscount) {
-          setState((prev) => ({
-            ...prev,
-            ...(hasDays ? { defaultTrialDays: Math.max(0, data.defaultTrialDays) } : {}),
-            ...(hasDiscount ? { annualDiscountPercent: Math.min(90, Math.max(0, data.annualDiscountPercent)) } : {}),
-          }));
-        }
-      }
-    }, (err) => console.warn('Firestore trialPolicy sync error:', err));
+    }, (err) => handleSyncError('owners', err));
 
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
       const items: MobileUserProfile[] = [];
       snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileUserProfile));
       setState((prev) => ({ ...prev, users: items }));
-    }, (err) => console.warn('Firestore users sync error:', err));
+    }, (err) => handleSyncError('users', err));
 
     const unsubCommLogs = onSnapshot(collection(db, 'communicationLogs'), (snap) => {
       const items: MobileCommunicationLog[] = [];
@@ -684,7 +704,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       if (items.length > 0) {
         setState((prev) => ({ ...prev, communicationLogs: items }));
       }
-    }, (err) => console.warn('Firestore communicationLogs sync error:', err));
+    }, (err) => handleSyncError('communicationLogs', err));
 
     const unsubComms = onSnapshot(doc(db, 'platformConfig', 'comms'), (snap) => {
       if (snap.exists()) {
@@ -699,7 +719,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
           }));
         }
       }
-    }, (err) => console.warn('Firestore commsConfig sync error:', err));
+    }, (err) => handleSyncError('commsConfig', err));
 
     return () => {
       unsubProps();
@@ -717,22 +737,20 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubEnquiries();
       unsubRenewals();
       unsubMoveouts();
+      unsubSettlements();
       unsubManagers();
       unsubManagerPayouts();
       unsubStaffSchedules();
+      unsubCashClaims();
       unsubNotifications();
       unsubPlatformSupport();
-      unsubReviews();
-      unsubPlans();
       unsubPlatformInvoices();
       unsubOwners();
-      unsubGateways();
-      unsubTrial();
       unsubUsers();
       unsubCommLogs();
       unsubComms();
     };
-  }, []);
+  }, [isAuthenticated, user?.id, role]);
 
   // -------------------------------------------------------------
   // REAL-TIME CONCURRENCY & OFFLINE PERSISTENCE (AsyncStorage + localStorage)
@@ -942,13 +960,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
           (!ag.propertyId || !u.propertyId || ag.propertyId === u.propertyId)
       );
 
-      const hasPendingOrAcceptedRequest = (rawState.tenancyRequests || []).some(
-        (r) =>
-          (cleanUnitStr(r.unitNumber) === uClean || r.unitId === u.id) &&
-          (r.status === 'pending' || r.status === 'accepted') &&
-          (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)
-      );
-
       const hasCompletedMoveout = (rawState.moveOuts || []).some(
         (m) =>
           (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
@@ -959,6 +970,14 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const hasTerminatedAgreementOnly =
         reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && ag.status === 'terminated') &&
         !reconciledAgreements.some((ag) => cleanUnitStr(ag.unit) === uClean && (ag.status === 'active' || (ag.status as string) === 'signed'));
+
+      const hasPendingOrAcceptedRequest = (rawState.tenancyRequests || []).some(
+        (r) =>
+          (cleanUnitStr(r.unitNumber) === uClean || r.unitId === u.id) &&
+          (r.status === 'pending' || r.status === 'accepted') &&
+          (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId) &&
+          !((hasCompletedMoveout || hasTerminatedAgreementOnly) && (r.status === 'accepted' || (r as any).status === 'archived'))
+      );
 
       const shouldBeVacant = !hasPendingOrActiveAgForUnit && !hasPendingOrAcceptedRequest && (hasCompletedMoveout || hasTerminatedAgreementOnly);
 
@@ -1038,7 +1057,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   // AUTHORITATIVE ROLE-BASED DATA ISOLATION ENGINE
   // Strict multi-tenant sandboxing for Owner, Tenant, Manager, Staff
   // -------------------------------------------------------------
-  const state: MobileAppState = useMemo(() => {
+  const roleScopedState: MobileAppState = useMemo(() => {
     if (!isAuthenticated || !user) {
       return {
         ...rawState,
@@ -1185,6 +1204,12 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         (u) => u.id === myOwnerId || u.ownerId === myOwnerId
       );
 
+      const enquiries = (rawState.enquiries || []).filter((e) => {
+        if (e.ownerId === myOwnerId) return true;
+        if (e.propertyId && myPropertyIds.has(e.propertyId)) return true;
+        return false;
+      });
+
       return {
         ...rawState,
         properties,
@@ -1209,6 +1234,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         reviews,
         platformInvoices,
         communicationLogs,
+        enquiries,
         users: ownerUsers,
       };
     }
@@ -1285,7 +1311,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       });
 
-      const units = (rawState.units || []).filter((u) => {
+      const tenantAssignedUnits = (rawState.units || []).filter((u) => {
         if (u.currentTenantId === myTenantUserId) return true;
         if (tenantDirectUnitIds.has(u.id)) return true;
         if (agreements.some((a) => (a.unitId === u.id || a.unit === u.unitNumber) && a.propertyId === u.propertyId)) return true;
@@ -1293,7 +1319,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         if (u.propertyId && (tenantPropertyUnitKeys.has(`${u.propertyId}:${u.id.toLowerCase().trim()}`) || (u.unitNumber && tenantPropertyUnitKeys.has(`${u.propertyId}:${u.unitNumber.toLowerCase().trim()}`)))) return true;
         return false;
       });
-      units.forEach((u) => {
+      tenantAssignedUnits.forEach((u) => {
         if (u.propertyId) tenantPropertyIds.add(u.propertyId);
         if (u.ownerId) tenantOwnerIds.add(u.ownerId);
         const p = (rawState.properties || []).find((prop) => prop.id === u.propertyId);
@@ -1306,8 +1332,15 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       });
 
+      const invitedPropertyIds = new Set<string>();
+      const invitedUnitKeys = new Set<string>();
       (rawState.tenancyRequests || []).forEach((tr) => {
         const isMe = (tr.tenantId && myTenantIds.has(tr.tenantId)) || (currentUserEmail && tr.tenantEmail?.toLowerCase().trim() === currentUserEmail);
+        if (isMe && (tr.status === 'pending' || tr.status === 'accepted')) {
+          if (tr.propertyId) invitedPropertyIds.add(tr.propertyId);
+          if (tr.unitId) invitedUnitKeys.add(tr.unitId.toLowerCase().trim());
+          if (tr.unitNumber) invitedUnitKeys.add(`${tr.propertyId || ''}:${tr.unitNumber.toLowerCase().trim()}`);
+        }
         if (isMe && tr.status === 'accepted') {
           if (tr.ownerId) {
             tenantOwnerIds.add(tr.ownerId);
@@ -1320,7 +1353,26 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       });
 
-      const properties = (rawState.properties || []).filter((p) => tenantPropertyIds.has(p.id));
+      const tenantAssignedUnitIds = new Set(tenantAssignedUnits.map((u) => u.id));
+      const units = (rawState.units || []).filter((u) => {
+        if (tenantAssignedUnitIds.has(u.id)) return true;
+        // Include units from pending/accepted tenancy invitations so tenant can review unit details & photos
+        if (invitedUnitKeys.has(u.id.toLowerCase().trim())) return true;
+        if (u.unitNumber && invitedUnitKeys.has(`${u.propertyId || ''}:${u.unitNumber.toLowerCase().trim()}`)) return true;
+        // Include publicly listed vacant units so Tenant Find a Home works 1-to-1 with Web
+        if ((u.status === 'vacant' || !u.status) && (u.isListedPublicly === true || u.isListedPublicly === undefined)) return true;
+        return false;
+      });
+
+      const publicOrVisiblePropertyIds = new Set<string>([...tenantPropertyIds, ...invitedPropertyIds]);
+      units.forEach((u) => {
+        if (u.propertyId) publicOrVisiblePropertyIds.add(u.propertyId);
+      });
+
+      const properties = (rawState.properties || []).filter((p) =>
+        publicOrVisiblePropertyIds.has(p.id) ||
+        units.some((u) => u.propertyName && p.name && u.propertyName.trim().toLowerCase() === p.name.trim().toLowerCase())
+      );
 
       const invoices = (rawState.invoices || []).filter((inv) => {
         // Strict property scoping: Reject invoices belonging to foreign properties
@@ -1388,7 +1440,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       });
 
       const tenantUnitIdentifiers = new Set<string>();
-      units.forEach((u) => {
+      tenantAssignedUnits.forEach((u) => {
         if (u.id) tenantUnitIdentifiers.add(u.id.toLowerCase().trim());
         if (u.unitNumber) tenantUnitIdentifiers.add(u.unitNumber.toLowerCase().trim());
       });
@@ -1457,7 +1509,14 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const reviews = (rawState.reviews || []).filter((rv) => {
         if (rv.tenantId && myTenantIds.has(rv.tenantId)) return true;
-        if (rv.propertyId && tenantPropertyIds.has(rv.propertyId)) return true;
+        if (rv.propertyId && publicOrVisiblePropertyIds.has(rv.propertyId)) return true;
+        if (rv.ownerId && tenantOwnerIds.has(rv.ownerId)) return true;
+        return true;
+      });
+
+      const enquiries = (rawState.enquiries || []).filter((e) => {
+        if (e.tenantId && (myTenantIds.has(e.tenantId) || e.tenantId === myTenantUserId)) return true;
+        if (currentUserEmail && e.prospectEmail?.toLowerCase().trim() === currentUserEmail) return true;
         return false;
       });
 
@@ -1484,16 +1543,40 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         platformSupport: (rawState.platformSupport || []).filter((ps) => ps.userId === myTenantUserId),
         reviews,
         communicationLogs: (rawState.communicationLogs || []).filter((cl) => cl.recipientId === myTenantUserId),
+        enquiries,
       };
     }
 
     // ─── 3. MANAGER ROLE ISOLATION ────────────────────────────────────────
     if (currentRole === 'manager') {
-      const managerOwnerId = user.ownerId || '';
+      const managerRecord = (rawState.propertyManagers || []).find(
+        (m) =>
+          (currentUserId && String(m.id) === currentUserId) ||
+          (currentUserEmail && m.email?.toLowerCase().trim() === currentUserEmail)
+      );
+      const assignedPropertyId =
+        (user as any)?.propertyId ||
+        (user as any)?.assignedPropertyId ||
+        managerRecord?.propertyId ||
+        '';
+      const assignedPropsList: string[] = [
+        ...((user?.assignedProperties as string[]) || []),
+        ...((managerRecord?.assignedProperties as string[]) || []),
+        ...(assignedPropertyId ? [assignedPropertyId] : []),
+      ];
+      const effectiveOwnerId =
+        user.ownerId && user.ownerId !== currentUserId
+          ? user.ownerId
+          : managerRecord?.ownerId || '';
+
       const properties = (rawState.properties || []).filter((p) => {
-        if (managerOwnerId && p.ownerId !== managerOwnerId) return false;
-        if (p.assignedManagerId && p.assignedManagerId === currentUserId) return true;
-        if (p.ownerId === managerOwnerId) return true;
+        if (p.assignedManagerId === currentUserId || (p as any).managerId === currentUserId) return true;
+        if (assignedPropsList.includes(p.id)) return true;
+        if (assignedPropertyId && p.id === assignedPropertyId) return true;
+        if (effectiveOwnerId && p.ownerId === effectiveOwnerId) {
+          if (assignedPropsList.length === 0 && !assignedPropertyId) return true;
+          if (assignedPropsList.includes(p.id)) return true;
+        }
         return false;
       });
       const myPropertyIds = new Set(properties.map((p) => p.id));
@@ -1506,16 +1589,17 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const tickets = (rawState.tickets || []).filter((t) => t.propertyId && myPropertyIds.has(t.propertyId));
       const moveOuts = (rawState.moveOuts || []).filter((m) => m.propertyId && myPropertyIds.has(m.propertyId));
       const disputes = (rawState.disputes || []).filter((d) => d.propertyId && myPropertyIds.has(d.propertyId));
-      const staff = (rawState.staff || []).filter((s) => managerOwnerId && s.ownerId === managerOwnerId);
+      const staff = (rawState.staff || []).filter((s) => effectiveOwnerId && s.ownerId === effectiveOwnerId);
       const managerPayouts = (rawState.managerPayouts || []).filter(
-        (mp) => mp.managerId === currentUserId || (managerOwnerId && mp.ownerId === managerOwnerId)
+        (mp) => mp.managerId === currentUserId || (effectiveOwnerId && mp.ownerId === effectiveOwnerId)
       );
-      const staffSchedules = (rawState.staffSchedules || []).filter((sc) => managerOwnerId && sc.ownerId === managerOwnerId);
+      const staffSchedules = (rawState.staffSchedules || []).filter((sc) => effectiveOwnerId && sc.ownerId === effectiveOwnerId);
       const tenancyRequests = (rawState.tenancyRequests || []).filter((tr) => tr.propertyId && myPropertyIds.has(tr.propertyId));
       const renewals = (rawState.renewals || []).filter((r) => r.propertyId && myPropertyIds.has(r.propertyId));
-      const cashClaims = (rawState.cashClaims || []).filter((c) => managerOwnerId && c.ownerId === managerOwnerId);
+      const cashClaims = (rawState.cashClaims || []).filter((c) => effectiveOwnerId && c.ownerId === effectiveOwnerId);
       const managerOwnerIds = new Set<string>();
-      if (managerOwnerId) managerOwnerIds.add(managerOwnerId);
+      if (effectiveOwnerId) managerOwnerIds.add(effectiveOwnerId);
+      if (user.ownerId) managerOwnerIds.add(user.ownerId);
       properties.forEach((p) => { if (p.ownerId) managerOwnerIds.add(p.ownerId); });
 
       const announcements = (rawState.announcements || []).filter((a) => {
@@ -1546,8 +1630,15 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         return true;
       });
       const notifications = (rawState.notifications || []).filter(
-        (n) => n.recipientId === currentUserId || n.userId === currentUserId || (managerOwnerId && n.ownerId === managerOwnerId && (!n.recipientId || n.recipientRole === 'manager'))
+        (n) => n.recipientId === currentUserId || n.userId === currentUserId || (effectiveOwnerId && n.ownerId === effectiveOwnerId && (!n.recipientId || n.recipientRole === 'manager'))
       );
+
+      const enquiries = (rawState.enquiries || []).filter((e) => {
+        if (e.managerId && e.managerId === currentUserId) return true;
+        if (effectiveOwnerId && e.ownerId === effectiveOwnerId) return true;
+        if (e.propertyId && myPropertyIds.has(e.propertyId)) return true;
+        return false;
+      });
 
       return {
         ...rawState,
@@ -1562,7 +1653,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         disputes,
         staff,
         propertyManagers: (rawState.propertyManagers || []).filter(
-          (pm) => pm.id === currentUserId || (managerOwnerId && pm.ownerId === managerOwnerId)
+          (pm) => pm.id === currentUserId || (effectiveOwnerId && pm.ownerId === effectiveOwnerId)
         ),
         managerPayouts,
         staffSchedules,
@@ -1576,6 +1667,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         communicationLogs: (rawState.communicationLogs || []).filter(
           (cl) => cl.senderId === currentUserId || cl.recipientId === currentUserId
         ),
+        enquiries,
       };
     }
 
@@ -1661,6 +1753,96 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     return rawState;
   }, [rawState, user, role, isAuthenticated]);
+
+  // Single source of truth: derive unit status, property occupancy, tenant assignment,
+  // agreements, invoices and payments from agreements / requests / move-outs (identical rules to web)
+  // so stale stored fields or duplicate transactions never leak into screens.
+  const reconciled = useMemo(
+    () => {
+      const settledDepositMoveouts = (roleScopedState.depositSettlements || [])
+        .filter((s: any) => s.status === 'refunded' || s.tenantConfirmedReceipt)
+        .map((s: any) => ({
+          id: s.id,
+          agreementId: s.agreementId,
+          unit: s.unit,
+          propertyId: s.propertyId,
+          tenantId: s.tenantId,
+          tenant: s.tenantName,
+          status: 'refund_completed',
+          settledAt: s.disbursedAt || s.updatedAt || s.createdAt,
+          tenantConfirmedReceipt: true,
+        }));
+      const allMoveOuts = [...(roleScopedState.moveOuts || []), ...settledDepositMoveouts];
+
+      return reconcilePortfolio({
+        units: roleScopedState.units || [],
+        properties: roleScopedState.properties || [],
+        tenants: roleScopedState.tenants || [],
+        agreements: roleScopedState.agreements || [],
+        invoices: roleScopedState.invoices || [],
+        payments: roleScopedState.payments || [],
+        tenancyRequests: roleScopedState.tenancyRequests || [],
+        moveOuts: allMoveOuts,
+      });
+    },
+    [roleScopedState]
+  );
+  const state: MobileAppState = useMemo(
+    () => ({
+      ...roleScopedState,
+      units: reconciled.units,
+      properties: reconciled.properties,
+      tenants: reconciled.tenants,
+      agreements: reconciled.agreements,
+      invoices: reconciled.invoices,
+      payments: reconciled.payments,
+    }),
+    [roleScopedState, reconciled]
+  );
+
+  // Persist reconciled records (owner/manager only) so the database converges too. Failures are logged.
+  const persistedKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isFirebaseConfigured || !isAuthenticated || !user) return;
+    const activeRole = role || user.role;
+    if (activeRole !== 'owner' && activeRole !== 'manager') return;
+    const jobs: Array<{ key: string; col: string; id: string; data: Record<string, any> }> = [];
+    reconciled.changedAgreements?.forEach((a: any) =>
+      jobs.push({ key: `a:${a.id}:terminated`, col: 'agreements', id: a.id, data: { status: 'terminated', depositStatus: 'refunded' } })
+    );
+    reconciled.changedUnits.forEach((u: any) =>
+      jobs.push({ key: `u:${u.id}:vacant`, col: 'units', id: u.id, data: { status: 'vacant', tenant: null, currentTenantId: null } })
+    );
+    reconciled.changedProperties.forEach((p: any) =>
+      jobs.push({ key: `p:${p.id}:${p.occupied}`, col: 'properties', id: p.id, data: { occupied: p.occupied } })
+    );
+    reconciled.changedTenants.forEach((t: any) =>
+      jobs.push({ key: `t:${t.id}:unassigned`, col: 'tenants', id: t.id, data: { unit: 'Unassigned', rent: 0, deposit: 0 } })
+    );
+    reconciled.changedInvoices?.forEach((inv: any) =>
+      jobs.push({ key: `i:${inv.id}:void`, col: 'invoices', id: inv.id, data: { status: 'void', notes: inv.notes } })
+    );
+
+    jobs.forEach((job) => {
+      if (persistedKeysRef.current.has(job.key)) return;
+      persistedKeysRef.current.add(job.key);
+      setDoc(doc(db, job.col, job.id), job.data, { merge: true }).catch((err) => {
+        persistedKeysRef.current.delete(job.key);
+        console.error(`[Reconcile] Failed to persist ${job.col}/${job.id}:`, err);
+      });
+    });
+
+    // Delete duplicate / voided payment records
+    reconciled.deletedPaymentIds?.forEach((payId: string) => {
+      const delKey = `del:p:${payId}`;
+      if (persistedKeysRef.current.has(delKey)) return;
+      persistedKeysRef.current.add(delKey);
+      deleteDoc(doc(db, 'payments', payId)).catch((err) => {
+        persistedKeysRef.current.delete(delKey);
+        console.error(`[Reconcile] Failed to delete duplicate payment ${payId}:`, err);
+      });
+    });
+  }, [reconciled, isAuthenticated, user, role]);
 
   // Dynamic Plan limits (Growth Tier default: Max 10 properties, Max 25 units)
   const [planConfig, setPlanConfig] = useState<Partial<MobilePlanUsage>>({
@@ -2414,9 +2596,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
           tenant: null,
           currentTenantId: null,
         };
-        if (isFirebaseConfigured) {
-          setDoc(doc(db, 'units', u.id), vacatedUnit, { merge: true }).catch(console.warn);
-        }
         return vacatedUnit;
       }
       return u;
@@ -2432,10 +2611,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const isTenantMatch = !tenantId || a.tenantId === tenantId || (tenantName && a.tenant?.toLowerCase() === tenantName.toLowerCase()) || !a.tenantId;
 
       if (isExplicitTarget || (isUnitMatch && isPropMatch && isTenantMatch)) {
-        const termAg: MobileAgreement = { ...a, status: 'terminated' as const };
-        if (isFirebaseConfigured) {
-          setDoc(doc(db, 'agreements', a.id), termAg, { merge: true }).catch(console.warn);
-        }
+        const termAg: MobileAgreement = { ...a, status: 'terminated' as const, depositStatus: 'refunded' as const };
         return termAg;
       }
       return a;
@@ -2469,9 +2645,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
           leaseEnd: remainingAg ? remainingAg.end : (nextUnit === 'Unassigned' ? '' : t.leaseEnd),
           currency: remainingAg ? remainingAg.currency : t.currency,
         };
-        if (isFirebaseConfigured) {
-          setDoc(doc(db, 'tenants', t.id), upTenant, { merge: true }).catch(console.warn);
-        }
         return upTenant;
       }
       return t;
@@ -2482,16 +2655,12 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!propId || p.id === propId) {
         const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
         const upProp: MobileProperty = { ...p, occupied: occ };
-        if (isFirebaseConfigured) {
-          setDoc(doc(db, 'properties', p.id), upProp, { merge: true }).catch(console.warn);
-        }
         return upProp;
       }
       return p;
     });
 
     // 5. Void any pending/overdue rent/deposit invoices for this vacated tenancy
-    // BUT DO NOT void invoices belonging to a new active agreement or created after move-out!
     const updatedInvoices = prev.invoices.map((inv) => {
       if (inv.status === 'paid' || inv.status === 'cancelled' || (inv as any).status === 'void' || (inv as any).status === 'refunded') return inv;
       const isForThisUnit =
@@ -2503,7 +2672,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (!isForThisUnit || !isForThisTenant) return inv;
 
-      // If invoice belongs to a different (newer) agreement, do not void
       if (targetMoveOut?.agreementId && inv.leaseAgreementId && inv.leaseAgreementId !== targetMoveOut.agreementId) {
         return inv;
       }
@@ -2518,10 +2686,18 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         status: 'void' as any,
         notes: 'Voided automatically upon move-out conclusion and settlement.',
       };
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'invoices', inv.id), voidedInv, { merge: true }).catch(console.warn);
-      }
       return voidedInv;
+    });
+
+    // 6. Archive matching tenancyRequests for this vacated unit & tenant
+    const updatedTenancyRequests = (prev.tenancyRequests || []).map((r) => {
+      const isTargetUnit = cleanUnitStr(r.unitNumber) === cleanUnitStr(unitNum) || r.unitNumber === unitNum || r.unitId === unitNum;
+      const isTenantMatch = !tenantId || r.tenantId === tenantId || (tenantName && r.tenantName?.toLowerCase() === tenantName.toLowerCase());
+      if (isTargetUnit && isTenantMatch) {
+        const archivedReq: MobileTenancyRequest = { ...r, status: 'archived' as const };
+        return archivedReq;
+      }
+      return r;
     });
 
     return {
@@ -2530,6 +2706,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       tenants: updatedTenants,
       properties: updatedProperties,
       invoices: updatedInvoices,
+      tenancyRequests: updatedTenancyRequests,
     };
   };
 
@@ -2543,10 +2720,13 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const settlePayload = {
         id: settleDocId,
         moveOutId: settlement.id,
+        agreementId: settlement.agreementId || '',
         unit: settlement.unit,
         propertyId: settlement.propertyId,
         tenantId: settlement.tenantId,
         tenantName: settlement.tenantName,
+        currency: normalizeCurrencyCode(settlement.currency || 'USD'),
+        grossDepositHeld: (settlement as any).deposit || (settlement as any).grossDepositHeld || 0,
         totalDeductions: settlement.totalDeductions || 0,
         netRefundableAmount: settlement.netRefundAmount,
         status: settlementStatus,
@@ -2561,7 +2741,9 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         createdAt: new Date().toISOString(),
       };
       setDoc(doc(db, 'depositSettlements', settleDocId), cleanFirestoreObject(settlePayload), { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'depositSettlements', settlement.id), cleanFirestoreObject(settlePayload), { merge: true }).catch(console.warn);
+      if (settlement.id !== settleDocId) {
+        deleteDoc(doc(db, 'depositSettlements', settlement.id)).catch(() => {});
+      }
     }
     setState((prev) => {
       const target = prev.moveOuts.find((m) => m.id === settlement.id);
@@ -3095,6 +3277,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       uid = existingTenant.id;
     }
 
+    let tenantUserProfile: MobileUserProfile | null = null;
     if (cleanEmail && isFirebaseConfigured) {
       const pass = password || 'Tenant@123';
       try {
@@ -3104,6 +3287,16 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       } catch (err: any) {
         console.warn('Firebase secondary user creation for tenant:', err?.message || err);
+        if (err?.code === 'auth/email-already-in-use' && !existingUser?.id) {
+          try {
+            const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', cleanEmail)));
+            if (!userSnap.empty) {
+              uid = userSnap.docs[0].id;
+            }
+          } catch (qErr) {
+            console.warn('[saveTenant] Error querying existing user by email:', qErr);
+          }
+        }
       }
     }
 
@@ -3119,7 +3312,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     };
 
     if (cleanEmail && isFirebaseConfigured) {
-      const tenantUserProfile: MobileUserProfile = {
+      tenantUserProfile = {
         id: uid,
         email: cleanEmail,
         displayName: tenant.name,
@@ -3127,7 +3320,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         phone: tenant.phone || '',
         ownerId: ownerIdToSet,
         ownerName: user?.displayName || 'Property Owner',
-        status: 'active',
+        status: tenant.status === 'invited' ? 'invited' : 'active',
         createdAt: existingUser?.createdAt || new Date().toISOString(),
       };
       setDoc(doc(db, 'users', uid), tenantUserProfile, { merge: true }).catch(console.warn);
@@ -3145,11 +3338,19 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     setState((prev) => {
       const exists = prev.tenants.some((t) => t.id === tenantToSave.id);
+      const userExists = (prev.users || []).some((u) => u.id === uid || u.email?.toLowerCase() === cleanEmail);
+      const updatedUsers = tenantUserProfile
+        ? (userExists
+            ? (prev.users || []).map((u) => (u.id === uid || u.email?.toLowerCase() === cleanEmail ? { ...u, ...tenantUserProfile } : u))
+            : [...(prev.users || []), tenantUserProfile])
+        : (prev.users || []);
+
       return {
         ...prev,
         tenants: exists
           ? prev.tenants.map((t) => (t.id === tenantToSave.id ? tenantToSave : t))
           : [tenantToSave, ...prev.tenants],
+        users: updatedUsers,
       };
     });
     return uid;
@@ -3858,12 +4059,63 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       status: 'new',
       createdAt: new Date().toISOString(),
     };
+
+    const notifs: MobileInAppNotification[] = [];
+    if (newEnquiry.ownerId) {
+      notifs.push({
+        id: `notif_${Date.now()}_owner_${newEnquiry.ownerId}`,
+        userId: newEnquiry.ownerId,
+        recipientId: newEnquiry.ownerId,
+        ownerId: newEnquiry.ownerId,
+        title: `New Enquiry: Unit ${newEnquiry.unitNumber}`,
+        body: `${newEnquiry.prospectName} (${newEnquiry.prospectPhone}) submitted an enquiry for Unit ${newEnquiry.unitNumber} (${newEnquiry.propertyName}).`,
+        category: 'leases',
+        isRead: false,
+        read: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    if (newEnquiry.managerId) {
+      notifs.push({
+        id: `notif_${Date.now()}_mgr_${newEnquiry.managerId}`,
+        userId: newEnquiry.managerId,
+        recipientId: newEnquiry.managerId,
+        ownerId: newEnquiry.ownerId,
+        title: `New Enquiry: Unit ${newEnquiry.unitNumber}`,
+        body: `${newEnquiry.prospectName} (${newEnquiry.prospectPhone}) submitted an enquiry for Unit ${newEnquiry.unitNumber} (${newEnquiry.propertyName}).`,
+        category: 'leases',
+        isRead: false,
+        read: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
     if (isFirebaseConfigured) {
-      await setDoc(doc(db, 'enquiries', newEnquiry.id), newEnquiry, { merge: true }).catch(console.warn);
+      await setDoc(doc(db, 'enquiries', newEnquiry.id), cleanFirestoreObject(newEnquiry), { merge: true }).catch(console.warn);
+      for (const notif of notifs) {
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      }
     }
     setState((prev) => ({
       ...prev,
       enquiries: [newEnquiry, ...(prev.enquiries || [])],
+      notifications: [...notifs, ...(prev.notifications || [])],
+    }));
+  };
+
+  const updateEnquiryStatus = async (
+    id: string,
+    status: 'new' | 'reviewed' | 'onboarded' | 'contacted' | 'archived'
+  ) => {
+    const updatedAt = new Date().toISOString();
+    if (isFirebaseConfigured) {
+      await setDoc(doc(db, 'enquiries', id), { status, updatedAt }, { merge: true }).catch(console.warn);
+    }
+    setState((prev) => ({
+      ...prev,
+      enquiries: (prev.enquiries || []).map((e) =>
+        e.id === id ? { ...e, status, updatedAt } : e
+      ),
     }));
   };
 
@@ -4843,6 +5095,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         sendTenancyRequest,
         updateTenancyRequest,
         submitEnquiry,
+        updateEnquiryStatus,
         saveTicket,
         updateTicket,
         sendStaffPaymentReminder,

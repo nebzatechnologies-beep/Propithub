@@ -28,6 +28,7 @@ import { pickSingleImage } from '../lib/nativePicker';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { getCleanAddressText } from '../lib/addressUtils';
+import { resolveEffectiveUnitStatus, isDepositPayment } from '../lib/portfolioReconcile';
 
 interface FinancialLedgerScreenProps {
   onProfilePress?: () => void;
@@ -126,11 +127,11 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
   const filteredInvoices = useMemo(() => {
     if (!ownerId) return [];
-    return (state.invoices || []).filter((inv) => inv.ownerId === ownerId);
+    return (state.invoices || []).filter((inv) => inv.ownerId === ownerId && inv.status !== 'void');
   }, [state.invoices, ownerId]);
 
   const dueInvoices = useMemo(() => {
-    return filteredInvoices.filter((i) => i.status !== 'paid');
+    return filteredInvoices.filter((i) => i.status !== 'paid' && i.status !== 'void' && (i.status as string) !== 'archived');
   }, [filteredInvoices]);
 
   const totalDueAmount = dueInvoices.reduce((sum, i) => sum + i.total, 0);
@@ -144,7 +145,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   }, [state.payments, ownerId]);
 
   const totalCollected = myPayments
-    .filter((p) => p.status === 'paid')
+    .filter((p) => p.status === 'paid' && !isDepositPayment(p, state.invoices))
     .reduce((sum, p) => sum + p.amount, 0);
 
   // Pending offline approvals
@@ -171,6 +172,24 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   const effectiveLateType: string = (ownerSettingsObj?.lateFeeConfig?.type as string) || 'daily_fixed';
   const effectiveLateVal = Number(ownerSettingsObj?.lateFeeConfig?.value) || 100;
   const effectiveLateCapVal = Number(ownerSettingsObj?.lateFeeConfig?.cap) || 2500;
+
+  const allMoveOuts = useMemo(() => {
+    const settledDepositMoveouts = (state.depositSettlements || [])
+      .filter((s) => s.status === 'refunded' || Boolean(s.tenantConfirmedReceipt))
+      .map((s) => ({
+        id: s.id || `settle-${s.agreementId || s.unit}`,
+        unit: s.unit,
+        propertyId: s.propertyId,
+        agreementId: s.agreementId,
+        tenant: s.tenantName,
+        tenantId: s.tenantId,
+        tenantEmail: s.tenantEmail,
+        status: 'refund_completed',
+        settledAt: s.disbursedAt || (s as any).updatedAt || s.createdAt,
+        tenantConfirmedReceipt: true,
+      }));
+    return [...(state.moveOuts || []), ...settledDepositMoveouts];
+  }, [state.moveOuts, state.depositSettlements]);
 
   const rentDueList = useMemo(() => {
     const now = new Date();
@@ -206,11 +225,26 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
     const processedUnitKeys = new Set<string>();
 
     myUnits.forEach((u) => {
+      // 1. Resolve unit occupancy strictly: if not effectively occupied, skip (no rent dues for vacant/vacated units)
+      const effStatus = resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, allMoveOuts);
+      if (effStatus !== 'occupied') return;
+
+      // 2. Guard: if unit has a settled or completed move-out, skip
+      const cleanU = (u.unitNumber || u.id || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+      const hasSettledMoveout = (allMoveOuts || []).some(
+        (m) =>
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
+          (m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanU &&
+          (!m.propertyId || !u.propertyId || m.propertyId === u.propertyId)
+      );
+      if (hasSettledMoveout) return;
+
       const activeAg = (myAgreements || []).find(
         (a) =>
           (a.unit === u.unitNumber || a.unit === u.id || (a as any).unitId === u.id) &&
           (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId) &&
-          (a.status === 'active' || (a.status as any) === 'signed' || a.status === 'awaiting_tenant_signature' || a.depositStatus === 'paid')
+          (a.status === 'active' || (a.status as any) === 'signed') &&
+          a.status !== 'terminated'
       );
 
       const matchedTenant = u.currentTenantId
@@ -218,13 +252,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
         : undefined;
 
       const tenantName = activeAg?.tenant || u.tenant || matchedTenant?.name;
-      const isOccupied =
-        u.status === 'occupied' ||
-        u.status === 'reserved' ||
-        Boolean(u.tenant) ||
-        Boolean(u.currentTenantId) ||
-        Boolean(activeAg);
-      if (!tenantName && !isOccupied) return;
+      if (!tenantName || !activeAg) return;
 
       const effectiveTenantName = tenantName || 'Current Resident';
       processedUnitKeys.add(u.unitNumber.toLowerCase());
@@ -407,7 +435,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
     });
 
     return items;
-  }, [myUnits, myAgreements, state.tenants, selectedProperty?.currency, selectedProperty?.name, filteredInvoices, myPayments, viewCurrency, effectiveGrace, effectiveLateType, effectiveLateVal, effectiveLateCapVal]);
+  }, [myUnits, myAgreements, state.tenants, selectedProperty?.currency, selectedProperty?.name, filteredInvoices, myPayments, viewCurrency, effectiveGrace, effectiveLateType, effectiveLateVal, effectiveLateCapVal, allMoveOuts, state.agreements, state.tenancyRequests]);
 
   const rentDueMetrics = useMemo(() => {
     const totalExpected = rentDueList.reduce((sum, item) => sum + item.rentAmount, 0);
@@ -708,9 +736,9 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
       const mo = (state.moveOuts || []).find(
         (m) =>
-          ((m as any).agreementId === ag.id ||
-            ((m.unit === ag.unit || m.unit === ag.id) &&
-              (!((m as any).propertyId) || !ag.propertyId || (m as any).propertyId === ag.propertyId)))
+        ((m as any).agreementId === ag.id ||
+          ((m.unit === ag.unit || m.unit === ag.id) &&
+            (!((m as any).propertyId) || !ag.propertyId || (m as any).propertyId === ag.propertyId)))
       );
 
       const targetUnit = state.units.find((u) => (u.unitNumber === ag.unit || u.id === ag.unit) && (!ag.propertyId || u.propertyId === ag.propertyId));
@@ -952,6 +980,8 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
     };
   });
 
+  const [expandedMobileGateway, setExpandedMobileGateway] = useState<string | null>(null);
+
   const ownerSettings = state.ownerSettings[user.id];
   const existingTemplate = ownerSettings?.invoiceTemplate;
   const existingLateFee = ownerSettings?.lateFeeConfig;
@@ -986,6 +1016,11 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   const [tmplNotes, setTmplNotes] = useState(existingTemplate?.notes || 'Thank you for your prompt tenancy settlement.');
   const [tmplSignatureUrl, setTmplSignatureUrl] = useState(existingTemplate?.signatureUrl || '');
   const [showLiveInvoicePreview, setShowLiveInvoicePreview] = useState(true);
+  const [tmplIncludeTerms, setTmplIncludeTerms] = useState(existingTemplate?.includeTerms !== false);
+  const [depTmplIncludeTerms, setDepTmplIncludeTerms] = useState(ownerSettings?.depositTemplate?.includeTerms !== false);
+  const [mobileTmplViewMode, setMobileTmplViewMode] = useState<'both' | 'edit' | 'preview'>('both');
+  const [showMoreRentOptions, setShowMoreRentOptions] = useState(false);
+  const [showMoreDepOptions, setShowMoreDepOptions] = useState(false);
 
   // Security Deposit Voucher Template State (1-to-1 Web Parity)
   const defaultDepositTerms = `1. Security Deposit Classification: 100% Refundable Security Deposit held in fiduciary trust custody by Landlord for the duration of the tenancy agreement.
@@ -1026,11 +1061,12 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   const sampleLocale = normalizeCurrencyCode(sampleCurrency) === 'INR' ? 'en-IN' : 'en-US';
 
   // Late Fee & Reminder Rules Form State (1-to-1 Web Parity)
+  const [lateFeeEnabled, setLateFeeEnabled] = useState<boolean>(existingLateFee?.enabled ?? false);
   const [lateFeeGrace, setLateFeeGrace] = useState((existingLateFee?.graceDays ?? 5).toString());
   const [lateFeeType, setLateFeeType] = useState<'flat' | 'percent' | 'daily_fixed' | 'fixed_once' | 'percent_monthly'>((existingLateFee?.type as any) ?? 'percent');
-  const [lateFeeValue, setLateFeeValue] = useState((existingLateFee?.value ?? 5).toString());
-  const [lateFeeCap, setLateFeeCap] = useState((existingLateFee?.cap ?? 2500).toString());
-  const [reminderDays, setReminderDays] = useState<number>(ownerSettings?.rentReminderDaysPrior ?? ownerSettings?.rentalReminderConfig?.daysPrior ?? 5);
+  const [lateFeeValue, setLateFeeValue] = useState((existingLateFee?.value ?? 2).toString());
+  const [lateFeeCap, setLateFeeCap] = useState((existingLateFee?.cap ?? 1000).toString());
+  const [reminderDays, setReminderDays] = useState<number>(ownerSettings?.rentReminderDaysPrior ?? ownerSettings?.rentalReminderConfig?.daysPrior ?? 10);
   const [reminderEnabled, setReminderEnabled] = useState<boolean>(ownerSettings?.rentalReminderConfig?.enabled ?? true);
 
   const handleSaveInvoiceTemplate = async () => {
@@ -1059,6 +1095,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
           ifscOrRouting: tmplIfsc,
           upiId: tmplUpiId,
           termsAndConditions: tmplTerms,
+          includeTerms: tmplIncludeTerms,
           signatoryName: tmplSignatory,
           notes: tmplNotes,
           signatureUrl: tmplSignatureUrl || undefined,
@@ -1095,6 +1132,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
           taxLabel: 'Non-Taxable Deposit',
           taxPercent: 0,
           termsAndConditions: depTmplTerms,
+          includeTerms: depTmplIncludeTerms,
           signatoryName: depTmplSignatory,
           notes: depTmplNotes,
           bankName: depTmplBankName,
@@ -1128,15 +1166,16 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
           daysPrior: reminderDays,
         },
         lateFeeConfig: {
+          enabled: lateFeeEnabled,
           graceDays: parseInt(lateFeeGrace, 10) || 5,
           type: lateFeeType,
-          value: parseFloat(lateFeeValue) || 5,
-          cap: parseFloat(lateFeeCap) || 2500,
+          value: parseFloat(lateFeeValue) || 2,
+          cap: parseFloat(lateFeeCap) || 1000,
           reminderDaysPrior: reminderDays,
           reminderEnabled,
         },
       });
-      Alert.alert('Late Fee & Reminder Rules Saved ✓', `Automated late fee penalties will trigger after ${lateFeeGrace} grace days. Rental reminders will notify tenants ${reminderDays} days prior to due date.`);
+      Alert.alert('Settings Saved ✓', `Automated billing rules and reminder settings have been updated.`);
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to save late fee rules');
     }
@@ -1269,7 +1308,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
       {/* Header */}
       <Header
         title="Transactions"
-        onNotificationPress={() => { }}
+        onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
 
@@ -1298,82 +1337,82 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
           {/* 7-Tab Scrollable Capsule Bar (1-to-1 Web PaymentsPage.tsx Parity) */}
           <TourTarget id="payments-subtabs">
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll}>
-            <TouchableOpacity
-              style={[styles.tabButton, activeTab === 'due' && styles.tabButtonActive]}
-              onPress={() => setActiveTab('due')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabText, activeTab === 'due' && styles.tabTextActive]}>
-                Rent Due ({rentDueList.length})
-              </Text>
-            </TouchableOpacity>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll}>
+              <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'due' && styles.tabButtonActive]}
+                onPress={() => setActiveTab('due')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, activeTab === 'due' && styles.tabTextActive]}>
+                  Rent Due ({rentDueList.length})
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabButton, activeTab === 'deposits' && styles.tabButtonActive]}
-              onPress={() => setActiveTab('deposits')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabText, activeTab === 'deposits' && styles.tabTextActive]}>
-                Deposits ({totalDepositCount})
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'deposits' && styles.tabButtonActive]}
+                onPress={() => setActiveTab('deposits')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, activeTab === 'deposits' && styles.tabTextActive]}>
+                  Deposits ({totalDepositCount})
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabButton, (activeTab === 'transactions' || activeTab === 'approvals') && styles.tabButtonActive]}
-              onPress={() => setActiveTab('transactions')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabText, (activeTab === 'transactions' || activeTab === 'approvals') && styles.tabTextActive]}>
-                Transactions ({myPayments.length})
-              </Text>
-              {pendingConfirmationsCount > 0 && (
-                <View style={styles.badgeAmber}>
-                  <Text style={styles.badgeAmberText}>{pendingConfirmationsCount}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabButton, (activeTab === 'transactions' || activeTab === 'approvals') && styles.tabButtonActive]}
+                onPress={() => setActiveTab('transactions')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, (activeTab === 'transactions' || activeTab === 'approvals') && styles.tabTextActive]}>
+                  Payments ({myPayments.length})
+                </Text>
+                {pendingConfirmationsCount > 0 && (
+                  <View style={styles.badgeAmber}>
+                    <Text style={styles.badgeAmberText}>{pendingConfirmationsCount}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabButton, activeTab === 'invoices' && styles.tabButtonActive]}
-              onPress={() => setActiveTab('invoices')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabText, activeTab === 'invoices' && styles.tabTextActive]}>
-                Invoices ({filteredInvoices.length})
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'invoices' && styles.tabButtonActive]}
+                onPress={() => setActiveTab('invoices')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, activeTab === 'invoices' && styles.tabTextActive]}>
+                  Invoices ({filteredInvoices.length})
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabButton, activeTab === 'methods' && styles.tabButtonActive]}
-              onPress={() => setActiveTab('methods')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabText, activeTab === 'methods' && styles.tabTextActive]}>
-                Gateways
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'methods' && styles.tabButtonActive]}
+                onPress={() => setActiveTab('methods')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, activeTab === 'methods' && styles.tabTextActive]}>
+                  Gateways
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabButton, activeTab === 'template' && styles.tabButtonActive]}
-              onPress={() => setActiveTab('template')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabText, activeTab === 'template' && styles.tabTextActive]}>
-                Template
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'template' && styles.tabButtonActive]}
+                onPress={() => setActiveTab('template')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, activeTab === 'template' && styles.tabTextActive]}>
+                  Template
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabButton, activeTab === 'rules' && styles.tabButtonActive]}
-              onPress={() => setActiveTab('rules')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabText, activeTab === 'rules' && styles.tabTextActive]}>
-                Rules & Reminders
-              </Text>
-            </TouchableOpacity>
-          </ScrollView>
+              <TouchableOpacity
+                style={[styles.tabButton, activeTab === 'rules' && styles.tabButtonActive]}
+                onPress={() => setActiveTab('rules')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, activeTab === 'rules' && styles.tabTextActive]}>
+                  Rules & Reminders
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
 
           </TourTarget>
 
@@ -1741,42 +1780,22 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
           {/* TAB 2 / TRANSACTIONS: 1-to-1 Web PaymentsPage.tsx Parity */}
           {(activeTab === 'transactions' || activeTab === 'approvals') && (
             <View>
-              {/* 1. Summary Stats Grid (1-to-1 Web lines 2289-2304) */}
-              <View style={styles.txnStatGrid}>
-                <View style={[styles.txnStatCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Text style={[styles.txnStatNum, { color: colors.navy }]}>
-                    {format(totalCollected, selectedProperty?.currency || viewCurrency)}
-                  </Text>
-                  <Text style={[styles.txnStatLbl, { color: colors.inkSoft }]}>Collected</Text>
-                </View>
-                <View style={[styles.txnStatCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Text style={[styles.txnStatNum, { color: totalOverdueAmount > 0 ? '#DC2626' : colors.navy }]}>
-                    {format(totalOverdueAmount, selectedProperty?.currency || viewCurrency)}
-                  </Text>
-                  <Text style={[styles.txnStatLbl, { color: colors.inkSoft }]}>Overdue</Text>
-                </View>
-                <View style={[styles.txnStatCard, { backgroundColor: colors.surface, borderColor: colors.line }, pendingConfirmationsCount > 0 && (isDark ? { backgroundColor: 'rgba(217, 119, 6, 0.15)', borderColor: 'rgba(217, 119, 6, 0.35)' } : styles.txnStatCardAmber)]}>
-                  <Text style={[styles.txnStatNum, { color: pendingConfirmationsCount > 0 ? '#D97706' : colors.navy }]}>
-                    {pendingConfirmationsCount}
-                  </Text>
-                  <Text style={[styles.txnStatLbl, { color: colors.inkSoft }]}>Awaiting confirmation</Text>
-                </View>
-              </View>
-
               {/* 2. Pending Tenant Cash Payment Handover Claims Banner (1-to-1 Web lines 2306-2373) */}
               {pendingCashClaims.length > 0 && (
                 <View style={styles.cashClaimsContainer}>
                   {pendingCashClaims.map((c) => (
-                    <View key={c.id} style={[styles.cashClaimCard, isDark && { backgroundColor: 'rgba(245, 158, 11, 0.12)', borderColor: '#F59E0B' }]}>
+                    <View key={c.id} style={styles.cashClaimCard}>
                       <View style={styles.cashClaimTop}>
                         <View style={styles.cashClaimBadgeRow}>
                           <View style={styles.cashClaimPill}>
                             <Feather name="zap" size={11} color="#B45309" style={{ marginRight: 4 }} />
                             <Text style={styles.cashClaimPillText}>
-                              TENANT CASH CLAIM — CONFIRMATION REQUIRED
+                              TENANT CASH CLAIM
                             </Text>
                           </View>
-                          <Text style={[styles.cashClaimId, isDark && { color: '#FCD34D' }]}>Claim #{c.id}</Text>
+                          <View style={styles.cashClaimIdPill}>
+                            <Text style={styles.cashClaimId}>#{c.id}</Text>
+                          </View>
                         </View>
                         <Text style={[styles.cashClaimTitle, { color: colors.navy }]}>
                           {(() => {
@@ -1789,7 +1808,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             <Text style={{ fontWeight: '700', color: colors.navy }}>Handover Date:</Text> {c.handoverDate} • <Text style={{ fontWeight: '700', color: colors.navy }}>Location:</Text> {c.handoverLocation || 'On-Site'}
                           </Text>
                           {c.notes && (
-                            <Text style={[styles.cashClaimNote, isDark && { backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#FCD34D' }]}>"{c.notes}"</Text>
+                            <Text style={styles.cashClaimNote}>"{c.notes}"</Text>
                           )}
                         </View>
                       </View>
@@ -1802,18 +1821,19 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                           }}
                           activeOpacity={0.85}
                         >
-                          <Feather name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                          <Text style={styles.cashClaimConfirmText}>Confirm Receipt & Settle</Text>
+                          <Feather name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 5 }} />
+                          <Text style={styles.cashClaimConfirmText}>Confirm & Settle</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={[styles.cashClaimDeclineBtn, isDark && { borderColor: 'rgba(239, 68, 68, 0.4)' }]}
+                          style={styles.cashClaimDeclineBtn}
                           onPress={() => {
                             rejectCashClaim(c.id, 'Cash not received');
                             Alert.alert('Declined', 'Cash claim marked as rejected.');
                           }}
                           activeOpacity={0.85}
                         >
-                          <Text style={styles.cashClaimDeclineText}>Decline / Not Received</Text>
+                          <Feather name="x-circle" size={14} color="#DC2626" style={{ marginRight: 5 }} />
+                          <Text style={styles.cashClaimDeclineText}>Decline</Text>
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -1850,27 +1870,27 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
               {/* 4. Action Header Row: Transactions Count + Record Offline Payment */}
               <TourTarget id="payments-record-offline">
-              <View style={styles.sectionHeaderRow}>
-                <View>
-                  <Text style={[styles.sectionHeading, { color: colors.navy }]}>
-                    Transactions ({myPayments.length})
-                  </Text>
+                <View style={styles.sectionHeaderRow}>
+                  <View>
+                    <Text style={[styles.sectionHeading, { color: colors.navy }]}>
+                      Payments ({myPayments.length})
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.recordOfflineBtn}
+                    onPress={() => {
+                      const firstUnit = myUnits[0];
+                      setOfflineUnit(firstUnit?.unitNumber || firstUnit?.id || '101');
+                      setOfflineDate(new Date().toISOString().split('T')[0]);
+                      setOfflineAmount(firstUnit?.rent ? String(firstUnit.rent) : '25000');
+                      setIsRecordOfflineOpen(true);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Feather name="plus" size={12} color="#FFFFFF" />
+                    <Text style={styles.recordOfflineBtnText}>Record Payment</Text>
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity
-                  style={styles.recordOfflineBtn}
-                  onPress={() => {
-                    const firstUnit = myUnits[0];
-                    setOfflineUnit(firstUnit?.unitNumber || firstUnit?.id || '101');
-                    setOfflineDate(new Date().toISOString().split('T')[0]);
-                    setOfflineAmount(firstUnit?.rent ? String(firstUnit.rent) : '25000');
-                    setIsRecordOfflineOpen(true);
-                  }}
-                  activeOpacity={0.85}
-                >
-                  <Feather name="plus" size={12} color="#FFFFFF" />
-                  <Text style={styles.recordOfflineBtnText}>Record Payment</Text>
-                </TouchableOpacity>
-              </View>
 
               </TourTarget>
 
@@ -1957,8 +1977,8 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                     >
                       {/* Top Row: Ref + Direction */}
                       <View style={styles.txnTopRow}>
-                        <View style={{ flex: 1 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                             <Text style={styles.txnId}>{p.id}</Text>
                             {p.cashClaimId && (
                               <View style={styles.cashClaimTag}>
@@ -1971,9 +1991,9 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                           </Text>
                         </View>
 
-                        <View style={[styles.directionBadge, isOutflow ? styles.directionOutflow : styles.directionInflow]}>
+                        <View style={[styles.directionBadge, isOutflow ? styles.directionOutflow : styles.directionInflow, { flexShrink: 0 }]}>
                           <Text style={[styles.directionBadgeText, isOutflow ? styles.directionOutflowText : styles.directionInflowText]}>
-                            {isOutflow ? '↓ Outflow / Refund' : '↑ Inflow / Rent'}
+                            {isOutflow ? '↓ Outflow' : '↑ Inflow'}
                           </Text>
                         </View>
                       </View>
@@ -2000,7 +2020,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             {p.invoiceId ? (
                               <View style={p.invoiceId.startsWith('DEP-') ? styles.voucherPillAmber : styles.voucherPillSlate}>
                                 <Text style={p.invoiceId.startsWith('DEP-') ? styles.voucherPillAmberText : styles.voucherPillSlateText} numberOfLines={1} ellipsizeMode="middle">
-                                  {p.invoiceId.startsWith('DEP-') ? '🛡️ ' : '📄 '}
+                                   {p.invoiceId.startsWith('DEP-') ? '🛡️ ' : '📄 '}
                                   {p.invoiceId}
                                 </Text>
                               </View>
@@ -2043,7 +2063,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             {isReconciled
                               ? '✓ Reconciled'
                               : isPending
-                                ? '⚡ Pending Confirmation'
+                                ? '⚡ Pending'
                                 : isDisputed
                                   ? '⚠ Disputed'
                                   : 'Overdue'}
@@ -2051,13 +2071,13 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                         </View>
 
                         {isPending ? (
-                          <View style={{ flexDirection: 'row', gap: 6 }}>
+                          <View style={{ flexDirection: 'row', gap: 6, flexShrink: 0 }}>
                             <TouchableOpacity
                               style={styles.confirmSmallBtn}
                               onPress={() => handleConfirmTransactionReceipt(p.id)}
                               activeOpacity={0.8}
                             >
-                              <Feather name="check" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
+                              <Feather name="check" size={13} color="#FFFFFF" style={{ marginRight: 3 }} />
                               <Text style={styles.confirmSmallBtnText}>Confirm</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
@@ -2425,19 +2445,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 </TouchableOpacity>
               </ScrollView>
 
-              {/* Fiduciary Notice Banner */}
-              <View style={styles.fiduciaryBanner}>
-                <View style={styles.fiduciaryBannerIcon}>
-                  <Feather name="shield" size={18} color="#059669" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.fiduciaryBannerTitle}>Statutory Fiduciary Trust Protection</Text>
-                  <Text style={styles.fiduciaryBannerText}>
-                    Security deposit funds are segregated non-taxable assets. Deductions are strictly limited to verified arrears and documented repair walkthrough invoices.
-                  </Text>
-                </View>
-              </View>
-
               {/* Deposit Records List */}
               {filteredDepositLedgerList.length === 0 ? (
                 <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
@@ -2455,7 +2462,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                           Unit {item.unitNumber} • {item.propertyName}
                         </Text>
                         {(item.tenantPhone || item.tenantEmail) && (
-                          <View style={{ flexDirection: 'row', gap: 10, marginTop: 3 }}>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 3 }}>
                             {item.tenantPhone && (
                               <Text style={{ fontSize: 11, color: '#64748B' }}>📞 {item.tenantPhone}</Text>
                             )}
@@ -2465,7 +2472,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                           </View>
                         )}
                       </View>
-                      <View style={{ alignItems: 'flex-end' }}>
+                      <View style={{ alignItems: 'flex-end', flexShrink: 0 }}>
                         <Text style={styles.depositRecordAmount}>
                           {format(item.amount, item.currency || viewCurrency)}
                         </Text>
@@ -2487,14 +2494,14 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                         </Text>
                       </View>
                       {item.depositVoucherId ? (
-                        <View style={styles.depositRecordMetaItem}>
+                        <View style={[styles.depositRecordMetaItem, { flexShrink: 0 }]}>
                           <Feather name="file-text" size={12} color="#2563EB" />
                           <Text style={[styles.depositRecordMetaText, { color: '#2563EB', fontWeight: '700' }]}>
                             {item.depositVoucherId}
                           </Text>
                         </View>
                       ) : (
-                        <View style={styles.depositRecordMetaItem}>
+                        <View style={[styles.depositRecordMetaItem, { flexShrink: 0 }]}>
                           <Feather name="shield" size={12} color="#059669" />
                           <Text style={[styles.depositRecordMetaText, { color: '#059669', fontWeight: '600' }]}>
                             100% Refundable
@@ -2525,685 +2532,748 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
           {/* TAB 5: PAYMENT GATEWAYS (Exact 1-to-1 Web PaymentsPage.tsx Methods Subtab) */}
           {activeTab === 'methods' && (
             <View>
-              {/* Informative Note Box matching Web */}
-              <View style={styles.gatewayNoteBox}>
-                <Text style={styles.gatewayNoteText}>
-                  These are the payment gateways and settlement channels configured for <Text style={{ fontWeight: '700' }}>your tenants to pay you rent</Text>. Tenants can dynamically choose from any of your enabled and configured gateways at checkout. Online gateways (Razorpay, Stripe, PayPal) confirm payments instantly and auto-reconcile your ledger; offline channels (UPI QR, Bank Transfer, Cash) will register in your ledger awaiting your one-click receipt confirmation.
+              {/* SECTION 1: ONLINE GATEWAYS */}
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ fontSize: 15, fontWeight: '700', color: colors.navy, marginBottom: 10 }}>
+                  Online Gateways
                 </Text>
+
+                {/* 1. Razorpay */}
+                {(() => {
+                  const isEnabled = methodsConfig.razorpay?.enabled ?? false;
+                  const isOpen = expandedMobileGateway === 'razorpay';
+                  return (
+                    <View style={[styles.gatewayCard, { padding: 14, marginBottom: 8, borderRadius: 12 }]}>
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        style={styles.gatewayHeadTop}
+                        onPress={() => setExpandedMobileGateway(isOpen ? null : 'razorpay')}
+                      >
+                        <Text style={[styles.gatewayTitle, { fontSize: 14.5, flex: 1 }]}>
+                          Razorpay
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Switch
+                            value={isEnabled}
+                            onValueChange={(val) => {
+                              const updated = {
+                                ...methodsConfig,
+                                razorpay: {
+                                  ...methodsConfig.razorpay,
+                                  enabled: val,
+                                  mode: 'live' as const,
+                                  keyId: methodsConfig.razorpay?.keyId || '',
+                                  keySecret: methodsConfig.razorpay?.keySecret || '',
+                                },
+                              };
+                              saveSpecificConfig(updated, `Razorpay turned ${val ? 'ON' : 'OFF'}.`);
+                            }}
+                            trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                          />
+                          <Feather name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
+                        </View>
+                      </TouchableOpacity>
+
+                      {isOpen && (
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Key ID</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.razorpay?.keyId || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, razorpay: { ...methodsConfig.razorpay!, mode: 'live', keyId: val } })}
+                            placeholder="rzp_live_..."
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Key Secret</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.razorpay?.keySecret || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, razorpay: { ...methodsConfig.razorpay!, mode: 'live', keySecret: val } })}
+                            placeholder="Key Secret"
+                            secureTextEntry
+                            autoCapitalize="none"
+                          />
+
+                          <View style={styles.gatewayBtnRow}>
+                            <TouchableOpacity
+                              style={styles.saveKeyBtn}
+                              onPress={() => {
+                                const isConnected = !!(methodsConfig.razorpay?.keyId && methodsConfig.razorpay?.keySecret);
+                                const updated = {
+                                  ...methodsConfig,
+                                  razorpay: {
+                                    ...methodsConfig.razorpay!,
+                                    enabled: true,
+                                    connected: isConnected,
+                                  },
+                                };
+                                saveSpecificConfig(updated, '✓ Razorpay settings saved.');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.testKeyBtn}
+                              onPress={() => verifyRazorpayCredentials(methodsConfig.razorpay?.keyId, methodsConfig.razorpay?.keySecret)}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
+                              <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })()}
+
+                {/* 2. Stripe */}
+                {(() => {
+                  const isEnabled = methodsConfig.stripe?.enabled ?? false;
+                  const isOpen = expandedMobileGateway === 'stripe';
+                  return (
+                    <View style={[styles.gatewayCard, { padding: 14, marginBottom: 8, borderRadius: 12 }]}>
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        style={styles.gatewayHeadTop}
+                        onPress={() => setExpandedMobileGateway(isOpen ? null : 'stripe')}
+                      >
+                        <Text style={[styles.gatewayTitle, { fontSize: 14.5, flex: 1 }]}>
+                          Stripe
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Switch
+                            value={isEnabled}
+                            onValueChange={(val) => {
+                              const updated = {
+                                ...methodsConfig,
+                                stripe: {
+                                  ...methodsConfig.stripe,
+                                  enabled: val,
+                                  mode: 'live' as const,
+                                  pubKey: methodsConfig.stripe?.pubKey || '',
+                                  secretKey: methodsConfig.stripe?.secretKey || '',
+                                },
+                              };
+                              saveSpecificConfig(updated, `Stripe turned ${val ? 'ON' : 'OFF'}.`);
+                            }}
+                            trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                          />
+                          <Feather name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
+                        </View>
+                      </TouchableOpacity>
+
+                      {isOpen && (
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Publishable Key</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.stripe?.pubKey || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, stripe: { ...methodsConfig.stripe!, mode: 'live', pubKey: val } })}
+                            placeholder="pk_live_..."
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Secret Key</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.stripe?.secretKey || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, stripe: { ...methodsConfig.stripe!, mode: 'live', secretKey: val } })}
+                            placeholder="sk_live_..."
+                            secureTextEntry
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Webhook Secret (Optional)</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.stripe?.webhookSecret || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, stripe: { ...methodsConfig.stripe!, webhookSecret: val } })}
+                            placeholder="whsec_..."
+                            autoCapitalize="none"
+                          />
+
+                          <View style={styles.gatewayBtnRow}>
+                            <TouchableOpacity
+                              style={styles.saveKeyBtn}
+                              onPress={() => {
+                                const isConnected = !!(methodsConfig.stripe?.pubKey && methodsConfig.stripe?.secretKey);
+                                const updated = {
+                                  ...methodsConfig,
+                                  stripe: {
+                                    ...methodsConfig.stripe!,
+                                    enabled: true,
+                                    connected: isConnected,
+                                  },
+                                };
+                                saveSpecificConfig(updated, '✓ Stripe settings saved.');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.testKeyBtn}
+                              onPress={() => verifyStripeCredentials(methodsConfig.stripe?.pubKey, methodsConfig.stripe?.secretKey)}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
+                              <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })()}
+
+                {/* 3. PayPal */}
+                {(() => {
+                  const isEnabled = methodsConfig.paypal?.enabled ?? false;
+                  const isOpen = expandedMobileGateway === 'paypal';
+                  return (
+                    <View style={[styles.gatewayCard, { padding: 14, marginBottom: 8, borderRadius: 12 }]}>
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        style={styles.gatewayHeadTop}
+                        onPress={() => setExpandedMobileGateway(isOpen ? null : 'paypal')}
+                      >
+                        <Text style={[styles.gatewayTitle, { fontSize: 14.5, flex: 1 }]}>
+                          PayPal
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Switch
+                            value={isEnabled}
+                            onValueChange={(val) => {
+                              const updated = {
+                                ...methodsConfig,
+                                paypal: {
+                                  ...methodsConfig.paypal,
+                                  enabled: val,
+                                  mode: 'live' as const,
+                                  email: methodsConfig.paypal?.email || '',
+                                  clientId: methodsConfig.paypal?.clientId || '',
+                                  secret: methodsConfig.paypal?.secret || '',
+                                },
+                              };
+                              saveSpecificConfig(updated, `PayPal turned ${val ? 'ON' : 'OFF'}.`);
+                            }}
+                            trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                          />
+                          <Feather name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
+                        </View>
+                      </TouchableOpacity>
+
+                      {isOpen && (
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Email</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.paypal?.email || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, paypal: { ...methodsConfig.paypal!, mode: 'live', email: val } })}
+                            placeholder="landlord@business.com"
+                            keyboardType="email-address"
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Client ID</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.paypal?.clientId || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, paypal: { ...methodsConfig.paypal!, mode: 'live', clientId: val } })}
+                            placeholder="Client ID"
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Secret</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.paypal?.secret || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, paypal: { ...methodsConfig.paypal!, mode: 'live', secret: val } })}
+                            placeholder="Secret"
+                            secureTextEntry
+                            autoCapitalize="none"
+                          />
+
+                          <View style={styles.gatewayBtnRow}>
+                            <TouchableOpacity
+                              style={styles.saveKeyBtn}
+                              onPress={() => {
+                                const isConnected = !!(methodsConfig.paypal?.email || methodsConfig.paypal?.clientId);
+                                const updated = {
+                                  ...methodsConfig,
+                                  paypal: {
+                                    ...methodsConfig.paypal!,
+                                    enabled: true,
+                                    connected: isConnected,
+                                  },
+                                };
+                                saveSpecificConfig(updated, '✓ PayPal settings saved.');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.testKeyBtn}
+                              onPress={() => verifyPayPalCredentials(methodsConfig.paypal?.clientId, methodsConfig.paypal?.secret)}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
+                              <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })()}
+
+                {/* 4. Easebuzz */}
+                {(() => {
+                  const isEnabled = methodsConfig.easebuzz?.enabled ?? true;
+                  const isOpen = expandedMobileGateway === 'easebuzz';
+                  return (
+                    <View style={[styles.gatewayCard, { padding: 14, marginBottom: 8, borderRadius: 12 }]}>
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        style={styles.gatewayHeadTop}
+                        onPress={() => setExpandedMobileGateway(isOpen ? null : 'easebuzz')}
+                      >
+                        <Text style={[styles.gatewayTitle, { fontSize: 14.5, flex: 1 }]}>
+                          Easebuzz
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Switch
+                            value={isEnabled}
+                            onValueChange={(val) => {
+                              const updated = {
+                                ...methodsConfig,
+                                easebuzz: {
+                                  ...methodsConfig.easebuzz,
+                                  enabled: val,
+                                  merchantKey: methodsConfig.easebuzz?.merchantKey || '',
+                                  salt: methodsConfig.easebuzz?.salt || '',
+                                  subMerchantId: methodsConfig.easebuzz?.subMerchantId || '',
+                                  mode: 'live' as const,
+                                },
+                              };
+                              saveSpecificConfig(updated, `Easebuzz turned ${val ? 'ON' : 'OFF'}.`);
+                            }}
+                            trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                          />
+                          <Feather name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
+                        </View>
+                      </TouchableOpacity>
+
+                      {isOpen && (
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Merchant Key</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.easebuzz?.merchantKey || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, easebuzz: { ...methodsConfig.easebuzz, merchantKey: val } })}
+                            placeholder="e.g. 2PBPXXXXXX"
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Merchant Salt</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.easebuzz?.salt || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, easebuzz: { ...methodsConfig.easebuzz, salt: val } })}
+                            placeholder="Merchant Salt"
+                            secureTextEntry
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Sub-Merchant ID (Optional)</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.easebuzz?.subMerchantId || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, easebuzz: { ...methodsConfig.easebuzz, subMerchantId: val } })}
+                            placeholder="Optional Sub-Merchant ID"
+                            autoCapitalize="none"
+                          />
+
+                          <View style={styles.gatewayBtnRow}>
+                            <TouchableOpacity
+                              style={styles.saveKeyBtn}
+                              onPress={() => {
+                                const isConnected = !!(methodsConfig.easebuzz?.merchantKey && methodsConfig.easebuzz?.salt);
+                                const updated = {
+                                  ...methodsConfig,
+                                  easebuzz: {
+                                    ...methodsConfig.easebuzz,
+                                    enabled: true,
+                                    connected: isConnected,
+                                    merchantKey: methodsConfig.easebuzz?.merchantKey || '',
+                                    salt: methodsConfig.easebuzz?.salt || '',
+                                    subMerchantId: methodsConfig.easebuzz?.subMerchantId || '',
+                                    mode: 'live' as const,
+                                  },
+                                };
+                                saveSpecificConfig(updated, '✓ Easebuzz settings saved.');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.testKeyBtn}
+                              onPress={() => verifyEasebuzzCredentials(methodsConfig.easebuzz?.merchantKey, methodsConfig.easebuzz?.salt)}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
+                              <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })()}
               </View>
 
-              {/* 1. Stripe Gateway Card */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#6366F1' }]}>
-                      <Feather name="credit-card" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Stripe</Text>
-                      <View style={styles.gatewayBadgeRow}>
-                        <View style={methodsConfig.stripe?.connected ? styles.badgePillGreen : styles.badgePillGrey}>
-                          <Text style={methodsConfig.stripe?.connected ? styles.badgePillGreenText : styles.badgePillGreyText}>
-                            {methodsConfig.stripe?.connected ? 'Connected' : 'Not connected'}
-                          </Text>
+              {/* SECTION 2: DIRECT & OFFLINE METHODS */}
+              <View style={{ marginBottom: 20 }}>
+                <Text style={{ fontSize: 15, fontWeight: '700', color: colors.navy, marginBottom: 10 }}>
+                  Direct & Offline Methods
+                </Text>
+
+                {/* 5. UPI */}
+                {(() => {
+                  const isEnabled = methodsConfig.upi?.enabled ?? true;
+                  const isOpen = expandedMobileGateway === 'upi';
+                  return (
+                    <View style={[styles.gatewayCard, { padding: 14, marginBottom: 8, borderRadius: 12 }]}>
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        style={styles.gatewayHeadTop}
+                        onPress={() => setExpandedMobileGateway(isOpen ? null : 'upi')}
+                      >
+                        <Text style={[styles.gatewayTitle, { fontSize: 14.5, flex: 1 }]}>
+                          UPI (VPA & QR)
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Switch
+                            value={isEnabled}
+                            onValueChange={(val) => {
+                              const updated = {
+                                ...methodsConfig,
+                                upi: {
+                                  ...methodsConfig.upi!,
+                                  enabled: val,
+                                },
+                              };
+                              saveSpecificConfig(updated, `UPI turned ${val ? 'ON' : 'OFF'}.`);
+                            }}
+                            trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                          />
+                          <Feather name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
                         </View>
-                      </View>
-                    </View>
-                  </View>
-                  <Switch
-                    value={methodsConfig.stripe?.enabled ?? false}
-                    onValueChange={(val) => {
-                      const updated = {
-                        ...methodsConfig,
-                        stripe: {
-                          ...methodsConfig.stripe,
-                          enabled: val,
-                          mode: 'live' as const,
-                          pubKey: methodsConfig.stripe?.pubKey || '',
-                          secretKey: methodsConfig.stripe?.secretKey || '',
-                        },
-                      };
-                      saveSpecificConfig(updated, `Stripe turned ${val ? 'ON' : 'OFF'} for tenant collection.`);
-                    }}
-                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                {methodsConfig.stripe?.enabled && (
-                  <View style={styles.gatewayBody}>
-                    <Text style={styles.fieldLabel}>Publishable Key</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.stripe?.pubKey || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, stripe: { ...methodsConfig.stripe!, mode: 'live', pubKey: val } })}
-                      placeholder="pk_live_..."
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>Secret Key</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.stripe?.secretKey || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, stripe: { ...methodsConfig.stripe!, mode: 'live', secretKey: val } })}
-                      placeholder="sk_live_..."
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>Webhook Signing Secret (Optional)</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.stripe?.webhookSecret || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, stripe: { ...methodsConfig.stripe!, webhookSecret: val } })}
-                      placeholder="whsec_..."
-                      autoCapitalize="none"
-                    />
-
-                    <View style={styles.gatewayBtnRow}>
-                      <TouchableOpacity
-                        style={styles.saveKeyBtn}
-                        onPress={() => {
-                          const isConnected = !!(methodsConfig.stripe?.pubKey && methodsConfig.stripe?.secretKey);
-                          const updated = {
-                            ...methodsConfig,
-                            stripe: {
-                              ...methodsConfig.stripe!,
-                              enabled: true,
-                              connected: isConnected,
-                            },
-                          };
-                          saveSpecificConfig(updated, '✓ Stripe gateway credentials saved.');
-                        }}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save Keys</Text>
                       </TouchableOpacity>
 
-                      <TouchableOpacity
-                        style={styles.testKeyBtn}
-                        onPress={() => verifyStripeCredentials(methodsConfig.stripe?.pubKey, methodsConfig.stripe?.secretKey)}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
-                        <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
+                      {isOpen && (
+                        <View style={styles.gatewayBody}>
+                          {tmplUpiId && tmplUpiId !== methodsConfig.upi?.upiId && (
+                            <TouchableOpacity
+                              style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                backgroundColor: '#ECFDF5',
+                                paddingHorizontal: 10,
+                                paddingVertical: 5,
+                                borderRadius: 5,
+                                marginBottom: 10,
+                                alignSelf: 'flex-start',
+                              }}
+                              onPress={() => {
+                                setMethodsConfig({
+                                  ...methodsConfig,
+                                  upi: { ...methodsConfig.upi!, upiId: tmplUpiId },
+                                });
+                                Alert.alert('Synced', `UPI VPA synced: ${tmplUpiId}`);
+                              }}
+                            >
+                              <Feather name="zap" size={12} color="#059669" style={{ marginRight: 5 }} />
+                              <Text style={{ fontSize: 11.5, fontWeight: '600', color: '#059669' }}>
+                                Sync VPA ({tmplUpiId})
+                              </Text>
+                            </TouchableOpacity>
+                          )}
 
-              {/* 2. Razorpay Gateway Card */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#0284C7' }]}>
-                      <Feather name="shield" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Razorpay</Text>
-                      <View style={styles.gatewayBadgeRow}>
-                        <View style={methodsConfig.razorpay?.connected ? styles.badgePillGreen : styles.badgePillGrey}>
-                          <Text style={methodsConfig.razorpay?.connected ? styles.badgePillGreenText : styles.badgePillGreyText}>
-                            {methodsConfig.razorpay?.connected ? 'Connected' : 'Not connected'}
-                          </Text>
+                          <Text style={styles.fieldLabel}>UPI ID (VPA)</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.upi?.upiId || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, upi: { ...methodsConfig.upi!, upiId: val } })}
+                            placeholder="e.g. name@upi"
+                            autoCapitalize="none"
+                          />
+
+                          <Text style={styles.fieldLabel}>Display Name</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.upi?.merchantName || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, upi: { ...methodsConfig.upi!, merchantName: val } })}
+                            placeholder="e.g. Property Name"
+                          />
+
+                          <View style={styles.gatewayBtnRow}>
+                            <TouchableOpacity
+                              style={styles.saveKeyBtn}
+                              onPress={() => {
+                                const updated = {
+                                  ...methodsConfig,
+                                  upi: {
+                                    ...methodsConfig.upi!,
+                                    enabled: true,
+                                  },
+                                };
+                                saveSpecificConfig(updated, '✓ UPI settings saved.');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.testKeyBtn}
+                              onPress={() => verifyUpiVpa(methodsConfig.upi?.upiId)}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="check-circle" size={14} color="#0F172A" style={{ marginRight: 6 }} />
+                              <Text style={styles.testKeyBtnText} numberOfLines={1}>Verify VPA</Text>
+                            </TouchableOpacity>
+                          </View>
                         </View>
-                      </View>
+                      )}
                     </View>
-                  </View>
-                  <Switch
-                    value={methodsConfig.razorpay?.enabled ?? false}
-                    onValueChange={(val) => {
-                      const updated = {
-                        ...methodsConfig,
-                        razorpay: {
-                          ...methodsConfig.razorpay,
-                          enabled: val,
-                          mode: 'live' as const,
-                          keyId: methodsConfig.razorpay?.keyId || '',
-                          keySecret: methodsConfig.razorpay?.keySecret || '',
-                        },
-                      };
-                      saveSpecificConfig(updated, `Razorpay turned ${val ? 'ON' : 'OFF'} for tenant collection.`);
-                    }}
-                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
+                  );
+                })()}
 
-                {methodsConfig.razorpay?.enabled && (
-                  <View style={styles.gatewayBody}>
-                    <Text style={styles.fieldLabel}>Key ID</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.razorpay?.keyId || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, razorpay: { ...methodsConfig.razorpay!, mode: 'live', keyId: val } })}
-                      placeholder="rzp_live_..."
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>Key Secret</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.razorpay?.keySecret || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, razorpay: { ...methodsConfig.razorpay!, mode: 'live', keySecret: val } })}
-                      placeholder="Razorpay Key Secret"
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-
-                    <View style={styles.gatewayBtnRow}>
+                {/* 6. Bank Transfer */}
+                {(() => {
+                  const isEnabled = methodsConfig.bank?.enabled ?? true;
+                  const isOpen = expandedMobileGateway === 'bank';
+                  return (
+                    <View style={[styles.gatewayCard, { padding: 14, marginBottom: 8, borderRadius: 12 }]}>
                       <TouchableOpacity
-                        style={styles.saveKeyBtn}
-                        onPress={() => {
-                          const isConnected = !!(methodsConfig.razorpay?.keyId && methodsConfig.razorpay?.keySecret);
-                          const updated = {
-                            ...methodsConfig,
-                            razorpay: {
-                              ...methodsConfig.razorpay!,
-                              enabled: true,
-                              connected: isConnected,
-                            },
-                          };
-                          saveSpecificConfig(updated, '✓ Razorpay gateway credentials saved.');
-                        }}
-                        activeOpacity={0.85}
+                        activeOpacity={0.7}
+                        style={styles.gatewayHeadTop}
+                        onPress={() => setExpandedMobileGateway(isOpen ? null : 'bank')}
                       >
-                        <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save Keys</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.testKeyBtn}
-                        onPress={() => verifyRazorpayCredentials(methodsConfig.razorpay?.keyId, methodsConfig.razorpay?.keySecret)}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
-                        <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
-
-              {/* 3. PayPal Gateway Card */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#0284C7' }]}>
-                      <Feather name="globe" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>PayPal</Text>
-                      <View style={styles.gatewayBadgeRow}>
-                        <View style={methodsConfig.paypal?.connected ? styles.badgePillGreen : styles.badgePillGrey}>
-                          <Text style={methodsConfig.paypal?.connected ? styles.badgePillGreenText : styles.badgePillGreyText}>
-                            {methodsConfig.paypal?.connected ? 'Connected' : 'Not connected'}
-                          </Text>
+                        <Text style={[styles.gatewayTitle, { fontSize: 14.5, flex: 1 }]}>
+                          Bank Transfer
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Switch
+                            value={isEnabled}
+                            onValueChange={(val) => {
+                              const updated = {
+                                ...methodsConfig,
+                                bank: {
+                                  ...methodsConfig.bank!,
+                                  enabled: val,
+                                },
+                              };
+                              saveSpecificConfig(updated, `Bank transfer turned ${val ? 'ON' : 'OFF'}.`);
+                            }}
+                            trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                          />
+                          <Feather name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
                         </View>
-                      </View>
-                    </View>
-                  </View>
-                  <Switch
-                    value={methodsConfig.paypal?.enabled ?? false}
-                    onValueChange={(val) => {
-                      const updated = {
-                        ...methodsConfig,
-                        paypal: {
-                          ...methodsConfig.paypal,
-                          enabled: val,
-                          mode: 'live' as const,
-                          email: methodsConfig.paypal?.email || '',
-                          clientId: methodsConfig.paypal?.clientId || '',
-                          secret: methodsConfig.paypal?.secret || '',
-                        },
-                      };
-                      saveSpecificConfig(updated, `PayPal turned ${val ? 'ON' : 'OFF'} for tenant collection.`);
-                    }}
-                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                {methodsConfig.paypal?.enabled && (
-                  <View style={styles.gatewayBody}>
-                    <Text style={styles.fieldLabel}>PayPal Business Email</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.paypal?.email || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, paypal: { ...methodsConfig.paypal!, mode: 'live', email: val } })}
-                      placeholder="landlord@business.com"
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>REST API Client ID</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.paypal?.clientId || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, paypal: { ...methodsConfig.paypal!, mode: 'live', clientId: val } })}
-                      placeholder="Client ID from developer.paypal.com"
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>Secret</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.paypal?.secret || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, paypal: { ...methodsConfig.paypal!, mode: 'live', secret: val } })}
-                      placeholder="Client Secret"
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-
-                    <View style={styles.gatewayBtnRow}>
-                      <TouchableOpacity
-                        style={styles.saveKeyBtn}
-                        onPress={() => {
-                          const isConnected = !!(methodsConfig.paypal?.email || methodsConfig.paypal?.clientId);
-                          const updated = {
-                            ...methodsConfig,
-                            paypal: {
-                              ...methodsConfig.paypal!,
-                              enabled: true,
-                              connected: isConnected,
-                            },
-                          };
-                          saveSpecificConfig(updated, '✓ PayPal gateway credentials saved.');
-                        }}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save Keys</Text>
                       </TouchableOpacity>
 
-                      <TouchableOpacity
-                        style={styles.testKeyBtn}
-                        onPress={() => verifyPayPalCredentials(methodsConfig.paypal?.clientId, methodsConfig.paypal?.secret)}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
-                        <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
+                      {isOpen && (
+                        <View style={styles.gatewayBody}>
+                          <TouchableOpacity
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+                              paddingHorizontal: 10,
+                              paddingVertical: 6,
+                              borderRadius: 6,
+                              marginBottom: 10,
+                              alignSelf: 'flex-start',
+                            }}
+                            onPress={() => {
+                              if (!tmplAccountNumber && !tmplBankName) {
+                                Alert.alert('Notice', 'No remittance details found in Invoice Template.');
+                                return;
+                              }
+                              const updatedBank = {
+                                ...methodsConfig.bank!,
+                                accountName: tmplAccountName || methodsConfig.bank?.accountName || '',
+                                bankName: tmplBankName || methodsConfig.bank?.bankName || '',
+                                accountNumber: tmplAccountNumber || methodsConfig.bank?.accountNumber || '',
+                                routing: tmplIfsc || methodsConfig.bank?.routing || '',
+                              };
+                              setMethodsConfig({ ...methodsConfig, bank: updatedBank });
+                              Alert.alert('Synced', 'Bank details synced from Invoice Template.');
+                            }}
+                          >
+                            <Feather name="zap" size={12} color="#059669" style={{ marginRight: 5 }} />
+                            <Text style={{ fontSize: 11.5, fontWeight: '600', color: colors.navy }}>
+                              Sync from Invoice Template
+                            </Text>
+                          </TouchableOpacity>
 
-              {/* 5. Easebuzz Payment Gateway Card (Live Production) */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#0D9488' }]}>
-                      <Feather name="shield" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Easebuzz Payment Gateway</Text>
-                      <View style={styles.gatewayBadgeRow}>
-                        <View style={methodsConfig.easebuzz?.connected ? styles.badgePillGreen : styles.badgePillGrey}>
-                          <Text style={methodsConfig.easebuzz?.connected ? styles.badgePillGreenText : styles.badgePillGreyText}>
-                            {methodsConfig.easebuzz?.connected ? 'Connected' : 'Not connected'}
-                          </Text>
+                          <Text style={styles.fieldLabel}>Account Holder Name</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.bank?.accountName || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, accountName: val } })}
+                            placeholder="Account Holder"
+                          />
+
+                          <Text style={styles.fieldLabel}>Bank Name</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.bank?.bankName || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, bankName: val } })}
+                            placeholder="Bank Name"
+                          />
+
+                          <Text style={styles.fieldLabel}>Account Number / IBAN</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.bank?.accountNumber || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, accountNumber: val } })}
+                            placeholder="Account Number"
+                            keyboardType="numeric"
+                          />
+
+                          <Text style={styles.fieldLabel}>Routing / IFSC Code</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.bank?.routing || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, routing: val } })}
+                            placeholder="Routing or IFSC"
+                            autoCapitalize="characters"
+                          />
+
+                          <Text style={styles.fieldLabel}>Country</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={methodsConfig.bank?.country || selectedProperty?.country || 'United States'}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, country: val } })}
+                            placeholder="Country"
+                          />
+
+                          <View style={styles.gatewayBtnRow}>
+                            <TouchableOpacity
+                              style={styles.saveKeyBtn}
+                              onPress={() => {
+                                const updated = {
+                                  ...methodsConfig,
+                                  bank: {
+                                    ...methodsConfig.bank!,
+                                    enabled: true,
+                                  },
+                                };
+                                saveSpecificConfig(updated, '✓ Bank details saved.');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save</Text>
+                            </TouchableOpacity>
+                          </View>
                         </View>
-                      </View>
+                      )}
                     </View>
-                  </View>
-                  <Switch
-                    value={methodsConfig.easebuzz?.enabled ?? true}
-                    onValueChange={(val) => {
-                      const updated = {
-                        ...methodsConfig,
-                        easebuzz: {
-                          ...methodsConfig.easebuzz,
-                          enabled: val,
-                          merchantKey: methodsConfig.easebuzz?.merchantKey || '',
-                          salt: methodsConfig.easebuzz?.salt || '',
-                          subMerchantId: methodsConfig.easebuzz?.subMerchantId || '',
-                          mode: 'live' as const,
-                        },
-                      };
-                      saveSpecificConfig(updated, `Easebuzz turned ${val ? 'ON' : 'OFF'} for tenant collection.`);
-                    }}
-                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
+                  );
+                })()}
 
-                {methodsConfig.easebuzz?.enabled !== false && (
-                  <View style={styles.gatewayBody}>
-                    <Text style={styles.fieldLabel}>Merchant Key</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.easebuzz?.merchantKey || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, easebuzz: { ...methodsConfig.easebuzz, merchantKey: val } })}
-                      placeholder="e.g. 2PBPXXXXXX"
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>Merchant Salt</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.easebuzz?.salt || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, easebuzz: { ...methodsConfig.easebuzz, salt: val } })}
-                      placeholder="e.g. D41D8CD98F00B204E9800998ECF8427E"
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>Sub-Merchant ID (Optional)</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.easebuzz?.subMerchantId || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, easebuzz: { ...methodsConfig.easebuzz, subMerchantId: val } })}
-                      placeholder="e.g. SUB_MRCH_10928"
-                      autoCapitalize="none"
-                    />
-
-                    <View style={styles.gatewayBtnRow}>
+                {/* 7. Cash / Cheque */}
+                {(() => {
+                  const isEnabled = methodsConfig.cash?.enabled ?? true;
+                  const isOpen = expandedMobileGateway === 'cash';
+                  return (
+                    <View style={[styles.gatewayCard, { padding: 14, marginBottom: 8, borderRadius: 12 }]}>
                       <TouchableOpacity
-                        style={styles.saveKeyBtn}
-                        onPress={() => {
-                          const isConnected = !!(methodsConfig.easebuzz?.merchantKey && methodsConfig.easebuzz?.salt);
-                          const updated = {
-                            ...methodsConfig,
-                            easebuzz: {
-                              ...methodsConfig.easebuzz,
-                              enabled: true,
-                              connected: isConnected,
-                              merchantKey: methodsConfig.easebuzz?.merchantKey || '',
-                              salt: methodsConfig.easebuzz?.salt || '',
-                              subMerchantId: methodsConfig.easebuzz?.subMerchantId || '',
-                              mode: 'live' as const,
-                            },
-                          };
-                          saveSpecificConfig(updated, '✓ Easebuzz Live Production gateway credentials saved.');
-                        }}
-                        activeOpacity={0.85}
+                        activeOpacity={0.7}
+                        style={styles.gatewayHeadTop}
+                        onPress={() => setExpandedMobileGateway(isOpen ? null : 'cash')}
                       >
-                        <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save Keys</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.testKeyBtn}
-                        onPress={() => verifyEasebuzzCredentials(methodsConfig.easebuzz?.merchantKey, methodsConfig.easebuzz?.salt)}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="activity" size={14} color="#0F172A" style={{ marginRight: 6 }} />
-                        <Text style={styles.testKeyBtnText} numberOfLines={1}>Test Connection</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
-
-              {/* 6. UPI Direct VPA & QR Code Card */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#10B981' }]}>
-                      <Feather name="smartphone" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>UPI (Direct VPA & QR Code)</Text>
-                      <View style={styles.gatewayBadgeRow}>
-                        <View style={methodsConfig.upi?.upiId ? styles.badgePillGreen : styles.badgePillGrey}>
-                          <Text style={methodsConfig.upi?.upiId ? styles.badgePillGreenText : styles.badgePillGreyText}>
-                            {methodsConfig.upi?.upiId ? 'Configured' : 'Not configured'}
-                          </Text>
+                        <Text style={[styles.gatewayTitle, { fontSize: 14.5, flex: 1 }]}>
+                          Cash / Cheque
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <Switch
+                            value={isEnabled}
+                            onValueChange={(val) => {
+                              const updated = {
+                                ...methodsConfig,
+                                cash: {
+                                  ...methodsConfig.cash!,
+                                  enabled: val,
+                                },
+                              };
+                              saveSpecificConfig(updated, `Cash collection turned ${val ? 'ON' : 'OFF'}.`);
+                            }}
+                            trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                          />
+                          <Feather name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
                         </View>
-                      </View>
-                    </View>
-                  </View>
-                  <Switch
-                    value={methodsConfig.upi?.enabled ?? true}
-                    onValueChange={(val) => {
-                      const updated = {
-                        ...methodsConfig,
-                        upi: {
-                          ...methodsConfig.upi!,
-                          enabled: val,
-                        },
-                      };
-                      saveSpecificConfig(updated, `UPI turned ${val ? 'ON' : 'OFF'} for tenant collection.`);
-                    }}
-                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                {methodsConfig.upi?.enabled !== false && (
-                  <View style={styles.gatewayBody}>
-                    <Text style={styles.fieldLabel}>UPI Virtual Payment Address (VPA)</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.upi?.upiId || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, upi: { ...methodsConfig.upi!, upiId: val } })}
-                      placeholder="e.g. propertyowner@upi"
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={styles.fieldLabel}>Payee / Merchant Display Name</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.upi?.merchantName || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, upi: { ...methodsConfig.upi!, merchantName: val } })}
-                      placeholder="e.g. Skyline Apartments"
-                    />
-
-                    {/* QR Preview & Generation */}
-                    <View style={styles.qrPreviewBox}>
-                      <View style={styles.qrMockGraphic}>
-                        <Feather name="maximize" size={44} color="#059669" />
-                        <Text style={styles.qrMockText}>ACTIVE QR</Text>
-                      </View>
-                      <Text style={styles.qrHintText}>
-                        Dynamic QR code is active and rendered on tenant rent checkout modals for instant scanning.
-                      </Text>
-                    </View>
-
-                    <View style={styles.gatewayBtnRow}>
-                      <TouchableOpacity
-                        style={styles.saveKeyBtn}
-                        onPress={() => {
-                          const updated = {
-                            ...methodsConfig,
-                            upi: {
-                              ...methodsConfig.upi!,
-                              enabled: true,
-                            },
-                          };
-                          saveSpecificConfig(updated, '✓ UPI configuration saved.');
-                        }}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save UPI</Text>
                       </TouchableOpacity>
 
-                      <TouchableOpacity
-                        style={styles.testKeyBtn}
-                        onPress={() => verifyUpiVpa(methodsConfig.upi?.upiId)}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="check-circle" size={14} color="#0F172A" style={{ marginRight: 6 }} />
-                        <Text style={styles.testKeyBtnText} numberOfLines={1}>Verify VPA</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
+                      {isOpen && (
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Instructions for Tenants</Text>
+                          <TextInput
+                            style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
+                            value={methodsConfig.cash?.instructions || ''}
+                            onChangeText={(val) => setMethodsConfig({ ...methodsConfig, cash: { ...methodsConfig.cash!, instructions: val } })}
+                            placeholder="e.g. Pay directly at the property management office."
+                            multiline
+                          />
 
-              {/* 6. Direct Bank Wire Card */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#475569' }]}>
-                      <Feather name="home" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Direct Bank Transfer (NEFT / RTGS / IMPS / Wire)</Text>
-                      <View style={styles.gatewayBadgeRow}>
-                        <View style={methodsConfig.bank?.accountNumber ? styles.badgePillGreen : styles.badgePillGrey}>
-                          <Text style={methodsConfig.bank?.accountNumber ? styles.badgePillGreenText : styles.badgePillGreyText}>
-                            {methodsConfig.bank?.accountNumber ? 'Configured' : 'Not configured'}
-                          </Text>
+                          <View style={styles.gatewayBtnRow}>
+                            <TouchableOpacity
+                              style={styles.saveKeyBtn}
+                              onPress={() => {
+                                const updated = {
+                                  ...methodsConfig,
+                                  cash: {
+                                    ...methodsConfig.cash!,
+                                    enabled: true,
+                                  },
+                                };
+                                saveSpecificConfig(updated, '✓ Cash settings saved.');
+                              }}
+                              activeOpacity={0.85}
+                            >
+                              <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save</Text>
+                            </TouchableOpacity>
+                          </View>
                         </View>
-                      </View>
+                      )}
                     </View>
-                  </View>
-                  <Switch
-                    value={methodsConfig.bank?.enabled ?? true}
-                    onValueChange={(val) => {
-                      const updated = {
-                        ...methodsConfig,
-                        bank: {
-                          ...methodsConfig.bank!,
-                          enabled: val,
-                        },
-                      };
-                      saveSpecificConfig(updated, `Bank transfer turned ${val ? 'ON' : 'OFF'} for tenant collection.`);
-                    }}
-                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                {methodsConfig.bank?.enabled !== false && (
-                  <View style={styles.gatewayBody}>
-                    <Text style={styles.fieldLabel}>Account Holder Name</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.bank?.accountName || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, accountName: val } })}
-                      placeholder="e.g. Skyline Properties LLC"
-                    />
-
-                    <Text style={styles.fieldLabel}>Bank Name / Financial Institution</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.bank?.bankName || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, bankName: val } })}
-                      placeholder="e.g. Chase Bank / Barclays / Bank of America"
-                    />
-
-                    <Text style={styles.fieldLabel}>Account Number / IBAN</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.bank?.accountNumber || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, accountNumber: val } })}
-                      placeholder="Account Number"
-                      keyboardType="numeric"
-                    />
-
-                    <Text style={styles.fieldLabel}>Routing / SWIFT / IFSC Code</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.bank?.routing || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, routing: val } })}
-                      placeholder="e.g. ROUTING1234 / SWIFT / IFSC"
-                      autoCapitalize="characters"
-                    />
-
-                    <Text style={styles.fieldLabel}>Country</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={methodsConfig.bank?.country || selectedProperty?.country || 'United States'}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, bank: { ...methodsConfig.bank!, country: val } })}
-                      placeholder="Country"
-                    />
-
-                    <View style={styles.gatewayBtnRow}>
-                      <TouchableOpacity
-                        style={styles.saveKeyBtn}
-                        onPress={() => {
-                          const updated = {
-                            ...methodsConfig,
-                            bank: {
-                              ...methodsConfig.bank!,
-                              enabled: true,
-                            },
-                          };
-                          saveSpecificConfig(updated, '✓ Bank transfer details saved.');
-                        }}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save Details</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
-
-              {/* 7. Cash & Offline Collection Card */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#F59E0B' }]}>
-                      <Feather name="dollar-sign" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Cash & Offline Collection</Text>
-                      <View style={styles.gatewayBadgeRow}>
-                        <View style={(methodsConfig.cash?.enabled ?? true) ? styles.badgePillGreen : styles.badgePillGrey}>
-                          <Text style={(methodsConfig.cash?.enabled ?? true) ? styles.badgePillGreenText : styles.badgePillGreyText}>
-                            {(methodsConfig.cash?.enabled ?? true) ? 'Active' : 'Disabled'}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                  <Switch
-                    value={methodsConfig.cash?.enabled ?? true}
-                    onValueChange={(val) => {
-                      const updated = {
-                        ...methodsConfig,
-                        cash: {
-                          ...methodsConfig.cash!,
-                          enabled: val,
-                        },
-                      };
-                      saveSpecificConfig(updated, `Cash collection turned ${val ? 'ON' : 'OFF'}.`);
-                    }}
-                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                {methodsConfig.cash?.enabled !== false && (
-                  <View style={styles.gatewayBody}>
-                    <Text style={styles.fieldLabel}>Cash Collection Instructions for Tenants</Text>
-                    <TextInput
-                      style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
-                      value={methodsConfig.cash?.instructions || ''}
-                      onChangeText={(val) => setMethodsConfig({ ...methodsConfig, cash: { ...methodsConfig.cash!, instructions: val } })}
-                      placeholder="e.g. Pay directly at the property management office between 9 AM and 5 PM."
-                      multiline
-                    />
-
-                    <View style={styles.gatewayBtnRow}>
-                      <TouchableOpacity
-                        style={styles.saveKeyBtn}
-                        onPress={() => {
-                          const updated = {
-                            ...methodsConfig,
-                            cash: {
-                              ...methodsConfig.cash!,
-                              enabled: true,
-                            },
-                          };
-                          saveSpecificConfig(updated, '✓ Cash settings saved.');
-                        }}
-                        activeOpacity={0.85}
-                      >
-                        <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.saveKeyBtnText} numberOfLines={1}>Save Instructions</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
+                  );
+                })()}
               </View>
             </View>
           )}
@@ -3211,389 +3281,440 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
           {/* TAB 6: INVOICE & DEPOSIT VOUCHER TEMPLATE CUSTOMIZER (1-to-1 Web Parity) */}
           {activeTab === 'template' && (
             <View>
-              <View style={styles.sectionHeaderRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.sectionHeading}>
-                    {tmplDocumentType === 'rent'
-                      ? 'Invoice Template'
-                      : 'Deposit Voucher Template'}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Document Switcher: Monthly Rent Invoice vs Security Deposit Voucher */}
-              <View style={styles.docTypeSwitcherRow}>
+              {/* Document Switcher (Sleek pill buttons) */}
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
                 <TouchableOpacity
                   style={[
-                    styles.docTypeSwitcherBtn,
-                    tmplDocumentType === 'rent' && styles.docTypeSwitcherBtnActive,
+                    styles.modeBtn,
+                    tmplDocumentType === 'rent' && styles.modeBtnActive,
+                    { flex: 1, paddingVertical: 10, borderRadius: 20 },
                   ]}
                   onPress={() => setTmplDocumentType('rent')}
                   activeOpacity={0.8}
                 >
-                  <Feather
-                    name="file-text"
-                    size={14}
-                    color={tmplDocumentType === 'rent' ? '#FFFFFF' : '#475569'}
-                    style={{ marginRight: 6 }}
-                  />
                   <Text
                     style={[
-                      styles.docTypeSwitcherBtnText,
-                      tmplDocumentType === 'rent' && styles.docTypeSwitcherBtnTextActive,
+                      styles.modeBtnText,
+                      tmplDocumentType === 'rent' && styles.modeBtnTextActive,
+                      { textAlign: 'center' },
                     ]}
                   >
-                    Rent Invoice
+                    Rent invoice
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={[
-                    styles.docTypeSwitcherBtn,
-                    tmplDocumentType === 'deposit' && styles.docTypeSwitcherBtnActive,
+                    styles.modeBtn,
+                    tmplDocumentType === 'deposit' && styles.modeBtnActive,
+                    { flex: 1, paddingVertical: 10, borderRadius: 20 },
                   ]}
                   onPress={() => setTmplDocumentType('deposit')}
                   activeOpacity={0.8}
                 >
-                  <Feather
-                    name="shield"
-                    size={14}
-                    color={tmplDocumentType === 'deposit' ? '#FFFFFF' : '#475569'}
-                    style={{ marginRight: 6 }}
-                  />
                   <Text
                     style={[
-                      styles.docTypeSwitcherBtnText,
-                      tmplDocumentType === 'deposit' && styles.docTypeSwitcherBtnTextActive,
+                      styles.modeBtnText,
+                      tmplDocumentType === 'deposit' && styles.modeBtnTextActive,
+                      { textAlign: 'center' },
                     ]}
                   >
-                    Deposit Voucher
+                    Deposit receipt
                   </Text>
                 </TouchableOpacity>
+              </View>
+
+              {/* Top Brief Card with Readiness Indicator & View Mode Switcher */}
+              <View
+                style={{
+                  backgroundColor: colors.surface,
+                  borderRadius: 14,
+                  padding: 14,
+                  marginBottom: 16,
+                  borderWidth: 1,
+                  borderColor: isDark ? colors.line : '#E2E8F0',
+                }}
+              >
+                <Text style={{ fontSize: 13, color: colors.navy, marginBottom: 4, lineHeight: 18 }}>
+                  {tmplDocumentType === 'rent'
+                    ? 'The invoice a tenant gets each month. Fill in three short sections and watch it update.'
+                    : 'The receipt a tenant gets when their deposit is paid. Fill in three short sections and watch it update.'}
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2, marginBottom: 12 }}>
+                  <Feather name="check-circle" size={13} color="#10B981" style={{ marginRight: 5 }} />
+                  <Text style={{ fontSize: 11.5, color: '#10B981', fontWeight: '600' }}>
+                    Ready to use · Tenant, unit, amount and dates fill in automatically.
+                  </Text>
+                </View>
+
+                {/* View Mode Pills */}
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+                    borderRadius: 8,
+                    padding: 3,
+                  }}
+                >
+                  {(['both', 'edit', 'preview'] as const).map((mode) => (
+                    <TouchableOpacity
+                      key={mode}
+                      onPress={() => setMobileTmplViewMode(mode)}
+                      style={{
+                        flex: 1,
+                        paddingVertical: 6,
+                        borderRadius: 6,
+                        backgroundColor: mobileTmplViewMode === mode ? (isDark ? colors.surface : '#FFFFFF') : 'transparent',
+                        alignItems: 'center',
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 11.5,
+                          fontWeight: mobileTmplViewMode === mode ? '700' : '500',
+                          color: mobileTmplViewMode === mode ? colors.navy : colors.inkSoft,
+                        }}
+                      >
+                        {mode === 'both' ? 'Edit & Preview' : mode === 'edit' ? 'Edit Only' : 'Preview Only'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
 
               {/* RENT INVOICE TEMPLATE */}
               {tmplDocumentType === 'rent' && (
                 <View>
-                  {/* 1. Issuer & Entity Branding */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#10B981' }]}>
-                          <Feather name="file-text" size={18} color="#FFFFFF" />
+                  {/* EDIT FORM (3 Simple Sections + Collapsible More Options) */}
+                  {mobileTmplViewMode !== 'preview' && (
+                    <View style={{ marginBottom: 20 }}>
+                      {/* Section 1: Who is this from? */}
+                      <View style={styles.gatewayCard}>
+                        <View style={styles.gatewayHeadTop}>
+                          <View style={styles.gatewayBrandRow}>
+                            <View style={[styles.gatewayIconBox, { backgroundColor: '#10B981' }]}>
+                              <Feather name="user" size={18} color="#FFFFFF" />
+                            </View>
+                            <View>
+                              <Text style={styles.gatewayTitle}>1. Who is this from?</Text>
+                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Shown at the top of the invoice</Text>
+                            </View>
+                          </View>
                         </View>
-                        <Text style={styles.gatewayTitle}>Legal Issuer & Entity Branding</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.gatewayBody}>
-                      <Text style={styles.fieldLabel}>Company / Landlord Legal Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={tmplIssuerName}
-                        onChangeText={setTmplIssuerName}
-                        placeholder="e.g. Skyline Living Properties LLC"
-                      />
-
-                      <Text style={styles.fieldLabel}>Tax ID / GSTIN / VAT Registration</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={tmplIssuerTaxNo}
-                        onChangeText={setTmplIssuerTaxNo}
-                        placeholder="e.g. TAX-ID-9821345 or GSTIN"
-                        autoCapitalize="characters"
-                      />
-
-                      <Text style={styles.fieldLabel}>Registered Business Address</Text>
-                      <TextInput
-                        style={[styles.input, { minHeight: 50, textAlignVertical: 'top' }]}
-                        value={tmplIssuerAddress}
-                        onChangeText={setTmplIssuerAddress}
-                        placeholder="e.g. 100 Main Street, Suite 400"
-                        multiline
-                      />
-
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>Billing Phone</Text>
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Official Trade / Business Name</Text>
                           <TextInput
                             style={styles.input}
-                            value={tmplIssuerPhone}
-                            onChangeText={setTmplIssuerPhone}
-                            placeholder="+1 555-019-2834"
-                            keyboardType="phone-pad"
+                            value={tmplIssuerName}
+                            onChangeText={setTmplIssuerName}
+                            placeholder="e.g. Acme Properties"
                           />
+
+                          <View style={{ flexDirection: 'row', gap: 10 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.fieldLabel}>Primary Contact Phone</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={tmplIssuerPhone}
+                                onChangeText={setTmplIssuerPhone}
+                                placeholder="+1 555-019-2834"
+                                keyboardType="phone-pad"
+                              />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.fieldLabel}>Official Billing Email</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={tmplIssuerEmail}
+                                onChangeText={setTmplIssuerEmail}
+                                placeholder="billing@acme.com"
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                              />
+                            </View>
+                          </View>
+
+                          <Text style={styles.fieldLabel}>Full Business / Registered Address</Text>
+                          <TextInput
+                            style={[styles.input, { minHeight: 48, textAlignVertical: 'top' }]}
+                            value={tmplIssuerAddress}
+                            onChangeText={setTmplIssuerAddress}
+                            placeholder="e.g. 100 Main St, Suite 400"
+                            multiline
+                          />
+
+                          <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+                            <View style={{ flex: 1.4 }}>
+                              <Text style={styles.fieldLabel}>Tax Name / Label</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={tmplTaxLabel}
+                                onChangeText={setTmplTaxLabel}
+                                placeholder="GST / VAT / Sales Tax"
+                              />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.fieldLabel}>Rate (%)</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={tmplTaxPercent}
+                                onChangeText={setTmplTaxPercent}
+                                placeholder="0"
+                                keyboardType="numeric"
+                              />
+                            </View>
+                          </View>
                         </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>Billing Email</Text>
+                      </View>
+
+                      {/* Section 2: How should tenants pay? */}
+                      <View style={styles.gatewayCard}>
+                        <View style={styles.gatewayHeadTop}>
+                          <View style={styles.gatewayBrandRow}>
+                            <View style={[styles.gatewayIconBox, { backgroundColor: '#0284C7' }]}>
+                              <Feather name="credit-card" size={18} color="#FFFFFF" />
+                            </View>
+                            <View>
+                              <Text style={styles.gatewayTitle}>2. How should tenants pay?</Text>
+                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Settlement instructions printed on invoice</Text>
+                            </View>
+                          </View>
+                        </View>
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Bank Institution Name</Text>
                           <TextInput
                             style={styles.input}
-                            value={tmplIssuerEmail}
-                            onChangeText={setTmplIssuerEmail}
-                            placeholder="billing@propithub.app"
-                            keyboardType="email-address"
+                            value={tmplBankName}
+                            onChangeText={setTmplBankName}
+                            placeholder="e.g. Chase Bank / HDFC"
+                          />
+
+                          <Text style={styles.fieldLabel}>Account Beneficiary Name</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={tmplAccountName}
+                            onChangeText={setTmplAccountName}
+                            placeholder="Acme Properties LLC"
+                          />
+
+                          <View style={{ flexDirection: 'row', gap: 10 }}>
+                            <View style={{ flex: 1.2 }}>
+                              <Text style={styles.fieldLabel}>Account Number / IBAN</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={tmplAccountNumber}
+                                onChangeText={setTmplAccountNumber}
+                                placeholder="1234567890"
+                                keyboardType="numeric"
+                              />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.fieldLabel}>IFSC / Routing</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={tmplIfsc}
+                                onChangeText={setTmplIfsc}
+                                placeholder="ROUTING1234"
+                                autoCapitalize="characters"
+                              />
+                            </View>
+                          </View>
+
+                          <Text style={styles.fieldLabel}>Remittance UPI ID / VPA / Instant Link</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={tmplUpiId}
+                            onChangeText={setTmplUpiId}
+                            placeholder="pay@upi / VPA"
                             autoCapitalize="none"
                           />
                         </View>
                       </View>
-                    </View>
-                  </View>
 
-                  {/* 2. Tax Configuration on Invoices */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#6366F1' }]}>
-                          <Feather name="percent" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>Tax Computation Scheme</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.gatewayBody}>
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <View style={{ flex: 1.5 }}>
-                          <Text style={styles.fieldLabel}>Tax Label (e.g. GST, VAT, Sales Tax)</Text>
-                          <TextInput
-                            style={styles.input}
-                            value={tmplTaxLabel}
-                            onChangeText={setTmplTaxLabel}
-                            placeholder="GST / VAT"
-                          />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>Tax Rate (%)</Text>
-                          <TextInput
-                            style={styles.input}
-                            value={tmplTaxPercent}
-                            onChangeText={setTmplTaxPercent}
-                            placeholder="0"
-                            keyboardType="numeric"
-                          />
-                        </View>
-                      </View>
-
-                      {/* Quick Select Rate Pills */}
-                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                        {['0', '5', '12', '18'].map((rate) => (
-                          <TouchableOpacity
-                            key={rate}
-                            style={[
-                              styles.modeBtn,
-                              tmplTaxPercent === rate && styles.modeBtnActive,
-                              { flex: 1, paddingVertical: 8 },
-                            ]}
-                            onPress={() => setTmplTaxPercent(rate)}
-                          >
-                            <Text style={[styles.modeBtnText, tmplTaxPercent === rate && styles.modeBtnTextActive]}>
-                              {rate}%
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
-                  </View>
-
-                  {/* 3. Settlement Remittance printed on Invoice */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#0284C7' }]}>
-                          <Feather name="credit-card" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>Payment Instructions on Invoice</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.gatewayBody}>
-                      <Text style={styles.fieldLabel}>Beneficiary Bank Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={tmplBankName}
-                        onChangeText={setTmplBankName}
-                        placeholder="e.g. Chase Bank / Bank of America"
-                      />
-
-                      <Text style={styles.fieldLabel}>Beneficiary Account Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={tmplAccountName}
-                        onChangeText={setTmplAccountName}
-                        placeholder="e.g. Skyline Living Properties LLC"
-                      />
-
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>Account Number</Text>
-                          <TextInput
-                            style={styles.input}
-                            value={tmplAccountNumber}
-                            onChangeText={setTmplAccountNumber}
-                            placeholder="1234567890"
-                            keyboardType="numeric"
-                          />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>IFSC / SWIFT / Routing</Text>
-                          <TextInput
-                            style={styles.input}
-                            value={tmplIfsc}
-                            onChangeText={setTmplIfsc}
-                            placeholder="ROUTING1234"
-                            autoCapitalize="characters"
-                          />
-                        </View>
-                      </View>
-
-                      <Text style={styles.fieldLabel}>UPI VPA ID for Direct Scanning</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={tmplUpiId}
-                        onChangeText={setTmplUpiId}
-                        placeholder="e.g. pay@yourproperty.com / UPI"
-                        autoCapitalize="none"
-                      />
-                    </View>
-                  </View>
-
-                  {/* 4. Authorized Signatory & Legal Terms */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#8B5CF6' }]}>
-                          <Feather name="check-square" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>Signatory & Standard Terms</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.gatewayBody}>
-                      <Text style={styles.fieldLabel}>Authorized Signatory Designation / Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={tmplSignatory}
-                        onChangeText={setTmplSignatory}
-                        placeholder="Authorized Property Manager"
-                      />
-
-                      <Text style={styles.fieldLabel}>Standard Terms & Conditions</Text>
-                      <TextInput
-                        style={[styles.input, { minHeight: 90, textAlignVertical: 'top' }]}
-                        value={tmplTerms}
-                        onChangeText={setTmplTerms}
-                        multiline
-                      />
-
-                      <Text style={styles.fieldLabel}>Footer Tenancy Greeting / Note</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={tmplNotes}
-                        onChangeText={setTmplNotes}
-                        placeholder="Thank you for your prompt tenancy settlement."
-                      />
-
-                      {/* Signature Upload (1-to-1 Web Parity) */}
-                      <View style={{ marginTop: 4 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                          <Text style={styles.fieldLabel}>Official Signature / Digital Stamp</Text>
-                          {tmplSignatureUrl ? (
-                            <TouchableOpacity
-                              onPress={() => setTmplSignatureUrl('')}
-                              style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 }}
-                            >
-                              <Text style={{ fontSize: 11, fontWeight: '600', color: '#DC2626' }}>✕ Remove</Text>
-                            </TouchableOpacity>
-                          ) : null}
-                        </View>
-
-                        {tmplSignatureUrl ? (
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F8FAFC', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' }}>
-                            <Image
-                              source={{ uri: tmplSignatureUrl }}
-                              style={{ width: 120, height: 40, resizeMode: 'contain', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 4, padding: 2 }}
-                            />
+                      {/* Collapsible: More options (signatory, notes, legal terms & Tax ID) */}
+                      <View style={[styles.gatewayCard, { overflow: 'hidden' }]}>
+                        <TouchableOpacity
+                          style={[styles.gatewayHeadTop, { paddingVertical: 14 }]}
+                          onPress={() => setShowMoreRentOptions(!showMoreRentOptions)}
+                          activeOpacity={0.8}
+                        >
+                          <View style={styles.gatewayBrandRow}>
+                            <View style={[styles.gatewayIconBox, { backgroundColor: '#8B5CF6' }]}>
+                              <Feather name="sliders" size={18} color="#FFFFFF" />
+                            </View>
                             <View style={{ flex: 1 }}>
-                              <Text style={{ fontSize: 12, fontWeight: '600', color: '#0F172A' }}>Authorized Signature Uploaded</Text>
-                              <TouchableOpacity
-                                onPress={async () => {
-                                  try {
-                                    const picked = await pickSingleImage({ quality: 0.8 });
-                                    if (picked) {
-                                      setTmplSignatureUrl(picked.base64 || picked.uri);
-                                      Alert.alert('Signature Attached ✓', 'Authorized signature image updated.');
-                                    }
-                                  } catch (err: any) {
-                                    Alert.alert('Selection Error', err?.message || 'Could not select signature.');
-                                  }
-                                }}
-                              >
-                                <Text style={{ fontSize: 11.5, color: '#10B981', fontWeight: '600', textDecorationLine: 'underline', marginTop: 2 }}>Replace Signature</Text>
-                              </TouchableOpacity>
+                              <Text style={styles.gatewayTitle}>More options</Text>
+                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Tax ID, signatory, notes, terms & stamp</Text>
                             </View>
                           </View>
-                        ) : (
-                          <TouchableOpacity
-                            style={{ borderWidth: 1.5, borderStyle: 'dashed', borderColor: '#CBD5E1', borderRadius: 8, padding: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8FAFC' }}
-                            onPress={async () => {
-                              try {
-                                const picked = await pickSingleImage({ quality: 0.8 });
-                                if (picked) {
-                                  setTmplSignatureUrl(picked.base64 || picked.uri);
-                                  Alert.alert('Signature Attached ✓', 'Authorized signature image attached.');
-                                }
-                              } catch (err: any) {
-                                Alert.alert('Selection Error', err?.message || 'Could not select signature.');
-                              }
-                            }}
-                            activeOpacity={0.7}
-                          >
-                            <Feather name="upload" size={20} color="#64748B" style={{ marginBottom: 6 }} />
-                            <Text style={{ fontSize: 12.5, fontWeight: '600', color: '#0F172A' }}>Tap to upload official signature image or stamp</Text>
-                            <Text style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>PNG, JPG or SVG with transparent background recommended</Text>
-                          </TouchableOpacity>
+                          <Feather name={showMoreRentOptions ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkSoft} />
+                        </TouchableOpacity>
+
+                        {showMoreRentOptions && (
+                          <View style={[styles.gatewayBody, { borderTopWidth: 1, borderTopColor: isDark ? colors.line : '#E2E8F0', paddingTop: 14 }]}>
+                            <Text style={styles.fieldLabel}>Tax Registration No (GSTIN / PAN / VAT / EIN)</Text>
+                            <TextInput
+                              style={styles.input}
+                              value={tmplIssuerTaxNo}
+                              onChangeText={setTmplIssuerTaxNo}
+                              placeholder="e.g. GSTIN: 36AAACP1234F1Z8"
+                              autoCapitalize="characters"
+                            />
+
+                            <View style={{ flexDirection: 'row', gap: 10 }}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.fieldLabel}>Authorized Signatory</Text>
+                                <TextInput
+                                  style={styles.input}
+                                  value={tmplSignatory}
+                                  onChangeText={setTmplSignatory}
+                                  placeholder="Authorized Property Manager"
+                                />
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.fieldLabel}>Footer Greeting / Note</Text>
+                                <TextInput
+                                  style={styles.input}
+                                  value={tmplNotes}
+                                  onChangeText={setTmplNotes}
+                                  placeholder="Thank you for your tenancy"
+                                />
+                              </View>
+                            </View>
+
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                              <Text style={[styles.fieldLabel, { marginBottom: 0 }]}>Standard Terms & Conditions (T&C)</Text>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Text style={{ fontSize: 11, color: colors.inkSoft }}>Show on invoice</Text>
+                                <Switch
+                                  value={tmplIncludeTerms}
+                                  onValueChange={setTmplIncludeTerms}
+                                  trackColor={{ false: '#CBD5E1', true: '#10B981' }}
+                                  thumbColor="#FFFFFF"
+                                />
+                              </View>
+                            </View>
+                            <TextInput
+                              style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]}
+                              value={tmplTerms}
+                              onChangeText={setTmplTerms}
+                              placeholder="Terms & Conditions (one per line)"
+                              multiline
+                            />
+
+                            {/* Signature / Stamp */}
+                            <View style={{ marginTop: 4 }}>
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                <Text style={styles.fieldLabel}>Official Signature / Digital Stamp</Text>
+                                {tmplSignatureUrl ? (
+                                  <TouchableOpacity
+                                    onPress={() => setTmplSignatureUrl('')}
+                                    style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 }}
+                                  >
+                                    <Text style={{ fontSize: 11, fontWeight: '600', color: '#DC2626' }}>✕ Remove</Text>
+                                  </TouchableOpacity>
+                                ) : null}
+                              </View>
+
+                              {tmplSignatureUrl ? (
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: isDark ? colors.line : '#E2E8F0' }}>
+                                  <Image
+                                    source={{ uri: tmplSignatureUrl }}
+                                    style={{ width: 120, height: 40, resizeMode: 'contain', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 4, padding: 2 }}
+                                  />
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ fontSize: 12, fontWeight: '600', color: colors.navy }}>Authorized Signature Attached</Text>
+                                    <TouchableOpacity
+                                      onPress={async () => {
+                                        try {
+                                          const picked = await pickSingleImage({ quality: 0.8 });
+                                          if (picked) {
+                                            setTmplSignatureUrl(picked.base64 || picked.uri);
+                                            Alert.alert('Signature Attached ✓', 'Authorized signature image updated.');
+                                          }
+                                        } catch (err: any) {
+                                          Alert.alert('Selection Error', err?.message || 'Could not select signature.');
+                                        }
+                                      }}
+                                    >
+                                      <Text style={{ fontSize: 11.5, color: '#10B981', fontWeight: '600', textDecorationLine: 'underline', marginTop: 2 }}>Replace Signature</Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              ) : (
+                                <TouchableOpacity
+                                  style={{ borderWidth: 1.5, borderStyle: 'dashed', borderColor: isDark ? colors.line : '#CBD5E1', borderRadius: 8, padding: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC' }}
+                                  onPress={async () => {
+                                    try {
+                                      const picked = await pickSingleImage({ quality: 0.8 });
+                                      if (picked) {
+                                        setTmplSignatureUrl(picked.base64 || picked.uri);
+                                        Alert.alert('Signature Attached ✓', 'Authorized signature image attached.');
+                                      }
+                                    } catch (err: any) {
+                                      Alert.alert('Selection Error', err?.message || 'Could not select signature.');
+                                    }
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <Feather name="upload" size={18} color={colors.inkSoft} style={{ marginBottom: 4 }} />
+                                  <Text style={{ fontSize: 12, fontWeight: '600', color: colors.navy }}>Tap to upload signature or stamp</Text>
+                                </TouchableOpacity>
+                              )}
+                            </View>
+                          </View>
                         )}
                       </View>
-                    </View>
-                  </View>
 
-                  {/* 5. Live Interactive Invoice Preview Card */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#059669' }]}>
-                          <Feather name="eye" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>Live Rendered Tenant Invoice</Text>
-                      </View>
+                      {/* Single Clean Save Button */}
                       <TouchableOpacity
-                        onPress={() => setShowLiveInvoicePreview(!showLiveInvoicePreview)}
-                        style={{ padding: 6 }}
+                        style={styles.primaryActionButton}
+                        onPress={handleSaveInvoiceTemplate}
+                        activeOpacity={0.85}
                       >
-                        <Feather name={showLiveInvoicePreview ? 'chevron-up' : 'chevron-down'} size={20} color="#64748B" />
+                        <Feather name="save" size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.primaryActionButtonText}>Save Rent Invoice Template</Text>
                       </TouchableOpacity>
                     </View>
+                  )}
 
-                    {showLiveInvoicePreview && (
+                  {/* LIVE DOCUMENT PREVIEW (tplPreview model) */}
+                  {mobileTmplViewMode !== 'edit' && (
+                    <View style={{ marginBottom: 24 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>Live Document Preview</Text>
+                        <Text style={{ fontSize: 11, color: colors.inkSoft }}>Updates dynamically with changes</Text>
+                      </View>
+
                       <View style={styles.invoicePreviewContainer}>
-                        {/* Invoice Top Header */}
+                        {/* Header */}
                         <View style={styles.invoicePreviewHeader}>
                           <View style={{ flex: 1.2, paddingRight: 8, minWidth: 0 }}>
-                            <Text style={styles.invoicePreviewBrand} numberOfLines={1}>{tmplIssuerName}</Text>
-                            <Text style={styles.invoicePreviewMeta} numberOfLines={2}>{tmplIssuerAddress}</Text>
-                            <Text style={styles.invoicePreviewMeta} numberOfLines={1}>Tax ID: {tmplIssuerTaxNo}</Text>
-                            <Text style={styles.invoicePreviewMeta} numberOfLines={1}>{tmplIssuerPhone} • {tmplIssuerEmail}</Text>
+                            <Text style={styles.invoicePreviewBrand} numberOfLines={1}>{tmplIssuerName || 'Your Name or Business'}</Text>
+                            {tmplIssuerAddress ? <Text style={styles.invoicePreviewMeta} numberOfLines={2}>{tmplIssuerAddress}</Text> : null}
+                            {tmplIssuerEmail ? <Text style={styles.invoicePreviewMeta} numberOfLines={1}>{tmplIssuerEmail}</Text> : null}
+                            {tmplIssuerPhone ? <Text style={styles.invoicePreviewMeta} numberOfLines={1}>{tmplIssuerPhone}</Text> : null}
+                            {tmplIssuerTaxNo ? (
+                              <Text style={[styles.invoicePreviewMeta, { color: '#059669', fontWeight: '700' }]} numberOfLines={1}>
+                                {tmplIssuerTaxNo}
+                              </Text>
+                            ) : null}
+                            {!tmplIssuerAddress && !tmplIssuerEmail && !tmplIssuerPhone && !tmplIssuerTaxNo && (
+                              <Text style={styles.invoicePreviewMeta}>Your address, email & phone</Text>
+                            )}
                           </View>
                           <View style={{ flex: 1, alignItems: 'flex-end', minWidth: 0 }}>
                             <Text style={styles.invoicePreviewDocType} numberOfLines={1}>TAX INVOICE</Text>
-                            <Text style={styles.invoicePreviewId} numberOfLines={1}>#INV-2024-8891</Text>
-                            <Text style={styles.invoicePreviewMeta} numberOfLines={1}>Date: 01 Oct 2026</Text>
-                            <Text style={styles.invoicePreviewMeta} numberOfLines={1}>Due: 05 Oct 2026</Text>
+                            <Text style={styles.invoicePreviewId} numberOfLines={1}>#INV-2026-0089</Text>
+                            <Text style={styles.invoicePreviewMeta} numberOfLines={1}>Date: {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}</Text>
+                            <Text style={styles.invoicePreviewMeta} numberOfLines={1}>Status: UNPAID</Text>
                           </View>
                         </View>
 
-                        {/* Bill To */}
+                        {/* Bill To & Schedule Grid */}
                         <View style={styles.invoicePreviewBillTo}>
-                          <Text style={styles.invoicePreviewBillToLabel}>BILL TO:</Text>
+                          <Text style={styles.invoicePreviewBillToLabel}>BILLED TO (RESIDENT / TENANT):</Text>
                           <Text style={styles.invoicePreviewBillToVal}>{sampleTenantName} • {sampleUnitName}, {samplePropertyName}</Text>
                         </View>
 
@@ -3625,7 +3746,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                               </View>
                               {taxRate > 0 && (
                                 <View style={styles.invoiceTableRow}>
-                                  <Text style={[styles.invoiceTableCell, { flex: 2 }]}>{tmplTaxLabel} ({taxRate}%)</Text>
+                                  <Text style={[styles.invoiceTableCell, { flex: 2 }]}>{tmplTaxLabel || 'Tax'} ({taxRate}%)</Text>
                                   <Text style={[styles.invoiceTableCell, { flex: 1, textAlign: 'right', fontWeight: '700' }]}>
                                     {format(taxAmt, sampleCurrency)}
                                   </Text>
@@ -3651,8 +3772,16 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                         {/* Terms & Footer Sign */}
                         <View style={styles.invoicePreviewFooter}>
                           <View style={{ flex: 1.5 }}>
-                            <Text style={styles.invoicePreviewTermsTitle}>Terms & Conditions</Text>
-                            <Text style={styles.invoicePreviewTermsText} numberOfLines={3}>{tmplTerms}</Text>
+                            {tmplIncludeTerms && tmplTerms ? (
+                              <View style={{ marginBottom: 6 }}>
+                                <Text style={styles.invoicePreviewTermsTitle}>Terms & Conditions</Text>
+                                {tmplTerms.split('\n').filter(Boolean).map((clause, idx) => (
+                                  <Text key={idx} style={[styles.invoicePreviewTermsText, { marginBottom: 2 }]}>
+                                    {clause.trim()}
+                                  </Text>
+                                ))}
+                              </View>
+                            ) : null}
                             <Text style={styles.invoicePreviewNotes}>{tmplNotes}</Text>
                           </View>
                           <View style={{ flex: 1, alignItems: 'flex-end', justifyContent: 'flex-end' }}>
@@ -3664,390 +3793,352 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             ) : (
                               <View style={styles.invoicePreviewSignLine} />
                             )}
-                            <Text style={styles.invoicePreviewSignText}>{tmplSignatory}</Text>
-                            <Text style={styles.invoicePreviewSignSub}>Digitally Authorized</Text>
+                            <Text style={styles.invoicePreviewSignText}>{tmplSignatory || 'Authorized Manager'}</Text>
+                            <Text style={styles.invoicePreviewSignSub}>Authorized Signatory</Text>
                           </View>
                         </View>
                       </View>
-                    )}
-                  </View>
-
-                  {/* Save Template Action Button */}
-                  <TouchableOpacity
-                    style={styles.primaryActionButton}
-                    onPress={handleSaveInvoiceTemplate}
-                    activeOpacity={0.85}
-                  >
-                    <Feather name="save" size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.primaryActionButtonText}>Save Invoice Template</Text>
-                  </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               )}
 
               {/* SECURITY DEPOSIT VOUCHER TEMPLATE */}
               {tmplDocumentType === 'deposit' && (
                 <View>
-                  {/* 1. Voucher Settings & Document Title */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#10B981' }]}>
-                          <Feather name="shield" size={18} color="#FFFFFF" />
+                  {/* EDIT FORM (3 Simple Sections + Collapsible More Options) */}
+                  {mobileTmplViewMode !== 'preview' && (
+                    <View style={{ marginBottom: 20 }}>
+                      {/* Section 1: Who is this from? */}
+                      <View style={styles.gatewayCard}>
+                        <View style={styles.gatewayHeadTop}>
+                          <View style={styles.gatewayBrandRow}>
+                            <View style={[styles.gatewayIconBox, { backgroundColor: '#10B981' }]}>
+                              <Feather name="shield" size={18} color="#FFFFFF" />
+                            </View>
+                            <View>
+                              <Text style={styles.gatewayTitle}>1. Who is this from?</Text>
+                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Shown at the top of the voucher</Text>
+                            </View>
+                          </View>
                         </View>
-                        <Text style={styles.gatewayTitle}>1. Voucher Settings & Document Title</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.gatewayBody}>
-                      <Text style={styles.fieldLabel}>Document Official Title</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplTitle}
-                        onChangeText={setDepTmplTitle}
-                        placeholder="SECURITY DEPOSIT CUSTODY VOUCHER"
-                      />
-
-                      <Text style={styles.fieldLabel}>Deposit Classification</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplClassification}
-                        onChangeText={setDepTmplClassification}
-                        placeholder="100% Refundable Security Deposit"
-                      />
-
-                      <Text style={styles.fieldLabel}>Custody Ledger Verification Mechanism</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplCustodyMechanism}
-                        onChangeText={setDepTmplCustodyMechanism}
-                        placeholder="Held in Landlord Trust Ledger with Platform Verification"
-                      />
-
-                      <Text style={styles.fieldLabel}>Mandatory Refund Window Following Move-Out Walkthrough</Text>
-                      <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
-                        {[14, 21, 30].map((days) => (
-                          <TouchableOpacity
-                            key={days}
-                            style={[
-                              styles.modeBtn,
-                              depTmplRefundTimeline === days && styles.modeBtnActive,
-                              { flex: 1, paddingVertical: 8 },
-                            ]}
-                            onPress={() => setDepTmplRefundTimeline(days)}
-                          >
-                            <Text style={[styles.modeBtnText, depTmplRefundTimeline === days && styles.modeBtnTextActive]} numberOfLines={1}>
-                              {days} Days
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplRefundTimeline ? depTmplRefundTimeline.toString() : ''}
-                        onChangeText={(txt) => {
-                          const cleaned = txt.replace(/[^0-9]/g, '');
-                          setDepTmplRefundTimeline(cleaned === '' ? 14 : Number(cleaned));
-                        }}
-                        placeholder="14"
-                        keyboardType="numeric"
-                      />
-                    </View>
-                  </View>
-
-                  {/* 2. Landlord / Custodian Identity */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#6366F1' }]}>
-                          <Feather name="user-check" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>2. Landlord / Custodian Identity</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.gatewayBody}>
-                      <Text style={styles.fieldLabel}>Official Trade / Business Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplIssuerName}
-                        onChangeText={setDepTmplIssuerName}
-                        placeholder="e.g. Propithub Real Estate Trust"
-                      />
-
-                      <Text style={styles.fieldLabel}>Tax Registration No (GSTIN / PAN / VAT)</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplIssuerTaxNo}
-                        onChangeText={setDepTmplIssuerTaxNo}
-                        placeholder="e.g. TAX-ID-9821345 or GSTIN"
-                        autoCapitalize="characters"
-                      />
-
-                      <Text style={styles.fieldLabel}>Full Business / Registered Address</Text>
-                      <TextInput
-                        style={[styles.input, { minHeight: 50, textAlignVertical: 'top' }]}
-                        value={depTmplIssuerAddress}
-                        onChangeText={setDepTmplIssuerAddress}
-                        placeholder="e.g. 100 Main Street, Suite 400"
-                        multiline
-                      />
-
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>Custodian Phone</Text>
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Official Trade / Business Name</Text>
                           <TextInput
                             style={styles.input}
-                            value={depTmplIssuerPhone}
-                            onChangeText={setDepTmplIssuerPhone}
-                            placeholder="+1 555-019-2834"
-                            keyboardType="phone-pad"
+                            value={depTmplIssuerName}
+                            onChangeText={setDepTmplIssuerName}
+                            placeholder="e.g. Acme Properties"
+                          />
+
+                          <View style={{ flexDirection: 'row', gap: 10 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.fieldLabel}>Primary Contact Phone</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={depTmplIssuerPhone}
+                                onChangeText={setDepTmplIssuerPhone}
+                                placeholder="+1 555-019-2834"
+                                keyboardType="phone-pad"
+                              />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.fieldLabel}>Official Billing Email</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={depTmplIssuerEmail}
+                                onChangeText={setDepTmplIssuerEmail}
+                                placeholder="billing@acme.com"
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                              />
+                            </View>
+                          </View>
+
+                          <Text style={styles.fieldLabel}>Full Business / Registered Address</Text>
+                          <TextInput
+                            style={[styles.input, { minHeight: 48, textAlignVertical: 'top' }]}
+                            value={depTmplIssuerAddress}
+                            onChangeText={setDepTmplIssuerAddress}
+                            placeholder="e.g. 100 Main St, Suite 400"
+                            multiline
+                          />
+
+                          <Text style={styles.fieldLabel}>Refund within (days after move-out)</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={String(depTmplRefundTimeline || '')}
+                            onChangeText={(text) => {
+                              const val = parseInt(text.replace(/[^0-9]/g, ''), 10);
+                              setDepTmplRefundTimeline(isNaN(val) ? 0 : val);
+                            }}
+                            placeholder="14"
+                            keyboardType="number-pad"
                           />
                         </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>Custodian Email</Text>
+                      </View>
+
+                      {/* Section 2: How should tenants pay? */}
+                      <View style={styles.gatewayCard}>
+                        <View style={styles.gatewayHeadTop}>
+                          <View style={styles.gatewayBrandRow}>
+                            <View style={[styles.gatewayIconBox, { backgroundColor: '#0284C7' }]}>
+                              <Feather name="credit-card" size={18} color="#FFFFFF" />
+                            </View>
+                            <View>
+                              <Text style={styles.gatewayTitle}>2. How should tenants pay?</Text>
+                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Deposit settlement instructions printed on voucher</Text>
+                            </View>
+                          </View>
+                        </View>
+                        <View style={styles.gatewayBody}>
+                          <Text style={styles.fieldLabel}>Trust Institution / Bank Name</Text>
                           <TextInput
                             style={styles.input}
-                            value={depTmplIssuerEmail}
-                            onChangeText={setDepTmplIssuerEmail}
-                            placeholder="custody@propithub.app"
-                            keyboardType="email-address"
+                            value={depTmplBankName}
+                            onChangeText={setDepTmplBankName}
+                            placeholder="e.g. Chase Bank / HDFC"
+                          />
+
+                          <Text style={styles.fieldLabel}>Beneficiary Account Name</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={depTmplAccountName}
+                            onChangeText={setDepTmplAccountName}
+                            placeholder="Acme Properties LLC - Trust A/C"
+                          />
+
+                          <View style={{ flexDirection: 'row', gap: 10 }}>
+                            <View style={{ flex: 1.2 }}>
+                              <Text style={styles.fieldLabel}>Account Number / IBAN</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={depTmplAccountNumber}
+                                onChangeText={setDepTmplAccountNumber}
+                                placeholder="1234567890"
+                                keyboardType="numeric"
+                              />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.fieldLabel}>IFSC / Routing</Text>
+                              <TextInput
+                                style={styles.input}
+                                value={depTmplIfsc}
+                                onChangeText={setDepTmplIfsc}
+                                placeholder="ROUTING1234"
+                                autoCapitalize="characters"
+                              />
+                            </View>
+                          </View>
+
+                          <Text style={styles.fieldLabel}>Remittance UPI ID / VPA / Instant Link</Text>
+                          <TextInput
+                            style={styles.input}
+                            value={depTmplUpiId}
+                            onChangeText={setDepTmplUpiId}
+                            placeholder="deposit@upi / VPA"
                             autoCapitalize="none"
                           />
                         </View>
                       </View>
-                    </View>
-                  </View>
 
-                  {/* 3. Deposit Trust Bank Account & Remittance */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#0284C7' }]}>
-                          <Feather name="credit-card" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>3. Deposit Trust Bank Account & Remittance</Text>
+                      {/* Collapsible: More options (signatory, notes, custody mechanism & terms) */}
+                      <View style={[styles.gatewayCard, { overflow: 'hidden' }]}>
+                        <TouchableOpacity
+                          style={[styles.gatewayHeadTop, { paddingVertical: 14 }]}
+                          onPress={() => setShowMoreDepOptions(!showMoreDepOptions)}
+                          activeOpacity={0.8}
+                        >
+                          <View style={styles.gatewayBrandRow}>
+                            <View style={[styles.gatewayIconBox, { backgroundColor: '#8B5CF6' }]}>
+                              <Feather name="sliders" size={18} color="#FFFFFF" />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.gatewayTitle}>More options</Text>
+                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Tax ID, title, custody classification & terms</Text>
+                            </View>
+                          </View>
+                          <Feather name={showMoreDepOptions ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkSoft} />
+                        </TouchableOpacity>
+
+                        {showMoreDepOptions && (
+                          <View style={[styles.gatewayBody, { borderTopWidth: 1, borderTopColor: isDark ? colors.line : '#E2E8F0', paddingTop: 14 }]}>
+                            <Text style={styles.fieldLabel}>Tax Registration No (GSTIN / PAN / VAT / EIN)</Text>
+                            <TextInput
+                              style={styles.input}
+                              value={depTmplIssuerTaxNo}
+                              onChangeText={setDepTmplIssuerTaxNo}
+                              placeholder="e.g. PAN or GSTIN"
+                              autoCapitalize="characters"
+                            />
+
+                            <Text style={styles.fieldLabel}>Document Official Title</Text>
+                            <TextInput
+                              style={styles.input}
+                              value={depTmplTitle}
+                              onChangeText={setDepTmplTitle}
+                              placeholder="SECURITY DEPOSIT CUSTODY VOUCHER"
+                            />
+
+                            <Text style={styles.fieldLabel}>Custody Mechanism</Text>
+                            <TextInput
+                              style={styles.input}
+                              value={depTmplCustodyMechanism}
+                              onChangeText={setDepTmplCustodyMechanism}
+                              placeholder="Held in Landlord Trust Ledger"
+                            />
+
+                            <View style={{ flexDirection: 'row', gap: 10 }}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.fieldLabel}>Authorized Signatory</Text>
+                                <TextInput
+                                  style={styles.input}
+                                  value={depTmplSignatory}
+                                  onChangeText={setDepTmplSignatory}
+                                  placeholder="Authorized Custodian"
+                                />
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.fieldLabel}>Footer Remark / Custody Note</Text>
+                                <TextInput
+                                  style={styles.input}
+                                  value={depTmplNotes}
+                                  onChangeText={setDepTmplNotes}
+                                  placeholder="Held in landlord trust ledger until move-out"
+                                />
+                              </View>
+                            </View>
+
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                              <Text style={[styles.fieldLabel, { marginBottom: 0 }]}>Deposit Terms & Conditions</Text>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Text style={{ fontSize: 11, color: colors.inkSoft }}>Show on invoice</Text>
+                                <Switch
+                                  value={depTmplIncludeTerms}
+                                  onValueChange={setDepTmplIncludeTerms}
+                                  trackColor={{ false: '#CBD5E1', true: '#10B981' }}
+                                  thumbColor="#FFFFFF"
+                                />
+                              </View>
+                            </View>
+                            <TextInput
+                              style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]}
+                              value={depTmplTerms}
+                              onChangeText={setDepTmplTerms}
+                              placeholder="Deposit Terms & Conditions (one per line)"
+                              multiline
+                            />
+                          </View>
+                        )}
                       </View>
-                    </View>
 
-                    <View style={styles.gatewayBody}>
-                      <Text style={styles.fieldLabel}>Trust Bank Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplBankName}
-                        onChangeText={setDepTmplBankName}
-                        placeholder="e.g. Trust Bank / Chase Bank"
-                      />
-
-                      <Text style={styles.fieldLabel}>Beneficiary Account Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplAccountName}
-                        onChangeText={setDepTmplAccountName}
-                        placeholder="e.g. Propithub Deposit Custody Account"
-                      />
-
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>Account Number</Text>
-                          <TextInput
-                            style={styles.input}
-                            value={depTmplAccountNumber}
-                            onChangeText={setDepTmplAccountNumber}
-                            placeholder="1234567890"
-                            keyboardType="numeric"
-                          />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fieldLabel}>IFSC / SWIFT / Routing</Text>
-                          <TextInput
-                            style={styles.input}
-                            value={depTmplIfsc}
-                            onChangeText={setDepTmplIfsc}
-                            placeholder="ROUTING1234"
-                            autoCapitalize="characters"
-                          />
-                        </View>
-                      </View>
-
-                      <Text style={styles.fieldLabel}>Deposit Remittance UPI ID / VPA</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplUpiId}
-                        onChangeText={setDepTmplUpiId}
-                        placeholder="e.g. deposit@yourproperty.com / UPI"
-                        autoCapitalize="none"
-                      />
-                    </View>
-                  </View>
-
-                  {/* 4. Deposit & Move-Out Legal Clauses */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#8B5CF6' }]}>
-                          <Feather name="file-text" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>4. Deposit & Move-Out Legal Clauses</Text>
-                      </View>
+                      {/* Single Clean Save Button */}
                       <TouchableOpacity
-                        style={styles.statutoryResetBtn}
-                        onPress={() => setDepTmplTerms(defaultDepositTerms)}
-                        activeOpacity={0.8}
+                        style={styles.primaryActionButton}
+                        onPress={handleSaveDepositTemplate}
+                        activeOpacity={0.85}
                       >
-                        <Text style={styles.statutoryResetBtnText}>Reset Statutory</Text>
+                        <Feather name="shield" size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.primaryActionButtonText}>Save Deposit Template</Text>
                       </TouchableOpacity>
                     </View>
+                  )}
 
-                    <View style={styles.gatewayBody}>
-                      <Text style={styles.fieldLabel}>Security Deposit Terms & Walkthrough Conditions</Text>
-                      <TextInput
-                        style={[styles.input, { minHeight: 110, textAlignVertical: 'top' }]}
-                        value={depTmplTerms}
-                        onChangeText={setDepTmplTerms}
-                        multiline
-                      />
-
-                      <Text style={styles.fieldLabel}>Authorized Signatory Designation / Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplSignatory}
-                        onChangeText={setDepTmplSignatory}
-                        placeholder="Authorized Property Manager / Landlord"
-                      />
-
-                      <Text style={styles.fieldLabel}>Footer Custody Note</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={depTmplNotes}
-                        onChangeText={setDepTmplNotes}
-                        placeholder="Funds are non-commingled, non-taxable security deposits..."
-                      />
-                    </View>
-                  </View>
-
-                  {/* 5. Live Rendered Security Deposit Voucher Preview */}
-                  <View style={styles.gatewayCard}>
-                    <View style={styles.gatewayHeadTop}>
-                      <View style={styles.gatewayBrandRow}>
-                        <View style={[styles.gatewayIconBox, { backgroundColor: '#10B981' }]}>
-                          <Feather name="eye" size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={styles.gatewayTitle}>Live Rendered Deposit Voucher</Text>
+                  {/* LIVE DOCUMENT PREVIEW (tplPreview model for deposit) */}
+                  {mobileTmplViewMode !== 'edit' && (
+                    <View style={{ marginBottom: 24 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>Live Document Preview</Text>
+                        <Text style={{ fontSize: 11, color: colors.inkSoft }}>Updates dynamically with changes</Text>
                       </View>
-                      <TouchableOpacity
-                        onPress={() => setShowLiveDepositPreview(!showLiveDepositPreview)}
-                        style={{ padding: 6 }}
-                      >
-                        <Feather name={showLiveDepositPreview ? 'chevron-up' : 'chevron-down'} size={20} color="#64748B" />
-                      </TouchableOpacity>
-                    </View>
 
-                    {showLiveDepositPreview && (
                       <View style={styles.invoicePreviewContainer}>
-                        {/* Top Header */}
+                        {/* Header */}
                         <View style={styles.invoicePreviewHeader}>
-                          <View style={{ flex: 1.2 }}>
-                            <Text style={styles.invoicePreviewBrand}>{depTmplIssuerName}</Text>
-                            <Text style={styles.invoicePreviewMeta}>{depTmplIssuerAddress}</Text>
+                          <View style={{ flex: 1.2, paddingRight: 8, minWidth: 0 }}>
+                            <Text style={styles.invoicePreviewBrand} numberOfLines={1}>{depTmplIssuerName || 'Your Name or Business'}</Text>
+                            {depTmplIssuerAddress ? <Text style={styles.invoicePreviewMeta} numberOfLines={2}>{depTmplIssuerAddress}</Text> : null}
+                            {depTmplIssuerEmail ? <Text style={styles.invoicePreviewMeta} numberOfLines={1}>{depTmplIssuerEmail}</Text> : null}
+                            {depTmplIssuerPhone ? <Text style={styles.invoicePreviewMeta} numberOfLines={1}>{depTmplIssuerPhone}</Text> : null}
                             {depTmplIssuerTaxNo ? (
-                              <Text style={[styles.invoicePreviewMeta, { color: '#10B981', fontWeight: '700' }]}>
+                              <Text style={[styles.invoicePreviewMeta, { color: '#059669', fontWeight: '700' }]} numberOfLines={1}>
                                 {depTmplIssuerTaxNo}
                               </Text>
                             ) : null}
-                            <Text style={styles.invoicePreviewMeta}>{depTmplIssuerPhone} • {depTmplIssuerEmail}</Text>
+                            {!depTmplIssuerAddress && !depTmplIssuerEmail && !depTmplIssuerPhone && !depTmplIssuerTaxNo && (
+                              <Text style={styles.invoicePreviewMeta}>Your address, email & phone</Text>
+                            )}
                           </View>
-                          <View style={{ flex: 1, alignItems: 'flex-end' }}>
-                            <Text style={[styles.invoicePreviewDocType, { fontSize: 11, textAlign: 'right' }]}>
-                              {depTmplTitle}
+                          <View style={{ flex: 1, alignItems: 'flex-end', minWidth: 0 }}>
+                            <Text style={[styles.invoicePreviewDocType, { color: '#059669' }]} numberOfLines={1}>
+                              {depTmplTitle || 'DEPOSIT RECEIPT'}
                             </Text>
-                            <Text style={styles.invoicePreviewId}>#DEP-2026-0042</Text>
-                            <Text style={styles.invoicePreviewMeta}>Issued: 01 Oct 2026</Text>
-                            <View style={styles.depositBadge}>
-                              <Text style={styles.depositBadgeText}>✓ DEPOSIT PROTECTED</Text>
-                            </View>
+                            <Text style={styles.invoicePreviewId} numberOfLines={1}>#DEP-2026-0042</Text>
+                            <Text style={styles.invoicePreviewMeta} numberOfLines={1}>Date: {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}</Text>
+                            <Text style={[styles.invoicePreviewMeta, { color: '#059669', fontWeight: '700' }]} numberOfLines={1}>
+                              ✓ CUSTODY HELD
+                            </Text>
                           </View>
                         </View>
 
-                        {/* Recipient & Tenancy Details */}
+                        {/* Bill To & Custody Grid */}
                         <View style={styles.invoicePreviewBillTo}>
-                          <Text style={styles.invoicePreviewBillToLabel}>HELD ON BEHALF OF (TENANT):</Text>
+                          <Text style={styles.invoicePreviewBillToLabel}>RECEIVED FROM (TENANT):</Text>
                           <Text style={styles.invoicePreviewBillToVal}>{sampleTenantName} • {sampleUnitName}, {samplePropertyName}</Text>
-                          <Text style={[styles.invoicePreviewMeta, { marginTop: 2 }]}>
-                            Custody Status: <Text style={{ color: '#15803D', fontWeight: '700' }}>Held in Trust Ledger</Text>
-                          </Text>
                         </View>
 
                         {/* Line Items Table */}
                         <View style={styles.invoiceTable}>
                           <View style={styles.invoiceTableRowHead}>
-                            <Text style={[styles.invoiceTableHeadCell, { flex: 2 }]}>Custody Item Description</Text>
+                            <Text style={[styles.invoiceTableHeadCell, { flex: 2 }]}>Description</Text>
                             <Text style={[styles.invoiceTableHeadCell, { flex: 1, textAlign: 'right' }]}>Amount</Text>
                           </View>
                           <View style={styles.invoiceTableRow}>
-                            <View style={{ flex: 2 }}>
-                              <Text style={[styles.invoiceTableCell, { fontWeight: '700' }]}>Security Deposit — {sampleUnitName}</Text>
-                              <Text style={{ fontSize: 9.5, color: '#64748B' }}>{depTmplClassification}</Text>
-                            </View>
+                            <Text style={[styles.invoiceTableCell, { flex: 2 }]}>Security Deposit Trust Custody</Text>
                             <Text style={[styles.invoiceTableCell, { flex: 1, textAlign: 'right', fontWeight: '700' }]}>
                               {format(sampleDepositAmount, sampleCurrency)}
                             </Text>
                           </View>
-                          <View style={styles.invoiceTableRow}>
-                            <Text style={[styles.invoiceTableCell, { flex: 2 }]}>Tax Assessment</Text>
-                            <Text style={[styles.invoiceTableCell, { flex: 1, textAlign: 'right', color: '#15803D', fontWeight: '600' }]}>{format(0, sampleCurrency)} (Non-Taxable)</Text>
-                          </View>
                           <View style={[styles.invoiceTableRow, styles.invoiceTableTotalRow]}>
-                            <Text style={[styles.invoiceTableTotalCell, { flex: 2 }]}>TOTAL DEPOSIT IN CUSTODY</Text>
-                            <Text style={[styles.invoiceTableTotalCell, { flex: 1, textAlign: 'right', color: '#10B981' }]}>
+                            <Text style={[styles.invoiceTableTotalCell, { flex: 2 }]}>TOTAL DEPOSIT HELD</Text>
+                            <Text style={[styles.invoiceTableTotalCell, { flex: 1, textAlign: 'right', color: '#059669' }]}>
                               {format(sampleDepositAmount, sampleCurrency)}
                             </Text>
                           </View>
                         </View>
 
-                        {/* Custody Mechanism Banner */}
-                        <View style={styles.custodyBanner}>
-                          <Text style={styles.custodyBannerTitle}>Custody & Verification Mechanism</Text>
-                          <Text style={styles.custodyBannerText}>
-                            {depTmplCustodyMechanism}
-                          </Text>
-                          <Text style={[styles.custodyBannerText, { marginTop: 2, fontWeight: '600' }]}>
-                            Mandatory Refund Window: {depTmplRefundTimeline} business days following move-out clearance
-                          </Text>
-                        </View>
-
-                        {/* Remittance Trust Info */}
+                        {/* Custody Mechanism & Settlement Wire Info */}
                         <View style={styles.invoicePreviewRemitBox}>
-                          <Text style={styles.invoicePreviewRemitTitle}>OFFICIAL DEPOSIT TRUST BANK & REMITTANCE:</Text>
-                          <Text style={styles.invoicePreviewRemitText}>Bank: {depTmplBankName || 'Custody Trust Bank'} • A/C: {depTmplAccountNumber || '1234567890'} ({depTmplAccountName || user.displayName || 'Property Landlord'})</Text>
-                          <Text style={styles.invoicePreviewRemitText}>Routing/SWIFT: {depTmplIfsc || 'ROUTING1234'}{depTmplUpiId ? ` • VPA: ${depTmplUpiId}` : ''}</Text>
+                          <Text style={styles.invoicePreviewRemitTitle}>CUSTODY & REFUND CLEARANCE:</Text>
+                          <Text style={styles.invoicePreviewRemitText}>{depTmplCustodyMechanism}</Text>
+                          <Text style={styles.invoicePreviewRemitText}>Refund Timeline: {depTmplRefundTimeline} business days following checkout clearance</Text>
+                          <Text style={[styles.invoicePreviewRemitText, { marginTop: 4 }]}>Trust Bank: {depTmplBankName || 'Custody Bank'} • A/C: {depTmplAccountNumber || '1234567890'} ({depTmplAccountName || user.displayName || 'Property Landlord'})</Text>
                         </View>
 
                         {/* Terms & Footer Sign */}
                         <View style={styles.invoicePreviewFooter}>
                           <View style={{ flex: 1.5 }}>
-                            <Text style={styles.invoicePreviewTermsTitle}>Deposit Terms & Move-Out Conditions</Text>
-                            <Text style={styles.invoicePreviewTermsText} numberOfLines={3}>{depTmplTerms}</Text>
+                            {depTmplIncludeTerms && depTmplTerms ? (
+                              <View style={{ marginBottom: 6 }}>
+                                <Text style={styles.invoicePreviewTermsTitle}>Deposit Terms & Conditions</Text>
+                                {depTmplTerms.split('\n').filter(Boolean).map((clause, idx) => (
+                                  <Text key={idx} style={[styles.invoicePreviewTermsText, { marginBottom: 2 }]}>
+                                    {clause.trim()}
+                                  </Text>
+                                ))}
+                              </View>
+                            ) : null}
                             <Text style={styles.invoicePreviewNotes}>{depTmplNotes}</Text>
                           </View>
                           <View style={{ flex: 1, alignItems: 'flex-end', justifyContent: 'flex-end' }}>
                             <View style={styles.invoicePreviewSignLine} />
-                            <Text style={styles.invoicePreviewSignText}>{depTmplSignatory}</Text>
+                            <Text style={styles.invoicePreviewSignText}>{depTmplSignatory || 'Authorized Custodian'}</Text>
                             <Text style={styles.invoicePreviewSignSub}>Authorized Custodian</Text>
                           </View>
                         </View>
                       </View>
-                    )}
-                  </View>
-
-                  {/* Save Deposit Voucher Template Action Button */}
-                  <TouchableOpacity
-                    style={styles.primaryActionButton}
-                    onPress={handleSaveDepositTemplate}
-                    activeOpacity={0.85}
-                  >
-                    <Feather name="shield" size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.primaryActionButtonText}>Save Deposit Template</Text>
-                  </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               )}
             </View>
@@ -4062,113 +4153,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 </View>
               </View>
 
-              {/* 1. Grace Period Policy */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#F59E0B' }]}>
-                      <Feather name="clock" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Grace Period Window</Text>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.gatewayBody}>
-                  <Text style={styles.fieldLabel}>Grace Period (Days)</Text>
-                  <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12 }}>
-                    {['3', '5', '7', '10'].map((d) => (
-                      <TouchableOpacity
-                        key={d}
-                        style={[
-                          styles.gracePillBtn,
-                          lateFeeGrace === d && styles.gracePillBtnActive,
-                        ]}
-                        onPress={() => setLateFeeGrace(d)}
-                      >
-                        <Text style={[styles.gracePillBtnText, lateFeeGrace === d && styles.gracePillBtnTextActive]} numberOfLines={1}>
-                          {d} Days
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <View style={styles.sandboxInfoBox}>
-                    <Text style={styles.sandboxInfoText}>
-                      Rent due on 1st of month. With a {lateFeeGrace}-day grace period, penalties will automatically apply starting on the {parseInt(lateFeeGrace, 10) + 1}th of each month.
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* 2. Late Fee Penalty Calculation Model */}
-              <View style={styles.gatewayCard}>
-                <View style={styles.gatewayHeadTop}>
-                  <View style={styles.gatewayBrandRow}>
-                    <View style={[styles.gatewayIconBox, { backgroundColor: '#DC2626' }]}>
-                      <Feather name="alert-triangle" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Penalty Calculation Engine</Text>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.gatewayBody}>
-                  <Text style={styles.fieldLabel}>Calculation Method</Text>
-                  <View style={styles.penaltyMethodRow}>
-                    <TouchableOpacity
-                      style={[styles.penaltyMethodCard, lateFeeType === 'percent' && styles.penaltyMethodCardActive]}
-                      onPress={() => setLateFeeType('percent')}
-                      activeOpacity={0.8}
-                    >
-                      <Feather name="percent" size={14} color={lateFeeType === 'percent' ? '#10B981' : '#64748B'} style={{ marginRight: 6 }} />
-                      <Text style={[styles.penaltyMethodTitle, lateFeeType === 'percent' && styles.penaltyMethodTitleActive]} numberOfLines={1}>
-                        Percentage
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.penaltyMethodCard, lateFeeType === 'flat' && styles.penaltyMethodCardActive]}
-                      onPress={() => setLateFeeType('flat')}
-                      activeOpacity={0.8}
-                    >
-                      <Feather name="dollar-sign" size={14} color={lateFeeType === 'flat' ? '#10B981' : '#64748B'} style={{ marginRight: 6 }} />
-                      <Text style={[styles.penaltyMethodTitle, lateFeeType === 'flat' && styles.penaltyMethodTitleActive]} numberOfLines={1}>
-                        Flat Fee
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.fieldLabel}>
-                        {lateFeeType === 'percent' ? 'Rate (% of Monthly Rent)' : `Penalty Amount (${dominantRentCurrency})`}
-                      </Text>
-                      <TextInput
-                        style={styles.input}
-                        value={lateFeeValue}
-                        onChangeText={setLateFeeValue}
-                        keyboardType="numeric"
-                        placeholder="5"
-                      />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.fieldLabel}>Max Statutory Cap ({dominantRentCurrency})</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={lateFeeCap}
-                        onChangeText={setLateFeeCap}
-                        keyboardType="numeric"
-                        placeholder="2500"
-                      />
-                    </View>
-                  </View>
-                </View>
-              </View>
-
-              {/* 3. Automated Rental Reminders */}
+              {/* 1. Automated Rental Reminders */}
               <View style={styles.gatewayCard}>
                 <View style={styles.gatewayHeadTop}>
                   <View style={styles.gatewayBrandRow}>
@@ -4176,7 +4161,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                       <Feather name="bell" size={18} color="#FFFFFF" />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.gatewayTitle}>Automated Rental Reminders</Text>
+                      <Text style={styles.gatewayTitle}>Rental Payment Reminder Rule</Text>
                       <View style={styles.gatewayBadgeRow}>
                         <View style={reminderEnabled ? styles.badgePillGreen : styles.badgePillGrey}>
                           <Text style={reminderEnabled ? styles.badgePillGreenText : styles.badgePillGreyText}>
@@ -4198,7 +4183,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                   <View style={styles.gatewayBody}>
                     <Text style={styles.fieldLabel}>Dispatch Schedule Window</Text>
                     <View style={{ flexDirection: 'row', gap: 6, marginBottom: 14 }}>
-                      {[10, 7, 5, 3].map((days) => (
+                      {[15, 10, 7, 5, 3].map((days) => (
                         <TouchableOpacity
                           key={days}
                           style={[
@@ -4216,7 +4201,103 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
                     <View style={[styles.sandboxInfoBox, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
                       <Text style={[styles.sandboxInfoText, { color: '#065F46' }]}>
-                        ✓ Active Policy: Reminders will automatically be dispatched to tenants {reminderDays} days prior to the 1st of the month with quick checkout links.
+                        ✓ Active Policy: Reminders will automatically be dispatched to tenants {reminderDays} days prior to the rent due date with quick checkout links.
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* 2. Late Fee Rule */}
+              <View style={styles.gatewayCard}>
+                <View style={styles.gatewayHeadTop}>
+                  <View style={styles.gatewayBrandRow}>
+                    <View style={[styles.gatewayIconBox, { backgroundColor: '#DC2626' }]}>
+                      <Feather name="alert-triangle" size={18} color="#FFFFFF" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.gatewayTitle}>Late Fee Rule</Text>
+                      <View style={styles.gatewayBadgeRow}>
+                        <View style={lateFeeEnabled ? styles.badgePillGreen : styles.badgePillGrey}>
+                          <Text style={lateFeeEnabled ? styles.badgePillGreenText : styles.badgePillGreyText}>
+                            {lateFeeEnabled ? 'Active' : 'Disabled'}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  </View>
+                  <Switch
+                    value={lateFeeEnabled}
+                    onValueChange={setLateFeeEnabled}
+                    trackColor={{ false: '#E2E8F0', true: '#10B981' }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {lateFeeEnabled && (
+                  <View style={styles.gatewayBody}>
+                    <Text style={styles.fieldLabel}>Fee Type</Text>
+                    <View style={styles.penaltyMethodRow}>
+                      <TouchableOpacity
+                        style={[styles.penaltyMethodCard, lateFeeType === 'percent' && styles.penaltyMethodCardActive]}
+                        onPress={() => setLateFeeType('percent')}
+                        activeOpacity={0.8}
+                      >
+                        <Feather name="percent" size={14} color={lateFeeType === 'percent' ? '#10B981' : '#64748B'} style={{ marginRight: 6 }} />
+                        <Text style={[styles.penaltyMethodTitle, lateFeeType === 'percent' && styles.penaltyMethodTitleActive]} numberOfLines={1}>
+                          Percent of rent
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.penaltyMethodCard, lateFeeType === 'flat' && styles.penaltyMethodCardActive]}
+                        onPress={() => setLateFeeType('flat')}
+                        activeOpacity={0.8}
+                      >
+                        <Feather name="dollar-sign" size={14} color={lateFeeType === 'flat' ? '#10B981' : '#64748B'} style={{ marginRight: 6 }} />
+                        <Text style={[styles.penaltyMethodTitle, lateFeeType === 'flat' && styles.penaltyMethodTitleActive]} numberOfLines={1}>
+                          Flat amount
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.fieldLabel}>
+                          {lateFeeType === 'percent' ? 'Rate (% of Monthly Rent)' : `Amount (${dominantRentCurrency})`}
+                        </Text>
+                        <TextInput
+                          style={styles.input}
+                          value={lateFeeValue}
+                          onChangeText={setLateFeeValue}
+                          keyboardType="numeric"
+                          placeholder="5"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.fieldLabel}>Grace Period (Days)</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={lateFeeGrace}
+                          onChangeText={setLateFeeGrace}
+                          keyboardType="numeric"
+                          placeholder="3"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.fieldLabel}>Max Cap ({dominantRentCurrency})</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={lateFeeCap}
+                          onChangeText={setLateFeeCap}
+                          keyboardType="numeric"
+                          placeholder="1000"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={[styles.sandboxInfoBox, { marginTop: 12 }]}>
+                      <Text style={styles.sandboxInfoText}>
                       </Text>
                     </View>
                   </View>
@@ -4417,10 +4498,10 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                         offlineMethod === 'Bank Transfer'
                           ? 'credit-card'
                           : offlineMethod === 'UPI Direct'
-                          ? 'zap'
-                          : offlineMethod === 'Cash Handover'
-                          ? 'dollar-sign'
-                          : 'file-text'
+                            ? 'zap'
+                            : offlineMethod === 'Cash Handover'
+                              ? 'dollar-sign'
+                              : 'file-text'
                       }
                       size={16}
                       color={isDark ? '#34D399' : '#059669'}
@@ -4610,2256 +4691,2273 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  statusBarRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 4,
-    backgroundColor: colors.surface,
-  },
-  statusTime: {
-    color: colors.navy,
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  statusIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  mainContainer: {
-    flex: 1,
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    padding: 16,
-  },
-  summaryStrip: {
-    flexDirection: 'row',
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 14,
-    marginBottom: 16,
-  },
-  summaryItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  summaryDivider: {
-    width: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
-  },
-  summaryLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    marginBottom: 4,
-  },
-  summaryValueGreen: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#059669',
-  },
-  summaryValueAmber: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#D97706',
-  },
-  tabScroll: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  tabButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
-    marginRight: 8,
-  },
-  tabButtonActive: {
-    backgroundColor: '#10B981',
-  },
-  tabText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  tabTextActive: {
-    color: '#FFFFFF',
-  },
-  badgeAmber: {
-    backgroundColor: '#F59E0B',
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    marginLeft: 6,
-  },
-  badgeAmberText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionHeading: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  sectionSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  sectionSubHeading: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-    marginTop: 2,
-    lineHeight: 16,
-  },
-  createLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  createLinkText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#10B981',
-    marginLeft: 4,
-  },
-  exportBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-  },
-  exportBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.navy,
-    marginLeft: 4,
-  },
-  emptyCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 24,
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 10,
-  },
-  emptySub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  invoiceCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 14,
-    marginBottom: 10,
-  },
-  invTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  invTenant: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  invId: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#2563EB',
-    marginBottom: 2,
-  },
-  invUnit: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  invPeriod: {
-    fontSize: 11,
-    color: colors.inkMuted,
-    marginTop: 4,
-  },
-  amountCol: {
-    alignItems: 'flex-end',
-  },
-  invAmount: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  statusPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    marginTop: 6,
-  },
-  statusPillRed: {
-    backgroundColor: '#FEE2E2',
-  },
-  statusTextRed: {
-    color: '#DC2626',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  statusPillAmber: {
-    backgroundColor: '#FEF3C7',
-  },
-  statusTextAmber: {
-    color: '#B45309',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  statusPillGreen: {
-    backgroundColor: '#DCFCE7',
-  },
-  statusTextGreen: {
-    color: '#15803D',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  statusPillText: {
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  approvalCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#F59E0B',
-    padding: 14,
-    marginBottom: 12,
-  },
-  approvalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  approvalTenant: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  approvalSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  approvalAmount: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#D97706',
-  },
-  proofDetailsBox: {
-    backgroundColor: '#FFFBEB',
-    borderRadius: 8,
-    padding: 10,
-    marginVertical: 10,
-  },
-  proofDetailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  proofLabel: {
-    fontSize: 12,
-    color: '#92400E',
-    fontWeight: '600',
-  },
-  proofValue: {
-    fontSize: 12,
-    color: '#78350F',
-    fontWeight: '700',
-  },
-  approvalBtnRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  reviewProofBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    paddingVertical: 9,
-    borderRadius: 8,
-  },
-  reviewProofBtnText: {
-    color: '#2563EB',
-    fontSize: 12,
-    fontWeight: '700',
-    marginLeft: 4,
-  },
-  quickApproveBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#10B981',
-    paddingVertical: 9,
-    borderRadius: 8,
-  },
-  quickApproveBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    marginLeft: 4,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 16,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-    marginBottom: 12,
-  },
-  gatewaySectionTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#2563EB',
-    marginTop: 10,
-    marginBottom: 6,
-  },
-  fieldLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  fieldLabelNoMargin: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  input: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 13,
-    color: colors.navy,
-  },
-  gatewayToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-  },
-  toggleDivider: {
-    height: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    marginVertical: 12,
-  },
-  saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#10B981',
-    paddingVertical: 12,
-    borderRadius: 8,
-    marginTop: 18,
-  },
-  saveBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-    justifyContent: 'flex-end',
-  },
-  modalCard: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    maxHeight: '85%',
-  },
-  modalTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  modalSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  proofSummaryBox: {
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: 10,
-    padding: 14,
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  proofSummaryAmount: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#15803D',
-  },
-  proofSummaryRail: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#166534',
-    marginTop: 2,
-  },
-  modalFieldBox: {
-    marginBottom: 10,
-  },
-  modalFieldLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  modalFieldVal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  rejectLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#DC2626',
-    marginBottom: 4,
-  },
-  rejectInput: {
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 13,
-    color: '#991B1B',
-  },
-  modalActionsRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 18,
-  },
-  declineBtn: {
-    flex: 1,
-    backgroundColor: '#FEE2E2',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  declineBtnText: {
-    color: '#DC2626',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  confirmRejectBtn: {
-    flex: 1,
-    backgroundColor: '#DC2626',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  confirmRejectText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  approveBtn: {
-    flex: 1,
-    backgroundColor: '#10B981',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  approveBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    statusBarRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 20,
+      paddingTop: 8,
+      paddingBottom: 4,
+      backgroundColor: colors.surface,
+    },
+    statusTime: {
+      color: colors.navy,
+      fontWeight: '600',
+      fontSize: 14,
+    },
+    statusIcons: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    mainContainer: {
+      flex: 1,
+    },
+    scroll: {
+      flex: 1,
+    },
+    content: {
+      padding: 16,
+    },
+    summaryStrip: {
+      flexDirection: 'row',
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+      padding: 14,
+      marginBottom: 16,
+    },
+    summaryItem: {
+      flex: 1,
+      alignItems: 'center',
+    },
+    summaryDivider: {
+      width: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
+    },
+    summaryLabel: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      marginBottom: 4,
+    },
+    summaryValueGreen: {
+      fontSize: 18,
+      fontWeight: '800',
+      color: '#059669',
+    },
+    summaryValueAmber: {
+      fontSize: 18,
+      fontWeight: '800',
+      color: '#D97706',
+    },
+    tabScroll: {
+      flexDirection: 'row',
+      marginBottom: 16,
+    },
+    tabButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      borderRadius: 8,
+      marginRight: 8,
+    },
+    tabButtonActive: {
+      backgroundColor: '#10B981',
+    },
+    tabText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    tabTextActive: {
+      color: '#FFFFFF',
+    },
+    badgeAmber: {
+      backgroundColor: '#F59E0B',
+      borderRadius: 10,
+      paddingHorizontal: 6,
+      paddingVertical: 1,
+      marginLeft: 6,
+    },
+    badgeAmberText: {
+      color: '#FFFFFF',
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    sectionHeaderRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 12,
+    },
+    sectionHeading: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    sectionSub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+    },
+    sectionSubHeading: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+      marginTop: 2,
+      lineHeight: 16,
+    },
+    createLink: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    createLinkText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#10B981',
+      marginLeft: 4,
+    },
+    exportBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 6,
+    },
+    exportBtnText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.navy,
+      marginLeft: 4,
+    },
+    emptyCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+      padding: 24,
+      alignItems: 'center',
+      marginBottom: 16,
+    },
+    emptyTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 10,
+    },
+    emptySub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      textAlign: 'center',
+      marginTop: 4,
+    },
+    invoiceCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+      padding: 14,
+      marginBottom: 10,
+    },
+    invTopRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+    },
+    invTenant: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    invId: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: '#2563EB',
+      marginBottom: 2,
+    },
+    invUnit: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    invPeriod: {
+      fontSize: 11,
+      color: colors.inkMuted,
+      marginTop: 4,
+    },
+    amountCol: {
+      alignItems: 'flex-end',
+    },
+    invAmount: {
+      fontSize: 15,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    statusPill: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+      marginTop: 6,
+    },
+    statusPillRed: {
+      backgroundColor: '#FEE2E2',
+    },
+    statusTextRed: {
+      color: '#DC2626',
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    statusPillAmber: {
+      backgroundColor: '#FEF3C7',
+    },
+    statusTextAmber: {
+      color: '#B45309',
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    statusPillGreen: {
+      backgroundColor: '#DCFCE7',
+    },
+    statusTextGreen: {
+      color: '#15803D',
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    statusPillText: {
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    approvalCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: '#F59E0B',
+      padding: 14,
+      marginBottom: 12,
+    },
+    approvalHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+    },
+    approvalTenant: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    approvalSub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    approvalAmount: {
+      fontSize: 16,
+      fontWeight: '800',
+      color: '#D97706',
+    },
+    proofDetailsBox: {
+      backgroundColor: '#FFFBEB',
+      borderRadius: 8,
+      padding: 10,
+      marginVertical: 10,
+    },
+    proofDetailRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginBottom: 4,
+    },
+    proofLabel: {
+      fontSize: 12,
+      color: '#92400E',
+      fontWeight: '600',
+    },
+    proofValue: {
+      fontSize: 12,
+      color: '#78350F',
+      fontWeight: '700',
+    },
+    approvalBtnRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    reviewProofBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+      paddingVertical: 9,
+      borderRadius: 8,
+    },
+    reviewProofBtnText: {
+      color: '#2563EB',
+      fontSize: 12,
+      fontWeight: '700',
+      marginLeft: 4,
+    },
+    quickApproveBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#10B981',
+      paddingVertical: 9,
+      borderRadius: 8,
+    },
+    quickApproveBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '700',
+      marginLeft: 4,
+    },
+    card: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+      padding: 16,
+    },
+    cardTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+      marginBottom: 12,
+    },
+    gatewaySectionTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: '#2563EB',
+      marginTop: 10,
+      marginBottom: 6,
+    },
+    fieldLabel: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+      marginTop: 8,
+      marginBottom: 4,
+    },
+    fieldLabelNoMargin: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    input: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      fontSize: 13,
+      color: colors.navy,
+    },
+    gatewayToggleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 8,
+    },
+    toggleDivider: {
+      height: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      marginVertical: 12,
+    },
+    saveBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#10B981',
+      paddingVertical: 12,
+      borderRadius: 8,
+      marginTop: 18,
+    },
+    saveBtnText: {
+      color: '#FFFFFF',
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(15, 23, 42, 0.6)',
+      justifyContent: 'flex-end',
+    },
+    modalCard: {
+      backgroundColor: colors.surface,
+      borderTopLeftRadius: 20,
+      borderTopRightRadius: 20,
+      padding: 20,
+      maxHeight: '85%',
+    },
+    modalTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 14,
+    },
+    modalTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    modalSub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    proofSummaryBox: {
+      backgroundColor: '#F0FDF4',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      borderRadius: 10,
+      padding: 14,
+      alignItems: 'center',
+      marginBottom: 14,
+    },
+    proofSummaryAmount: {
+      fontSize: 22,
+      fontWeight: '800',
+      color: '#15803D',
+    },
+    proofSummaryRail: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#166534',
+      marginTop: 2,
+    },
+    modalFieldBox: {
+      marginBottom: 10,
+    },
+    modalFieldLabel: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    modalFieldVal: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    rejectLabel: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#DC2626',
+      marginBottom: 4,
+    },
+    rejectInput: {
+      backgroundColor: '#FEF2F2',
+      borderWidth: 1,
+      borderColor: '#FECACA',
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      fontSize: 13,
+      color: '#991B1B',
+    },
+    modalActionsRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginTop: 18,
+    },
+    declineBtn: {
+      flex: 1,
+      backgroundColor: '#FEE2E2',
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+    },
+    declineBtnText: {
+      color: '#DC2626',
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    confirmRejectBtn: {
+      flex: 1,
+      backgroundColor: '#DC2626',
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+    },
+    confirmRejectText: {
+      color: '#FFFFFF',
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    approveBtn: {
+      flex: 1,
+      backgroundColor: '#10B981',
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+    },
+    approveBtnText: {
+      color: '#FFFFFF',
+      fontSize: 13,
+      fontWeight: '700',
+    },
 
-  // ── Payment Gateways, Templates, Deposits & Rules (Spacious & De-congested) ──
-  gatewayNoteBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 20,
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'flex-start',
-  },
-  gatewayNoteIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: '#ECFDF5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  gatewayNoteTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-    marginBottom: 4,
-  },
-  gatewayNoteText: {
-    fontSize: 12.5,
-    color: colors.inkSoft,
-    lineHeight: 18,
-  },
-  gatewayCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  gatewayHeadTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  gatewayBrandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-    marginRight: 12,
-  },
-  gatewayIconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gatewayTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  gatewayBadgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 4,
-  },
-  gatewaySubtitle: {
-    fontSize: 12.5,
-    color: colors.inkSoft,
-    lineHeight: 18,
-    marginBottom: 4,
-  },
-  gatewayHeadRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  gatewayHeadLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-    marginRight: 8,
-  },
-  gatewayHeadRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
-  },
-  badgePillGreen: {
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  badgePillGreenText: {
-    color: '#059669',
-    fontSize: 10.5,
-    fontWeight: '700',
-  },
-  badgePillGrey: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  badgePillGreyText: {
-    color: colors.inkSoft,
-    fontSize: 10.5,
-    fontWeight: '600',
-  },
-  badgePillAmber: {
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  badgePillAmberText: {
-    color: '#B45309',
-    fontSize: 10.5,
-    fontWeight: '700',
-  },
-  gatewayBody: {
-    marginTop: 18,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-    paddingTop: 16,
-  },
-  sandboxCredentialsCard: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 14,
-  },
-  sandboxRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 7,
-  },
-  sandboxRowIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 7,
-    backgroundColor: '#ECFDF5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  sandboxRowTag: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    color: '#059669',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  sandboxRowVal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    fontFamily: 'monospace',
-    marginTop: 1,
-  },
-  sandboxRowBadge: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 6,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    marginLeft: 8,
-  },
-  sandboxRowBadgeText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  sandboxDivider: {
-    height: 1,
-    backgroundColor: '#EDF2F7',
-  },
-  sandboxGrid: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 14,
-  },
-  sandboxCell: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    padding: 12,
-    alignItems: 'center',
-  },
-  sandboxCellTag: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#059669',
-    textTransform: 'uppercase',
-    marginBottom: 3,
-  },
-  sandboxCellVal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    fontFamily: 'monospace',
-  },
-  sandboxCellSub: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginTop: 3,
-  },
-  sandboxInfoBox: {
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 14,
-  },
-  sandboxInfoText: {
-    fontSize: 12,
-    color: '#92400E',
-    lineHeight: 18,
-  },
-  modeSelectRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 14,
-    marginTop: 2,
-  },
-  modeBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modeBtnActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  modeBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  modeBtnTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  gracePillBtn: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gracePillBtnActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  gracePillBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  gracePillBtnTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  gatewayBtnRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 18,
-  },
-  saveKeyBtn: {
-    flex: 1,
-    backgroundColor: '#10B981',
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 38,
-  },
-  saveKeyBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  testKeyBtn: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 38,
-  },
-  testKeyBtnText: {
-    color: colors.navy,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  qrPreviewBox: {
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 12,
-    padding: 16,
-    marginVertical: 12,
-  },
-  qrMockGraphic: {
-    width: 96,
-    height: 96,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  qrMockText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 4,
-  },
-  qrHintText: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-    textAlign: 'center',
-    lineHeight: 16,
-  },
-  primaryActionButton: {
-    backgroundColor: '#10B981',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 14,
-    marginBottom: 24,
-  },
-  primaryActionButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14.5,
-    fontWeight: '700',
-  },
-  invoicePreviewContainer: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 14,
-    padding: 12,
-    paddingVertical: 14,
-    marginTop: 14,
-    overflow: 'hidden',
-  },
-  invoicePreviewHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingBottom: 12,
-    borderBottomWidth: 1.5,
-    borderBottomColor: colors.line,
-    marginBottom: 12,
-  },
-  invoicePreviewBrand: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  invoicePreviewMeta: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginTop: 2,
-    lineHeight: 14,
-  },
-  invoicePreviewDocType: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#10B981',
-    letterSpacing: 0.5,
-    textAlign: 'right',
-  },
-  invoicePreviewId: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-    textAlign: 'right',
-  },
-  invoicePreviewBillTo: {
-    padding: 12,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 14,
-  },
-  invoicePreviewBillToLabel: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-  },
-  invoicePreviewBillToVal: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  invoiceTable: {
-    marginBottom: 14,
-  },
-  invoiceTableRowHead: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-  },
-  invoiceTableHeadCell: {
-    fontSize: 10.5,
-    fontWeight: '800',
-    color: colors.inkSoft,
-    textTransform: 'uppercase',
-  },
-  invoiceTableRow: {
-    flexDirection: 'row',
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  invoiceTableCell: {
-    fontSize: 11.5,
-    color: colors.navy,
-  },
-  invoiceTableTotalRow: {
-    borderTopWidth: 2,
-    borderTopColor: '#0F172A',
-    borderBottomWidth: 0,
-    paddingTop: 10,
-    marginTop: 4,
-  },
-  invoiceTableTotalCell: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  invoicePreviewRemitBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 14,
-  },
-  invoicePreviewRemitTitle: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: colors.navy,
-    marginBottom: 4,
-  },
-  invoicePreviewRemitText: {
-    fontSize: 10.5,
-    color: colors.inkSoft,
-    lineHeight: 15,
-  },
-  invoicePreviewFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  invoicePreviewTermsTitle: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  invoicePreviewTermsText: {
-    fontSize: 9.5,
-    color: colors.inkSoft,
-    marginTop: 3,
-    lineHeight: 14,
-  },
-  invoicePreviewNotes: {
-    fontSize: 10,
-    fontStyle: 'italic',
-    color: colors.inkSoft,
-    marginTop: 5,
-  },
-  invoicePreviewSignLine: {
-    width: 100,
-    height: 1.5,
-    backgroundColor: '#94A3B8',
-    marginBottom: 5,
-  },
-  invoicePreviewSignText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  invoicePreviewSignSub: {
-    fontSize: 9,
-    color: colors.inkSoft,
-  },
-  docTypeSwitcherRow: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 12,
-    padding: 6,
-    marginBottom: 20,
-    gap: 8,
-  },
-  docTypeSwitcherBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: 'transparent',
-  },
-  docTypeSwitcherBtnActive: {
-    backgroundColor: '#10B981',
-  },
-  docTypeSwitcherBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  docTypeSwitcherBtnTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  statutoryResetBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  statutoryResetBtnText: {
-    fontSize: 11.5,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  depositBadge: {
-    backgroundColor: '#DCFCE7',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    marginTop: 4,
-    alignSelf: 'flex-end',
-  },
-  depositBadgeText: {
-    color: '#15803D',
-    fontSize: 9.5,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  custodyBanner: {
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 14,
-  },
-  custodyBannerTitle: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#15803D',
-    marginBottom: 3,
-    textTransform: 'uppercase',
-  },
-  custodyBannerText: {
-    fontSize: 10.5,
-    color: '#166534',
-    lineHeight: 15,
-  },
-  penaltyMethodRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 14,
-  },
-  penaltyMethodCard: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1.5,
-    borderColor: colors.line,
-    borderRadius: 9,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 40,
-  },
-  penaltyMethodCardActive: {
-    backgroundColor: '#ECFDF5',
-    borderColor: '#10B981',
-  },
-  penaltyMethodTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  penaltyMethodTitleActive: {
-    color: '#065F46',
-    fontWeight: '700',
-  },
-  penaltyMethodSub: {
-    fontSize: 10,
-    color: colors.inkMuted,
-    marginTop: 2,
-  },
-  penaltyMethodSubActive: {
-    color: '#047857',
-  },
-  depositKpiRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 16,
-  },
-  depositKpiCard: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-  },
-  depositKpiLabel: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  depositKpiValue: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#059669',
-    marginBottom: 2,
-  },
-  depositKpiSubRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  depositKpiSubText: {
-    fontSize: 10.5,
-    color: colors.inkSoft,
-  },
-  fiduciaryBanner: {
-    flexDirection: 'row',
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 16,
-    gap: 12,
-    alignItems: 'center',
-  },
-  fiduciaryBannerIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: '#DCFCE7',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fiduciaryBannerTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#166534',
-    marginBottom: 2,
-  },
-  fiduciaryBannerText: {
-    fontSize: 11.5,
-    color: '#15803D',
-    lineHeight: 16,
-  },
-  depositRecordCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  depositRecordTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  depositRecordTenant: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  depositRecordUnit: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  depositRecordAmount: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#059669',
-  },
-  depositRecordBadge: {
-    backgroundColor: '#DCFCE7',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginTop: 4,
-  },
-  depositRecordBadgeText: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    color: '#15803D',
-  },
-  depositRecordDivider: {
-    height: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    marginVertical: 12,
-  },
-  depositRecordMetaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  depositRecordMetaItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  depositRecordMetaText: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-  },
-  txnStatGrid: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 16,
-  },
-  txnStatCard: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-  },
-  txnStatCardAmber: {
-    borderColor: '#FDE68A',
-    backgroundColor: '#FFFBEB',
-  },
-  txnStatNum: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: colors.navy,
-    marginBottom: 2,
-  },
-  txnStatLbl: {
-    fontSize: 10.5,
-    fontWeight: '600',
-    color: colors.inkSoft,
-    textAlign: 'center',
-  },
-  cashClaimsContainer: {
-    marginBottom: 16,
-    gap: 10,
-  },
-  cashClaimCard: {
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1.5,
-    borderColor: '#F59E0B',
-    borderRadius: 14,
-    padding: 14,
-  },
-  cashClaimTop: {
-    marginBottom: 12,
-  },
-  cashClaimBadgeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  cashClaimPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  cashClaimPillText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#B45309',
-    letterSpacing: 0.5,
-  },
-  cashClaimId: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  cashClaimTitle: {
-    fontSize: 13.5,
-    fontWeight: '700',
-    color: '#78350F',
-    lineHeight: 18,
-    marginBottom: 6,
-  },
-  cashClaimMeta: {
-    marginTop: 4,
-  },
-  cashClaimMetaText: {
-    fontSize: 11.5,
-    color: '#92400E',
-  },
-  cashClaimNote: {
-    fontSize: 12,
-    fontStyle: 'italic',
-    color: '#B45309',
-    marginTop: 6,
-    backgroundColor: '#FEF3C7',
-    padding: 8,
-    borderRadius: 6,
-  },
-  cashClaimActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  cashClaimConfirmBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#10B981',
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  cashClaimConfirmText: {
-    color: '#FFFFFF',
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  cashClaimDeclineBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cashClaimDeclineText: {
-    color: colors.inkSoft,
-    fontSize: 12.5,
-    fontWeight: '600',
-  },
-  managerPayoutBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 16,
-  },
-  managerPayoutBannerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  managerPayoutIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#D1FAE5',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  managerPayoutBannerTitle: {
-    fontSize: 13.5,
-    fontWeight: '700',
-    color: '#065F46',
-  },
-  managerPayoutBannerSub: {
-    fontSize: 11,
-    color: '#047857',
-    marginTop: 2,
-  },
-  recordOfflineBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#10B981',
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    gap: 6,
-  },
-  recordOfflineBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  txnSearchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 12,
-    gap: 8,
-  },
-  txnSearchInput: {
-    flex: 1,
-    fontSize: 13,
-    color: colors.navy,
-    padding: 0,
-  },
-  filterChipScroll: {
-    marginBottom: 14,
-  },
-  filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 20,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  filterChipActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  filterChipText: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  filterChipTextActive: {
-    color: '#FFFFFF',
-  },
-  txnCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  txnTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 10,
-  },
-  txnId: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  cashClaimTag: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginLeft: 6,
-  },
-  cashClaimTagText: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    color: '#B45309',
-  },
-  txnTenantSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  directionBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  directionInflow: {
-    backgroundColor: '#DCFCE7',
-  },
-  directionOutflow: {
-    backgroundColor: '#FEE2E2',
-  },
-  directionBadgeText: {
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  directionInflowText: {
-    color: '#15803D',
-  },
-  directionOutflowText: {
-    color: '#B91C1C',
-  },
-  txnDetailsBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 12,
-    gap: 8,
-  },
-  txnDetailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  txnDetailCol: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  txnDetailLabel: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    flexShrink: 0,
-  },
-  txnDetailAmount: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.navy,
-    flexShrink: 0,
-    textAlign: 'right',
-  },
-  txnDetailVal: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.navy,
-    textAlign: 'right',
-    lineHeight: 17,
-  },
-  txnVoucherCol: {
-    flex: 1,
-    alignItems: 'flex-end',
-    justifyContent: 'flex-start',
-    gap: 3,
-  },
-  voucherPillSlate: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  voucherPillSlateText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  voucherPillAmber: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  voucherPillAmberText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: '#B45309',
-  },
-  directSettleText: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-    fontStyle: 'italic',
-  },
-  txnRefSub: {
-    fontSize: 10,
-    color: colors.inkMuted,
-    marginTop: 2,
-  },
-  txnBottomRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-    paddingTop: 10,
-  },
-  txnStatusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  txnStatusGreen: {
-    backgroundColor: '#DCFCE7',
-  },
-  txnStatusAmber: {
-    backgroundColor: '#FEF3C7',
-  },
-  txnStatusPurple: {
-    backgroundColor: '#F3E8FF',
-  },
-  txnStatusRed: {
-    backgroundColor: '#FEE2E2',
-  },
-  txnStatusText: {
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  txnStatusGreenText: {
-    color: '#15803D',
-  },
-  txnStatusAmberText: {
-    color: '#B45309',
-  },
-  txnStatusPurpleText: {
-    color: '#7E22CE',
-  },
-  txnStatusRedText: {
-    color: '#B91C1C',
-  },
-  confirmSmallBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#10B981',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    gap: 4,
-  },
-  confirmSmallBtnText: {
-    color: '#FFFFFF',
-    fontSize: 11.5,
-    fontWeight: '700',
-  },
-  declineSmallBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-    gap: 4,
-  },
-  declineSmallBtnText: {
-    color: colors.inkSoft,
-    fontSize: 11.5,
-    fontWeight: '600',
-  },
-  viewVoucherLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  unitSelectorRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 14,
-  },
-  unitPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  unitPillActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  unitPillText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  unitPillTextActive: {
-    color: '#FFFFFF',
-  },
-  rolePickerRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 14,
-  },
-  roleChip: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-  },
-  roleChipActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  roleChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  roleChipTextActive: {
-    color: '#FFFFFF',
-  },
-  dropdownSelectTrigger: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 14,
-  },
-  dropdownSelectMenu: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    marginTop: -8,
-    marginBottom: 14,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  dropdownSelectItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  modalBtnRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 16,
-  },
-  modalCancelBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-  },
-  modalCancelBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  modalSaveBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#10B981',
-    gap: 6,
-  },
-  modalSaveBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  receiptContainer: {
-    padding: 8,
-  },
-  receiptHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 14,
-  },
-  receiptBrand: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  receiptSub: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  receiptStampBox: {
-    backgroundColor: '#DCFCE7',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  receiptStampText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#15803D',
-  },
-  receiptAmountHero: {
-    alignItems: 'center',
-    paddingVertical: 16,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 12,
-    marginBottom: 16,
-  },
-  receiptAmountLabel: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  receiptAmountVal: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#059669',
-  },
-  receiptMethodRail: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-    marginTop: 4,
-    fontWeight: '600',
-  },
-  receiptGrid: {
-    gap: 10,
-    marginBottom: 16,
-  },
-  receiptGridCol: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  receiptGridLbl: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-  },
-  receiptGridVal: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  receiptGridSub: {
-    fontSize: 10.5,
-    color: colors.inkSoft,
-  },
-  cryptoSealBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 16,
-  },
-  cryptoSealText: {
-    fontSize: 9.5,
-    color: colors.inkSoft,
-    fontFamily: 'monospace',
-    lineHeight: 14,
-  },
-  receiptActionRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  receiptDownloadBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#10B981',
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 6,
-  },
-  receiptDownloadText: {
-    color: '#FFFFFF',
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  receiptShareBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 6,
-  },
-  receiptShareText: {
-    color: colors.navy,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  rentDueSearchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingHorizontal: 12,
-    marginBottom: 12,
-  },
-  rentDueSearchInput: {
-    flex: 1,
-    fontSize: 13,
-    color: colors.navy,
-    paddingVertical: 8,
-  },
-  rentDueFilterScroll: {
-    marginBottom: 14,
-  },
-  rentDueChip: {
-    paddingHorizontal: 13,
-    paddingVertical: 7,
-    borderRadius: 20,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  rentDueChipActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  rentDueChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  rentDueChipTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  rentCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  rentCardTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
-  rentTenantName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  rentUnitRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 3,
-  },
-  rentUnitBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  rentUnitBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  rentPropName: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  rentContactRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 6,
-  },
-  rentContactItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  rentContactText: {
-    fontSize: 11,
-    color: colors.inkSoft,
-  },
-  rentDetailsGrid: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 10,
-    gap: 10,
-  },
-  rentGridCol: {
-    flex: 1,
-  },
-  rentGridLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  rentGridVal: {
-    fontSize: 13.5,
-    fontWeight: '800',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  rentGridSub: {
-    fontSize: 10.5,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  rentCardActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  rentRemindBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingVertical: 9,
-    borderRadius: 8,
-    gap: 6,
-  },
-  rentRemindBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  rentRecordBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#D97706',
-    paddingVertical: 9,
-    borderRadius: 8,
-    gap: 6,
-  },
-  rentRecordBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  statusPillBlue: {
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-  },
-  statusTextBlue: {
-    color: '#1D4ED8',
-    fontWeight: '700',
-    fontSize: 11,
-  },
-  settledActionRow: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  settledBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  settledBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#15803D',
-  },
-  rentViewReceiptBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    gap: 4,
-  },
-  rentViewReceiptBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#1D4ED8',
-  },
-  rentVerifyBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#D97706',
-    paddingVertical: 9,
-    borderRadius: 8,
-    gap: 6,
-  },
-  rentVerifyBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  receiptCol: {
-    flex: 1,
-  },
-  receiptColLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  receiptColVal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  receiptColSub: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  propFilterScroll: {
-    marginHorizontal: 16,
-    marginBottom: 10,
-    marginTop: 2,
-  },
-  propFilterChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 13,
-    paddingVertical: 7,
-    borderRadius: 20,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  propFilterChipActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  propFilterChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  propFilterChipTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-});
+    // ── Payment Gateways, Templates, Deposits & Rules (Spacious & De-congested) ──
+    gatewayNoteBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 14,
+      padding: 16,
+      marginBottom: 20,
+      flexDirection: 'row',
+      gap: 12,
+      alignItems: 'flex-start',
+    },
+    gatewayNoteIconBox: {
+      width: 38,
+      height: 38,
+      borderRadius: 10,
+      backgroundColor: '#ECFDF5',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 2,
+    },
+    gatewayNoteTitle: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.navy,
+      marginBottom: 4,
+    },
+    gatewayNoteText: {
+      fontSize: 12.5,
+      color: colors.inkSoft,
+      lineHeight: 18,
+    },
+    gatewayCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 16,
+      padding: 20,
+      marginBottom: 20,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    gatewayHeadTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    gatewayBrandRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      flex: 1,
+      marginRight: 12,
+    },
+    gatewayIconBox: {
+      width: 42,
+      height: 42,
+      borderRadius: 12,
+      backgroundColor: '#10B981',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    gatewayTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    gatewayBadgeRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      marginTop: 4,
+    },
+    gatewaySubtitle: {
+      fontSize: 12.5,
+      color: colors.inkSoft,
+      lineHeight: 18,
+      marginBottom: 4,
+    },
+    gatewayHeadRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+    },
+    gatewayHeadLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      flex: 1,
+      marginRight: 8,
+    },
+    gatewayHeadRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      flexWrap: 'wrap',
+      justifyContent: 'flex-end',
+    },
+    badgePillGreen: {
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    badgePillGreenText: {
+      color: '#059669',
+      fontSize: 10.5,
+      fontWeight: '700',
+    },
+    badgePillGrey: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderWidth: 1,
+      borderColor: colors.line,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    badgePillGreyText: {
+      color: colors.inkSoft,
+      fontSize: 10.5,
+      fontWeight: '600',
+    },
+    badgePillAmber: {
+      backgroundColor: '#FEF3C7',
+      borderWidth: 1,
+      borderColor: '#FDE68A',
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    badgePillAmberText: {
+      color: '#B45309',
+      fontSize: 10.5,
+      fontWeight: '700',
+    },
+    gatewayBody: {
+      marginTop: 18,
+      borderTopWidth: 1,
+      borderTopColor: '#F1F5F9',
+      paddingTop: 16,
+    },
+    sandboxCredentialsCard: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      marginBottom: 14,
+    },
+    sandboxRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 7,
+    },
+    sandboxRowIcon: {
+      width: 28,
+      height: 28,
+      borderRadius: 7,
+      backgroundColor: '#ECFDF5',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 10,
+    },
+    sandboxRowTag: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: '#059669',
+      letterSpacing: 0.5,
+      textTransform: 'uppercase',
+    },
+    sandboxRowVal: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+      fontFamily: 'monospace',
+      marginTop: 1,
+    },
+    sandboxRowBadge: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 6,
+      paddingHorizontal: 7,
+      paddingVertical: 3,
+      marginLeft: 8,
+    },
+    sandboxRowBadgeText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    sandboxDivider: {
+      height: 1,
+      backgroundColor: '#EDF2F7',
+    },
+    sandboxGrid: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 14,
+    },
+    sandboxCell: {
+      flex: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      padding: 12,
+      alignItems: 'center',
+    },
+    sandboxCellTag: {
+      fontSize: 10,
+      fontWeight: '800',
+      color: '#059669',
+      textTransform: 'uppercase',
+      marginBottom: 3,
+    },
+    sandboxCellVal: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+      fontFamily: 'monospace',
+    },
+    sandboxCellSub: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginTop: 3,
+    },
+    sandboxInfoBox: {
+      backgroundColor: '#FFFBEB',
+      borderWidth: 1,
+      borderColor: '#FDE68A',
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 14,
+    },
+    sandboxInfoText: {
+      fontSize: 12,
+      color: '#92400E',
+      lineHeight: 18,
+    },
+    modeSelectRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 14,
+      marginTop: 2,
+    },
+    modeBtn: {
+      flex: 1,
+      paddingVertical: 8,
+      paddingHorizontal: 8,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    modeBtnActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    modeBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    modeBtnTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    gracePillBtn: {
+      flex: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      paddingVertical: 8,
+      paddingHorizontal: 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    gracePillBtnActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    gracePillBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    gracePillBtnTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    gatewayBtnRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginTop: 18,
+    },
+    saveKeyBtn: {
+      flex: 1,
+      backgroundColor: '#10B981',
+      paddingVertical: 10,
+      paddingHorizontal: 10,
+      borderRadius: 9,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 38,
+    },
+    saveKeyBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    testKeyBtn: {
+      flex: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      paddingVertical: 10,
+      paddingHorizontal: 10,
+      borderRadius: 9,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 38,
+    },
+    testKeyBtnText: {
+      color: colors.navy,
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    qrPreviewBox: {
+      alignItems: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 12,
+      padding: 16,
+      marginVertical: 12,
+    },
+    qrMockGraphic: {
+      width: 96,
+      height: 96,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: 8,
+    },
+    qrMockText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 4,
+    },
+    qrHintText: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+      textAlign: 'center',
+      lineHeight: 16,
+    },
+    primaryActionButton: {
+      backgroundColor: '#10B981',
+      paddingVertical: 14,
+      paddingHorizontal: 20,
+      borderRadius: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 14,
+      marginBottom: 24,
+    },
+    primaryActionButtonText: {
+      color: '#FFFFFF',
+      fontSize: 14.5,
+      fontWeight: '700',
+    },
+    invoicePreviewContainer: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 14,
+      padding: 12,
+      paddingVertical: 14,
+      marginTop: 14,
+      overflow: 'hidden',
+    },
+    invoicePreviewHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingBottom: 12,
+      borderBottomWidth: 1.5,
+      borderBottomColor: colors.line,
+      marginBottom: 12,
+    },
+    invoicePreviewBrand: {
+      fontSize: 14,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    invoicePreviewMeta: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginTop: 2,
+      lineHeight: 14,
+    },
+    invoicePreviewDocType: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: '#10B981',
+      letterSpacing: 0.5,
+      textAlign: 'right',
+    },
+    invoicePreviewId: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 2,
+      textAlign: 'right',
+    },
+    invoicePreviewBillTo: {
+      padding: 12,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      marginBottom: 14,
+    },
+    invoicePreviewBillToLabel: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+    },
+    invoicePreviewBillToVal: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    invoiceTable: {
+      marginBottom: 14,
+    },
+    invoiceTableRowHead: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      paddingVertical: 8,
+      paddingHorizontal: 10,
+      borderRadius: 6,
+    },
+    invoiceTableHeadCell: {
+      fontSize: 10.5,
+      fontWeight: '800',
+      color: colors.inkSoft,
+      textTransform: 'uppercase',
+    },
+    invoiceTableRow: {
+      flexDirection: 'row',
+      paddingVertical: 9,
+      paddingHorizontal: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    invoiceTableCell: {
+      fontSize: 11.5,
+      color: colors.navy,
+    },
+    invoiceTableTotalRow: {
+      borderTopWidth: 2,
+      borderTopColor: '#0F172A',
+      borderBottomWidth: 0,
+      paddingTop: 10,
+      marginTop: 4,
+    },
+    invoiceTableTotalCell: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    invoicePreviewRemitBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      padding: 12,
+      marginBottom: 14,
+    },
+    invoicePreviewRemitTitle: {
+      fontSize: 10,
+      fontWeight: '800',
+      color: colors.navy,
+      marginBottom: 4,
+    },
+    invoicePreviewRemitText: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+      lineHeight: 15,
+    },
+    invoicePreviewFooter: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor: '#F1F5F9',
+    },
+    invoicePreviewTermsTitle: {
+      fontSize: 10,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    invoicePreviewTermsText: {
+      fontSize: 9.5,
+      color: colors.inkSoft,
+      marginTop: 3,
+      lineHeight: 14,
+    },
+    invoicePreviewNotes: {
+      fontSize: 10,
+      fontStyle: 'italic',
+      color: colors.inkSoft,
+      marginTop: 5,
+    },
+    invoicePreviewSignLine: {
+      width: 100,
+      height: 1.5,
+      backgroundColor: '#94A3B8',
+      marginBottom: 5,
+    },
+    invoicePreviewSignText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    invoicePreviewSignSub: {
+      fontSize: 9,
+      color: colors.inkSoft,
+    },
+    docTypeSwitcherRow: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 12,
+      padding: 6,
+      marginBottom: 20,
+      gap: 8,
+    },
+    docTypeSwitcherBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 7,
+      paddingHorizontal: 10,
+      borderRadius: 9,
+      backgroundColor: 'transparent',
+    },
+    docTypeSwitcherBtnActive: {
+      backgroundColor: '#10B981',
+    },
+    docTypeSwitcherBtnText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    docTypeSwitcherBtnTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '600',
+    },
+    statutoryResetBtn: {
+      paddingVertical: 6,
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    statutoryResetBtnText: {
+      fontSize: 11.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    depositBadge: {
+      backgroundColor: '#DCFCE7',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+      marginTop: 4,
+      alignSelf: 'flex-end',
+    },
+    depositBadgeText: {
+      color: '#15803D',
+      fontSize: 9.5,
+      fontWeight: '800',
+      letterSpacing: 0.5,
+    },
+    custodyBanner: {
+      backgroundColor: '#F0FDF4',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      borderRadius: 8,
+      padding: 12,
+      marginBottom: 14,
+    },
+    custodyBannerTitle: {
+      fontSize: 10,
+      fontWeight: '800',
+      color: '#15803D',
+      marginBottom: 3,
+      textTransform: 'uppercase',
+    },
+    custodyBannerText: {
+      fontSize: 10.5,
+      color: '#166534',
+      lineHeight: 15,
+    },
+    penaltyMethodRow: {
+      flexDirection: 'row',
+      gap: 12,
+      marginBottom: 14,
+    },
+    penaltyMethodCard: {
+      flex: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1.5,
+      borderColor: colors.line,
+      borderRadius: 9,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 40,
+    },
+    penaltyMethodCardActive: {
+      backgroundColor: '#ECFDF5',
+      borderColor: '#10B981',
+    },
+    penaltyMethodTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    penaltyMethodTitleActive: {
+      color: '#065F46',
+      fontWeight: '700',
+    },
+    penaltyMethodSub: {
+      fontSize: 10,
+      color: colors.inkMuted,
+      marginTop: 2,
+    },
+    penaltyMethodSubActive: {
+      color: '#047857',
+    },
+    depositKpiRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 16,
+    },
+    depositKpiCard: {
+      flex: 1,
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: colors.line,
+      alignItems: 'center',
+    },
+    depositKpiLabel: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+      marginBottom: 4,
+    },
+    depositKpiValue: {
+      fontSize: 16,
+      fontWeight: '800',
+      color: '#059669',
+      marginBottom: 2,
+    },
+    depositKpiSubRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    depositKpiSubText: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+    },
+    fiduciaryBanner: {
+      flexDirection: 'row',
+      backgroundColor: '#F0FDF4',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 16,
+      gap: 12,
+      alignItems: 'center',
+    },
+    fiduciaryBannerIcon: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      backgroundColor: '#DCFCE7',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    fiduciaryBannerTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: '#166534',
+      marginBottom: 2,
+    },
+    fiduciaryBannerText: {
+      fontSize: 11.5,
+      color: '#15803D',
+      lineHeight: 16,
+    },
+    depositRecordCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      padding: 16,
+      marginBottom: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    depositRecordTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+    },
+    depositRecordTenant: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    depositRecordUnit: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    depositRecordAmount: {
+      fontSize: 17,
+      fontWeight: '800',
+      color: '#059669',
+    },
+    depositRecordBadge: {
+      backgroundColor: '#DCFCE7',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      paddingHorizontal: 7,
+      paddingVertical: 2,
+      borderRadius: 6,
+      marginTop: 4,
+    },
+    depositRecordBadgeText: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: '#15803D',
+    },
+    depositRecordDivider: {
+      height: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      marginVertical: 12,
+    },
+    depositRecordMetaRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: 6,
+    },
+    depositRecordMetaItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+    },
+    depositRecordMetaText: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+    },
+    txnStatGrid: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 16,
+    },
+    txnStatCard: {
+      flex: 1,
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+      alignItems: 'center',
+    },
+    txnStatCardAmber: {
+      borderColor: '#FDE68A',
+      backgroundColor: '#FFFBEB',
+    },
+    txnStatNum: {
+      fontSize: 17,
+      fontWeight: '800',
+      color: colors.navy,
+      marginBottom: 2,
+    },
+    txnStatLbl: {
+      fontSize: 10.5,
+      fontWeight: '600',
+      color: colors.inkSoft,
+      textAlign: 'center',
+    },
+    cashClaimsContainer: {
+      marginBottom: 16,
+      gap: 10,
+    },
+    cashClaimCard: {
+      backgroundColor: isDark ? 'rgba(245, 158, 11, 0.1)' : '#FFFDF5',
+      borderWidth: 1,
+      borderColor: 'rgba(245, 158, 11, 0.35)',
+      borderLeftWidth: 4,
+      borderLeftColor: '#F59E0B',
+      borderRadius: 12,
+      padding: 14,
+    },
+    cashClaimTop: {
+      marginBottom: 12,
+    },
+    cashClaimBadgeRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 8,
+    },
+    cashClaimPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#FEF3C7',
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    cashClaimPillText: {
+      fontSize: 10,
+      fontWeight: '800',
+      color: '#B45309',
+      letterSpacing: 0.5,
+    },
+    cashClaimIdPill: {
+      backgroundColor: isDark ? 'rgba(245, 158, 11, 0.2)' : 'rgba(180, 83, 9, 0.08)',
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+    },
+    cashClaimId: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: '#92400E',
+      fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    },
+    cashClaimTitle: {
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: '#78350F',
+      lineHeight: 18,
+      marginBottom: 6,
+    },
+    cashClaimMeta: {
+      marginTop: 4,
+    },
+    cashClaimMetaText: {
+      fontSize: 11.5,
+      color: '#92400E',
+    },
+    cashClaimNote: {
+      fontSize: 12,
+      fontStyle: 'italic',
+      color: '#B45309',
+      marginTop: 6,
+      backgroundColor: '#FEF3C7',
+      padding: 8,
+      borderRadius: 6,
+    },
+    cashClaimActions: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    cashClaimConfirmBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#10B981',
+      paddingVertical: 9,
+      paddingHorizontal: 6,
+      borderRadius: 8,
+    },
+    cashClaimConfirmText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    cashClaimDeclineBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 9,
+      paddingHorizontal: 6,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    cashClaimDeclineText: {
+      color: colors.inkSoft,
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    managerPayoutBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 16,
+    },
+    managerPayoutBannerLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      flex: 1,
+    },
+    managerPayoutIconWrap: {
+      width: 40,
+      height: 40,
+      borderRadius: 10,
+      backgroundColor: '#D1FAE5',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    managerPayoutBannerTitle: {
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: '#065F46',
+    },
+    managerPayoutBannerSub: {
+      fontSize: 11,
+      color: '#047857',
+      marginTop: 2,
+    },
+    recordOfflineBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#10B981',
+      paddingVertical: 7,
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      gap: 6,
+    },
+    recordOfflineBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    txnSearchBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      marginBottom: 12,
+      gap: 8,
+    },
+    txnSearchInput: {
+      flex: 1,
+      fontSize: 13,
+      color: colors.navy,
+      padding: 0,
+    },
+    filterChipScroll: {
+      marginBottom: 14,
+    },
+    filterChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 20,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      marginRight: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    filterChipActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    filterChipText: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    filterChipTextActive: {
+      color: '#FFFFFF',
+    },
+    txnCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      padding: 14,
+      marginBottom: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    txnTopRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 10,
+    },
+    txnId: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    cashClaimTag: {
+      backgroundColor: '#FEF3C7',
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+    },
+    cashClaimTagText: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: '#B45309',
+    },
+    txnTenantSub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    directionBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+      alignSelf: 'flex-start',
+    },
+    directionInflow: {
+      backgroundColor: '#DCFCE7',
+    },
+    directionOutflow: {
+      backgroundColor: '#FEE2E2',
+    },
+    directionBadgeText: {
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    directionInflowText: {
+      color: '#15803D',
+    },
+    directionOutflowText: {
+      color: '#B91C1C',
+    },
+    txnDetailsBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 10,
+      padding: 10,
+      marginBottom: 12,
+      gap: 8,
+    },
+    txnDetailRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      gap: 8,
+    },
+    txnDetailCol: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 8,
+    },
+    txnDetailLabel: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      flexShrink: 0,
+    },
+    txnDetailAmount: {
+      fontSize: 14,
+      fontWeight: '800',
+      color: colors.navy,
+      flexShrink: 0,
+      textAlign: 'right',
+    },
+    txnDetailVal: {
+      flex: 1,
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.navy,
+      textAlign: 'right',
+      lineHeight: 17,
+    },
+    txnVoucherCol: {
+      flex: 1,
+      alignItems: 'flex-end',
+      justifyContent: 'flex-start',
+      gap: 3,
+    },
+    voucherPillSlate: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    voucherPillSlateText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    voucherPillAmber: {
+      backgroundColor: '#FEF3C7',
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    voucherPillAmberText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: '#B45309',
+    },
+    directSettleText: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+      fontStyle: 'italic',
+    },
+    txnRefSub: {
+      fontSize: 10,
+      color: colors.inkMuted,
+      marginTop: 2,
+    },
+    txnBottomRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      borderTopWidth: 1,
+      borderTopColor: isDark ? colors.line : '#F1F5F9',
+      paddingTop: 10,
+      flexWrap: 'wrap',
+      gap: 6,
+    },
+    txnStatusBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    txnStatusGreen: {
+      backgroundColor: '#DCFCE7',
+    },
+    txnStatusAmber: {
+      backgroundColor: '#FEF3C7',
+    },
+    txnStatusPurple: {
+      backgroundColor: '#F3E8FF',
+    },
+    txnStatusRed: {
+      backgroundColor: '#FEE2E2',
+    },
+    txnStatusText: {
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    txnStatusGreenText: {
+      color: '#15803D',
+    },
+    txnStatusAmberText: {
+      color: '#B45309',
+    },
+    txnStatusPurpleText: {
+      color: '#7E22CE',
+    },
+    txnStatusRedText: {
+      color: '#B91C1C',
+    },
+    confirmSmallBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#10B981',
+      paddingHorizontal: 9,
+      paddingVertical: 5,
+      borderRadius: 6,
+      gap: 3,
+    },
+    confirmSmallBtnText: {
+      color: '#FFFFFF',
+      fontSize: 11,
+      fontWeight: '700',
+    },
+    declineSmallBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      paddingHorizontal: 8,
+      paddingVertical: 5,
+      borderRadius: 6,
+      gap: 3,
+    },
+    declineSmallBtnText: {
+      color: colors.inkSoft,
+      fontSize: 11,
+      fontWeight: '600',
+    },
+    viewVoucherLink: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    unitSelectorRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginBottom: 14,
+    },
+    unitPill: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    unitPillActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    unitPillText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    unitPillTextActive: {
+      color: '#FFFFFF',
+    },
+    rolePickerRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 14,
+    },
+    roleChip: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      alignItems: 'center',
+    },
+    roleChipActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    roleChipText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    roleChipTextActive: {
+      color: '#FFFFFF',
+    },
+    dropdownSelectTrigger: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      marginBottom: 14,
+    },
+    dropdownSelectMenu: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      marginTop: -8,
+      marginBottom: 14,
+      overflow: 'hidden',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.05,
+      shadowRadius: 4,
+      elevation: 2,
+    },
+    dropdownSelectItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    modalBtnRow: {
+      flexDirection: 'row',
+      gap: 12,
+      marginTop: 16,
+    },
+    modalCancelBtn: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+      alignItems: 'center',
+      backgroundColor: colors.surface,
+    },
+    modalCancelBtnText: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    modalSaveBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 12,
+      borderRadius: 8,
+      backgroundColor: '#10B981',
+      gap: 6,
+    },
+    modalSaveBtnText: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    receiptContainer: {
+      padding: 8,
+    },
+    receiptHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 14,
+    },
+    receiptBrand: {
+      fontSize: 14,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    receiptSub: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    receiptStampBox: {
+      backgroundColor: '#DCFCE7',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+    },
+    receiptStampText: {
+      fontSize: 10,
+      fontWeight: '800',
+      color: '#15803D',
+    },
+    receiptAmountHero: {
+      alignItems: 'center',
+      paddingVertical: 16,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 12,
+      marginBottom: 16,
+    },
+    receiptAmountLabel: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+      marginBottom: 4,
+    },
+    receiptAmountVal: {
+      fontSize: 24,
+      fontWeight: '800',
+      color: '#059669',
+    },
+    receiptMethodRail: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+      marginTop: 4,
+      fontWeight: '600',
+    },
+    receiptGrid: {
+      gap: 10,
+      marginBottom: 16,
+    },
+    receiptGridCol: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    receiptGridLbl: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+    },
+    receiptGridVal: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    receiptGridSub: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+    },
+    cryptoSealBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 16,
+    },
+    cryptoSealText: {
+      fontSize: 9.5,
+      color: colors.inkSoft,
+      fontFamily: 'monospace',
+      lineHeight: 14,
+    },
+    receiptActionRow: {
+      flexDirection: 'row',
+      gap: 10,
+    },
+    receiptDownloadBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#10B981',
+      paddingVertical: 12,
+      borderRadius: 8,
+      gap: 6,
+    },
+    receiptDownloadText: {
+      color: '#FFFFFF',
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    receiptShareBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderWidth: 1,
+      borderColor: colors.line,
+      paddingVertical: 12,
+      borderRadius: 8,
+      gap: 6,
+    },
+    receiptShareText: {
+      color: colors.navy,
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    rentDueSearchContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: colors.line,
+      paddingHorizontal: 12,
+      marginBottom: 12,
+    },
+    rentDueSearchInput: {
+      flex: 1,
+      fontSize: 13,
+      color: colors.navy,
+      paddingVertical: 8,
+    },
+    rentDueFilterScroll: {
+      marginBottom: 14,
+    },
+    rentDueChip: {
+      paddingHorizontal: 13,
+      paddingVertical: 7,
+      borderRadius: 20,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      marginRight: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    rentDueChipActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    rentDueChipText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    rentDueChipTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    rentCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      padding: 16,
+      marginBottom: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    rentCardTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 8,
+    },
+    rentTenantName: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    rentUnitRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      marginTop: 3,
+    },
+    rentUnitBadge: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+    },
+    rentUnitBadgeText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    rentPropName: {
+      fontSize: 12,
+      color: colors.inkSoft,
+    },
+    rentContactRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 12,
+      marginTop: 6,
+    },
+    rentContactItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    rentContactText: {
+      fontSize: 11,
+      color: colors.inkSoft,
+    },
+    rentDetailsGrid: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 10,
+      padding: 12,
+      marginTop: 10,
+      gap: 10,
+    },
+    rentGridCol: {
+      flex: 1,
+    },
+    rentGridLabel: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: colors.inkMuted,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    rentGridVal: {
+      fontSize: 13.5,
+      fontWeight: '800',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    rentGridSub: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    rentCardActions: {
+      flexDirection: 'row',
+      gap: 8,
+      marginTop: 12,
+      paddingTop: 10,
+      borderTopWidth: 1,
+      borderTopColor: '#F1F5F9',
+    },
+    rentRemindBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      paddingVertical: 9,
+      borderRadius: 8,
+      gap: 6,
+    },
+    rentRemindBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    rentRecordBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#D97706',
+      paddingVertical: 9,
+      borderRadius: 8,
+      gap: 6,
+    },
+    rentRecordBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    statusPillBlue: {
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+    },
+    statusTextBlue: {
+      color: '#1D4ED8',
+      fontWeight: '700',
+      fontSize: 11,
+    },
+    settledActionRow: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: '#F0FDF4',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    settledBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    settledBadgeText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#15803D',
+    },
+    rentViewReceiptBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 6,
+      gap: 4,
+    },
+    rentViewReceiptBtnText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: '#1D4ED8',
+    },
+    rentVerifyBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#D97706',
+      paddingVertical: 9,
+      borderRadius: 8,
+      gap: 6,
+    },
+    rentVerifyBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    receiptCol: {
+      flex: 1,
+    },
+    receiptColLabel: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: colors.inkMuted,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    receiptColVal: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    receiptColSub: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    propFilterScroll: {
+      marginHorizontal: 16,
+      marginBottom: 10,
+      marginTop: 2,
+    },
+    propFilterChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 13,
+      paddingVertical: 7,
+      borderRadius: 20,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      marginRight: 8,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    propFilterChipActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    propFilterChipText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    propFilterChipTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+  });

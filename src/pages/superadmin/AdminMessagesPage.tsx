@@ -23,6 +23,7 @@ import {
   Server,
   User,
   Plus,
+  Info,
 } from 'lucide-react';
 
 export const AdminMessagesPage: React.FC = () => {
@@ -206,17 +207,17 @@ export const AdminMessagesPage: React.FC = () => {
         broadcastAudience === 'all_owners'
           ? ['owner']
           : broadcastAudience === 'all_tenants'
-          ? ['tenant']
-          : ['owner', 'tenant', 'manager', 'staff'];
+            ? ['tenant']
+            : ['owner', 'tenant', 'manager', 'staff'];
 
       const anncCategory =
         broadcastCategory === 'maintenance'
           ? 'maintenance'
           : broadcastCategory === 'dispute'
-          ? 'policy'
-          : broadcastCategory === 'subscription' || broadcastCategory === 'rent'
-          ? 'policy'
-          : 'general';
+            ? 'policy'
+            : broadcastCategory === 'subscription' || broadcastCategory === 'rent'
+              ? 'policy'
+              : 'general';
 
       const newAnnouncement: Announcement = {
         id: `annc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -453,9 +454,7 @@ export const AdminMessagesPage: React.FC = () => {
       {/* Page Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 800, color: 'var(--ink-base)' }}>
-            Platform Communications & Outbound Audit Hub
-          </h1>
+
         </div>
         <button
           type="button"
@@ -468,13 +467,13 @@ export const AdminMessagesPage: React.FC = () => {
       </div>
 
       {/* KPI Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '8px' }}>
         <div className="panel" style={{ padding: '18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
           <div style={{ background: '#eff6ff', color: '#2563eb', padding: '12px', borderRadius: '8px' }}>
             <Send size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Total Platform Dispatches</div>
+            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Broadcast Campaigns</div>
             <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink-base)' }}>{stats.total}</div>
           </div>
         </div>
@@ -484,7 +483,7 @@ export const AdminMessagesPage: React.FC = () => {
             <Smartphone size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Twilio SMS</div>
+            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Twilio SMS Dispatched</div>
             <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink-base)' }}>{stats.smsCount}</div>
           </div>
         </div>
@@ -494,7 +493,7 @@ export const AdminMessagesPage: React.FC = () => {
             <Mail size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>SendGrid Emails</div>
+            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>SendGrid Emails Dispatched</div>
             <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink-base)' }}>{stats.emailCount}</div>
           </div>
         </div>
@@ -504,17 +503,22 @@ export const AdminMessagesPage: React.FC = () => {
             <Server size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Admin & SaaS Notices</div>
+            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>In-App & System Notices</div>
             <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink-base)' }}>{stats.adminOnlyCount}</div>
           </div>
         </div>
+      </div>
+
+      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <Info size={13} />
+        <span>Multi-channel broadcast campaigns dispatch across SMS, Email, and In-App channels simultaneously.</span>
       </div>
 
       {/* Filter Toolbar with Dedicated "Filter For His" scope */}
       <div className="panel" style={{ marginBottom: '20px', padding: '14px 16px', boxSizing: 'border-box', overflow: 'hidden' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', justifyContent: 'space-between', minWidth: 0, width: '100%' }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', flex: '1 1 auto', minWidth: 0, maxWidth: '100%' }}>
-            
+
             {/* Dedicated Primary Filter: Everything vs Platform/Admin Only vs Specific Owner */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, maxWidth: '100%', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', flexShrink: 0 }}>Scope:</span>
@@ -524,11 +528,11 @@ export const AdminMessagesPage: React.FC = () => {
                 style={{
                   padding: '8px 12px',
                   fontSize: '13px',
-                  fontWeight: 600,
+                  fontWeight: 500,
                   borderRadius: '6px',
-                  border: '1.5px solid #2563eb',
-                  background: '#eff6ff',
-                  color: '#1e40af',
+                  border: '1px solid var(--border, var(--line))',
+                  background: 'var(--surface)',
+                  color: 'var(--ink)',
                   minWidth: 0,
                   maxWidth: '100%',
                   boxSizing: 'border-box',
@@ -628,9 +632,7 @@ export const AdminMessagesPage: React.FC = () => {
                   <th style={{ minWidth: '130px' }}>Time</th>
                   <th style={{ minWidth: '130px' }}>Category</th>
                   <th style={{ minWidth: '100px' }}>Channels</th>
-                  <th style={{ minWidth: '160px' }}>Owner Portfolio</th>
                   <th style={{ minWidth: '170px' }}>Recipient & Contact</th>
-                  <th>Message Content</th>
                   <th style={{ minWidth: '110px' }}>Status</th>
                   <th style={{ width: '90px', textAlign: 'center' }}>Inspect</th>
                 </tr>
@@ -638,7 +640,7 @@ export const AdminMessagesPage: React.FC = () => {
               <tbody>
                 {filteredLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={8} style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--ink-soft)' }}>
+                    <td colSpan={6} style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--ink-soft)' }}>
                       <MessageSquare size={36} style={{ margin: '0 auto 12px auto', opacity: 0.3 }} />
                       <div style={{ fontSize: '15px', fontWeight: 600 }}>No communication dispatches recorded</div>
                       <div style={{ fontSize: '13px', marginTop: '4px' }}>
@@ -651,8 +653,6 @@ export const AdminMessagesPage: React.FC = () => {
                 ) : (
                   filteredLogs.map((log) => {
                     const dateStr = formatLogDate(log.createdAt || (log as any).timestamp || (log as any).sentAt);
-                    const isPlatformNotice = log.senderRole === 'superadmin' || log.category === 'subscription' || !log.ownerId;
-                    const cleanTitle = (log.title || 'Platform Notification').replace(/\s*\(\s*N\/A\s*\)/gi, '').trim();
 
                     return (
                       <tr key={log.id}>
@@ -682,35 +682,11 @@ export const AdminMessagesPage: React.FC = () => {
                           </div>
                         </td>
                         <td>
-                          {isPlatformNotice ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'var(--surface-sunken)', color: 'var(--ink)', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
-                              <Server size={11} /> Platform System
-                            </span>
-                          ) : (
-                            <div>
-                              <div style={{ fontWeight: 600, fontSize: '12px', color: 'var(--ink-base)' }}>
-                                {log.ownerName || log.ownerId || 'Assigned Landlord'}
-                              </div>
-                              <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
-                                {log.propertyName ? log.propertyName : 'Portfolio Property'}
-                              </div>
-                            </div>
-                          )}
-                        </td>
-                        <td>
                           <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--ink-base)' }}>
                             {log.recipientName || 'Resident'}
                           </div>
                           <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
                             {log.recipientContact?.phone || log.recipientContact?.email || ''}
-                          </div>
-                        </td>
-                        <td>
-                          <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--ink-base)' }}>
-                            {cleanTitle}
-                          </div>
-                          <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px', maxHeight: '36px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {log.body}
                           </div>
                         </td>
                         <td>
@@ -1141,7 +1117,7 @@ export const AdminMessagesPage: React.FC = () => {
                               <input
                                 type="checkbox"
                                 checked={isSelected}
-                                onChange={() => {}}
+                                onChange={() => { }}
                                 style={{ cursor: 'pointer' }}
                               />
                               <div>

@@ -14,6 +14,7 @@ import {
   Platform,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
+import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon, PropithubLogo } from '../components/PropithubLogo';
 import { useMobileTheme } from '../context/MobileThemeContext';
@@ -558,25 +559,12 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       {/* Screen Status Bar */}
       <ScreenStatusBar />
 
-      {/* Screen Header matching Helpdesk & Reputation screens */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-        <View style={styles.headerLeft}>
-          {onBack && (
-            <TouchableOpacity onPress={onBack} style={[styles.backBtn, isDark && { backgroundColor: '#1E293B' }]} activeOpacity={0.7}>
-              <Feather name="arrow-left" size={18} color={colors.text} />
-            </TouchableOpacity>
-          )}
-          <View style={[styles.logoBadge, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.3)' }]}>
-            <PropithubIcon size={20} />
-          </View>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>Plans</Text>
-          </View>
-        </View>
-        <View style={[styles.ownerBadge, isDark && { backgroundColor: '#1E293B', borderColor: colors.border }]}>
-          <Text style={[styles.ownerBadgeText, { color: colors.text }]}>OWNER</Text>
-        </View>
-      </View>
+      {/* Screen Header */}
+      <Header
+        title="Subscription"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       <ScrollView
         style={[styles.scroll, { backgroundColor: colors.background }]}

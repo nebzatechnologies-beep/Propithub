@@ -13,20 +13,26 @@ import {
 } from 'react-native';
 import { Ionicons, Feather, FontAwesome } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { Header } from '../components/Header';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { MobileTenantReview } from '../types';
 
-export const TenantLandlordReviewsScreen: React.FC = () => {
+interface TenantLandlordReviewsScreenProps {
+  onNavigate?: (screenKey: string) => void;
+  onProfilePress?: () => void;
+}
+
+export const TenantLandlordReviewsScreen: React.FC<TenantLandlordReviewsScreenProps> = ({
+  onNavigate,
+  onProfilePress,
+}) => {
   const { colors, isDark } = useMobileTheme();
   const { state, saveReview } = useMobileAppData();
   const { user } = useMobileAuth();
 
-  // 2 Web-Parity Subtabs: Directory vs Reviews
-  const [subTab, setSubTab] = useState<'directory' | 'reviews'>('directory');
-
-  const [search, setSearch] = useState('');
+  const [selectedOwnerFilter, setSelectedOwnerFilter] = useState<string>('all');
   const [showWriteModal, setShowWriteModal] = useState(false);
   const [selectedOwnerForReview, setSelectedOwnerForReview] = useState<any | null>(null);
   const [newRating, setNewRating] = useState(5);
@@ -122,18 +128,6 @@ export const TenantLandlordReviewsScreen: React.FC = () => {
     return Array.from(discoveredOwners.values());
   }, [state.users, associatedOwnerIds, state.agreements, tenantRecord, user.id, userEmail, userName]);
 
-  // Filtered Landlords
-  const filteredLandlords = useMemo(() => {
-    if (!search.trim()) return associatedLandlords;
-    const q = search.toLowerCase();
-    return associatedLandlords.filter(
-      (o) =>
-        o.displayName?.toLowerCase().includes(q) ||
-        o.email?.toLowerCase().includes(q) ||
-        (o.phone && o.phone.includes(q))
-    );
-  }, [associatedLandlords, search]);
-
   // Live reviews from state.reviews
   const allReviews: MobileTenantReview[] = useMemo(() => {
     const list = state.reviews || [];
@@ -145,15 +139,9 @@ export const TenantLandlordReviewsScreen: React.FC = () => {
   }, [state.reviews, associatedOwnerIds]);
 
   const filteredReviews = useMemo(() => {
-    if (!search.trim()) return allReviews;
-    const q = search.toLowerCase();
-    return allReviews.filter(
-      (r) =>
-        (r.tenantName || '').toLowerCase().includes(q) ||
-        (r.comment || '').toLowerCase().includes(q) ||
-        (r.unit && (r.unit || '').toLowerCase().includes(q))
-    );
-  }, [allReviews, search]);
+    if (selectedOwnerFilter === 'all') return allReviews;
+    return allReviews.filter((r) => r.ownerId === selectedOwnerFilter);
+  }, [allReviews, selectedOwnerFilter]);
 
   const handleOpenWriteModal = (landlord?: any) => {
     setSelectedOwnerForReview(landlord || associatedLandlords[0]);
@@ -203,195 +191,140 @@ export const TenantLandlordReviewsScreen: React.FC = () => {
       {/* Screen Status Bar */}
       <ScreenStatusBar />
 
-      {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <View style={styles.logoBadge}>
-            <Feather name="star" size={18} color="#FFFFFF" />
-          </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.navy }]}>Landlord Reviews</Text>
-          </View>
-        </View>
-        <TouchableOpacity
-          style={styles.writeReviewHeaderBtn}
-          onPress={() => handleOpenWriteModal()}
-          activeOpacity={0.85}
-        >
-          <Feather name="edit-3" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
-          <Text style={styles.writeReviewHeaderBtnText}>Write Review</Text>
-        </TouchableOpacity>
-      </View>
+      {/* Unified Header */}
+      <Header
+        title="Reviews"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Search Bar */}
-        <View style={[styles.searchBar, { backgroundColor: isDark ? colors.card : '#FFFFFF', borderColor: colors.line }]}>
-          <Feather name="search" size={16} color={colors.inkSoft} style={{ marginRight: 8 }} />
-          <TextInput
-            style={[styles.searchInput, { color: colors.navy }]}
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search landlord or unit..."
-            placeholderTextColor={colors.inkSoft}
-            autoCapitalize="none"
-          />
-          {search ? (
-            <TouchableOpacity onPress={() => setSearch('')}>
-              <Ionicons name="close-circle" size={18} color={colors.inkSoft} />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-
-        {/* 2 Subtabs: Directory vs Reviews */}
-        <View style={[styles.subTabCapsule, { backgroundColor: isDark ? colors.card : '#E2E8F0' }]}>
-          <TouchableOpacity
-            style={[styles.subTabBtn, subTab === 'directory' && [styles.subTabBtnActive, { backgroundColor: colors.surface, borderColor: colors.line }]]}
-            onPress={() => setSubTab('directory')}
-            activeOpacity={0.8}
-          >
-            <Feather
-              name="users"
-              size={13}
-              color={subTab === 'directory' ? colors.navy : colors.inkSoft}
-              style={{ marginRight: 5 }}
-            />
-            <Text style={[styles.subTabText, { color: colors.inkSoft }, subTab === 'directory' && [styles.subTabTextActive, { color: colors.navy }]]}>
-              Directory ({filteredLandlords.length})
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.subTabBtn, subTab === 'reviews' && [styles.subTabBtnActive, { backgroundColor: colors.surface, borderColor: colors.line }]]}
-            onPress={() => setSubTab('reviews')}
-            activeOpacity={0.8}
-          >
-            <Feather
-              name="message-square"
-              size={13}
-              color={subTab === 'reviews' ? colors.navy : colors.inkSoft}
-              style={{ marginRight: 5 }}
-            />
-            <Text style={[styles.subTabText, { color: colors.inkSoft }, subTab === 'reviews' && [styles.subTabTextActive, { color: colors.navy }]]}>
-              Reviews ({filteredReviews.length})
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* =============================================================== */}
-        {/* SUBTAB 1: LANDLORD DIRECTORY                                    */}
-        {/* =============================================================== */}
-        {subTab === 'directory' && (
-          <>
-            <View style={[styles.trustBanner, isDark && { backgroundColor: '#064E3B20', borderColor: '#065F46' }]}>
-              <Feather name="shield" size={16} color="#059669" style={{ marginRight: 8 }} />
-              <Text style={[styles.trustBannerText, isDark && { color: '#6EE7B7' }]}>
-                Showing property owners from your verified past & active tenancies.
-              </Text>
-            </View>
-
-            {filteredLandlords.map((landlord) => {
-              const initials = (landlord.displayName || 'Landlord')
-                .split(' ')
-                .map((n: string) => n[0])
-                .join('')
-                .slice(0, 2)
-                .toUpperCase();
-
-              return (
-                <View key={landlord.id} style={[styles.landlordCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <View style={styles.landlordTopRow}>
-                    <View style={styles.avatarBox}>
-                      <Text style={styles.avatarText}>{initials}</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.landlordName, { color: colors.navy }]}>{landlord.displayName || 'Property Landlord'}</Text>
-                      <Text style={[styles.landlordSub, { color: colors.inkSoft }]}>Verified Property Owner • Propithub Trust Certified</Text>
-                    </View>
-                    <View style={styles.ratingBadge}>
-                      <FontAwesome name="star" size={12} color="#D97706" style={{ marginRight: 4 }} />
-                      <Text style={styles.ratingBadgeText}>4.9</Text>
-                    </View>
-                  </View>
-
-                  <View style={[styles.divider, { backgroundColor: colors.line }]} />
-
-                  <View style={styles.contactRow}>
-                    <View style={styles.contactItem}>
-                      <Feather name="mail" size={13} color={colors.inkSoft} style={{ marginRight: 5 }} />
-                      <Text style={[styles.contactText, { color: colors.inkSoft }]}>{landlord.email || 'landlord@propithub.app'}</Text>
-                    </View>
-                    <View style={styles.contactItem}>
-                      <Feather name="phone" size={13} color={colors.inkSoft} style={{ marginRight: 5 }} />
-                      <Text style={[styles.contactText, { color: colors.inkSoft }]}>{landlord.phone || '+91 98450 11223'}</Text>
-                    </View>
-                  </View>
-
-                  <View style={[styles.divider, { backgroundColor: colors.line }]} />
-
-                  <View style={styles.landlordActionsRow}>
-                    <TouchableOpacity
-                      style={styles.reviewBtn}
-                      onPress={() => handleOpenWriteModal(landlord)}
-                      activeOpacity={0.85}
-                    >
-                      <Feather name="edit-3" size={13} color="#FFFFFF" style={{ marginRight: 5 }} />
-                      <Text style={styles.reviewBtnText}>Write Landlord Review</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              );
-            })}
-          </>
-        )}
-
-        {/* =============================================================== */}
-        {/* SUBTAB 2: PUBLISHED REVIEWS                                     */}
-        {/* =============================================================== */}
-        {subTab === 'reviews' && (
-          <>
-            {filteredReviews.length === 0 ? (
-              <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <Feather name="message-square" size={32} color={colors.inkSoft} />
-                <Text style={[styles.emptyTitle, { color: colors.navy }]}>Zero Reviews Yet</Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>Be the first resident to submit a review for your landlord.</Text>
-              </View>
+        {/* Top Row: Landlord Filter Pills (if >1) + Write a review Button */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+            {associatedLandlords.length > 1 ? (
+              <>
+                <TouchableOpacity
+                  onPress={() => setSelectedOwnerFilter('all')}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: selectedOwnerFilter === 'all' ? colors.navy : colors.line,
+                    backgroundColor: selectedOwnerFilter === 'all' ? colors.navy : colors.surface,
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: selectedOwnerFilter === 'all' ? '#FFFFFF' : colors.inkSoft }}>
+                    All ({associatedLandlords.length})
+                  </Text>
+                </TouchableOpacity>
+                {associatedLandlords.map((o) => (
+                  <TouchableOpacity
+                    key={o.id}
+                    onPress={() => setSelectedOwnerFilter(o.id)}
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 999,
+                      borderWidth: 1,
+                      borderColor: selectedOwnerFilter === o.id ? colors.navy : colors.line,
+                      backgroundColor: selectedOwnerFilter === o.id ? colors.navy : colors.surface,
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: selectedOwnerFilter === o.id ? '#FFFFFF' : colors.inkSoft }}>
+                      {o.displayName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </>
             ) : (
-              filteredReviews.map((r) => (
-                <View key={r.id} style={[styles.reviewCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <View style={styles.reviewHeader}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.reviewerName, { color: colors.navy }]}>{r.tenantName}</Text>
-                      <Text style={[styles.reviewerUnit, { color: colors.inkSoft }]}>
-                        Resident • Unit {r.unit || 'Residence'} • {r.createdAt?.split('T')[0] || 'Recent'}
-                      </Text>
-                    </View>
-                    <View style={styles.starsRow}>
-                      {[1, 2, 3, 4, 5].map((s) => (
-                        <FontAwesome
-                          key={s}
-                          name={s <= (r.rating || 5) ? 'star' : 'star-o'}
-                          size={13}
-                          color="#D97706"
-                          style={{ marginLeft: 2 }}
-                        />
-                      ))}
-                    </View>
-                  </View>
-
-                  <Text style={[styles.reviewComment, { color: colors.navy }]}>{r.comment}</Text>
-
-                  <View style={[styles.verifiedTenancyStrip, isDark && { backgroundColor: '#064E3B20' }]}>
-                    <Feather name="check-circle" size={12} color="#059669" style={{ marginRight: 4 }} />
-                    <Text style={[styles.verifiedTenancyText, isDark && { color: '#6EE7B7' }]}>Verified Tenancy via Propithub Lease Deed</Text>
-                  </View>
-                </View>
-              ))
+              <Text style={{ fontSize: 14, fontWeight: '800', color: colors.navy }}>
+                Landlord reviews
+              </Text>
             )}
-          </>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.writeReviewHeaderBtn, associatedLandlords.length === 0 && { opacity: 0.5 }]}
+            onPress={() => {
+              if (associatedLandlords.length === 0) return;
+              const match = selectedOwnerFilter !== 'all' ? associatedLandlords.find((o) => o.id === selectedOwnerFilter) : associatedLandlords[0];
+              handleOpenWriteModal(match);
+            }}
+            activeOpacity={0.85}
+          >
+            <Feather name="plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
+            <Text style={styles.writeReviewHeaderBtnText}>Write a review</Text>
+          </TouchableOpacity>
+        </View>
+
+        {filteredReviews.length === 0 ? (
+          <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+            <Text style={{ fontSize: 13, color: colors.inkSoft }}>
+              No reviews recorded for your landlords yet.
+            </Text>
+          </View>
+        ) : (
+          filteredReviews.map((r) => (
+            <View key={r.id} style={[styles.reviewCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+              <View style={styles.reviewHeader}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={[styles.reviewerName, { color: colors.navy }]}>
+                    {r.ownerName || 'Property Landlord'}
+                  </Text>
+                  <Text style={[styles.reviewerUnit, { color: colors.inkSoft }]}>
+                    Reviewed by {r.tenantName} • {r.createdAt?.split('T')[0] || 'Recent'}{r.propertyName ? ` • ${r.propertyName}` : ''}{r.unit ? ` (Unit ${r.unit})` : ''}
+                  </Text>
+                </View>
+                <View style={[styles.verifiedTenancyStrip, { marginTop: 0 }, isDark && { backgroundColor: '#064E3B20' }]}>
+                  <Feather name="check-circle" size={11} color="#059669" style={{ marginRight: 4 }} />
+                  <Text style={[styles.verifiedTenancyText, isDark && { color: '#6EE7B7' }]}>Verified Tenancy</Text>
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                {[1, 2, 3, 4, 5].map((s) => (
+                  <FontAwesome
+                    key={s}
+                    name={s <= (r.rating || 5) ? 'star' : 'star-o'}
+                    size={13}
+                    color="#D97706"
+                    style={{ marginRight: 3 }}
+                  />
+                ))}
+                <Text style={{ fontSize: 11, fontWeight: '700', color: colors.inkSoft, marginLeft: 4 }}>
+                  ({(r.rating || 5).toFixed(1)})
+                </Text>
+              </View>
+
+              <Text style={[styles.reviewComment, { color: colors.navy, fontStyle: 'italic' }]}>
+                "{r.comment}"
+              </Text>
+
+              {Boolean(r.ownerReply) && (
+                <View
+                  style={{
+                    marginTop: 8,
+                    padding: 10,
+                    borderRadius: 8,
+                    backgroundColor: isDark ? '#0F172A' : '#F8FAFC',
+                    borderLeftWidth: 3,
+                    borderLeftColor: colors.brass,
+                  }}
+                >
+                  <Text style={{ fontSize: 12, color: colors.navy, lineHeight: 17 }}>
+                    <Text style={{ fontWeight: '700' }}>Landlord reply: </Text>
+                    {r.ownerReply}
+                  </Text>
+                </View>
+              )}
+            </View>
+          ))
         )}
 
         <View style={{ height: 40 }} />
@@ -421,6 +354,35 @@ export const TenantLandlordReviewsScreen: React.FC = () => {
               contentContainerStyle={{ paddingBottom: 24 }}
               keyboardShouldPersistTaps="handled"
             >
+              {associatedLandlords.length > 1 && (
+                <View style={{ marginBottom: 12 }}>
+                  <Text style={[styles.modalInputLabel, { color: colors.inkSoft }]}>Select Landlord / Residence</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                    {associatedLandlords.map((o) => {
+                      const isSelected = (selectedOwnerForReview?.id || associatedLandlords[0]?.id) === o.id;
+                      return (
+                        <TouchableOpacity
+                          key={o.id}
+                          onPress={() => setSelectedOwnerForReview(o)}
+                          style={{
+                            paddingHorizontal: 10,
+                            paddingVertical: 6,
+                            borderRadius: 6,
+                            borderWidth: 1,
+                            borderColor: isSelected ? '#10B981' : colors.line,
+                            backgroundColor: isSelected ? (isDark ? '#064E3B30' : '#ECFDF5') : 'transparent',
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: isSelected ? '700' : '500', color: isSelected ? '#059669' : colors.navy }}>
+                            {o.displayName} {o.propertyName ? `(${o.propertyName})` : ''}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
+
               <Text style={[styles.modalInputLabel, { color: colors.inkSoft }]}>Overall Rating</Text>
               <View style={styles.modalStarsRow}>
                 {[1, 2, 3, 4, 5].map((star) => (
@@ -541,132 +503,6 @@ const createStyles = (colors: any, isDark: boolean) =>
       fontSize: 13,
       color: colors.navy,
       paddingVertical: 0,
-    },
-    subTabCapsule: {
-      flexDirection: 'row',
-      backgroundColor: '#E2E8F0',
-      borderRadius: 8,
-      padding: 3,
-      marginBottom: 16,
-    },
-    subTabBtn: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      paddingVertical: 8,
-      borderRadius: 6,
-    },
-    subTabBtnActive: {
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    subTabText: {
-      fontSize: 11.5,
-      fontWeight: '600',
-      color: colors.inkSoft,
-    },
-    subTabTextActive: {
-      color: colors.navy,
-      fontWeight: '700',
-    },
-    trustBanner: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: '#F0FDF4',
-      borderWidth: 1,
-      borderColor: '#BBF7D0',
-      borderRadius: 8,
-      padding: 10,
-      marginBottom: 14,
-    },
-    trustBannerText: {
-      flex: 1,
-      fontSize: 11.5,
-      color: '#166534',
-      lineHeight: 16,
-    },
-    landlordCard: {
-      backgroundColor: colors.surface,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: colors.line,
-      padding: 14,
-      marginBottom: 12,
-    },
-    landlordTopRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
-    avatarBox: {
-      width: 40,
-      height: 40,
-      borderRadius: 20,
-      backgroundColor: '#10B981',
-      justifyContent: 'center',
-      alignItems: 'center',
-      marginRight: 10,
-    },
-    avatarText: {
-      fontSize: 14,
-      fontWeight: '700',
-      color: '#FFFFFF',
-    },
-    landlordName: {
-      fontSize: 14.5,
-      fontWeight: '700',
-      color: colors.navy,
-    },
-    landlordSub: {
-      fontSize: 11,
-      color: colors.inkSoft,
-      marginTop: 1,
-    },
-    ratingBadge: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: '#FEF3C7',
-      borderRadius: 6,
-      paddingHorizontal: 7,
-      paddingVertical: 4,
-    },
-    ratingBadgeText: {
-      fontSize: 11.5,
-      fontWeight: '800',
-      color: '#B45309',
-    },
-    divider: {
-      height: 1,
-      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-      marginVertical: 10,
-    },
-    contactRow: {
-      gap: 6,
-    },
-    contactItem: {
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
-    contactText: {
-      fontSize: 12,
-      color: colors.inkSoft,
-    },
-    landlordActionsRow: {
-      marginTop: 2,
-    },
-    reviewBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: '#10B981',
-      borderRadius: 7,
-      paddingVertical: 9,
-    },
-    reviewBtnText: {
-      fontSize: 12,
-      fontWeight: '700',
-      color: '#FFFFFF',
     },
     emptyCard: {
       backgroundColor: colors.surface,

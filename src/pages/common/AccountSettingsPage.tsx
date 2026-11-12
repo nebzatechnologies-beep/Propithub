@@ -373,9 +373,6 @@ export const AccountSettingsPage: React.FC = () => {
         <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--ink)', margin: 0 }}>
           Account Settings
         </h1>
-        <div style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px' }}>
-          Manage your personal profile, security credentials, and communication alerts.
-        </div>
       </div>
 
       {/* Settings Navigation Tabs — Only Profile Details, Security & Password, Notifications */}
@@ -537,11 +534,6 @@ export const AccountSettingsPage: React.FC = () => {
                   cursor: 'not-allowed',
                 }}
               />
-              <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '4px', display: 'block' }}>
-                {role === 'superadmin'
-                  ? 'Administrator login email can be updated below with current password verification.'
-                  : 'Primary sign-in email address cannot be changed directly. Contact administrator if update is needed.'}
-              </span>
             </div>
 
             <div className="field">
@@ -612,9 +604,6 @@ export const AccountSettingsPage: React.FC = () => {
                     Root Admin
                   </span>
                 </div>
-                <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px', maxWidth: '580px', lineHeight: 1.5 }}>
-                  Update the primary sign-in email address used to log into the Propithub Platform Administrator portal. Requires your current password for security verification.
-                </p>
               </div>
 
               {adminEmailError && (
@@ -785,9 +774,6 @@ export const AccountSettingsPage: React.FC = () => {
             <h3 style={{ fontSize: '17px', fontWeight: 700, margin: 0, color: 'var(--ink)', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Lock size={17} color="var(--teal-primary)" /> Password &amp; Account Security
             </h3>
-            <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px' }}>
-              Update your password to keep your property workspace, leases, and transactions secure.
-            </p>
           </div>
 
           {passwordError && (
@@ -983,9 +969,6 @@ export const AccountSettingsPage: React.FC = () => {
                     2-Step Verification
                   </span>
                 </div>
-                <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px', maxWidth: '580px', lineHeight: 1.5 }}>
-                  This 6-digit security code is required on the <b>/admin-login</b> portal as second-factor verification after entering your email and password. Default code is <b>123456</b>.
-                </p>
               </div>
 
               {pinError && (
@@ -1022,7 +1005,7 @@ export const AccountSettingsPage: React.FC = () => {
                         setCurrentPin(e.target.value.replace(/\D/g, '').slice(0, 6));
                         setPinError('');
                       }}
-                      placeholder="Enter current 6-digit code (default: 123456)"
+                      placeholder="Enter current 6-digit code"
                       maxLength={6}
                       required
                       style={{
@@ -1105,9 +1088,6 @@ export const AccountSettingsPage: React.FC = () => {
                       {showNewPin ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
-                  <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '4px', display: 'block' }}>
-                    Must be exactly 6 numeric digits (0-9).
-                  </span>
                 </div>
 
                 {/* Confirm New 6-Digit Code */}
@@ -1307,49 +1287,162 @@ export const AccountSettingsPage: React.FC = () => {
             <h3 style={{ fontSize: '17px', fontWeight: 700, margin: 0, color: 'var(--ink)', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Bell size={17} color="var(--teal-primary)" /> Notification &amp; Alert Preferences
             </h3>
-            <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px' }}>
-              Configure which operational updates, billing notices, and alerts you receive across communication channels.
-            </p>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {[
-              {
-                id: 'inAppReminders',
-                title: 'In-App Reminders & Banner Notifications',
-                desc: 'Instant notifications for rent dues, maintenance ticket milestones, and agreement signatures.',
-                checked: notifs.inAppReminders,
-                onChange: () => setNotifs((prev) => ({ ...prev, inAppReminders: !prev.inAppReminders })),
-              },
-              {
-                id: 'emailInvoices',
-                title: 'Email Delivery for Invoices & Payment Receipts',
-                desc: 'Automatically dispatch PDF invoices, tax receipts, and payment settlements to your registered email.',
-                checked: notifs.emailInvoices,
-                onChange: () => setNotifs((prev) => ({ ...prev, emailInvoices: !prev.emailInvoices })),
-              },
-              {
-                id: 'emailMaintenance',
-                title: 'Maintenance Requests & Repair Work Orders',
-                desc: 'Receive alerts when new work tickets are logged, assigned, or marked complete.',
-                checked: notifs.emailMaintenance,
-                onChange: () => setNotifs((prev) => ({ ...prev, emailMaintenance: !prev.emailMaintenance })),
-              },
-              {
-                id: 'emailAnnouncements',
-                title: 'Building Announcements & Policy Updates',
-                desc: 'Stay informed about scheduled water/power maintenance, inspection schedules, and notices.',
-                checked: notifs.emailAnnouncements,
-                onChange: () => setNotifs((prev) => ({ ...prev, emailAnnouncements: !prev.emailAnnouncements })),
-              },
-              {
-                id: 'smsAlerts',
-                title: 'SMS Urgent Security & Late Payment Alerts',
-                desc: 'Direct mobile SMS alerts for critical overdue notices and time-sensitive security items.',
-                checked: notifs.smsAlerts,
-                onChange: () => setNotifs((prev) => ({ ...prev, smsAlerts: !prev.smsAlerts })),
-              },
-            ].map((item) => (
+            {(() => {
+              if (role === 'staff') {
+                return [
+                  {
+                    id: 'inAppReminders',
+                    title: 'In-App Work Orders & Task Reminders',
+                    subtitle: 'Receive instant visual alerts when a new repair order is assigned to you',
+                    checked: notifs.inAppReminders,
+                    onChange: () => setNotifs((prev) => ({ ...prev, inAppReminders: !prev.inAppReminders })),
+                  },
+                  {
+                    id: 'emailMaintenance',
+                    title: 'New Dispatch & Work Order Assignment Emails',
+                    subtitle: 'Receive job descriptions, photos, and tenant contact details by email',
+                    checked: notifs.emailMaintenance,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailMaintenance: !prev.emailMaintenance })),
+                  },
+                  {
+                    id: 'emailInvoices',
+                    title: 'Task Fee Settlement & Payout Receipts',
+                    subtitle: 'Email delivery when contractor task fees and payouts are settled',
+                    checked: notifs.emailInvoices,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailInvoices: !prev.emailInvoices })),
+                  },
+                  {
+                    id: 'smsAlerts',
+                    title: 'SMS Urgent Security & Emergency Repair Alerts',
+                    subtitle: 'Instant SMS notifications for urgent hazard dispatches (burst pipe, gas leak, power outage)',
+                    checked: notifs.smsAlerts,
+                    onChange: () => setNotifs((prev) => ({ ...prev, smsAlerts: !prev.smsAlerts })),
+                  },
+                ];
+              }
+
+              if (role === 'manager') {
+                return [
+                  {
+                    id: 'inAppReminders',
+                    title: 'In-App Reminders & Portfolio Action Items',
+                    subtitle: 'Actionable reminders for pending leases, repairs, and move-outs',
+                    checked: notifs.inAppReminders,
+                    onChange: () => setNotifs((prev) => ({ ...prev, inAppReminders: !prev.inAppReminders })),
+                  },
+                  {
+                    id: 'emailMaintenance',
+                    title: 'Maintenance Requests & Resident Repair Tickets',
+                    subtitle: 'Get notified when residents log repair tickets or technicians resolve them',
+                    checked: notifs.emailMaintenance,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailMaintenance: !prev.emailMaintenance })),
+                  },
+                  {
+                    id: 'emailInvoices',
+                    title: 'Rent Collection & Deposit Transaction Alerts',
+                    subtitle: 'Email alerts for offline cash claims, payment proof submissions, and invoices',
+                    checked: notifs.emailInvoices,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailInvoices: !prev.emailInvoices })),
+                  },
+                  {
+                    id: 'emailAnnouncements',
+                    title: 'Building Announcements & Policy Updates',
+                    subtitle: 'Stay updated on portfolio notices and landlord communications',
+                    checked: notifs.emailAnnouncements,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailAnnouncements: !prev.emailAnnouncements })),
+                  },
+                  {
+                    id: 'smsAlerts',
+                    title: 'SMS Urgent Security & Resident Escalation Alerts',
+                    subtitle: 'Receive urgent SMS alerts for safety hazards and resident security escalations',
+                    checked: notifs.smsAlerts,
+                    onChange: () => setNotifs((prev) => ({ ...prev, smsAlerts: !prev.smsAlerts })),
+                  },
+                ];
+              }
+
+              if (role === 'tenant') {
+                return [
+                  {
+                    id: 'inAppReminders',
+                    title: 'In-App Reminders & Banner Notifications',
+                    subtitle: 'Reminders for upcoming rent due dates and maintenance updates',
+                    checked: notifs.inAppReminders,
+                    onChange: () => setNotifs((prev) => ({ ...prev, inAppReminders: !prev.inAppReminders })),
+                  },
+                  {
+                    id: 'emailInvoices',
+                    title: 'Email Delivery for Invoices & Payment Receipts',
+                    subtitle: 'Receive monthly rental invoices and payment vouchers directly to your inbox',
+                    checked: notifs.emailInvoices,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailInvoices: !prev.emailInvoices })),
+                  },
+                  {
+                    id: 'emailMaintenance',
+                    title: 'Maintenance Requests & Repair Work Orders',
+                    subtitle: 'Updates on technician visits and repair ticket progress',
+                    checked: notifs.emailMaintenance,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailMaintenance: !prev.emailMaintenance })),
+                  },
+                  {
+                    id: 'emailAnnouncements',
+                    title: 'Building Announcements & Community Bulletins',
+                    subtitle: 'Notices regarding building maintenance, elevator service, or policy updates',
+                    checked: notifs.emailAnnouncements,
+                    onChange: () => setNotifs((prev) => ({ ...prev, emailAnnouncements: !prev.emailAnnouncements })),
+                  },
+                  {
+                    id: 'smsAlerts',
+                    title: 'SMS Urgent Security & Payment Alerts',
+                    subtitle: 'SMS messages for urgent building security alerts and rent due notices',
+                    checked: notifs.smsAlerts,
+                    onChange: () => setNotifs((prev) => ({ ...prev, smsAlerts: !prev.smsAlerts })),
+                  },
+                ];
+              }
+
+              // Owner & Superadmin
+              return [
+                {
+                  id: 'inAppReminders',
+                  title: 'In-App Reminders & Portfolio Action Items',
+                  subtitle: 'Daily operational tasks, lease renewals, and collection alerts',
+                  checked: notifs.inAppReminders,
+                  onChange: () => setNotifs((prev) => ({ ...prev, inAppReminders: !prev.inAppReminders })),
+                },
+                {
+                  id: 'emailInvoices',
+                  title: 'Rent Payments, Invoices & Financial Reports',
+                  subtitle: 'Email delivery when residents pay rent, upload proof, or when statements generate',
+                  checked: notifs.emailInvoices,
+                  onChange: () => setNotifs((prev) => ({ ...prev, emailInvoices: !prev.emailInvoices })),
+                },
+                {
+                  id: 'emailMaintenance',
+                  title: 'Maintenance Requests & Contractor Dispatches',
+                  subtitle: 'Alerts when tickets are opened, contractors are dispatched, or jobs are finished',
+                  checked: notifs.emailMaintenance,
+                  onChange: () => setNotifs((prev) => ({ ...prev, emailMaintenance: !prev.emailMaintenance })),
+                },
+                {
+                  id: 'emailAnnouncements',
+                  title: 'Resident Communication & Broadcast Delivery Receipts',
+                  subtitle: 'Summaries when building announcements or emergency broadcasts are delivered',
+                  checked: notifs.emailAnnouncements,
+                  onChange: () => setNotifs((prev) => ({ ...prev, emailAnnouncements: !prev.emailAnnouncements })),
+                },
+                {
+                  id: 'smsAlerts',
+                  title: 'SMS Urgent Security & Critical Portfolio Alerts',
+                  subtitle: 'High-priority SMS alerts for critical incidents or lease escalations',
+                  checked: notifs.smsAlerts,
+                  onChange: () => setNotifs((prev) => ({ ...prev, smsAlerts: !prev.smsAlerts })),
+                },
+              ];
+            })().map((item) => (
               <div
                 key={item.id}
                 onClick={item.onChange}
@@ -1367,9 +1460,11 @@ export const AccountSettingsPage: React.FC = () => {
               >
                 <div style={{ paddingRight: '16px' }}>
                   <b style={{ color: 'var(--ink)', fontSize: '13.5px' }}>{item.title}</b>
-                  <p style={{ fontSize: '12px', color: 'var(--ink-soft)', margin: '2px 0 0', lineHeight: 1.4 }}>
-                    {item.desc}
-                  </p>
+                  {item.subtitle && (
+                    <div style={{ color: 'var(--ink-soft)', fontSize: '12px', marginTop: '3px' }}>
+                      {item.subtitle}
+                    </div>
+                  )}
                 </div>
                 <div
                   style={{

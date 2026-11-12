@@ -83,7 +83,9 @@ export async function registerForPushNotificationsAsync(userId?: string): Promis
 
   try {
     if (!Device?.isDevice) {
-      console.log('[PushNotifications] Physical device required for push notifications.');
+      if (__DEV__) {
+        console.info('[PushNotifications] Development simulator/emulator detected: physical device required for remote APNs/FCM tokens.');
+      }
       return null;
     }
   } catch (_e) {

@@ -1,8 +1,9 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
-import { Feather, Ionicons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
+import { useMobileAppData } from '../context/MobileAppDataContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { PropithubLogo, PropithubIcon } from './PropithubLogo';
 
@@ -24,6 +25,9 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const { user } = useMobileAuth();
   const { colors, isDark } = useMobileTheme();
+  const { state } = useMobileAppData();
+
+  const unreadCount = (state?.notifications || []).filter((n) => !n.read).length;
 
   const dynamicInitials =
     userInitials ||
@@ -76,12 +80,16 @@ export const Header: React.FC<HeaderProps> = ({
       {/* Actions on Right: Bell & User Avatar */}
       <TourTarget id="topbar-actions" style={styles.rightActions}>
         <TouchableOpacity
-          style={[styles.bellButton, { backgroundColor: colors.surfaceSunken }]}
+          style={[
+            styles.bellButton,
+            { backgroundColor: colors.surfaceSunken, borderColor: colors.line },
+          ]}
           onPress={onNotificationPress}
           activeOpacity={0.7}
           accessibilityLabel="Notifications"
         >
-          <Feather name="bell" size={17} color={colors.inkSoft} />
+          <Feather name="bell" size={16} color={colors.inkSoft} />
+          {unreadCount > 0 && <View style={styles.unreadDot} />}
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -148,9 +156,20 @@ const styles = StyleSheet.create({
   bellButton: {
     width: 34,
     height: 34,
-    borderRadius: 17,
+    borderRadius: 11,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+  },
+  unreadDot: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#EF4444',
   },
   avatarButton: {
     width: 34,

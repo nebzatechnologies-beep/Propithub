@@ -15,8 +15,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 }) => {
   const [selectedCountry, setSelectedCountry] = useState<string>('All countries');
 
-  // Filter listed vacant units
-  const listedUnits = units.filter((u) => u.isListedPublicly && u.status === 'vacant');
+  // Filter listed vacant units (popular prioritized first)
+  const popularRank = (a: Unit, b: Unit) => {
+    const aPop = Boolean(a.isPopular && a.popularUntil && new Date(a.popularUntil).getTime() > Date.now());
+    const bPop = Boolean(b.isPopular && b.popularUntil && new Date(b.popularUntil).getTime() > Date.now());
+    if (aPop && !bPop) return -1;
+    if (!aPop && bPop) return 1;
+    return 0;
+  };
+  const listedUnits = units.filter((u) => u.isListedPublicly && u.status === 'vacant').sort(popularRank);
   const countries = [
     'All countries',
     ...Array.from(new Set(listedUnits.map((u) => sanitizeCountry(u.country, u.address)))),
@@ -127,7 +134,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     })`,
                   }}
                 >
-                  <span>Unit {u.unitNumber}</span>
+                  {u.isPopular && u.popularUntil && new Date(u.popularUntil).getTime() > Date.now() ? (
+                    <span style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', color: '#ffffff', fontWeight: 800 }}>
+                      🔥 Popular · Unit {u.unitNumber}
+                    </span>
+                  ) : (
+                    <span>Unit {u.unitNumber}</span>
+                  )}
                 </div>
                 <div className="listing-body">
                   <div className="price">

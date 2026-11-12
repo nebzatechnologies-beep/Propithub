@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { ref, uploadString, getDownloadURL } from 'firebase/storage';
+import { ref, uploadString, uploadBytes, getDownloadURL } from 'firebase/storage';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { storage, isFirebaseConfigured } from './firebase';
 
@@ -159,14 +159,23 @@ export async function uploadOrCompressDocument(
           ? 'image/png'
           : 'image/jpeg');
 
-      await uploadString(storageRef, preparedPayload, 'data_url', {
-        contentType: effectiveContentType,
-      });
+      try {
+        const response = await fetch(preparedPayload);
+        const blob = await response.blob();
+        await uploadBytes(storageRef, blob, {
+          contentType: effectiveContentType,
+        });
+      } catch (_nativeUploadErr) {
+        await uploadString(storageRef, preparedPayload, 'data_url', {
+          contentType: effectiveContentType,
+        });
+      }
 
       const downloadUrl = await getDownloadURL(storageRef);
       return downloadUrl;
-    } catch (err) {
-      console.warn('Firebase Storage upload error, falling back to compressed payload:', err);
+    } catch (_err) {
+      // Safe fallback to compressed inline payload (offline resilience)
+      return preparedPayload;
     }
   }
 

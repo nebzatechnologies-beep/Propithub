@@ -1,17 +1,20 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
-import { Key, Copy, Check, Eye, EyeOff, ShieldCheck, Building2, X } from 'lucide-react';
+import { Copy, Check, Eye, EyeOff, ShieldCheck, Building2, X } from 'lucide-react';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { getCleanAddressText } from '../../lib/addressUtils';
 
 export const TeamPage: React.FC = () => {
   const { state, updateState, recordManagerPayout, saveManager, deleteManager, reassignManagerProperty, showToast } = useAppData();
-  const { user, provisionUser, resetPassword } = useAuth();
+  const { user, provisionUser } = useAuth();
+  const { viewCurrency } = useCurrency();
   const navigate = useNavigate();
 
   const [subTab, setSubTab] = useState<'managers' | 'payouts'>('managers');
@@ -230,8 +233,8 @@ export const TeamPage: React.FC = () => {
           <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
             <div className="hint">
               {canHaveManagers
-                ? `${myManagers.length} of ${maxManagers} property managers used (${currentPlanName} plan)`
-                : `Property managers not included in ${currentPlanName} plan (Limit: 0)`}
+                ? `${myManagers.length} of ${maxManagers} property managers used`
+                : `Property managers not included in current plan`}
             </div>
             {canHaveManagers ? (
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -264,8 +267,35 @@ export const TeamPage: React.FC = () => {
             )}
           </div>
 
+          {canHaveManagers && myProperties.length === 0 && myManagers.length > 0 && (
+            <div
+              style={{
+                background: 'var(--surface-sunken)',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--radius)',
+                padding: '12px 16px',
+                marginBottom: '16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '18px' }}>💡</span>
+                <div style={{ fontSize: '13px', color: 'var(--ink)' }}>
+                  <b>{myManagers.map((m: any) => m.name).join(', ')}</b> {myManagers.length === 1 ? 'is' : 'are'} currently unassigned because your portfolio has no properties yet.
+                </div>
+              </div>
+              <Link to="/owner/properties" className="btn brass small" style={{ textDecoration: 'none', fontSize: '12px' }}>
+                + Create Property to Assign
+              </Link>
+            </div>
+          )}
+
           {canHaveManagers ? (
-            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
               {myManagers.length === 0 ? (
                 <div className="panel" style={{ gridColumn: '1 / -1' }}>
                   <div className="panel-body" style={{ color: 'var(--ink-soft)', padding: '24px' }}>
@@ -278,47 +308,37 @@ export const TeamPage: React.FC = () => {
                     (p) => p.id === pm.propertyId || p.assignedManagerId === pm.id
                   );
                   return (
-                    <div key={pm.id} className="panel">
-                      <div className="panel-body">
-                        <div className="person" style={{ marginBottom: '12px' }}>
-                          <div className="avatar">{pm.name.slice(0, 2).toUpperCase()}</div>
-                          <div className="who">
-                            <b>{pm.name}</b>
-                            <span>{pm.email}</span>
+                    <div key={pm.id} className="panel" style={{ margin: 0, display: 'flex', flexDirection: 'column' }}>
+                      <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', flex: 1, padding: '16px' }}>
+                        <div>
+                          <div className="person" style={{ marginBottom: '14px' }}>
+                            <div className="avatar">{pm.name.slice(0, 2).toUpperCase()}</div>
+                            <div className="who">
+                              <b style={{ fontSize: '14px' }}>{pm.name}</b>
+                              <span style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>{pm.email}</span>
+                            </div>
                           </div>
+
+                          <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
+                            <span className="k" style={{ color: 'var(--ink-soft)' }}>Assigned Property</span>
+                            <span style={{ fontWeight: 600, color: assignedProp ? 'var(--ink)' : 'var(--amber, #D97706)' }}>
+                              {assignedProp?.name || (myProperties.length === 0 ? 'Unassigned (No properties in portfolio)' : 'Unassigned (Floating Manager)')}
+                            </span>
+                          </div>
+
+                          {pm.phone && (
+                            <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
+                              <span className="k" style={{ color: 'var(--ink-soft)' }}>Phone</span>
+                              <span style={{ color: 'var(--ink)' }}>{pm.phone}</span>
+                            </div>
+                          )}
                         </div>
-                        <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
-                          <span className="k" style={{ color: 'var(--ink-soft)' }}>Assigned Property</span>
-                          <span style={{ fontWeight: 500, color: assignedProp ? 'var(--ink)' : 'var(--amber, #D97706)' }}>{assignedProp?.name || 'Unassigned (No Scope)'}</span>
-                        </div>
-                        <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
-                          <span className="k" style={{ color: 'var(--ink-soft)' }}>Phone</span>
-                          <span>{pm.phone || '—'}</span>
-                        </div>
-                        <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
-                          <span className="k" style={{ color: 'var(--ink-soft)' }}>Financial records</span>
-                          <span style={{ color: 'var(--danger)', fontWeight: 600 }}>No access</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--line)', alignItems: 'center', flexWrap: 'wrap' }}>
                           <button
                             type="button"
                             className="btn secondary small"
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                            onClick={async () => {
-                              const r = await resetPassword(pm.email);
-                              if (r.success) {
-                                showToast(`Password reset link dispatched to ${pm.email}`);
-                              } else {
-                                showToast(r.error || 'Failed to dispatch reset link');
-                              }
-                            }}
-                          >
-                            <Key size={12} /> Send Password Reset
-                          </button>
-                          <button
-                            type="button"
-                            className="btn secondary small"
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12.5px' }}
                             onClick={() => {
                               const currentPropId = pm.propertyId || state.properties.find((p) => p.assignedManagerId === pm.id)?.id || '';
                               setReassignModal({
@@ -328,11 +348,13 @@ export const TeamPage: React.FC = () => {
                               });
                             }}
                           >
-                            <Building2 size={12} /> Assign / Unassign
+                            <Building2 size={13} /> {assignedProp ? 'Reassign' : 'Assign'}
                           </button>
+
                           <button
                             type="button"
                             className="btn brass small"
+                            style={{ fontSize: '12.5px' }}
                             onClick={() => {
                               setPayingManager(pm);
                               setIsPayModalOpen(true);
@@ -340,9 +362,11 @@ export const TeamPage: React.FC = () => {
                           >
                             Disburse Pay
                           </button>
+
                           <button
                             type="button"
                             className="btn secondary small"
+                            style={{ marginLeft: 'auto', fontSize: '12.5px', color: 'var(--danger)' }}
                             onClick={() => setPmToRemove(pm)}
                           >
                             Remove
@@ -358,10 +382,7 @@ export const TeamPage: React.FC = () => {
             <div className="panel">
               <div className="panel-body" style={{ textAlign: 'center', padding: '40px 20px' }}>
                 <div style={{ fontSize: '32px', color: 'var(--ink-soft)', marginBottom: '8px' }}>—</div>
-                <h3 style={{ marginBottom: '8px' }}>Property managers not included in {currentPlanName} plan</h3>
-                <p className="hint" style={{ maxWidth: '440px', margin: '0 auto 16px' }}>
-                  Your current subscription tier does not permit delegated property managers. Upgrade your plan to unlock manager accounts and delegation.
-                </p>
+                <h3 style={{ marginBottom: '14px' }}>Property managers not included in {currentPlanName} plan</h3>
                 <button
                   type="button"
                   className="btn brass"
@@ -375,10 +396,6 @@ export const TeamPage: React.FC = () => {
         </div>
       ) : (
         <div>
-          <div className="note-box">
-            <b>Payment Architecture:</b> Tenants pay monthly rent and security deposits directly to you (the Property Owner) through your configured payment gateways. You compensate your Property Managers with a dedicated monthly fee or performance commission.
-          </div>
-
           <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
             <div className="hint">{myPayouts.length} compensation records on file</div>
             <button
@@ -407,7 +424,7 @@ export const TeamPage: React.FC = () => {
                         <th>Record ID</th>
                         <th>Manager</th>
                         <th>Period</th>
-                        <th>Amount</th>
+                        <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                         <th>Status</th>
                         <th>Method & UTR</th>
                         <th>Date Paid</th>
@@ -419,7 +436,7 @@ export const TeamPage: React.FC = () => {
                           <td><b>{p.id}</b></td>
                           <td>{p.managerName}</td>
                           <td>{p.month}</td>
-                          <td style={{ fontWeight: 600 }}>{getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}{p.amount.toLocaleString('en-IN')}</td>
+                          <td style={{ fontWeight: 600 }}><CurrencyAmount amount={p.amount} currency={p.currency} /></td>
                           <td>
                             <span className={`badge ${p.status === 'paid' ? 'green' : 'amber'}`}>
                               {p.status === 'paid' ? '✓ Paid' : 'Pending'}
@@ -466,7 +483,7 @@ export const TeamPage: React.FC = () => {
 
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderTop: '1px solid var(--line)', fontSize: '12.5px' }}>
                         <span style={{ color: 'var(--ink-soft)' }}>Amount</span>
-                        <b style={{ color: 'var(--ledger)', fontSize: '14px' }}>{getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}{p.amount.toLocaleString('en-IN')}</b>
+                        <b style={{ color: 'var(--ledger)', fontSize: '14px' }}><CurrencyAmount amount={p.amount} currency={p.currency} /></b>
                       </div>
 
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderTop: '1px solid var(--line)', fontSize: '12.5px' }}>
@@ -610,9 +627,6 @@ export const TeamPage: React.FC = () => {
                     ))}
                 </select>
               </div>
-              <p className="hint">
-                They'll get access to listings, agreements, tenant reviews, and maintenance — not to payments or billing.
-              </p>
             </div>
             <div className="modal-foot" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', padding: '16px 20px', borderTop: '1px solid var(--line)', flexWrap: 'wrap' }}>
               <button
@@ -651,7 +665,6 @@ export const TeamPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 style={{ margin: 0, fontSize: '16px' }}>Manager Credentials Ready</h3>
-                  <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Account provisioned for login</span>
                 </div>
               </div>
               <button type="button" className="btn secondary small" onClick={() => setCredentialsModal(null)}>✕</button>
@@ -760,10 +773,6 @@ export const TeamPage: React.FC = () => {
               </button>
             </div>
             <div className="modal-body">
-              <p className="hint" style={{ marginBottom: '16px' }}>
-                Record monthly fee or commission disbursement to your property manager. This creates an auditable record in your management ledger.
-              </p>
-
               <div className="field" style={{ marginBottom: '16px' }}>
                 <label style={{ fontWeight: 600, color: 'var(--ink)' }}>Select Property Manager</label>
                 <select
@@ -878,29 +887,41 @@ export const TeamPage: React.FC = () => {
               </button>
             </div>
             <div className="modal-body">
-              <div className="hint" style={{ marginBottom: '16px' }}>
-                Manage delegated property operational scope for <b>{reassignModal.manager.name}</b> ({reassignModal.manager.email}).
-              </div>
-
-              <div className="field">
-                <label>Assigned Portfolio Property</label>
-                <select
-                  value={reassignModal.selectedPropertyId}
-                  onChange={(e) =>
-                    setReassignModal((prev) => (prev ? { ...prev, selectedPropertyId: e.target.value } : null))
-                  }
-                >
-                  <option value="">— None (Unassigned / Floating Manager) —</option>
-                  {myProperties.map((p) => {
-                    const cleanAddr = getCleanAddressText(p.address, '').text;
-                    return (
-                      <option key={p.id} value={p.id}>
-                        {p.name} {cleanAddr ? `(${cleanAddr})` : ''}
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
+              {myProperties.length === 0 ? (
+                <div style={{ padding: '14px', background: 'var(--surface-sunken)', borderRadius: '8px', border: '1px solid var(--line)', fontSize: '13px', color: 'var(--ink)' }}>
+                  <p style={{ margin: '0 0 12px', color: 'var(--ink-soft)' }}>
+                    You haven't created any properties in your portfolio yet. Once you add a property, you can assign <b>{reassignModal.manager.name}</b> to manage units, tenants, and maintenance.
+                  </p>
+                  <Link
+                    to="/owner/properties"
+                    className="btn brass small"
+                    onClick={() => setReassignModal(null)}
+                    style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    + Create Property First
+                  </Link>
+                </div>
+              ) : (
+                <div className="field">
+                  <label>Assigned Portfolio Property</label>
+                  <select
+                    value={reassignModal.selectedPropertyId}
+                    onChange={(e) =>
+                      setReassignModal((prev) => (prev ? { ...prev, selectedPropertyId: e.target.value } : null))
+                    }
+                  >
+                    <option value="">— None (Unassigned / Floating Manager) —</option>
+                    {myProperties.map((p) => {
+                      const cleanAddr = getCleanAddressText(p.address, '').text;
+                      return (
+                        <option key={p.id} value={p.id}>
+                          {p.name} {cleanAddr ? `(${cleanAddr})` : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
 
               <div className="note-box" style={{ fontSize: '13px', marginTop: '12px' }}>
                 <b>Note:</b> Selecting <i>"None (Unassigned)"</i> detaches this manager from active property duties without deleting their account. The buildings will remain under your direct owner oversight.

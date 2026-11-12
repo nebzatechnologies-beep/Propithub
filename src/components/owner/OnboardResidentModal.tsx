@@ -13,7 +13,7 @@ import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencySe
 import { uploadDocumentFile } from '../../lib/imageUploader';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { TenancyRequest, Agreement, TenantRecord, UserProfile, RequiredIdItem, Invoice, PaymentTransaction } from '../../types';
+import { TenancyRequest, Agreement, AgreementTemplate, TenantRecord, UserProfile, RequiredIdItem, Invoice, PaymentTransaction } from '../../types';
 import { isSingleUnitProperty } from '../../lib/propertyTypes';
 import { getCleanAddressText } from '../../lib/addressUtils';
 import {
@@ -42,6 +42,7 @@ export interface OnboardResidentModalProps {
   prefilledTenantName?: string;
   prefilledTenantPhone?: string;
   prefilledTenantEmail?: string;
+  enquiryId?: string;
   onSuccess?: (tenantName: string, unitLabel: string) => void;
 }
 
@@ -57,6 +58,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
   prefilledTenantName,
   prefilledTenantPhone,
   prefilledTenantEmail,
+  enquiryId,
   onSuccess,
 }) => {
   const {
@@ -70,6 +72,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
     saveTenant,
     savePayment,
     saveTenancyRequest,
+    updateEnquiryStatus,
   } = useAppData();
   const { user, provisionUser } = useAuth();
 
@@ -105,13 +108,15 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
   const myProperties = useMemo(() => {
     if (user?.role === 'manager') {
       const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
-      return state.properties.filter((p) => {
-        const matchOwner = Boolean(effectiveOwnerId) && p.ownerId === effectiveOwnerId;
-        if (!matchOwner) return false;
-        if (assignedPropertyId) return p.id === assignedPropertyId || p.assignedManagerId === user?.id;
-        if (p.assignedManagerId === user?.id) return true;
-        return true;
-      });
+      let props = state.properties;
+      if (effectiveOwnerId) {
+        props = props.filter((p) => p.ownerId === effectiveOwnerId || p.assignedManagerId === user?.id || (p as any).managerId === user?.id || p.ownerId === user?.id);
+      }
+      if (assignedPropertyId) {
+        return props.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id || (p as any).managerId === user?.id);
+      }
+      const explicitlyAssigned = props.filter((p) => p.assignedManagerId === user?.id || (p as any).managerId === user?.id || p.ownerId === user?.id);
+      return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
     }
     return state.properties.filter((p) => Boolean(ownerId) && p.ownerId === ownerId);
   }, [state.properties, ownerId, user?.role, user?.id, managerRecord, effectiveOwnerId]);
@@ -150,9 +155,14 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       if (selectedPropertyId && selectedPropertyId !== 'all' && u.propertyId !== selectedPropertyId) {
         return false;
       }
-      if (u.id === preselectedUnitId) return true;
       const hasActiveAgreement = (state.agreements || []).some(
-        (a) => a.status === 'active' && (a.unitId === u.id || (a.unit === u.unitNumber && (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)))
+        (a) =>
+          (a.status === 'active' ||
+            a.status === 'signed' ||
+            a.status === 'pending_deposit' ||
+            a.status === 'awaiting_tenant_signature' ||
+            a.status === 'awaiting_tenant_upload') &&
+          (a.unitId === u.id || (a.unit === u.unitNumber && (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)))
       );
       const hasPendingReq = (state.tenancyRequests || []).some(
         (r) => r.status === 'pending' && (r.unitId === u.id || (r.unitNumber === u.unitNumber && (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)))
@@ -164,6 +174,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
         Boolean(u.tenant && u.tenant !== 'Unassigned' && u.tenant !== 'Vacant') ||
         hasActiveAgreement ||
         hasPendingReq;
+      if (u.id === preselectedUnitId) return !hasActiveAgreement;
       return !isOccupiedOrReserved;
     });
   }, [state.units, state.agreements, state.tenancyRequests, myProperties, selectedPropertyId, preselectedUnitId]);
@@ -184,12 +195,47 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
     { id: 'req_id_1', name: 'Government Photo ID' },
   ]);
 
-  // Templates belonging to this owner
+  // Templates belonging to this owner / managed portfolio (shared with Owner & Manager library)
   const availableTemplates = useMemo(() => {
-    return (state.agreementTemplates || []).filter(
-      (t) => t.ownerId === ownerId || user?.role === 'superadmin' || (user?.role as string) === 'admin'
+    const propIds = new Set(myProperties.map((p) => p.id));
+    const customTemplates = (state.agreementTemplates || []).filter(
+      (t) =>
+        (Boolean(ownerId) && t.ownerId === ownerId) ||
+        (t.propertyId && t.propertyId !== 'all' && propIds.has(t.propertyId)) ||
+        user?.role === 'superadmin' ||
+        (user?.role as string) === 'admin'
     );
-  }, [state.agreementTemplates, ownerId, user?.role]);
+    const fromAgreements: AgreementTemplate[] = [];
+    const seenNames = new Set(customTemplates.map((t) => (t.fileName || t.title).toLowerCase()));
+    (state.agreements || []).forEach((a) => {
+      const belongsToPortfolio =
+        (Boolean(ownerId) && a.ownerId === ownerId) ||
+        (a.propertyId && propIds.has(a.propertyId)) ||
+        user?.role === 'superadmin' ||
+        (user?.role as string) === 'admin';
+      if (belongsToPortfolio && a.fileData && a.fileName) {
+        const lower = a.fileName.toLowerCase();
+        if (!seenNames.has(lower)) {
+          seenNames.add(lower);
+          fromAgreements.push({
+            id: `ag_tmpl_${a.id}`,
+            ownerId: a.ownerId,
+            ownerName: a.ownerName,
+            title: a.fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '),
+            propertyId: a.propertyId || 'all',
+            propertyName: a.propertyName || 'All Properties',
+            fileName: a.fileName,
+            fileData: a.fileData,
+            fileSizeKb: typeof a.fileSize === 'number' ? a.fileSize : 450,
+            uploadedAt: a.start || new Date().toISOString(),
+            uploadedBy: 'owner',
+            status: 'active',
+          });
+        }
+      }
+    });
+    return [...customTemplates, ...fromAgreements];
+  }, [state.agreementTemplates, state.agreements, ownerId, myProperties, user?.role]);
 
   // Initialize or reset when modal opens
   useEffect(() => {
@@ -238,12 +284,26 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
 
       setCurrentStep(1);
       if (prefilledTenantName) {
+        const emailLower = (prefilledTenantEmail || '').toLowerCase().trim();
+        const phoneClean = (prefilledTenantPhone || '').replace(/\D/g, '');
+        const existingUser = (state.users || []).find(
+          (u) =>
+            (emailLower && u.email?.toLowerCase().trim() === emailLower) ||
+            (phoneClean && u.phone && u.phone.replace(/\D/g, '') === phoneClean)
+        );
+        const existingTenant = (state.tenants || []).find(
+          (t) =>
+            (emailLower && t.email?.toLowerCase().trim() === emailLower) ||
+            (phoneClean && t.phone && t.phone.replace(/\D/g, '') === phoneClean)
+        );
+
         setSelectedTenant({
-          id: '',
-          name: prefilledTenantName,
-          phone: prefilledTenantPhone || '',
-          email: prefilledTenantEmail || '',
-          isNew: true,
+          id: existingUser?.id || existingTenant?.id || '',
+          name: existingUser?.displayName || existingTenant?.name || prefilledTenantName,
+          phone: prefilledTenantPhone || existingUser?.phone || existingTenant?.phone || '',
+          email: prefilledTenantEmail || existingUser?.email || existingTenant?.email || '',
+          tempPassword: 'Welcome@123',
+          isNew: !existingUser && !existingTenant,
         });
       } else {
         setSelectedTenant(null);
@@ -306,14 +366,19 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       const targetP = myProperties.find((p) => p.id === initialPropId);
       const isTargetSingle = isSingleUnitProperty(targetP);
       const initialUnit = preselectedUnitId
-        ? state.units.find((u) => u.id === preselectedUnitId)
+        ? (initialPropId
+          ? state.units.find((u) => u.id === preselectedUnitId && u.propertyId === initialPropId)
+          : null) ||
+        state.units.find((u) => u.id === preselectedUnitId && myProperties.some((p) => p.id === u.propertyId)) ||
+        state.units.find((u) => u.id === preselectedUnitId)
         : isTargetSingle
-        ? state.units.find((u) => u.propertyId === initialPropId) || candidateUnits[0] || null
-        : candidateUnits[0] || null;
+          ? state.units.find((u) => u.propertyId === initialPropId) || candidateUnits[0] || null
+          : candidateUnits[0] || null;
 
       if (initialUnit) {
         setSelectedUnitId(initialUnit.id);
-        setSelectedPropertyId(initialUnit.propertyId);
+        const resolvedPropId = (initialPropId && myProperties.some((p) => p.id === initialPropId)) ? initialPropId : initialUnit.propertyId;
+        setSelectedPropertyId(resolvedPropId);
         setRent(initialUnit.rent || 0);
         setDeposit(initialUnit.deposit || 0);
       } else {
@@ -336,7 +401,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       setRequireIds(false);
       setIdList([{ id: `req_id_${Date.now()}`, name: 'Government Photo ID' }]);
     }
-  }, [isOpen, preselectedUnitId, draftAgreementId, initialStep, myProperties, state.units, state.agreements, entryContext]);
+  }, [isOpen, preselectedUnitId, preselectedPropertyId, draftAgreementId, initialStep, myProperties, state.units, state.agreements, entryContext]);
 
   // Handle Property selection change
   const handlePropertyChange = (propId: string) => {
@@ -421,11 +486,10 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           return;
         }
         if (!selectedTenant.tempPassword || selectedTenant.tempPassword.trim().length < 6) {
-          showToast('Please specify a temporary password (at least 6 characters) for resident setup.');
-          return;
+          selectedTenant.tempPassword = 'Welcome@123';
         }
       }
-      if (isTenantLimitReached && selectedTenant.isNew) {
+      if (isTenantLimitReached && selectedTenant.isNew && user?.role !== 'manager') {
         openLimitModal('tenants');
         showToast(`Tenant quota reached (${usage.tenants.used}/${maxTenants} on ${currentPlanName} plan). Upgrade to add more tenants.`);
         return;
@@ -537,7 +601,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       return;
     }
 
-    if (isTenantLimitReached && selectedTenant.isNew) {
+    if (isTenantLimitReached && selectedTenant.isNew && user?.role !== 'manager') {
       openLimitModal('tenants');
       showToast(`Tenant limit reached (${usage.tenants.used}/${maxTenants} on ${currentPlanName} plan).`);
       return;
@@ -561,6 +625,27 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       const propCurrency = targetUnit?.currency || targetProperty?.currency || defaultOwnerCurrency;
       const nowIso = new Date().toISOString();
       const unitsToProcess = isBulkMode && bulkUnits.length > 0 ? bulkUnits : (targetUnit ? [targetUnit] : []);
+
+      // Dynamic Guardrail against double-booking / overlapping lease terms
+      const isDateOverlapping = (s1: string, e1: string, s2: string, e2: string): boolean => {
+        if (!s1 || !e1 || !s2 || !e2) return true;
+        return s1 <= e2 && e1 >= s2;
+      };
+
+      for (const u of unitsToProcess) {
+        const conflictingAg = (state.agreements || []).find((a) => {
+          if (a.status === 'terminated' || a.status === 'rejected' || a.status === 'unmanaged_archive') return false;
+          const matchUnit = a.unitId === u.id || (a.unit === u.unitNumber && (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId));
+          if (!matchUnit) return false;
+          return isDateOverlapping(leaseStart, leaseEnd, a.start, a.end);
+        });
+
+        if (conflictingAg) {
+          setIsSubmitting(false);
+          showToast(`⚠️ Unit ${u.unitNumber} already has an active or pending lease (${conflictingAg.id}) from ${conflictingAg.start} to ${conflictingAg.end}. Overlapping dates are not permitted.`);
+          return;
+        }
+      }
 
       // 1. Resolve or provision tenant UserProfile ID
       const existingUser = state.users.find((u) => u.email?.toLowerCase() === cleanEmail);
@@ -952,6 +1037,10 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
         deleteAgreement(draftAgreementId).catch(console.warn);
       }
 
+      if (enquiryId) {
+        updateEnquiryStatus(enquiryId, 'onboarded').catch(console.warn);
+      }
+
       if (onSuccess) {
         onSuccess(cleanName, unitLabel);
       }
@@ -1136,7 +1225,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
                   {isBulkMode ? (
                     <div>
                       <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>
-                        ⚡ Bulk Leasing ({bulkUnits.length} Units Selected)
+                        Bulk Leasing ({bulkUnits.length} Units Selected)
                       </label>
                       <div
                         style={{
@@ -1265,7 +1354,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
                   <label style={{ fontSize: '13px', fontWeight: 600, margin: 0 }}>
-                    Lease Duration & Timeline
+                    Lease Duration
                   </label>
                   <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                     <button

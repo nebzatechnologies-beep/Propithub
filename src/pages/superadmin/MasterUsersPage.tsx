@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useCurrency } from '../../context/CurrencyContext';
+import { getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { UserProfile } from '../../types';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
@@ -170,10 +171,6 @@ export const MasterUsersPage: React.FC = () => {
         <div className="panel-head">
           <div>
             <h3>All Owner & Platform Accounts</h3>
-            <div className="hint">
-              {isFirebaseConfigured ? 'Live Firebase Accounts' : 'Platform Directory'} ({filteredUsers.length} total account{filteredUsers.length === 1 ? '' : 's'})
-              {loading && ' · Syncing with Firestore…'}
-            </div>
           </div>
 
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', flex: '1 1 auto', maxWidth: '560px', justifyContent: 'flex-end' }}>
@@ -209,8 +206,7 @@ export const MasterUsersPage: React.FC = () => {
                     <th>Role</th>
                     <th>Properties</th>
                     <th>Plan</th>
-                    <th>MRR</th>
-                    <th>Rating</th>
+                    <th>{getTableCurrencyHeader('MRR', viewCurrency)}</th>
                     <th>Status</th>
                     <th>Action</th>
                   </tr>
@@ -218,7 +214,7 @@ export const MasterUsersPage: React.FC = () => {
                 <tbody>
                   {filteredUsers.length === 0 ? (
                     <tr>
-                      <td colSpan={8} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px' }}>
+                      <td colSpan={7} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px' }}>
                         {loading
                           ? 'Loading accounts from Firebase Firestore…'
                           : isFirebaseConfigured
@@ -232,7 +228,16 @@ export const MasterUsersPage: React.FC = () => {
                         u.role === 'owner'
                           ? state.properties.filter((p) => p.ownerId === u.id).length
                           : u.role === 'manager'
-                          ? state.properties.filter((p) => p.assignedManagerId === u.id).length
+                          ? (() => {
+                              const explicit = state.properties.filter(
+                                (p) => p.assignedManagerId === u.id || p.id === (u as any).propertyId
+                              );
+                              return explicit.length > 0
+                                ? explicit.length
+                                : u.ownerId
+                                ? state.properties.filter((p) => p.ownerId === u.ownerId).length
+                                : 0;
+                            })()
                           : '—';
 
                       const ownerSettings = state.ownerSettings[u.id];
@@ -288,7 +293,6 @@ export const MasterUsersPage: React.FC = () => {
                             )}
                           </td>
                           <td style={{ fontWeight: 500 }}>{userMrr}</td>
-                          <td>{u.role === 'owner' || u.role === 'staff' ? renderStars(u.rating) : '—'}</td>
                           <td>
                             <span className={`badge ${isTrial ? 'amber' : isPastDue ? 'red' : 'green'}`}>
                               {isTrial ? 'Trial' : isPastDue ? 'Past due' : 'Active'}
@@ -413,11 +417,6 @@ export const MasterUsersPage: React.FC = () => {
                       {ownerPropertiesCount !== '—' && (
                         <span className="badge grey">{ownerPropertiesCount} props</span>
                       )}
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', fontSize: '12px', color: 'var(--ink-soft)' }}>
-                      <span>Tenant Rating:</span>
-                      <div>{u.role === 'owner' || u.role === 'staff' ? renderStars(u.rating) : '—'}</div>
                     </div>
 
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -635,7 +636,7 @@ export const PaymentsHistoryPage: React.FC = () => {
       const moTime = new Date((m as any).settledAt || (m as any).refundDate || (m as any).updatedAt || m.moveOutDate || (m as any).createdAt || 0).getTime();
       const agTime = new Date(a.createdAt || a.start || 0).getTime();
       if (agTime > 0 && moTime > 0 && agTime > moTime) return false;
-      return a.status === 'terminated';
+      return true;
     });
 
     const hasRefundedSettlement = (state.depositSettlements || []).some((s) => {
@@ -650,7 +651,7 @@ export const PaymentsHistoryPage: React.FC = () => {
       const sTime = new Date(s.disbursedAt || (s as any).updatedAt || s.createdAt || 0).getTime();
       const agTime = new Date(a.createdAt || a.start || 0).getTime();
       if (agTime > 0 && sTime > 0 && agTime > sTime) return false;
-      return a.status === 'terminated';
+      return true;
     });
 
     return hasRefundedMoveout || hasRefundedSettlement;
@@ -2176,87 +2177,97 @@ export const PaymentsHistoryPage: React.FC = () => {
             <div
               className="panel"
               style={{
-                background: '#FFFBEB',
-                border: '2px solid var(--brass, #C59A45)',
-                borderRadius: '12px',
-                padding: '24px',
-                marginBottom: '20px',
-                boxShadow: 'var(--shadow-sm)',
+                background: 'var(--surface)',
+                border: '1px solid rgba(16, 185, 129, 0.28)',
+                borderLeft: '4px solid #10B981',
+                borderRadius: '10px',
+                padding: '12px 18px',
+                marginBottom: '14px',
+                boxShadow: '0 2px 8px -2px rgba(16, 185, 129, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
               }}
             >
               <div
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
-                  alignItems: 'flex-start',
+                  alignItems: 'center',
                   flexWrap: 'wrap',
-                  gap: '16px',
+                  gap: '12px',
                 }}
               >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <div style={{ flex: '1 1 340px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
                     <span
-                      className="badge amber"
-                      style={{ fontWeight: 700, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}
+                      className="badge green"
+                      style={{ fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.4px', padding: '2px 8px' }}
                     >
-                      Step 1: Mandatory Move-In Security Deposit
+                      Step 1: Security Deposit
                     </span>
-                    <span className="badge grey" style={{ fontSize: '11px', fontFamily: 'monospace' }}>
+                    <span className="badge grey" style={{ fontSize: '10.5px', fontFamily: 'monospace', padding: '2px 6px' }}>
                       {pendingDepositRecord.reference}
                     </span>
+                    <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>•</span>
+                    <span style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>
+                      <b>{pendingDepositRecord.propertyName}</b> • Unit {pendingDepositRecord.unit}
+                    </span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', margin: '0 0 6px 0' }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' }}>
-                      <h2 style={{ fontSize: '26px', fontWeight: 800, margin: 0, color: 'var(--ink)' }}>
-                        {getCurrencySymbol(pendingDepositRecord.currency) || resolvedCurrency}{pendingDepositRecord.amount.toLocaleString('en-IN')}
-                      </h2>
-                      {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(pendingDepositRecord.currency || resolvedCurrency) && (
-                        <span style={{ fontSize: '15px', color: 'var(--ink-soft)', fontWeight: 600 }}>
-                          (~{format(convert(pendingDepositRecord.amount, pendingDepositRecord.currency || resolvedCurrency, viewCurrency), viewCurrency)})
-                        </span>
-                      )}
-                    </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    {(() => {
+                      const isDiff = Boolean(viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(pendingDepositRecord.currency || resolvedCurrency));
+                      const displayCurr = viewCurrency || pendingDepositRecord.currency || resolvedCurrency;
+                      const displaySym = getCurrencySymbol(displayCurr);
+                      const displayAmt = isDiff
+                        ? Math.round(convert(pendingDepositRecord.amount, pendingDepositRecord.currency || resolvedCurrency, viewCurrency))
+                        : pendingDepositRecord.amount;
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                          <span style={{ fontSize: '20px', fontWeight: 800, color: 'var(--ink)', letterSpacing: '-0.3px' }}>
+                            {displaySym}{displayAmt.toLocaleString('en-IN')}
+                          </span>
+                          {isDiff && (
+                            <span style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 500 }}>
+                              (Base: {getCurrencySymbol(pendingDepositRecord.currency || resolvedCurrency)}{pendingDepositRecord.amount.toLocaleString('en-IN')})
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     <CurrencyConverterTrigger
                       amount={pendingDepositRecord.amount}
                       currency={pendingDepositRecord.currency || resolvedCurrency}
-                      label="View in your currency"
+                      label="Convert"
                     />
-                  </div>
-                  <div
-                    style={{
-                      fontSize: '13.5px',
-                      color: 'var(--ink-soft)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '12px',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <span>
-                      <b>Property:</b> {pendingDepositRecord.propertyName}
-                    </span>
-                    <span>•</span>
-                    <span>
-                      <b>Unit:</b> {pendingDepositRecord.unit}
-                    </span>
-                    <span>•</span>
-                    <span>
-                      <b>Status:</b> Deposit Due (Pending Payment)
+
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        color: '#B45309',
+                        background: 'rgba(245, 158, 11, 0.1)',
+                        border: '1px solid rgba(245, 158, 11, 0.25)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                      }}
+                    >
+                      Deposit Due (Pending)
                     </span>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <button
                     type="button"
                     className="btn brass btn-mobile-full"
                     style={{
-                      padding: '11px 22px',
-                      fontSize: '14.5px',
+                      padding: '8px 16px',
+                      fontSize: '13.5px',
                       fontWeight: 700,
-                      display: 'flex',
+                      display: 'inline-flex',
                       alignItems: 'center',
-                      gap: '8px',
+                      gap: '6px',
+                      borderRadius: '8px',
                     }}
                     onClick={() => {
                       if (pendingDepositRecord.depositInvoice) {
@@ -2298,27 +2309,27 @@ export const PaymentsHistoryPage: React.FC = () => {
                       }
                     }}
                   >
-                    <ShieldCheck size={18} /> Pay Security Deposit Now ({getCurrencySymbol(pendingDepositRecord.currency) || resolvedCurrency}{pendingDepositRecord.amount.toLocaleString('en-IN')})
+                    <ShieldCheck size={16} /> Pay Deposit ({getCurrencySymbol(pendingDepositRecord.currency) || resolvedCurrency}{pendingDepositRecord.amount.toLocaleString('en-IN')})
                   </button>
                 </div>
               </div>
 
-              {/* Explanatory Prerequisite Note */}
+              {/* Compact Prerequisite Footnote */}
               <div
                 style={{
-                  marginTop: '16px',
-                  paddingTop: '14px',
-                  borderTop: '1px solid rgba(197, 154, 69, 0.25)',
-                  fontSize: '12.5px',
-                  color: 'var(--ink)',
+                  marginTop: '8px',
+                  paddingTop: '6px',
+                  borderTop: '1px solid var(--line)',
+                  fontSize: '11.5px',
+                  color: 'var(--ink-soft)',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
+                  gap: '6px',
                 }}
               >
-                <AlertCircle size={16} style={{ color: '#D97706', flexShrink: 0 }} />
+                <ShieldCheck size={14} style={{ color: '#10B981', flexShrink: 0 }} />
                 <span>
-                  <b>Move-in Prerequisite Flow:</b> Signed lease agreement is approved. The refundable security deposit must be paid and secured in trust before recurring first month rent can be paid and residency keys handed over.
+                  <b style={{ color: 'var(--ink)' }}>Move-in Prerequisite:</b> Refundable security deposit is held in trust before first month rent can be paid and keys handed over.
                 </span>
               </div>
             </div>
@@ -2398,14 +2409,26 @@ export const PaymentsHistoryPage: React.FC = () => {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', margin: '0 0 6px 0' }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' }}>
-                      <h2 style={{ fontSize: '26px', fontWeight: 800, margin: 0, color: 'var(--ink)' }}>
-                        {getCurrencySymbol(currentDueItem.currency) || resolvedCurrency}{currentDueItem.amount.toLocaleString('en-IN')}
-                      </h2>
-                      {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(currentDueItem.currency || resolvedCurrency) && (
-                        <span style={{ fontSize: '15px', color: 'var(--ink-soft)', fontWeight: 600 }}>
-                          (~{format(convert(currentDueItem.amount, currentDueItem.currency || resolvedCurrency, viewCurrency), viewCurrency)})
-                        </span>
-                      )}
+                      {(() => {
+                        const isDiff = Boolean(viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(currentDueItem.currency || resolvedCurrency));
+                        const displayCurr = viewCurrency || currentDueItem.currency || resolvedCurrency;
+                        const displaySym = getCurrencySymbol(displayCurr);
+                        const displayAmt = isDiff
+                          ? Math.round(convert(currentDueItem.amount, currentDueItem.currency || resolvedCurrency, viewCurrency))
+                          : currentDueItem.amount;
+                        return (
+                          <>
+                            <h2 style={{ fontSize: '26px', fontWeight: 800, margin: 0, color: 'var(--ink)' }}>
+                              {displaySym}{displayAmt.toLocaleString('en-IN')}
+                            </h2>
+                            {isDiff && (
+                              <span style={{ fontSize: '14px', color: 'var(--ink-soft)', fontWeight: 500 }}>
+                                (Base: {getCurrencySymbol(currentDueItem.currency || resolvedCurrency)}{currentDueItem.amount.toLocaleString('en-IN')})
+                              </span>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                     <CurrencyConverterTrigger
                       amount={currentDueItem.amount}
@@ -2473,9 +2496,9 @@ export const PaymentsHistoryPage: React.FC = () => {
                         display: 'flex',
                         alignItems: 'center',
                         gap: '8px',
-                        color: '#B45309',
-                        borderColor: '#FDE68A',
-                        background: '#FEF3C7',
+                        color: 'var(--ink-soft)',
+                        borderColor: 'var(--line-strong)',
+                        background: 'var(--surface)',
                         fontWeight: 600,
                       }}
                       onClick={() => {
@@ -2509,29 +2532,6 @@ export const PaymentsHistoryPage: React.FC = () => {
                     </button>
                   )}
                 </div>
-              </div>
-
-              {/* Policy & Trust Note */}
-              <div
-                style={{
-                  marginTop: '16px',
-                  paddingTop: '14px',
-                  borderTop: '1px solid rgba(0,0,0,0.06)',
-                  fontSize: '12.5px',
-                  color: 'var(--ink-soft)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                <ShieldCheck size={16} style={{ color: '#10B981', flexShrink: 0 }} />
-                <span>
-                  <b>Security Deposit Separation:</b> Refundable security deposit ({getCurrencySymbol(currentDueAgreement?.currency || currentDueItem.currency || resolvedCurrency)}
-                  {(currentDueAgreement?.deposit || activeAgreement?.deposit || tenantRecord?.deposit || 0).toLocaleString('en-IN')}) is held separately as security deposit and is not applied towards recurring monthly rent.
-                  {currentDueItem.isMoveInMonth
-                    ? ' Immediate first month rent covers your initial 30 days of occupancy.'
-                    : ` Recurring monthly rent is due on day ${currentDueAgreement?.rentDueDay || activeAgreement?.rentDueDay || 1} of each month.`}
-                </span>
               </div>
             </div>
           ) : isResidentFullyVacated ? (
@@ -2627,9 +2627,6 @@ export const PaymentsHistoryPage: React.FC = () => {
                   <span style={{ fontSize: '24px' }}>🔄</span>
                   <div>
                     <h3 style={{ margin: 0, fontSize: '16px' }}>Rent Autopay</h3>
-                    <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                      Overall single active mandate — guaranteed zero double debits
-                    </div>
                   </div>
                 </div>
 
@@ -2828,7 +2825,6 @@ export const PaymentsHistoryPage: React.FC = () => {
               <div className="panel-head">
                 <div>
                   <h3>Upcoming Rent Schedule</h3>
-                  <div className="hint">Record of all upcoming monthly rent dues with date, amount, property, and cycle details</div>
                 </div>
               </div>
               <div className="panel-body">
@@ -2840,7 +2836,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                           <th>Billing Cycle</th>
                           <th>Property & Unit</th>
                           <th>Due Date</th>
-                          <th>Amount</th>
+                          <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                           <th>Important Details</th>
                           <th>Status</th>
                           <th>Action</th>
@@ -2887,7 +2883,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                                 </td>
                                 <td>
                                   <b style={{ fontSize: '14.5px', color: 'var(--ink)' }}>
-                                    {getCurrencySymbol(item.currency) || resolvedCurrency}{item.amount.toLocaleString('en-IN')}
+                                    <CurrencyAmount amount={item.amount} currency={item.currency || (resolvedCurrency as string)} />
                                   </b>
                                 </td>
                                 <td>
@@ -3054,7 +3050,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                             <div>
                               <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Cycle Amount</div>
                               <div style={{ fontWeight: 800, fontSize: '16px', color: 'var(--ink)' }}>
-                                {getCurrencySymbol(item.currency) || resolvedCurrency}{item.amount.toLocaleString('en-IN')}
+                                <CurrencyAmount amount={item.amount} currency={item.currency || (resolvedCurrency as string)} />
                               </div>
                             </div>
                             {item.status === 'pending_confirmation' ? (
@@ -3108,7 +3104,6 @@ export const PaymentsHistoryPage: React.FC = () => {
               <div className="panel-head">
                 <div>
                   <h3>Rent Due Settlement History</h3>
-                  <div className="hint">Historical record of all completed rent payments and official vouchers</div>
                 </div>
               </div>
               <div className="panel-body">
@@ -3119,7 +3114,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                         <tr>
                           <th>Billing Cycle</th>
                           <th>Property & Unit</th>
-                          <th>Amount Paid</th>
+                          <th>{getTableCurrencyHeader('Amount Paid', viewCurrency)}</th>
                           <th>Paid Date</th>
                           <th>Payment Method</th>
                           <th>Status</th>
@@ -3147,7 +3142,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                               </td>
                               <td>
                                 <b style={{ fontSize: '14.5px', color: '#166534' }}>
-                                  {getCurrencySymbol(item.currency) || resolvedCurrency}{item.amount.toLocaleString('en-IN')}
+                                  <CurrencyAmount amount={item.amount} currency={item.currency || (resolvedCurrency as string)} />
                                 </b>
                               </td>
                               <td>
@@ -3228,7 +3223,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                           <div>
                             <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Paid Amount</div>
                             <div style={{ fontWeight: 800, fontSize: '16px', color: '#166534' }}>
-                              {getCurrencySymbol(item.currency) || resolvedCurrency}{item.amount.toLocaleString('en-IN')}
+                              <CurrencyAmount amount={item.amount} currency={item.currency || (resolvedCurrency as string)} />
                             </div>
                           </div>
                           <button
@@ -3298,7 +3293,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                         <th>Direction</th>
                         <th>Property</th>
                         <th>Unit</th>
-                        <th>Amount</th>
+                        <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                         <th>Date</th>
                         <th>Method</th>
                         <th>Status</th>
@@ -3391,7 +3386,8 @@ export const PaymentsHistoryPage: React.FC = () => {
                               <td style={{ fontWeight: 600, color: 'var(--ink)' }}>{resolvedPropertyName}</td>
                               <td>Unit {p.unit}</td>
                               <td style={{ fontWeight: 700, color: isOutflow ? '#7E22CE' : 'var(--ink)' }}>
-                                {isOutflow ? `+ ${getCurrencySymbol(p.currency) || resolvedCurrency}${p.amount?.toLocaleString('en-IN')}` : `${getCurrencySymbol(p.currency) || resolvedCurrency}${p.amount?.toLocaleString('en-IN')}`}
+                                {isOutflow && '+ '}
+                                <CurrencyAmount amount={p.amount} currency={p.currency || resolvedCurrency} />
                               </td>
                               <td>{displayDate}</td>
                               <td>
@@ -3626,9 +3622,12 @@ export const PaymentsHistoryPage: React.FC = () => {
                         )}
                         <div className="staff-card-footer">
                           <div>
-                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Amount</div>
+                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
+                              {getTableCurrencyHeader('Amount', viewCurrency)}
+                            </div>
                             <div style={{ fontWeight: 800, fontSize: '16px', color: isOutflow ? '#7E22CE' : 'var(--ink)' }}>
-                              {isOutflow ? `+ ${getCurrencySymbol(p.currency) || resolvedCurrency}${p.amount?.toLocaleString('en-IN')}` : `${getCurrencySymbol(p.currency) || resolvedCurrency}${p.amount?.toLocaleString('en-IN')}`}
+                              {isOutflow && '+ '}
+                              <CurrencyAmount amount={p.amount} currency={p.currency || resolvedCurrency} />
                             </div>
                           </div>
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -3651,6 +3650,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                                     amount: p.amount,
                                     tax: 0,
                                     total: p.amount,
+                                    currency: p.currency || resolvedCurrency,
                                     due: p.dueDate || p.date,
                                     issueDate: p.date,
                                     paidAt: p.date,
@@ -3733,9 +3733,6 @@ export const PaymentsHistoryPage: React.FC = () => {
             <div className="panel-head">
               <div>
                 <h3>Invoices & Billing Documents</h3>
-                <div className="hint">
-                  Official tax invoices and vouchers issued by your landlord for security deposit trust, utilities, and maintenance. For recurring monthly rent, visit the <b>Rent Due</b> tab.
-                </div>
               </div>
             </div>
             <div className="panel-body">
@@ -3747,7 +3744,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                         <th>Invoice ID</th>
                         <th>Description</th>
                         <th>Unit</th>
-                        <th>Amount</th>
+                        <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                         <th>Due Date</th>
                         <th>Status</th>
                         <th>Action</th>
@@ -3789,7 +3786,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                               </td>
                               <td>Unit {inv.unit}</td>
                               <td>
-                                <b style={{ fontSize: '15px' }}>{getInvoiceCurrencySymbol(inv)}{inv.total.toLocaleString()}</b>
+                                <b style={{ fontSize: '15px' }}><CurrencyAmount amount={inv.total} currency={inv.currency || (resolvedCurrency as string)} /></b>
                               </td>
                               <td>{inv.due}</td>
                               <td>
@@ -3817,7 +3814,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                                   >
                                     View Voucher
                                   </button>
-                                  {!isPaid && inv.status !== 'pending_confirmation' && !isInvoiceForVacatedTenancy(inv) && (
+                                  {!isPaid && inv.status !== 'pending_confirmation' && (inv as any).status !== 'void' && (inv as any).status !== 'cancelled' && !isInvoiceForVacatedTenancy(inv) && (
                                     (() => {
                                       const matchingAgForInvoice = inv.leaseAgreementId
                                         ? state.agreements.find((a) => a.id === inv.leaseAgreementId)
@@ -3932,7 +3929,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                           <div>
                             <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Total Amount</div>
                             <div style={{ fontWeight: 800, fontSize: '16px', color: 'var(--ink)' }}>
-                              {getInvoiceCurrencySymbol(inv)}{inv.total.toLocaleString()}
+                              <CurrencyAmount amount={inv.total} currency={inv.currency || (resolvedCurrency as string)} />
                             </div>
                           </div>
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -4047,7 +4044,6 @@ export const PaymentsHistoryPage: React.FC = () => {
                   <div style={{ fontSize: '20px', fontWeight: 700, color: 'var(--ink)', marginTop: '2px' }}>
                     {resolvedCurrency}{totalSecuredHeld.toLocaleString('en-IN')}
                   </div>
-                  <span style={{ fontSize: '11px', color: '#16A34A', fontWeight: 500 }}>Secured in trust ledger</span>
                 </div>
               </div>
 
@@ -4060,7 +4056,6 @@ export const PaymentsHistoryPage: React.FC = () => {
                   <div style={{ fontSize: '20px', fontWeight: 700, color: 'var(--ink)', marginTop: '2px' }}>
                     {activePropertiesCount} {activePropertiesCount === 1 ? 'Property' : 'Properties'}
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 500 }}>Active lease residences</span>
                 </div>
               </div>
 
@@ -4073,9 +4068,6 @@ export const PaymentsHistoryPage: React.FC = () => {
                   <div style={{ fontSize: '20px', fontWeight: 700, color: pendingActionCount > 0 ? '#D97706' : 'var(--ink)', marginTop: '2px' }}>
                     {pendingActionCount} {pendingActionCount === 1 ? 'Action' : 'Actions'}
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 500 }}>
-                    {pendingActionCount > 0 ? 'Payment or move-out resolution' : 'All deposits up-to-date'}
-                  </span>
                 </div>
               </div>
             </div>
@@ -4233,11 +4225,8 @@ export const PaymentsHistoryPage: React.FC = () => {
                   <div>
                     <h4 style={{ margin: 0, fontSize: '16px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <ShieldCheck size={18} color="var(--brass)" />
-                      Security Deposit Ledger across Properties
+                      Security Deposits
                     </h4>
-                    <p style={{ margin: '3px 0 0', fontSize: '12px', color: 'var(--ink-soft)' }}>
-                      Complete records of refundable security deposits held in trust, settlement vouchers, and move-out refund status
-                    </p>
                   </div>
 
                   {/* Filter Pills */}
@@ -4319,7 +4308,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                             <tr style={{ background: 'var(--surface-sunken, #f9f8f5)' }}>
                               {['Reference', 'Unit & Property', 'Landlord / Owner', 'Deposit Amount', 'Status', 'Action'].map((h) => (
                                 <th key={h} style={{ textAlign: 'left', padding: '9px 12px', fontWeight: 600, color: 'var(--ink-soft)', borderBottom: '1px solid var(--line)', whiteSpace: 'nowrap' }}>
-                                  {h}
+                                  {h === 'Deposit Amount' ? getTableCurrencyHeader('Deposit Amount', viewCurrency) : h}
                                 </th>
                               ))}
                             </tr>
@@ -4339,7 +4328,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                                 </td>
                                 <td style={{ padding: '12px', whiteSpace: 'nowrap' }}>
                                   <div style={{ fontWeight: 700, fontSize: '13.5px', color: 'var(--ink)' }}>
-                                    {getCurrencySymbol(rec.currency)}{(rec.amount || 0).toLocaleString('en-IN')}
+                                    <CurrencyAmount amount={rec.amount || 0} currency={rec.currency} />
                                   </div>
                                   <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
                                     {rec.status === 'refund_completed'
@@ -4349,8 +4338,8 @@ export const PaymentsHistoryPage: React.FC = () => {
                                       : rec.status === 'pending_confirmation'
                                       ? 'Awaiting Confirmation'
                                       : rec.moveOut
-                                      ? 'Held in Trust (Move-Out)'
-                                      : 'Held in Trust'}
+                                      ? 'Held (Move-Out)'
+                                      : 'Held by Landlord'}
                                   </div>
                                 </td>
                                 <td style={{ padding: '12px' }}>
@@ -4383,7 +4372,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                                           : rec.moveOut.status === 'refund_scheduled' || rec.moveOut.status === 'awaiting_tenant_approval' || rec.moveOut.status === 'settlement_pending'
                                           ? `Refund target: ${rec.moveOut.refundDate || 'Pending'}`
                                           : rec.moveOut.status === 'refund_completed'
-                                          ? `Disbursed: ${getCurrencySymbol(rec.currency) || resolvedCurrency}${(rec.moveOut.finalRefundAmount || rec.amount).toLocaleString('en-IN')}`
+                                          ? `Disbursed ${rec.moveOut.settledAt || rec.moveOut.refundDate || ''}: ${getCurrencySymbol(rec.currency) || resolvedCurrency}${(rec.moveOut.finalRefundAmount || rec.amount).toLocaleString('en-IN')}`
                                           : `Move-Out: ${rec.moveOut.moveOutDate || '—'}`}
                                       </div>
                                     ) : (
@@ -4564,7 +4553,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                             <div>
                               <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Deposit Amount</div>
                               <div style={{ fontWeight: 800, fontSize: '16px', color: 'var(--ink)' }}>
-                                {getCurrencySymbol(rec.currency)}{(rec.amount || 0).toLocaleString('en-IN')}
+                                <CurrencyAmount amount={rec.amount || 0} currency={rec.currency} />
                               </div>
                             </div>
                             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -5449,7 +5438,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                       {selectedDepositRecordForView.status === 'refund_scheduled' &&
                         `Move-out inspection concluded. Refund settlement of ${getCurrencySymbol(selectedDepositRecordForView.currency)}${(selectedDepositRecordForView.amount || 0).toLocaleString('en-IN')} is scheduled for disbursement.`}
                       {selectedDepositRecordForView.status === 'paid' &&
-                        `Refundable security deposit of ${getCurrencySymbol(selectedDepositRecordForView.currency)}${(selectedDepositRecordForView.amount || 0).toLocaleString('en-IN')} is secured in the platform client trust ledger.`}
+                        `Refundable security deposit of ${getCurrencySymbol(selectedDepositRecordForView.currency)}${(selectedDepositRecordForView.amount || 0).toLocaleString('en-IN')} is held by your landlord.`}
                       {selectedDepositRecordForView.status === 'pending_confirmation' &&
                         'Payment proof submitted by resident. Landlord is verifying bank transfer receipt before issuing finalized confirmation.'}
                       {selectedDepositRecordForView.status === 'due' &&
@@ -5488,13 +5477,10 @@ export const PaymentsHistoryPage: React.FC = () => {
 
                 <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px', background: 'var(--surface)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--ink-soft)', fontSize: '12px', marginBottom: '4px' }}>
-                    <ShieldCheck size={14} /> Custodian / Landlord
+                    <ShieldCheck size={14} /> Landlord
                   </div>
                   <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>
                     {selectedDepositRecordForView.ownerName}
-                  </div>
-                  <div className="hint" style={{ fontSize: '11.5px', marginTop: '2px' }}>
-                    Direct trust holder
                   </div>
                 </div>
 
@@ -5504,9 +5490,6 @@ export const PaymentsHistoryPage: React.FC = () => {
                   </div>
                   <div style={{ fontSize: '18px', fontWeight: 700, color: 'var(--brass)' }}>
                     {getCurrencySymbol(selectedDepositRecordForView.currency)}{(selectedDepositRecordForView.amount || 0).toLocaleString('en-IN')}
-                  </div>
-                  <div className="hint" style={{ fontSize: '11.5px', marginTop: '2px' }}>
-                    Refundable upon checkout
                   </div>
                 </div>
 
@@ -5527,35 +5510,35 @@ export const PaymentsHistoryPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Trust Details Breakdown */}
+              {/* Deposit Details Breakdown */}
               <div className="panel" style={{ background: '#FAF9F5', border: '1px solid var(--line)' }}>
                 <div className="panel-body" style={{ padding: '16px 20px' }}>
                   <h4 style={{ margin: '0 0 10px', fontSize: '14px', fontWeight: 700 }}>
-                    Platform Trust Ledger &amp; Custody Terms
+                    Deposit Details
                   </h4>
                   <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
-                    <span className="k" style={{ color: 'var(--ink-soft)' }}>Security Deposit Classification</span>
-                    <span>100% Refundable Security Deposit</span>
+                    <span className="k" style={{ color: 'var(--ink-soft)' }}>Type</span>
+                    <span>Refundable Security Deposit</span>
                   </div>
                   <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
-                    <span className="k" style={{ color: 'var(--ink-soft)' }}>Custody Mechanism</span>
-                    <span>Held by Landlord directly with cryptographic platform timestamping</span>
+                    <span className="k" style={{ color: 'var(--ink-soft)' }}>Held By</span>
+                    <span>Landlord</span>
                   </div>
                   {selectedDepositRecordForView.depositInvoice?.receiptNumber && (
                     <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
-                      <span className="k" style={{ color: 'var(--ink-soft)' }}>Official Receipt Voucher Number</span>
+                      <span className="k" style={{ color: 'var(--ink-soft)' }}>Receipt Number</span>
                       <span style={{ fontWeight: 600, color: 'var(--brass)' }}>{selectedDepositRecordForView.depositInvoice.receiptNumber}</span>
                     </div>
                   )}
                   {selectedDepositRecordForView.depositInvoice?.paymentMethodUsed && (
                     <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
-                      <span className="k" style={{ color: 'var(--ink-soft)' }}>Settlement Channel</span>
+                      <span className="k" style={{ color: 'var(--ink-soft)' }}>Payment Method</span>
                       <span>{selectedDepositRecordForView.depositInvoice.paymentMethodUsed}</span>
                     </div>
                   )}
                   <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: '13px' }}>
-                    <span className="k" style={{ color: 'var(--ink-soft)' }}>Refund Eligibility</span>
-                    <span>Full refund disbursed upon move-out walkthrough inspection and keys handover</span>
+                    <span className="k" style={{ color: 'var(--ink-soft)' }}>Refund</span>
+                    <span>Returned after move-out inspection</span>
                   </div>
                 </div>
               </div>

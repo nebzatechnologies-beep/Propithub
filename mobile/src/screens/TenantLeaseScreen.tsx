@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons, Feather, FontAwesome5 } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { Header } from '../components/Header';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
@@ -29,9 +30,11 @@ import { TourTarget } from '../context/MobileTourContext';
 
 interface TenantLeaseScreenProps {
   onGiveNoticePress?: () => void;
+  onNavigate?: (screenKey: string) => void;
+  onProfilePress?: () => void;
 }
 
-export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoticePress }) => {
+export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoticePress, onNavigate, onProfilePress }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const {
@@ -1015,10 +1018,15 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
 
       {/* Screen Status Bar */}
       <ScreenStatusBar />
+      <Header
+        title="My Lease"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
+      <View style={[styles.header, !activeMoveOut && { display: 'none' }, { paddingVertical: 8, justifyContent: 'flex-end' }]}>
+        <View style={{ display: 'none' }}>
           <View style={styles.logoBadge}>
             <Feather name="file-text" size={18} color="#FFFFFF" />
           </View>
@@ -1057,220 +1065,150 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
           onSelectUnit={(unitId) => setSelectedTenantUnitId(unitId)}
         />
 
-        {/* Contextual Top Lease Reminders & Expiry Countdowns (1-to-1 Web Parity) */}
-        {contextualLeaseReminders.length > 0 && (
-          <View style={{ marginBottom: 14 }}>
-            {contextualLeaseReminders.map((reminder) => {
-              const isUrgent = reminder.severity === 'urgent';
-              const isPositive = reminder.severity === 'positive';
-              const borderCol = isUrgent ? '#EF4444' : isPositive ? '#10B981' : '#F59E0B';
-              const iconCol = isUrgent ? '#EF4444' : isPositive ? '#10B981' : '#D97706';
-              const bgCol = isUrgent
-                ? isDark ? 'rgba(239, 68, 68, 0.12)' : '#FEF2F2'
-                : isDark ? 'rgba(245, 158, 11, 0.12)' : '#FFFBEB';
-
-              return (
-                <View
-                  key={reminder.id}
-                  style={{
-                    backgroundColor: bgCol,
-                    borderWidth: 1,
-                    borderColor: borderCol,
-                    borderRadius: 10,
-                    padding: 12,
-                    marginBottom: 8,
-                  }}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                    <Feather
-                      name={reminder.icon === 'alert-triangle' ? 'alert-triangle' : reminder.icon === 'calendar' ? 'calendar' : 'file-text'}
-                      size={15}
-                      color={iconCol}
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text
-                      style={{
-                        fontSize: 13,
-                        fontWeight: '700',
-                        color: isUrgent ? (isDark ? '#FCA5A5' : '#B91C1C') : (isDark ? '#FDE68A' : '#92400E'),
-                        flex: 1,
-                      }}
-                      numberOfLines={1}
-                    >
-                      {reminder.title}
-                    </Text>
-                  </View>
-                  <Text
-                    style={{
-                      fontSize: 12,
-                      color: isDark ? '#E2E8F0' : '#475569',
-                      lineHeight: 17,
-                      marginBottom: 10,
-                    }}
-                  >
-                    {reminder.description}
-                  </Text>
-                  <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-                    <TouchableOpacity
-                      style={{
-                        backgroundColor: isUrgent ? '#EF4444' : '#10B981',
-                        paddingHorizontal: 12,
-                        paddingVertical: 6,
-                        borderRadius: 6,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                      }}
-                      onPress={() => {
-                        if (reminder.title.toLowerCase().includes('renewal') || reminder.id.includes('renewal')) {
-                          setSubTab('renewal');
-                        } else {
-                          setSubTab('owner');
-                        }
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>
-                        {reminder.actionLabel || 'View Details'}
-                      </Text>
-                      <Feather name="arrow-right" size={12} color="#FFFFFF" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              );
-            })}
+        {/* Single Slim Status Bar Matching Web LeaseAgreementPage.tsx */}
+        {primaryAgreement && (
+          primaryAgreement.status === 'awaiting_tenant_signature' ||
+          primaryAgreement.status === 'awaiting_tenant_upload' ||
+          primaryAgreement.status === 'rejected' ||
+          primaryAgreement.status === 'draft' ||
+          (!primaryAgreement.signedDocumentUrl &&
+            primaryAgreement.status !== 'pending_approval' &&
+            primaryAgreement.status !== 'pending_deposit' &&
+            primaryAgreement.status !== 'active' &&
+            primaryAgreement.status !== 'terminated' &&
+            primaryAgreement.status !== 'expired' &&
+            primaryAgreement.depositStatus !== 'paid')
+        ) ? (
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderWidth: 1,
+              borderColor: primaryAgreement.rejectionReason ? '#FECACA' : colors.line,
+              borderRadius: 10,
+              padding: 12,
+              marginBottom: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 10,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 180 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: primaryAgreement.rejectionReason ? '#DC2626' : '#D97706' }} />
+              <Text style={{ fontSize: 13, fontWeight: '600', color: colors.navy, flex: 1 }}>
+                {primaryAgreement.rejectionReason
+                  ? `Signed lease rejected: ${primaryAgreement.rejectionReason}`
+                  : `Sign and upload lease for Unit ${primaryAgreement.unit}`}
+              </Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TouchableOpacity
+                style={styles.bannerBtnSecondary}
+                onPress={() => handleDownloadDraft(primaryAgreement)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.bannerBtnSecondaryText}>Download PDF</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.bannerBtnPrimary, primaryAgreement.rejectionReason && { backgroundColor: '#DC2626' }]}
+                onPress={() => handleOpenUploadModal(primaryAgreement)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.bannerBtnPrimaryText}>
+                  {primaryAgreement.rejectionReason ? 'Re-upload' : 'Upload'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        )}
+        ) : (primaryAgreement?.status === 'pending_approval' || (primaryAgreement?.status as any) === 'awaiting_owner_signature') ? (
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderWidth: 1,
+              borderColor: colors.line,
+              borderRadius: 10,
+              padding: 12,
+              marginBottom: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#D97706' }} />
+              <Text style={{ fontSize: 13, color: colors.navy, flex: 1 }}>
+                <Text style={{ fontWeight: '700' }}>Waiting on landlord approval</Text> — Unit {primaryAgreement.unit}
+              </Text>
+            </View>
+          </View>
+        ) : primaryAgreement?.status === 'pending_deposit' ? (
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderWidth: 1,
+              borderColor: colors.line,
+              borderRadius: 10,
+              padding: 12,
+              marginBottom: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#2563EB' }} />
+              <Text style={{ fontSize: 13, color: colors.navy, flex: 1 }}>
+                <Text style={{ fontWeight: '700' }}>Security deposit due</Text> — {format(primaryAgreement.deposit || 0, primaryAgreement.currency || activeCurrency)} for Unit {primaryAgreement.unit}
+              </Text>
+            </View>
+          </View>
+        ) : null}
 
-        {/* 2 Sub-Tabs Matching Web Exactly: Owner Agreements vs Renewals */}
+        {/* 2 Sub-Tabs Matching Web Exactly: Owner & lease | Renew or vacate */}
         <TourTarget id="tenant-lease-subtabs">
-        <View style={styles.subTabCapsule}>
-          <TouchableOpacity
-            style={[styles.subTabBtn, subTab === 'owner' && styles.subTabBtnActive]}
-            onPress={() => setSubTab('owner')}
-            activeOpacity={0.8}
-          >
-            <Feather
-              name="file-text"
-              size={14}
-              color={subTab === 'owner' ? '#0F172A' : '#64748B'}
-              style={{ marginRight: 6 }}
-            />
-            <Text style={[styles.subTabText, subTab === 'owner' && styles.subTabTextActive]}>
-              Agreements
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.subTabCapsule}>
+            <TouchableOpacity
+              style={[styles.subTabBtn, subTab === 'owner' && styles.subTabBtnActive]}
+              onPress={() => setSubTab('owner')}
+              activeOpacity={0.8}
+            >
+              <Feather
+                name="file-text"
+                size={14}
+                color={subTab === 'owner' ? '#0F172A' : '#64748B'}
+                style={{ marginRight: 6 }}
+              />
+              <Text style={[styles.subTabText, subTab === 'owner' && styles.subTabTextActive]}>
+                Owner & lease
+              </Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.subTabBtn, subTab === 'renewal' && styles.subTabBtnActive]}
-            onPress={() => setSubTab('renewal')}
-            activeOpacity={0.8}
-          >
-            <Feather
-              name="refresh-cw"
-              size={14}
-              color={subTab === 'renewal' ? '#0F172A' : '#64748B'}
-              style={{ marginRight: 6 }}
-            />
-            <Text style={[styles.subTabText, subTab === 'renewal' && styles.subTabTextActive]}>
-              Renewals
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* =============================================================== */}
+            <TouchableOpacity
+              style={[styles.subTabBtn, subTab === 'renewal' && styles.subTabBtnActive]}
+              onPress={() => setSubTab('renewal')}
+              activeOpacity={0.8}
+            >
+              <Feather
+                name="refresh-cw"
+                size={14}
+                color={subTab === 'renewal' ? '#0F172A' : '#64748B'}
+                style={{ marginRight: 6 }}
+              />
+              <Text style={[styles.subTabText, subTab === 'renewal' && styles.subTabTextActive]}>
+                Renew or vacate
+              </Text>
+            </TouchableOpacity>
+          </View>
         </TourTarget>
+
         {/* =============================================================== */}
-        {/* SUBTAB 1: OWNER AGREEMENTS & MOVE-OUT PIPELINE                  */}
+        {/* SUBTAB 1: OWNER & LEASE                                         */}
         {/* =============================================================== */}
         {subTab === 'owner' && (
           <>
-            {/* Action Banners for Tenancy Execution Lifecycle */}
-            {primaryAgreement && (
-              primaryAgreement.status === 'awaiting_tenant_signature' ||
-              primaryAgreement.status === 'awaiting_tenant_upload' ||
-              primaryAgreement.status === 'rejected' ||
-              primaryAgreement.status === 'draft' ||
-              (!primaryAgreement.signedDocumentUrl &&
-                primaryAgreement.status !== 'pending_approval' &&
-                primaryAgreement.status !== 'pending_deposit' &&
-                primaryAgreement.status !== 'active' &&
-                primaryAgreement.status !== 'terminated' &&
-                primaryAgreement.status !== 'expired' &&
-                primaryAgreement.depositStatus !== 'paid')
-            ) ? (
-              <View style={[styles.actionBanner, primaryAgreement.rejectionReason && { borderColor: '#EF4444', backgroundColor: '#FEF2F2' }]}>
-                <View style={styles.actionBannerTop}>
-                  <View style={[styles.actionBannerIconBox, primaryAgreement.rejectionReason && { backgroundColor: '#FEE2E2' }]}>
-                    <Feather name={primaryAgreement.rejectionReason ? "alert-triangle" : "clock"} size={16} color={primaryAgreement.rejectionReason ? "#DC2626" : "#D97706"} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.actionBannerTitle, primaryAgreement.rejectionReason && { color: '#B91C1C' }]}>
-                      {primaryAgreement.rejectionReason ? 'Document Rejected' : 'Signature Required'}
-                    </Text>
-                    {primaryAgreement.rejectionReason ? (
-                      <View style={{ marginVertical: 6, padding: 8, backgroundColor: '#FFFFFF', borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' }}>
-                        <Text style={{ fontSize: 12, fontWeight: '700', color: '#991B1B' }}>Feedback / Reason:</Text>
-                        <Text style={{ fontSize: 12, color: '#7F1D1D', marginTop: 2 }}>{primaryAgreement.rejectionReason}</Text>
-                      </View>
-                    ) : null}
-                    <Text style={[styles.actionBannerSub, primaryAgreement.rejectionReason && { color: '#7F1D1D' }]}>
-                      {primaryAgreement.rejectionReason
-                        ? 'Review feedback above, re-sign, and re-upload.'
-                        : `Download, sign in ink, and upload.`}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.actionBannerBtns}>
-                  <TouchableOpacity
-                    style={styles.bannerBtnSecondary}
-                    onPress={() => handleDownloadDraft(primaryAgreement)}
-                    activeOpacity={0.8}
-                  >
-                    <Feather name="download" size={13} color="#0F172A" style={{ marginRight: 4 }} />
-                    <Text style={styles.bannerBtnSecondaryText}>Download</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.bannerBtnPrimary, primaryAgreement.rejectionReason && { backgroundColor: '#DC2626' }]}
-                    onPress={() => handleOpenUploadModal(primaryAgreement)}
-                    activeOpacity={0.85}
-                  >
-                    <Feather name="upload" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
-                    <Text style={styles.bannerBtnPrimaryText}>
-                      {primaryAgreement.rejectionReason ? 'Re-upload' : 'Upload'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ) : (primaryAgreement?.status === 'pending_approval' || (primaryAgreement?.status as any) === 'awaiting_owner_signature') ? (
-              <View style={[styles.actionBanner, { borderColor: '#FCD34D', backgroundColor: '#FFFBEB' }]}>
-                <View style={styles.actionBannerTop}>
-                  <View style={[styles.actionBannerIconBox, { backgroundColor: '#FEF3C7' }]}>
-                    <Feather name="clock" size={16} color="#D97706" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.actionBannerTitle, { color: '#92400E' }]}>Awaiting Approval</Text>
-                    <Text style={[styles.actionBannerSub, { color: '#78350F' }]}>
-                      Signed lease uploaded. Awaiting owner review.
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            ) : primaryAgreement?.status === 'pending_deposit' ? (
-              <View style={[styles.actionBanner, { borderColor: '#93C5FD', backgroundColor: '#EFF6FF' }]}>
-                <View style={styles.actionBannerTop}>
-                  <View style={[styles.actionBannerIconBox, { backgroundColor: '#DBEAFE' }]}>
-                    <Feather name="credit-card" size={16} color="#2563EB" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.actionBannerTitle, { color: '#1E40AF' }]}>Deposit Due</Text>
-                    <Text style={[styles.actionBannerSub, { color: '#1E3A8A' }]}>
-                      Lease approved. Pay deposit to move in.
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            ) : null}
-
             {/* Filter Pills: All, Active, Pending, Concluded */}
             <View style={styles.filterPillsRow}>
               {(['all', 'active', 'pending', 'concluded'] as const).map((filterKey) => (
@@ -1295,22 +1233,22 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
               ))}
             </View>
 
-            {/* Agreements List */}
+            {/* Agreements List (Compact Web .staff-card Parity) */}
             {filteredAgreements.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Feather name="file-text" size={32} color="#94A3B8" />
+                <Feather name="file-text" size={28} color="#94A3B8" />
                 <Text style={styles.emptyTitle}>No Agreements Found</Text>
-                <Text style={styles.emptySub}>No lease agreements matching the selected filter criteria.</Text>
+                <Text style={styles.emptySub}>No lease agreements match the selected filter.</Text>
               </View>
             ) : (
               filteredAgreements.map((ag) => (
                 <View key={ag.id} style={styles.agreementCard}>
                   <View style={styles.agreementHeader}>
-                    <View style={{ flex: 1 }}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text style={styles.agreementIdText}>#{ag.id}</Text>
                       <Text style={styles.agreementTitle}>
-                        {ag.propertyName || 'Property'} • Unit {ag.unit}
+                        Unit {ag.unit} • {ag.propertyName || 'Property'}
                       </Text>
-                      <Text style={styles.agreementIdText}>Agreement #{ag.id}</Text>
                     </View>
                     {(() => {
                       const isVacated =
@@ -1326,55 +1264,19 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                     })()}
                   </View>
 
-                  <View style={styles.divider} />
-
-                  <View style={styles.specGrid}>
-                    <View style={styles.specCell}>
-                      <Text style={styles.specLabel}>Monthly Rent</Text>
-                      <Text style={styles.specValue}>{format(ag.rent, ag.currency || activeCurrency)}/mo</Text>
-                    </View>
-                    <View style={styles.specCell}>
-                      <Text style={styles.specLabel}>Security Deposit</Text>
-                      <Text style={styles.specValue}>{format(ag.deposit, ag.currency || activeCurrency)}</Text>
-                    </View>
-                    <View style={styles.specCell}>
-                      <Text style={styles.specLabel}>Term Start</Text>
-                      <Text style={styles.specValue}>{ag.start}</Text>
-                    </View>
-                    <View style={styles.specCell}>
-                      <Text style={styles.specLabel}>Term Expiry</Text>
-                      <Text style={styles.specValue}>{ag.end}</Text>
-                    </View>
-                    <View style={styles.specCell}>
-                      <Text style={styles.specLabel}>Lock-in Period</Text>
-                      <Text style={styles.specValue}>{ag.lockInMonths || 6} Months</Text>
-                    </View>
-                    <View style={styles.specCell}>
-                      <Text style={styles.specLabel}>Notice Period</Text>
-                      <Text style={styles.specValue}>{ag.noticePeriodDays || 30} Days</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.divider} />
-
-                  {/* Legal Execution & Signature Audit Trail */}
-                  <View style={styles.auditTrailRow}>
-                    <View style={styles.shieldIconBox}>
-                      <Feather name="shield" size={15} color="#059669" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.auditTitle}>
-                        {ag.status === 'active' ? 'Registered Lease' : 'Lease Document'}
-                      </Text>
-                      <Text style={styles.auditSub}>
-                        Signatory: {ag.tenant || tenantName} • Landlord: {ag.ownerName || 'Property Landlord'}
-                      </Text>
-                    </View>
-                    <View style={styles.verifiedTag}>
-                      <Text style={styles.verifiedTagText}>
-                        {ag.status === 'active' ? 'REGISTERED' : 'OFFICIAL'}
-                      </Text>
-                    </View>
+                  <View style={{ marginVertical: 10, gap: 4 }}>
+                    <Text style={{ fontSize: 12.5, color: colors.inkSoft }}>
+                      <Text style={{ fontWeight: '700', color: colors.navy }}>Landlord: </Text>
+                      {ag.ownerName || 'Property Owner'}
+                    </Text>
+                    <Text style={{ fontSize: 12.5, color: colors.inkSoft }}>
+                      <Text style={{ fontWeight: '700', color: colors.navy }}>Period: </Text>
+                      {ag.start} → {ag.end}
+                    </Text>
+                    <Text style={{ fontSize: 12.5, color: colors.inkSoft }}>
+                      <Text style={{ fontWeight: '700', color: colors.navy }}>Rent: </Text>
+                      {format(ag.rent, ag.currency || activeCurrency)}/mo (Dep: {format(ag.deposit, ag.currency || activeCurrency)})
+                    </Text>
                   </View>
 
                   {/* Actions Row */}
@@ -1658,72 +1560,25 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                   ) : null}
                 </View>
               </View>
-            ) : isTenancyActive ? (
-              <View style={[styles.moveOutCard, { overflow: 'hidden', paddingVertical: 14 }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.moveOutCardTitle}>Notice to Vacate</Text>
-                    <Text style={styles.moveOutCardSub}>
-                      {/* Planning to move out? Submit formal notice to initiate your walkthrough inspection and deposit settlement. */}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.giveNoticeBtn}
-                    onPress={() => setShowNoticeModal(true)}
-                    activeOpacity={0.85}
-                  >
-                    <Feather name="edit-3" size={13} color="#FFFFFF" style={{ marginRight: 5 }} />
-                    <Text style={styles.giveNoticeBtnText}>Give Notice</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
             ) : null}
           </>
         )}
 
         {/* =============================================================== */}
-        {/* SUBTAB 2: LEASE RENEWAL HUB                                     */}
+        {/* SUBTAB 2: RENEW OR VACATE                                       */}
         {/* =============================================================== */}
         {subTab === 'renewal' && (
           <>
             {eligibleRenewalAgreements.length === 0 ? (
               <View style={[styles.emptyCard, { marginTop: 12 }]}>
-                <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: isDark ? '#1E293B' : '#F1F5F9', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
-                  <Feather name="repeat" size={22} color={isDark ? '#94A3B8' : '#64748B'} />
-                </View>
-                <Text style={styles.emptyTitle}>No Active Lease to Extend</Text>
+                <Feather name="repeat" size={24} color={isDark ? '#94A3B8' : '#64748B'} />
+                <Text style={styles.emptyTitle}>No Active Lease</Text>
                 <Text style={styles.emptySub}>
-                  Tenancy renewal requests and extension proposals are only available once you have an active, signed lease agreement with your property owner.
+                  Renewal and vacate options appear once your lease is active.
                 </Text>
               </View>
             ) : (
               <>
-                {/* Request Renewal Card Banner */}
-                <View style={styles.renewalHeroCard}>
-                  <View style={styles.renewalHeroIconBox}>
-                    <Feather name="repeat" size={20} color="#059669" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.renewalHeroTitle}>Extend Your Tenancy</Text>
-                    <Text style={styles.renewalHeroSub}>
-                      {/* Request a 12-month lease renewal directly with your landlord with transparent rent escalation and terms. */}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.requestRenewalBtn}
-                    onPress={() => {
-                      setShowRenewalRequestModal(true);
-                    }}
-                    activeOpacity={0.85}
-                  >
-                    <Feather name="plus" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
-                    <Text style={styles.requestRenewalBtnText}>Request Renewal</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* List of Renewal Offers & Proposals */}
-                <Text style={styles.sectionHeading}>Renewal Offers & Pipeline</Text>
-
                 {eligibleRenewalAgreements.map((ag) => {
                   const matchingRenewal = (state.renewals || []).find(
                     (r) =>
@@ -1749,14 +1604,11 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                       <View style={styles.agreementHeader}>
                         <View style={{ flex: 1, marginRight: 8 }}>
                           <Text style={styles.agreementTitle} numberOfLines={1}>
-                            Unit {ag.unit}
+                            Unit {ag.unit}{ag.propertyName ? ` • ${ag.propertyName}` : ''}
                           </Text>
-                          {ag.propertyName ? (
-                            <Text style={styles.agreementSubProperty} numberOfLines={1}>
-                              {ag.propertyName}
-                            </Text>
-                          ) : null}
-                          <Text style={styles.agreementIdText}>Current Rent: {format(ag.rent, ag.currency || activeCurrency)}/mo</Text>
+                          <Text style={styles.agreementIdText}>
+                            Period: {ag.start} → {ag.end} · Rent: {format(ag.rent, ag.currency || activeCurrency)}/mo
+                          </Text>
                         </View>
                         <View
                           style={[
@@ -1812,25 +1664,17 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
 
                       {isOffered ? (
                         <>
-                          <View style={styles.specGrid}>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Proposed Rent</Text>
-                              <Text style={[styles.specValue, { color: '#059669', fontWeight: '700' }]}>
-                                {format(proposedRent, matchingRenewal?.currency || ag.currency || activeCurrency)}/mo
+                          <View style={{ marginVertical: 8, gap: 4 }}>
+                            <Text style={{ fontSize: 12.5, color: colors.inkSoft }}>
+                              <Text style={{ fontWeight: '700', color: colors.navy }}>Proposed Rent: </Text>
+                              <Text style={{ color: '#059669', fontWeight: '700' }}>
+                                {format(proposedRent, matchingRenewal?.currency || ag.currency || activeCurrency)}/mo (+{percentageIncrease}%)
                               </Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Commencement</Text>
-                              <Text style={styles.specValue}>{newStart}</Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Extension Expiry</Text>
-                              <Text style={styles.specValue}>{newEnd}</Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Escalation</Text>
-                              <Text style={styles.specValue}>+{percentageIncrease}%</Text>
-                            </View>
+                            </Text>
+                            <Text style={{ fontSize: 12.5, color: colors.inkSoft }}>
+                              <Text style={{ fontWeight: '700', color: colors.navy }}>New Term: </Text>
+                              {newStart} → {newEnd}
+                            </Text>
                           </View>
 
                           {matchingRenewal?.ownerNotes ? (
@@ -1860,31 +1704,11 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                           </View>
                         </>
                       ) : isSignedByTenant ? (
-                        <View style={{ paddingVertical: 8 }}>
-                          <View style={styles.specGrid}>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Proposed Rent</Text>
-                              <Text style={[styles.specValue, { color: '#059669', fontWeight: '700' }]}>
-                                {format(proposedRent, matchingRenewal?.currency || ag.currency || activeCurrency)}/mo
-                              </Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Submitted On</Text>
-                              <Text style={styles.specValue}>{matchingRenewal?.tenantSignedAt ? matchingRenewal.tenantSignedAt.split('T')[0] : 'Recently'}</Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Extended Through</Text>
-                              <Text style={styles.specValue}>{newEnd}</Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Status</Text>
-                              <Text style={[styles.specValue, { color: '#D97706', fontWeight: '600' }]}>In Review</Text>
-                            </View>
-                          </View>
-                          <View style={[styles.noticeInfoBox, { marginVertical: 8 }]}>
+                        <View style={{ paddingVertical: 6 }}>
+                          <View style={[styles.noticeInfoBox, { marginVertical: 6 }]}>
                             <Feather name="clock" size={14} color="#D97706" style={{ marginRight: 6, marginTop: 1 }} />
                             <Text style={styles.noticeInfoText}>
-                              Your ink-signed renewal contract ({matchingRenewal?.tenantSignedFileName || 'Signed_Copy.pdf'}) was submitted. Your landlord is reviewing for final approval.
+                              Signed renewal ({matchingRenewal?.tenantSignedFileName || 'Signed_Copy.pdf'}) submitted. Awaiting landlord approval.
                             </Text>
                           </View>
                           {matchingRenewal?.tenantSignedFileUrl && (
@@ -1913,31 +1737,11 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                           )}
                         </View>
                       ) : isAccepted ? (
-                        <View style={{ paddingVertical: 8 }}>
-                          <View style={styles.specGrid}>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Contracted Rent</Text>
-                              <Text style={[styles.specValue, { color: '#059669', fontWeight: '700' }]}>
-                                {format(matchingRenewal?.proposedRent || ag.rent, matchingRenewal?.currency || ag.currency || activeCurrency)}/mo
-                              </Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Active From</Text>
-                              <Text style={styles.specValue}>{matchingRenewal?.newLeaseStart || ag.start}</Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Extended To</Text>
-                              <Text style={styles.specValue}>{matchingRenewal?.newLeaseEnd || ag.end}</Text>
-                            </View>
-                            <View style={styles.specCell}>
-                              <Text style={styles.specLabel}>Term Status</Text>
-                              <Text style={[styles.specValue, { color: '#059669', fontWeight: '700' }]}>Active ✓</Text>
-                            </View>
-                          </View>
-                          <View style={[styles.noticeInfoBox, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0', marginVertical: 8 }]}>
+                        <View style={{ paddingVertical: 6 }}>
+                          <View style={[styles.noticeInfoBox, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0', marginVertical: 4 }]}>
                             <Feather name="check-circle" size={14} color="#059669" style={{ marginRight: 6, marginTop: 1 }} />
                             <Text style={[styles.noticeInfoText, { color: '#065F46' }]}>
-                              Lease renewal successfully activated through {matchingRenewal?.newLeaseEnd || ag.end}.
+                              Renewed at {format(matchingRenewal?.proposedRent || ag.rent, matchingRenewal?.currency || ag.currency || activeCurrency)}/mo through {matchingRenewal?.newLeaseEnd || ag.end}.
                             </Text>
                           </View>
                         </View>
@@ -1946,43 +1750,33 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                           <View style={[styles.noticeInfoBox, { marginVertical: 4 }]}>
                             <Feather name="clock" size={14} color="#D97706" style={{ marginRight: 6, marginTop: 1 }} />
                             <Text style={styles.noticeInfoText}>
-                              Renewal requested{matchingRenewal?.requestedAt ? ` on ${matchingRenewal.requestedAt.split('T')[0]}` : ''}. Landlord will send the offer draft soon.
+                              Renewal requested{matchingRenewal?.requestedAt ? ` on ${matchingRenewal.requestedAt.split('T')[0]}` : ''}. Awaiting landlord offer.
                             </Text>
                           </View>
                         </View>
-                      ) : isDeclined ? (
-                        <View style={{ paddingVertical: 10 }}>
-                          <Text style={{ fontSize: 12.5, color: '#DC2626', marginBottom: 8 }}>
-                            The previous renewal offer was declined.{matchingRenewal?.tenantNotes ? ` Reason: "${matchingRenewal.tenantNotes}".` : ''} Existing lease concludes on {ag.end}.
-                          </Text>
-                          <TouchableOpacity
-                            style={styles.cardActionBtnSecondary}
-                            onPress={() => {
-                              setReviewingAgreement(ag);
-                              setShowRenewalRequestModal(true);
-                            }}
-                            activeOpacity={0.8}
-                          >
-                            <Feather name="repeat" size={13} color="#0F172A" style={{ marginRight: 5 }} />
-                            <Text style={styles.cardActionBtnSecondaryText}>Request Renewal</Text>
-                          </TouchableOpacity>
-                        </View>
                       ) : (
-                        <View style={{ paddingVertical: 10, alignItems: 'center' }}>
-                          <Text style={{ fontSize: 13, color: '#64748B', marginBottom: 10 }}>
-                            Current lease expires on {ag.end}. You can initiate renewal requests at any time.
-                          </Text>
+                        <View style={[styles.cardActionsRow, { marginTop: 8 }]}>
                           <TouchableOpacity
-                            style={styles.cardActionBtnSecondary}
+                            style={styles.cardActionBtnPrimary}
                             onPress={() => {
                               setReviewingAgreement(ag);
                               setShowRenewalRequestModal(true);
                             }}
-                            activeOpacity={0.8}
+                            activeOpacity={0.85}
                           >
-                            <Feather name="send" size={13} color="#0F172A" style={{ marginRight: 5 }} />
-                            <Text style={styles.cardActionBtnSecondaryText}>Request Extension</Text>
+                            <Feather name="repeat" size={13} color="#FFFFFF" style={{ marginRight: 5 }} />
+                            <Text style={styles.cardActionBtnPrimaryText}>Request Renewal</Text>
                           </TouchableOpacity>
+                          {!activeMoveOut && (
+                            <TouchableOpacity
+                              style={[styles.cardActionBtnSecondary, { borderColor: '#FCA5A5', backgroundColor: '#FEF2F2' }]}
+                              onPress={() => setShowNoticeModal(true)}
+                              activeOpacity={0.8}
+                            >
+                              <Feather name="log-out" size={13} color="#DC2626" style={{ marginRight: 5 }} />
+                              <Text style={[styles.cardActionBtnSecondaryText, { color: '#DC2626' }]}>Give Notice</Text>
+                            </TouchableOpacity>
+                          )}
                         </View>
                       )}
                     </View>

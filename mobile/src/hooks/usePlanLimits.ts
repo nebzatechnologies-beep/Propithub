@@ -276,6 +276,19 @@ export function usePlanLimits(explicitOwnerId?: string) {
     ? Math.max(0, Math.ceil((new Date(purgeScheduledAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
     : null;
 
+  const maxPopularBoostDays = (currentPlan as any)?.popularBoostDays ?? (
+    currentPlan?.id === 'growth' ? 7 :
+    currentPlan?.id === 'enterprise' ? 30 :
+    (currentPlan?.id === 'free_trial' || currentPlan?.isTrialOnly) ? 3 : 0
+  );
+
+  const popularBoostDaysUsed = (state.units || [])
+    .filter((u) => u.ownerId === resolvedOwnerId && (u as any).popularUntil && new Date((u as any).popularUntil).getTime() > Date.now())
+    .reduce((sum, u) => sum + (Number((u as any).popularDaysApplied) || 0), 0);
+
+  const popularBoostDaysRemaining = Math.max(0, maxPopularBoostDays - popularBoostDaysUsed);
+  const canBoostListing = maxPopularBoostDays > 0 && popularBoostDaysRemaining > 0;
+
   return {
     ownerId: resolvedOwnerId,
     ownerSettings,
@@ -289,6 +302,12 @@ export function usePlanLimits(explicitOwnerId?: string) {
     purgeDaysLeft,
     currentPlan,
     currentPlanName,
+    popularBoost: {
+      allowance: maxPopularBoostDays,
+      used: popularBoostDaysUsed,
+      remaining: popularBoostDaysRemaining,
+      canBoost: canBoostListing,
+    },
     usage: {
       properties: { used: propertiesUsed, max: maxProperties, isFull: isPropertiesFull },
       units: { used: unitsUsed, max: maxUnits, isFull: isUnitsFull },

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useAppData } from '../context/AppDataContext';
 import { useTheme } from '../context/ThemeContext';
@@ -45,11 +45,19 @@ export const WorkspaceLayout: React.FC = () => {
   const { state, markNotificationRead } = useAppData();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [logoError, setLogoError] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
+
+  // Auto-close open menus/drawers and reset scroll position on every navigation change
+  useEffect(() => {
+    setProfileOpen(false);
+    setMobileNavOpen(false);
+    window.scrollTo(0, 0);
+  }, [location.pathname]);
 
   const showCustomLogo = Boolean(
     !logoError &&
@@ -179,7 +187,7 @@ export const WorkspaceLayout: React.FC = () => {
             <div className="nav-group">
               <div className="nav-label">MAIN MENU</div>
               <NavLink to="/superadmin/overview" data-tour="superadmin-nav-overview" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <LayoutDashboard size={16} /> Overview
+                <LayoutDashboard size={16} /> Dashboard
               </NavLink>
               <NavLink to="/superadmin/users" data-tour="superadmin-nav-users" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Users size={16} /> Users Directory
@@ -215,7 +223,7 @@ export const WorkspaceLayout: React.FC = () => {
             <div className="nav-group">
               <div className="nav-label">MAIN MENU</div>
               <NavLink to="/owner/dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <LayoutDashboard size={16} /> Overview
+                <LayoutDashboard size={16} /> Dashboard
               </NavLink>
               <NavLink to="/owner/properties" data-tour="owner-nav-properties" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Building2 size={16} /> Properties
@@ -257,35 +265,49 @@ export const WorkspaceLayout: React.FC = () => {
           </>
         );
 
-      case 'tenant':
+      case 'tenant': {
+        const tenantActionCount = activeReminders.length;
         return (
-          <>
-            <div className="nav-group">
-              <div className="nav-label">MAIN MENU</div>
-              <NavLink to="/tenant/dashboard" data-tour="tenant-nav-overview" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Home size={16} /> Overview
-              </NavLink>
-              <NavLink to="/tenant/find-home" data-tour="tenant-nav-find-home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Compass size={16} /> Find a Home
-              </NavLink>
-              <NavLink to="/tenant/lease" data-tour="tenant-nav-lease" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <FileText size={16} /> My Lease
-              </NavLink>
-              <NavLink to="/tenant/payments" data-tour="tenant-nav-payments" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <CreditCard size={16} /> Transactions
-              </NavLink>
-            </div>
-            <div className="nav-group">
-              <div className="nav-label">SUPPORT</div>
-              <NavLink to="/tenant/support" data-tour="tenant-nav-support" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Wrench size={16} /> Support
-              </NavLink>
-              <NavLink to="/tenant/trust" data-tour="tenant-nav-trust" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Award size={16} /> Landlord Reviews
-              </NavLink>
-            </div>
-          </>
+          <div className="nav-group">
+            <NavLink to="/tenant/dashboard" data-tour="tenant-nav-overview" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px' }}>
+                <LayoutDashboard size={16} /> Dashboard
+              </span>
+              {tenantActionCount > 0 && (
+                <span
+                  style={{
+                    background: '#fff',
+                    color: '#0D9488',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    minWidth: '18px',
+                    height: '18px',
+                    borderRadius: '999px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0 5px',
+                  }}
+                >
+                  {tenantActionCount}
+                </span>
+              )}
+            </NavLink>
+            <NavLink to="/tenant/lease" data-tour="tenant-nav-lease" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+              <FileText size={16} /> My lease
+            </NavLink>
+            <NavLink to="/tenant/payments" data-tour="tenant-nav-payments" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+              <CreditCard size={16} /> Payments
+            </NavLink>
+            <NavLink to="/tenant/support" data-tour="tenant-nav-support" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+              <Wrench size={16} /> Support
+            </NavLink>
+            <NavLink to="/tenant/trust" data-tour="tenant-nav-trust" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+              <Award size={16} /> Reviews & Enquiries
+            </NavLink>
+          </div>
         );
+      }
 
       case 'manager':
         return (
@@ -293,7 +315,7 @@ export const WorkspaceLayout: React.FC = () => {
             <div className="nav-group">
               <div className="nav-label">MAIN MENU</div>
               <NavLink to="/manager/dashboard" data-tour="manager-nav-overview" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <LayoutDashboard size={16} /> Overview
+                <LayoutDashboard size={16} /> Dashboard
               </NavLink>
               <NavLink to="/manager/properties" data-tour="manager-nav-properties" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Building2 size={16} /> Properties
@@ -425,7 +447,7 @@ export const WorkspaceLayout: React.FC = () => {
                 >
                   {role === 'superadmin' && 'Superadmin Console'}
                   {role === 'owner' && 'Property Owner'}
-                  {role === 'tenant' && 'Tenant Resident'}
+                  {role === 'tenant' && 'TENANT'}
                   {role === 'manager' && 'Property Manager'}
                   {role === 'staff' && 'Maintenance Staff'}
                 </span>
@@ -526,7 +548,7 @@ export const WorkspaceLayout: React.FC = () => {
             >
               {role === 'superadmin' && 'Superadmin Console'}
               {role === 'owner' && 'Property Owner'}
-              {role === 'tenant' && 'Tenant Resident'}
+              {role === 'tenant' && 'TENANT'}
               {role === 'manager' && 'Property Manager'}
               {role === 'staff' && 'Maintenance Staff'}
             </span>
@@ -541,7 +563,7 @@ export const WorkspaceLayout: React.FC = () => {
       <div className="main">
         {/* Clean Topbar */}
         <header className="topbar">
-          <div className="topbar-search-cluster" style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1 1 auto', minWidth: 0, marginRight: '10px' }}>
+          <div className="topbar-search-cluster">
             <button
               type="button"
               className="mobile-nav-toggle"
@@ -553,7 +575,19 @@ export const WorkspaceLayout: React.FC = () => {
             <GlobalSearch />
           </div>
 
-          <div className="topbar-actions-cluster" data-tour="topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <div className="topbar-actions-cluster" data-tour="topbar-actions">
+            {/* Tenant Find Homes Shortcut Button */}
+            {role === 'tenant' && (
+              <Link
+                to="/homes"
+                className="topbar-find-home-btn"
+                title="Browse available homes & listings"
+              >
+                <Compass size={14} />
+                <span>Find Home</span>
+              </Link>
+            )}
+
             {/* Live Currency Converter Quick Trigger */}
             <CurrencyConverterTrigger variant="icon" className="currency-converter-topbar" />
 
@@ -726,7 +760,7 @@ export const WorkspaceLayout: React.FC = () => {
               </button>
             </div>
           )}
-          <Outlet />
+          <Outlet key={location.pathname} />
         </main>
       </div>
 

@@ -102,9 +102,9 @@ export const GLOBAL_CURRENCIES: CurrencyMeta[] = [
 // Fallback baseline exchange rates against 1 USD (used if network is offline or API fails)
 export const BASELINE_RATES_USD: Record<string, number> = {
   USD: 1,
-  INR: 86.85,
-  EUR: 0.92,
-  GBP: 0.78,
+  INR: 94.05,
+  EUR: 0.897,
+  GBP: 0.77,
   AED: 3.6725,
   SGD: 1.34,
   CAD: 1.39,
@@ -244,6 +244,7 @@ export function getLocaleForCurrency(currencyCodeOrSymbol: string | undefined | 
 export function normalizeCurrencyCode(curr: string | undefined | null): string {
   if (!curr) return 'USD';
   const clean = curr.trim().toUpperCase();
+  if (clean === 'LOCAL' || clean === 'DEFAULT') return 'LOCAL';
   const symbolMap: Record<string, string> = {
     '₹': 'INR',
     '$': 'USD',
@@ -279,7 +280,7 @@ export function convertCurrency(
   if (amount === 0 || isNaN(amount)) return 0;
   const from = normalizeCurrencyCode(fromCurrency);
   const to = normalizeCurrencyCode(toCurrency);
-  if (from === to) return amount;
+  if (from === to || to === 'LOCAL' || from === 'LOCAL') return amount;
 
   const rateFrom = rates[from] || BASELINE_RATES_USD[from] || 1;
   const rateTo = rates[to] || BASELINE_RATES_USD[to] || 1;
@@ -298,7 +299,8 @@ export function formatCurrencyAmount(
   options?: { minimumFractionDigits?: number; maximumFractionDigits?: number; compact?: boolean }
 ): string {
   const num = typeof amount === 'number' && !isNaN(amount) ? amount : (Number(amount) || 0);
-  const code = normalizeCurrencyCode(currencyCode || 'USD');
+  let code = normalizeCurrencyCode(currencyCode || 'USD');
+  if (code === 'LOCAL') code = DEFAULT_CURRENCY;
   const meta = GLOBAL_CURRENCIES.find((c) => c.code === code);
   const symbol = meta?.symbol || code;
 
@@ -327,6 +329,7 @@ export function formatCurrencyAmount(
  */
 export function formatCurrencyLabel(code?: string | null, symbol?: string | null): string {
   const c = normalizeCurrencyCode(code);
+  if (c === 'LOCAL') return 'Default / Local';
   const meta = GLOBAL_CURRENCIES.find((item) => item.code === c);
   const s = (symbol || meta?.symbol || c).trim();
   if (!s || s === c) return c;

@@ -36,6 +36,7 @@ export interface MobilePropertyAddress {
   street?: string;
   lat?: number;
   lng?: number;
+  placeId?: string;
 }
 
 export interface MobileProperty {
@@ -44,6 +45,9 @@ export interface MobileProperty {
   name: string;
   address: MobilePropertyAddress | string;
   propertyType: string; // e.g. Residential Apartment, Commercial Office, Villa, Gated Community
+  propertyStructure?: 'single_unit' | 'multi_unit';
+  propertyCategory?: 'residential' | 'commercial' | 'mixed';
+  isSingleUnit?: boolean;
   floorsCount: number;
   yearBuilt?: number;
   country: string;
@@ -55,6 +59,12 @@ export interface MobileProperty {
   images: string[];
   coverPhotoIndex?: number;
   assignedManagerId?: string;
+  isPopular?: boolean;
+  popularUntil?: string | null;
+  popularActivatedAt?: string | null;
+  popularDaysApplied?: number;
+  popularPlanId?: string | null;
+  popularPlanPrice?: number | null;
   rules?: {
     petsAllowed: boolean;
     smokingAllowed: boolean;
@@ -80,12 +90,24 @@ export interface MobileUnit {
   currency: string;
   status: 'occupied' | 'vacant' | 'reserved' | 'maintenance';
   isListedPublicly: boolean;
+  isPopular?: boolean;
+  popularUntil?: string | null;
+  popularActivatedAt?: string | null;
+  popularDaysApplied?: number;
+  popularPlanId?: string | null;
+  popularPlanPrice?: number | null;
   tenant?: string | null;
   currentTenantId?: string | null;
   electricityMeter?: string;
   waterMeter?: string;
+  isWholeProperty?: boolean;
+  country?: string;
+  address?: string;
   images?: string[];
   image?: string;
+  photos?: string[];
+  bathrooms?: number;
+  description?: string;
 }
 
 export interface MobileTenantRecord {
@@ -142,6 +164,8 @@ export interface MobileAgreement {
   offlineDepositRef?: string;
   depositInvoiceId?: string;
   depositStatus?: 'unpaid' | 'paid' | 'waived' | 'refunded';
+  fileName?: string | null;
+  fileData?: string | null;
   documentUrl?: string;
   signedDocumentUrl?: string;
   signedDocumentName?: string;
@@ -300,6 +324,13 @@ export interface MobileInvoice {
   lateFeeWaivedReason?: string;
   lateFeeCalculation?: string;
   notes?: string;
+  includeTerms?: boolean;
+  issuerName?: string;
+  issuerTaxNo?: string;
+  issuerAddress?: string;
+  issuerPhone?: string;
+  issuerEmail?: string;
+  termsAndConditions?: string;
   createdAt: string;
 }
 
@@ -618,6 +649,17 @@ export interface MobilePlan {
   isTrialOnly?: boolean;
 }
 
+export interface ListingBoostPlan {
+  id: string;
+  name: string;
+  days: number;
+  price: number;
+  currency: string;
+  description?: string;
+  isPopular?: boolean;
+  isActive: boolean;
+}
+
 export interface MobilePlatformInvoice {
   id: string;
   ownerId: string;
@@ -639,6 +681,13 @@ export interface MobilePlatformInvoice {
   notes?: string;
   paymentMethod?: string;
   transactionRef?: string;
+  issuerName?: string;
+  issuerTaxNo?: string;
+  ownerTaxNo?: string;
+  termsAndConditions?: string;
+  includeTerms?: boolean;
+  signatoryName?: string;
+  signatoryRole?: string;
 }
 
 export interface MobileInvoiceTemplateConfig {
@@ -655,6 +704,7 @@ export interface MobileInvoiceTemplateConfig {
   ifscOrRouting?: string;
   upiId?: string;
   termsAndConditions?: string;
+  includeTerms?: boolean;
   signatoryName?: string;
   signatureUrl?: string;
   notes?: string;
@@ -853,7 +903,7 @@ export interface MobileTenancyRequest {
   requiredIdList?: MobileRequiredIdItem[];
   tenantUploadedIdName?: string;
   tenantUploadedIdUrl?: string;
-  status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+  status: 'pending' | 'accepted' | 'declined' | 'cancelled' | 'fulfilled' | 'archived';
   message: string;
   createdAt: string;
 }
@@ -878,13 +928,18 @@ export interface MobileTenantReview {
   id: string;
   tenantId?: string;
   tenantName: string;
+  by?: string;
   ownerId?: string;
   ownerName?: string;
+  ownerEmail?: string;
   propertyId?: string;
   propertyName?: string;
   unit?: string;
   rating: number;
   comment: string;
+  text?: string;
+  ownerReply?: string;
+  ownerReplyDate?: string;
   createdAt: string;
 }
 
@@ -994,10 +1049,13 @@ export interface MobilePropertyEnquiry {
   prospectName: string;
   prospectPhone: string;
   prospectEmail?: string;
-  moveInDate: string;
+  moveInDate?: string;
+  preferredMoveInDate?: string;
   notes?: string;
-  status: 'new' | 'reviewed' | 'onboarded';
+  message?: string;
+  status: 'new' | 'reviewed' | 'onboarded' | 'contacted' | 'archived';
   tenantId?: string;
+  source?: string;
   createdAt: string;
   updatedAt?: string;
 }

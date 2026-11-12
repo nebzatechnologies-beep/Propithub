@@ -1,15 +1,26 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
+import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { PropithubIcon } from '../../components/common/PropithubLogo';
-import { Home, ArrowLeft, LogIn, Sun, Moon, HelpCircle } from 'lucide-react';
+import { Home, ArrowLeft, LogIn, Sun, Moon, HelpCircle, LayoutDashboard } from 'lucide-react';
 
 export const NotFoundPage: React.FC = () => {
   const { state } = useAppData();
+  const { user, role } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const cfg = state.landingConfig;
+
+  const dashboardPath = useMemo(() => {
+    if (!user) return '/';
+    if (role === 'staff') return '/staff/dashboard';
+    if (role === 'manager') return '/manager/dashboard';
+    if (role === 'tenant') return '/tenant/dashboard';
+    if (role === 'superadmin') return '/superadmin/overview';
+    return '/owner/dashboard';
+  }, [user, role]);
 
   return (
     <div
@@ -45,7 +56,7 @@ export const NotFoundPage: React.FC = () => {
           {/* Logo */}
           <div
             style={{ display: 'inline-flex', alignItems: 'center', gap: '9px', cursor: 'pointer' }}
-            onClick={() => navigate('/')}
+            onClick={() => navigate(dashboardPath)}
           >
             {cfg.faviconUrl ? (
               <img
@@ -93,23 +104,43 @@ export const NotFoundPage: React.FC = () => {
               <span className="hide-mobile">{theme === 'dark' ? 'Light' : 'Dark'}</span>
             </button>
 
-            <Link
-              to="/login"
-              className="btn primary"
-              style={{
-                padding: '8px 16px',
-                borderRadius: '8px',
-                textDecoration: 'none',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                fontSize: '13px',
-                fontWeight: 600,
-              }}
-            >
-              <LogIn size={14} />
-              <span>Sign In</span>
-            </Link>
+            {user ? (
+              <Link
+                to={dashboardPath}
+                className="btn primary"
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '8px',
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                }}
+              >
+                <LayoutDashboard size={14} />
+                <span>Go to Dashboard</span>
+              </Link>
+            ) : (
+              <Link
+                to="/login"
+                className="btn primary"
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '8px',
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                }}
+              >
+                <LogIn size={14} />
+                <span>Sign In</span>
+              </Link>
+            )}
           </div>
         </div>
       </header>
@@ -229,7 +260,7 @@ export const NotFoundPage: React.FC = () => {
             <button
               type="button"
               className="btn primary"
-              onClick={() => navigate('/')}
+              onClick={() => navigate(dashboardPath)}
               style={{
                 padding: '12px 20px',
                 borderRadius: '10px',
@@ -242,7 +273,15 @@ export const NotFoundPage: React.FC = () => {
                 cursor: 'pointer',
               }}
             >
-              <Home size={16} /> Return to Homepage
+              {user ? (
+                <>
+                  <LayoutDashboard size={16} /> Return to Workspace Dashboard
+                </>
+              ) : (
+                <>
+                  <Home size={16} /> Return to Homepage
+                </>
+              )}
             </button>
 
             <button

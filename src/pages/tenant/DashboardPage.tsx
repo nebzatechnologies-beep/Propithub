@@ -50,6 +50,7 @@ import { DepositSettlementReviewModal } from '../../components/common/DepositSet
 import { AddressDisplay } from '../../components/common/AddressDisplay';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 
 export const TenantDashboardPage: React.FC = () => {
   const { state, updateState, showToast, saveAgreement, saveInvoice, saveUnit, saveTenant, saveTenancyRequest, acknowledgeAnnouncement, confirmCashClaim, rejectCashClaim, confirmRefundReceipt } = useAppData();
@@ -77,36 +78,6 @@ export const TenantDashboardPage: React.FC = () => {
   const tenantReminders = useMemo(() => {
     return getTenantReminders(state, user);
   }, [state, user]);
-
-  // Check if tenant has any active or pending lease context
-  const hasActiveOrPendingLease = useMemo(() => {
-    const hasAssignedUnit = state.units.some(
-      (u) =>
-        (u.currentTenantId === user?.id || (tenantEmail && u.tenant?.toLowerCase() === tenantEmail)) &&
-        (u.status === 'occupied' || u.status === 'reserved')
-    );
-    const hasActiveAg = state.agreements.some(
-      (a) =>
-        (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)) &&
-        a.status !== 'terminated'
-    );
-    const hasPendingReq = (state.tenancyRequests || []).some(
-      (r) =>
-        (r.tenantId === user?.id || (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)) &&
-        (r.status === 'pending' || r.status === 'accepted')
-    );
-    return hasAssignedUnit || hasActiveAg || hasPendingReq;
-  }, [state.units, state.agreements, state.tenancyRequests, user?.id, tenantEmail]);
-
-  // Only consider completed move-out for the "Concluded Tenancy" view if the resident has NO active/pending lease
-  const completedMoveOut = useMemo(() => {
-    if (hasActiveOrPendingLease) return undefined;
-    return (state.moveouts || []).find(
-      (m) =>
-        m.tenantId === user?.id &&
-        m.status === 'refund_completed'
-    );
-  }, [hasActiveOrPendingLease, state.moveouts, user?.id]);
 
   // Match by tenantId (primary) or email fallback.
   // Display-name fallback removed — two tenants sharing the same display name would
@@ -173,20 +144,73 @@ export const TenantDashboardPage: React.FC = () => {
       // Must be actively occupied or reserved
       if (u.status !== 'occupied' && u.status !== 'reserved') return false;
 
+      const normUnitStr = (s?: string) => (s || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+      const uClean = normUnitStr(u.unitNumber || u.id);
+
+      // 1. Move-Out Conclusion Gate:
+      // If a move-out for this tenant & unit was completed/settled, or if all agreements are terminated,
+      // exclude it unless there is a genuinely newer active agreement created after the move-out!
+      const completedMo = (state.moveouts || []).find(
+        (m) =>
+          (!m.propertyId || !u.propertyId || m.propertyId === u.propertyId) &&
+          (m.tenantId === user?.id || (tenantEmail && m.tenant?.toLowerCase() === tenantEmail)) &&
+          (normUnitStr(m.unit) === uClean) &&
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt)
+      );
+
+      const completedSettlement = (state.depositSettlements || []).find(
+        (s) =>
+          (!s.propertyId || !u.propertyId || s.propertyId === u.propertyId) &&
+          (s.tenantId === user?.id || (tenantEmail && s.tenantEmail?.toLowerCase() === tenantEmail)) &&
+          (normUnitStr(s.unit) === uClean) &&
+          (s.status === 'refunded' || Boolean(s.tenantConfirmedReceipt))
+      );
+
+      const unitAgreements = state.agreements.filter(
+        (a) =>
+          (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId) &&
+          (normUnitStr(a.unit) === uClean) &&
+          (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))
+      );
+      const hasAgreements = unitAgreements.length > 0;
+      const allAgreementsTerminated = hasAgreements && unitAgreements.every((a) => a.status === 'terminated');
+
+      const moTime = completedSettlement
+        ? new Date(completedSettlement.disbursedAt || (completedSettlement as any).updatedAt || completedSettlement.createdAt || 0).getTime()
+        : completedMo
+        ? new Date((completedMo as any).completedAt || (completedMo as any).tenantConfirmedAt || completedMo.moveOutDate || 0).getTime()
+        : 0;
+
+      const hasNewerActiveAgreement = state.agreements.some((a) => {
+        if (!(!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)) return false;
+        if (normUnitStr(a.unit) !== uClean) return false;
+        if (!(a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))) return false;
+        if (a.status === 'terminated') return false;
+        if (moTime > 0) {
+          const agTime = new Date((a as any).createdAt || a.start || 0).getTime();
+          return agTime > moTime;
+        }
+        return a.status === 'active' || a.status === 'signed' || a.status === 'pending_deposit';
+      });
+
+      if ((completedMo || completedSettlement || allAgreementsTerminated) && !hasNewerActiveAgreement) {
+        return false;
+      }
+
       // If tenant explicitly declined an invitation for this unit, exclude it unless there is a subsequent active agreement
       const hasDeclinedReq = (state.tenancyRequests || []).some(
         (r) =>
           (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId) &&
-          (r.unitId === u.id || r.unitNumber === u.unitNumber) &&
+          (normUnitStr(r.unitId) === uClean || normUnitStr(r.unitNumber) === uClean) &&
           (r.tenantId === user?.id || (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)) &&
           r.status === 'declined'
       );
 
-      // If tenant has an active / non-terminated agreement or pending request for this unit, it IS active!
+      // If tenant has an active / non-terminated agreement or fresh pending request for this unit, it IS active!
       const hasActiveAgreementForUnit = state.agreements.some(
         (a) =>
           (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId) &&
-          (a.unit === u.unitNumber || a.unit === u.id) &&
+          (normUnitStr(a.unit) === uClean) &&
           (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)) &&
           a.status !== 'terminated'
       );
@@ -198,40 +222,13 @@ export const TenantDashboardPage: React.FC = () => {
       const hasPendingReqForUnit = (state.tenancyRequests || []).some(
         (r) =>
           (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId) &&
-          (r.unitId === u.id || r.unitNumber === u.unitNumber) &&
+          (normUnitStr(r.unitId) === uClean || normUnitStr(r.unitNumber) === uClean) &&
           (r.tenantId === user?.id || (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail)) &&
           (r.status === 'pending' || r.status === 'accepted')
       );
       if (hasActiveAgreementForUnit || hasPendingReqForUnit) {
         return true;
       }
-
-      // If all agreements for this unit are terminated and no active request exists, exclude it
-      const hasAgreements = state.agreements.some(
-        (a) =>
-          (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId) &&
-          (a.unit === u.unitNumber || a.unit === u.id) &&
-          (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))
-      );
-      const allAgreementsTerminated = hasAgreements && state.agreements
-        .filter(
-          (a) =>
-            (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId) &&
-            (a.unit === u.unitNumber || a.unit === u.id) &&
-            (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail))
-        )
-        .every((a) => a.status === 'terminated');
-      if (allAgreementsTerminated) return false;
-
-      // Check if a move-out concluded this specific tenancy
-      const hasCompletedMoveOut = (state.moveouts || []).some(
-        (m) =>
-          (!m.propertyId || !u.propertyId || m.propertyId === u.propertyId) &&
-          (m.tenantId === user?.id || (tenantEmail && m.tenant?.toLowerCase() === tenantEmail)) &&
-          (m.unit === u.unitNumber || m.unit === u.id) &&
-          m.status === 'refund_completed'
-      );
-      if (hasCompletedMoveOut) return false;
 
       return false;
     })
@@ -251,6 +248,72 @@ export const TenantDashboardPage: React.FC = () => {
       const bHasAg = myAgreementUnitIds.has(b.id) ? 0 : 1;
       return aHasAg - bHasAg;
     });
+
+  // Active lease status: does the resident have active assigned units, an active non-terminated agreement, or fresh onboarding request?
+  const hasActiveOrPendingLease = useMemo(() => {
+    if (myUnits.length > 0) return true;
+
+    const normUnitStr = (s?: string) => (s || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+
+    // Check if there is an active agreement that is NOT terminated and NOT concluded by moveout
+    const hasActiveAg = state.agreements.some((a) => {
+      const matchTenant =
+        (user?.id && a.tenantId === user.id) ||
+        (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail);
+      if (!matchTenant || a.status === 'terminated') return false;
+
+      const aUnitClean = normUnitStr(a.unit);
+      const isConcludedByMoveout = (state.moveouts || []).some(
+        (m) =>
+          normUnitStr(m.unit) === aUnitClean &&
+          (m.tenantId === user?.id || (tenantEmail && m.tenant?.toLowerCase() === tenantEmail)) &&
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt)
+      );
+      return !isConcludedByMoveout;
+    });
+
+    if (hasActiveAg) return true;
+
+    // Check if there is a real fresh pending request (excluding ones where tenancy was already concluded)
+    const hasPendingReq = (state.tenancyRequests || []).some((r) => {
+      const matchTenant =
+        (user?.id && r.tenantId === user.id) ||
+        (tenantEmail && r.tenantEmail?.toLowerCase() === tenantEmail);
+      if (!matchTenant) return false;
+      if (r.status !== 'pending' && r.status !== 'accepted') return false;
+
+      const rUnitClean = normUnitStr(r.unitNumber || r.unitId);
+      const isConcludedByMoveout = (state.moveouts || []).some(
+        (m) =>
+          normUnitStr(m.unit) === rUnitClean &&
+          (m.tenantId === user?.id || (tenantEmail && m.tenant?.toLowerCase() === tenantEmail)) &&
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt)
+      );
+      if (isConcludedByMoveout) return false;
+
+      const isConcludedByAg = state.agreements.some(
+        (a) =>
+          normUnitStr(a.unit) === rUnitClean &&
+          (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)) &&
+          a.status === 'terminated'
+      );
+      if (isConcludedByAg) return false;
+
+      return true;
+    });
+
+    return hasPendingReq;
+  }, [myUnits.length, state.agreements, state.moveouts, state.tenancyRequests, user?.id, tenantEmail]);
+
+  // Concluded Move-Out record (only if resident has NO active or pending lease context)
+  const completedMoveOut = useMemo(() => {
+    if (hasActiveOrPendingLease) return undefined;
+    return (state.moveouts || []).find(
+      (m) =>
+        (m.tenantId === user?.id || (tenantEmail && m.tenant?.toLowerCase() === tenantEmail)) &&
+        (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt)
+    );
+  }, [hasActiveOrPendingLease, state.moveouts, user?.id, tenantEmail]);
 
   // Active Building Announcements for Tenant
   // Strict Owner & Property Isolation:
@@ -392,6 +455,58 @@ export const TenantDashboardPage: React.FC = () => {
   const [ackingNoticeId, setAckingNoticeId] = useState<string | null>(null);
   const [justAckedIds, setJustAckedIds] = useState<Set<string>>(new Set());
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
+  const [showAllNeedsYou, setShowAllNeedsYou] = useState<boolean>(false);
+
+  const STORAGE_DISMISSED_KEY = 'propithub_dismissed_reminders';
+  const [dismissedReminderIds, setDismissedReminderIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_DISMISSED_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [snoozedReminderIds, setSnoozedReminderIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('propithub_snoozed_reminders');
+      if (!stored) return [];
+      const parsed: Record<string, number> = JSON.parse(stored);
+      const now = Date.now();
+      return Object.keys(parsed).filter((id) => parsed[id] > now);
+    } catch {
+      return [];
+    }
+  });
+
+  const handleDismissReminder = (reminderId: string) => {
+    try {
+      const stored = localStorage.getItem(STORAGE_DISMISSED_KEY);
+      const parsed: string[] = stored ? JSON.parse(stored) : [];
+      if (!parsed.includes(reminderId)) {
+        parsed.push(reminderId);
+        localStorage.setItem(STORAGE_DISMISSED_KEY, JSON.stringify(parsed));
+      }
+    } catch (e) {
+      console.warn('Failed to save dismissed reminder', e);
+    }
+    setDismissedReminderIds((prev) => [...prev, reminderId]);
+    showToast('✓ Reminder dismissed.');
+  };
+
+  const handleSnoozeReminder = (reminderId: string) => {
+    const expireAt = Date.now() + 24 * 60 * 60 * 1000;
+    try {
+      const stored = localStorage.getItem('propithub_snoozed_reminders');
+      const parsed: Record<string, number> = stored ? JSON.parse(stored) : {};
+      parsed[reminderId] = expireAt;
+      localStorage.setItem('propithub_snoozed_reminders', JSON.stringify(parsed));
+      setSnoozedReminderIds((prev) => [...prev, reminderId]);
+      showToast('✓ Reminder snoozed for 24 hours.');
+    } catch {
+      handleDismissReminder(reminderId);
+    }
+  };
 
   const handleTenantAcknowledge = async (announcementId: string) => {
     setAckingNoticeId(announcementId);
@@ -472,16 +587,26 @@ export const TenantDashboardPage: React.FC = () => {
     return true;
   });
 
-  // Active cash refund claims awaiting confirmation by this tenant
-  const pendingRefundClaimsForMe = (state.cashClaims || []).filter(
-    (c) =>
-      (c.status === 'pending_confirmation' || (c as any).status === 'pending') &&
-      c.claimedByRole === 'owner' &&
-      ((user?.id && c.tenantId === user.id) ||
-        (tenantEmail && c.tenantName?.toLowerCase() === tenantName.toLowerCase()) ||
-        myUnits.some((u) => u.unitNumber === c.unit || u.id === c.unit) ||
-        mySettlements.some((s) => s.id === c.settlementId || s.unit === c.unit))
-  );
+  // Active cash refund claims awaiting confirmation by this tenant (strictly scoped to this resident)
+  const pendingRefundClaimsForMe = (state.cashClaims || []).filter((c) => {
+    const isPending = c.status === 'pending_confirmation' || (c as any).status === 'pending';
+    if (!isPending || c.claimedByRole !== 'owner') return false;
+
+    // Strict tenant scoping: must match auth user ID or verified tenant record ID
+    const isMyTenant = Boolean(
+      (user?.id && c.tenantId === user.id) ||
+      (tenantRecord?.id && c.tenantId === tenantRecord.id)
+    );
+    if (!isMyTenant) return false;
+
+    // If claim carries a propertyId, also verify it matches this tenant's property
+    if (c.propertyId && myUnits.length > 0) {
+      const isMyProperty = myUnits.some((u) => !u.propertyId || u.propertyId === c.propertyId);
+      if (!isMyProperty) return false;
+    }
+
+    return true;
+  });
   const [galleryFilter, setGalleryFilter] = useState<'all' | 'unit' | 'property' | 'amenity'>('all');
   const [lightboxItem, setLightboxItem] = useState<{ url: string; title: string; categoryLabel: string } | null>(null);
 
@@ -495,21 +620,21 @@ export const TenantDashboardPage: React.FC = () => {
   // ONLY if there is NO new active tenancy or pending reservation for this unit
   useEffect(() => {
     if (!completedMoveOut || hasActiveOrPendingLease) return;
+    const normUnit = (s?: string) => (s || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+    const moUnitClean = normUnit(completedMoveOut.unit);
     const dirtyUnit = state.units.find(
       (u) =>
-        (u.unitNumber === completedMoveOut.unit || u.id === completedMoveOut.unit) &&
-        (u.status === 'occupied' || u.tenant || u.currentTenantId)
+        (normUnit(u.unitNumber) === moUnitClean || normUnit(u.id) === moUnitClean) &&
+        (u.status === 'occupied' || u.status === 'reserved' || u.tenant || u.currentTenantId)
     );
     if (dirtyUnit) {
-      // Guard: do not clean if dirtyUnit has an active agreement or pending request
+      // Guard: do not clean if dirtyUnit has a genuinely newer active agreement created AFTER this moveout
+      const moTime = new Date((completedMoveOut as any).completedAt || (completedMoveOut as any).tenantConfirmedAt || completedMoveOut.moveOutDate || 0).getTime();
       const isReoccupied = state.agreements.some(
         (a) =>
-          (a.unit === dirtyUnit.unitNumber || a.unit === dirtyUnit.id) &&
-          a.status !== 'terminated'
-      ) || (state.tenancyRequests || []).some(
-        (r) =>
-          (r.unitId === dirtyUnit.id || r.unitNumber === dirtyUnit.unitNumber) &&
-          (r.status === 'pending' || r.status === 'accepted')
+          normUnit(a.unit) === moUnitClean &&
+          a.status !== 'terminated' &&
+          new Date((a as any).createdAt || a.start || 0).getTime() > moTime
       );
       if (isReoccupied) return;
 
@@ -525,7 +650,7 @@ export const TenantDashboardPage: React.FC = () => {
         units: prev.units.map((u) => (u.id === dirtyUnit.id ? cleanedUnit : u)),
       }));
     }
-  }, [completedMoveOut, hasActiveOrPendingLease, state.units, state.agreements, state.tenancyRequests, saveUnit, updateState]);
+  }, [completedMoveOut, hasActiveOrPendingLease, state.units, state.agreements, saveUnit, updateState]);
 
   // Active unit & property — always prefer the best-matched unit from myUnits
   const currentUnit =
@@ -562,6 +687,11 @@ export const TenantDashboardPage: React.FC = () => {
   const isDifferentCurrency = Boolean(viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(rawContractCurrency));
   const convertedRent = isDifferentCurrency ? convert(Number(activeRent) || 0, rawContractCurrency, viewCurrency) : null;
   const convertedDeposit = isDifferentCurrency ? convert(Number(activeDeposit) || 0, rawContractCurrency, viewCurrency) : null;
+
+  const displayCurrencyCode = viewCurrency || rawContractCurrency;
+  const displayCurrencySymbol = getCurrencySymbol(displayCurrencyCode) || DEFAULT_CURRENCY_SYMBOL;
+  const displayRentAmount = isDifferentCurrency && convertedRent !== null ? Math.round(convertedRent) : (Number(activeRent) || 0);
+  const displayDepositAmount = isDifferentCurrency && convertedDeposit !== null ? Math.round(convertedDeposit) : (Number(activeDeposit) || 0);
 
   const myTickets = state.tickets.filter(
     (t) => (user?.id && t.tenantId === user.id) || (tenantEmail && (t as any).tenantEmail?.toLowerCase() === tenantEmail)
@@ -933,583 +1063,544 @@ export const TenantDashboardPage: React.FC = () => {
   };
 
   return (
-    <div>
+    <div style={{ width: '100%' }}>
+      {(currentUnit || currentProperty) && myUnits.length <= 1 && (
+        <div style={{ fontSize: '13.5px', fontWeight: 600, color: 'var(--ink-soft)', marginBottom: '14px' }}>
+          {currentUnit?.unitNumber ? `Unit ${currentUnit.unitNumber}` : ''}
+          {currentUnit?.unitNumber && (currentProperty?.name || currentUnit?.propertyName) ? ' · ' : ''}
+          {currentProperty?.name || currentUnit?.propertyName || ''}
+        </div>
+      )}
+
+      {/* Multi-Property Switcher if resident rents multiple units */}
+      {myUnits.length > 1 && (
+        <div
+          style={{
+            marginBottom: '18px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flexWrap: 'wrap',
+          }}
+        >
+          {myUnits.map((u) => {
+            const pName = u.propertyName || state.properties.find((p) => p.id === u.propertyId)?.name || 'Residence';
+            return (
+              <button
+                key={u.id}
+                type="button"
+                className={`btn small ${selectedUnitId === u.id ? 'brass' : 'secondary'}`}
+                onClick={() => setSelectedUnitId(u.id)}
+              >
+                Unit {u.unitNumber} · {pName}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Preserved Archive Banner for Decoupled Tenants */}
       {((tenantRecord as any)?.status === 'unmanaged_archive' || (state.agreements || []).some((a) => (a.tenantId === user?.id || (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)) && (a.status as string) === 'unmanaged_archive')) && (
         <div
           style={{
-            background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(59, 130, 246, 0.03))',
-            border: '1px solid #3B82F6',
-            borderRadius: 'var(--radius)',
-            padding: '16px 20px',
-            marginBottom: '20px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '14px',
+            background: 'rgba(59, 130, 246, 0.06)',
+            border: '1px solid #BFDBFE',
+            borderRadius: '10px',
+            padding: '14px 18px',
+            marginBottom: '18px',
+            fontSize: '13px',
+            color: '#1E40AF',
           }}
         >
-          <div style={{ fontSize: '24px' }}>📁</div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: '15px', color: '#1E40AF' }}>
-              Read-Only Preserved Tenancy Archive
-            </div>
-            <div style={{ fontSize: '13px', color: '#1E3A8A', marginTop: '3px', lineHeight: 1.5 }}>
-              The property landlord account associated with your previous tenancy was retired or unmanaged.
-              Your signed lease agreements, official tax vouchers, and payment history have been securely archived
-              and remain fully accessible in read-only mode for your personal and tax records.
-            </div>
-          </div>
+          <b>Archived Tenancy:</b> Your signed lease agreements, vouchers, and payment history remain accessible in read-only mode.
         </div>
       )}
 
-      {/* SECTION 0: Real-Time Automated Action Center & Reminders */}
-      <DashboardReminderHub
-        reminders={tenantReminders}
-        role="tenant"
-        title="Action Required & Reminders"
-      />
+      {/* Primary Rent / Payment Status Banner + Quick Actions (when active unit exists) */}
+      {myUnits.length > 0 && (() => {
+        const myUnitPayments = (state.payments || []).filter(
+          (p) =>
+            (p.unit === currentUnit?.unitNumber || p.unit === currentUnit?.id) &&
+            (p.tenantId === user?.id || (tenantEmail && (p as any).tenantEmail?.toLowerCase() === tenantEmail) || p.tenant?.toLowerCase() === tenantName.toLowerCase())
+        );
+        const pendingPayment = myUnitPayments.find((p) => p.status === 'pending_confirmation');
+        const overduePayment = myUnitPayments.find((p) => p.status === 'overdue');
+        const depInv = currentAgreement?.depositInvoiceId
+          ? state.invoices.find((i) => i.id === currentAgreement.depositInvoiceId)
+          : state.invoices.find((i) => i.leaseAgreementId === currentAgreement?.id && i.invoiceType === 'deposit');
+        const isDepositPending = depInv && depInv.status !== 'paid' && currentAgreement?.depositStatus !== 'paid';
 
+        const formatBannerAmount = (rawAmt: number, srcCurrency?: string) => {
+          const src = srcCurrency || rawContractCurrency;
+          if (viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(src)) {
+            const converted = Math.round(convert(rawAmt, src, viewCurrency));
+            return `${displayCurrencySymbol}${converted.toLocaleString()}`;
+          }
+          return `${getCurrencySymbol(src)}${rawAmt.toLocaleString()}`;
+        };
 
-      {/* SECTION: Actionable Cash Handover Confirmation Banners */}
-      {pendingRefundClaimsForMe.map((c) => (
-        <div
-          key={c.id}
-          style={{
-            background: '#FFFBEB',
-            border: '1.5px solid #F59E0B',
-            borderRadius: 'var(--radius)',
-            padding: '16px 18px',
-            marginBottom: '20px',
-            boxShadow: '0 2px 8px rgba(245, 158, 11, 0.12)',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                <span style={{ background: '#FEF3C7', color: '#B45309', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700 }}>
-                  ⚡ CASH REFUND HANDOVER CONFIRMATION NEEDED
-                </span>
-                <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Claim #{c.id}</span>
-              </div>
-              <h4 style={{ margin: '6px 0 4px', fontSize: '15px', color: 'var(--ink)' }}>
-                {c.claimedByName} reported handing you {getCurrencySymbol(c.currency)} {(Number(c.amount) || 0).toLocaleString('en-IN')} in Cash
-              </h4>
-              <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
-                <b>Date:</b> {c.handoverDate} • <b>Unit:</b> {c.unit} • <b>Location:</b> {c.handoverLocation || 'On-Site Inspection'}
-                {c.notes && <span style={{ display: 'block', marginTop: '2px', fontStyle: 'italic' }}>"{c.notes}"</span>}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="btn btn-mobile-full"
-                style={{ background: '#16A34A', color: '#fff', border: 'none', padding: '8px 16px', fontSize: '12.5px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}
-                onClick={async () => {
-                  await confirmCashClaim(c.id);
-                }}
-              >
-                <CheckCircle2 size={16} /> Confirm I Received Cash
-              </button>
-              <button
-                type="button"
-                className="btn secondary btn-mobile-full"
-                style={{ borderColor: '#DC2626', color: '#DC2626', padding: '8px 14px', fontSize: '12.5px', fontWeight: 600 }}
-                onClick={async () => {
-                  const reason = window.prompt('Please enter the reason for declining this cash refund (e.g. Cash not received, or discrepancy):');
-                  if (reason && reason.trim()) {
-                    await rejectCashClaim(c.id, reason.trim());
-                  }
-                }}
-              >
-                Decline / Not Received
-              </button>
-            </div>
-          </div>
-        </div>
-      ))}
+        let bannerLabel = 'Next rent due';
+        let bannerAmount = `${displayCurrencySymbol}${displayRentAmount.toLocaleString()}`;
+        let bannerDesc = 'Due on the 1st of the month.';
+        let bannerBg = '#ECFDF5';
+        let bannerBorder = '#D1FAE5';
 
-      {/* SECTION: Security Deposit Settlement & Refund Hub */}
-      {mySettlements.length > 0 && (
-        <div style={{ marginBottom: '24px' }}>
-          <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--ledger)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Landmark size={18} color="var(--brass)" />
-            Security Deposit Settlements ({mySettlements.length})
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {mySettlements.map((settlement) => {
-              const myPayout = (state.payoutProfiles || []).find((p) => p.tenantId === user?.id);
-              const grossDeposit = Number(settlement.grossDepositHeld ?? (settlement as any).deposit ?? (settlement as any).grossDeposit ?? 0);
-              const netRefund = Number(settlement.netRefundableAmount ?? (settlement as any).netRefund ?? (settlement as any).finalRefundAmount ?? grossDeposit);
-              const currency = settlement.currency || DEFAULT_CURRENCY;
-              return (
-                <div
-                  key={settlement.id}
-                  style={{
-                    background: 'var(--surface)',
-                    border: settlement.status === 'refunded' ? '2px solid #2F5D50' : '2px solid var(--brass, #C59A45)',
-                    borderRadius: '10px',
-                    padding: '20px',
-                    boxShadow: 'var(--shadow-sm)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                        <span
-                          className={`badge ${settlement.status === 'refunded'
-                              ? 'green'
-                              : settlement.status === 'awaiting_tenant_cash_confirmation'
-                                ? 'amber'
-                                : settlement.status === 'approved'
-                                  ? 'brass'
-                                  : settlement.status === 'rejected' || settlement.status === 'contested'
-                                    ? 'red'
-                                    : 'amber'
-                            }`}
-                          style={settlement.status === 'awaiting_tenant_cash_confirmation' ? { background: '#FEF3C7', color: '#B45309', border: '1px solid #F59E0B' } : undefined}
-                        >
-                          {settlement.status === 'refunded'
-                            ? '✓ Refund Disbursed'
-                            : settlement.status === 'awaiting_tenant_cash_confirmation'
-                              ? '⏳ Cash Handover Reported — Awaiting Your Confirmation'
-                              : settlement.status === 'approved'
-                                ? '✓ Accepted by Tenant'
-                                : settlement.status === 'rejected' || settlement.status === 'contested'
-                                  ? '❌ Deductions Rejected'
-                                  : 'Action Required: Review Move-Out Settlement'}
-                        </span>
-                        <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                          Unit {settlement.unit} • {settlement.propertyName}
-                        </span>
-                      </div>
-                      <h4 style={{ margin: 0, fontSize: '16px' }}>
-                        Move-Out Security Deposit Reconciliation
-                      </h4>
-                    </div>
-
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Net Refundable Amount:</div>
-                      <div style={{ fontSize: '20px', fontWeight: 800, color: 'var(--ledger)' }}>
-                        {getCurrencySymbol(currency)}{netRefund.toLocaleString('en-IN')}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Deductions Breakdown */}
-                  <div style={{ background: '#F8F9FA', borderRadius: '8px', padding: '12px 16px', marginBottom: '14px', border: '1px solid var(--line)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '6px' }}>
-                      <span>Initial Security Deposit Held:</span>
-                      <b>{getCurrencySymbol(currency)}{grossDeposit.toLocaleString('en-IN')}</b>
-                    </div>
-
-                    {settlement.deductions && settlement.deductions.length > 0 ? (
-                      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '6px', marginTop: '6px' }}>
-                        <div style={{ fontSize: '12px', color: 'var(--danger)', fontWeight: 600, marginBottom: '4px' }}>
-                          Itemized Deductions Assessed by Landlord:
-                        </div>
-                        {settlement.deductions.map((d) => (
-                          <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', color: 'var(--ink-soft)', marginBottom: '3px' }}>
-                            <span>• [{d.category ? d.category.replace('_', ' ').toUpperCase() : 'REPAIR'}] {d.title}</span>
-                            <b style={{ color: 'var(--danger)' }}>- {getCurrencySymbol(currency)}{(Number(d.amount) || 0).toLocaleString('en-IN')}</b>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div style={{ fontSize: '12px', color: 'var(--ledger)' }}>
-                        ✓ Zero deductions assessed. Full 100% deposit return approved by landlord.
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Payout Destination Info */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                    <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>
-                      {settlement.chosenPayoutDetails ? (
-                        <div>
-                          <b>Payout Destination: </b>
-                          <span style={{ color: 'var(--ledger)', fontWeight: 600 }}>
-                            {settlement.chosenPayoutDetails.method === 'upi' && `UPI ID (${settlement.chosenPayoutDetails.upiId})`}
-                            {settlement.chosenPayoutDetails.method === 'paypal' && `PayPal (${settlement.chosenPayoutDetails.paypalEmail})`}
-                            {settlement.chosenPayoutDetails.method === 'iban' && `IBAN (${settlement.chosenPayoutDetails.iban})`}
-                            {settlement.chosenPayoutDetails.method === 'bank_in' && `Bank Acc (${settlement.chosenPayoutDetails.accountNumber} • IFSC: ${settlement.chosenPayoutDetails.ifscCode})`}
-                            {settlement.chosenPayoutDetails.method === 'cash' && `In-Person Hand Cash Handover`}
-                          </span>
-                          {settlement.paymentReference && (
-                            <span style={{ marginLeft: '8px', color: 'var(--ink)', fontWeight: 600 }}>
-                              • Ref: {settlement.paymentReference}
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={{ color: settlement.status === 'awaiting_tenant_approval' ? 'var(--brass, #C59A45)' : 'var(--ink-soft)' }}>
-                          {settlement.status === 'awaiting_tenant_approval'
-                            ? '⚠️ Please review and accept to specify your refund destination handle (UPI / PayPal / Bank Wire / Cash).'
-                            : myPayout
-                              ? `Default Profile: ${myPayout.channel.toUpperCase()} (${myPayout.upiId || myPayout.paypalEmail || myPayout.accountNumber || 'Configured'})`
-                              : 'No payout profile configured.'}
-                        </div>
-                      )}
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        className="btn secondary small btn-mobile-full"
-                        onClick={() => downloadDepositSettlementPdf(settlement)}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                      >
-                        <Download size={13} /> Download PDF Voucher
-                      </button>
-
-                      {settlement.status === 'awaiting_tenant_approval' && (
-                        <button
-                          type="button"
-                          className="btn brass small btn-mobile-full"
-                          onClick={() => setSettlementToReview(settlement)}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
-                        >
-                          Review &amp; Claim Refund →
-                        </button>
-                      )}
-
-                      {(settlement.status === 'rejected' || settlement.status === 'contested') && (
-                        <button
-                          type="button"
-                          className="btn secondary small btn-mobile-full"
-                          onClick={() => setSettlementToReview(settlement)}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--danger)' }}
-                        >
-                          ❌ View Rejected Settlement
-                        </button>
-                      )}
-
-                      {(settlement.status === 'awaiting_tenant_cash_confirmation' || settlement.status === 'approved') && (() => {
-                        const cleanUnit = (u?: string) => (u || '').replace(/^(unit|apt|#)\s*/i, '').trim().toLowerCase();
-                        const matchingClaim = (state.cashClaims || []).find((c) => {
-                          const isPending = c.status === 'pending_confirmation' || (c as any).status === 'pending';
-                          if (!isPending) return false;
-                          if (c.settlementId && (c.settlementId === settlement.id || settlement.id.includes(c.settlementId) || c.settlementId.includes(settlement.id))) return true;
-                          if ((settlement as any).cashClaimId && c.id === (settlement as any).cashClaimId) return true;
-                          if (c.moveOutId && settlement.id.includes(c.moveOutId)) return true;
-                          if (c.unit && settlement.unit && cleanUnit(c.unit) === cleanUnit(settlement.unit) && (c.type === 'deposit_refund' || c.claimedByRole === 'owner')) return true;
-                          return false;
-                        });
-
-                        if (settlement.status === 'awaiting_tenant_cash_confirmation' || matchingClaim) {
-                          return (
-                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                              <button
-                                type="button"
-                                className="btn small btn-mobile-full"
-                                style={{ background: '#16A34A', color: '#fff', border: 'none', padding: '6px 14px', fontSize: '12.5px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}
-                                onClick={async () => {
-                                  if (matchingClaim) {
-                                    await confirmCashClaim(matchingClaim.id);
-                                  } else {
-                                    await confirmRefundReceipt(settlement.id);
-                                  }
-                                  showToast('✓ Cash refund confirmed! Security deposit settled.');
-                                }}
-                              >
-                                <CheckCircle2 size={14} /> Confirm Cash Received ({getCurrencySymbol(matchingClaim?.currency || settlement.currency)}{(Number(matchingClaim?.amount) || settlement.netRefundableAmount).toLocaleString('en-IN')})
-                              </button>
-                              <button
-                                type="button"
-                                className="btn secondary small btn-mobile-full"
-                                onClick={() => setSettlementToReview(settlement)}
-                                style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                              >
-                                Review Details
-                              </button>
-                            </div>
-                          );
-                        }
-                        return (
-                          <button
-                            type="button"
-                            className="btn secondary small btn-mobile-full"
-                            onClick={() => setSettlementToReview(settlement)}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                          >
-                            <span className="badge brass" style={{ fontSize: '12px' }}>
-                              ✓ Accepted — Awaiting Owner Disbursement
-                            </span>
-                          </button>
-                        );
-                      })()}
-
-                      {settlement.status === 'refunded' && (
-                        <button
-                          type="button"
-                          className="btn secondary small btn-mobile-full"
-                          onClick={() => setSettlementToReview(settlement)}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                        >
-                          {settlement.tenantConfirmedReceipt ? (
-                            <span className="badge green" style={{ fontSize: '12px' }}>
-                              ✓ Disbursed &amp; Settled
-                            </span>
-                          ) : (
-                            <span className="badge amber" style={{ fontSize: '12px', background: '#FEF3C7', color: '#B45309', border: '1px solid #F59E0B', display: 'inline-flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}>
-                              ⚡ Disbursed — Confirm Receipt
-                            </span>
-                          )}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Building Announcements & Community Bulletins */}
-      {(() => {
-        const visibleAnnouncements = myAnnouncements.filter((a) => {
-          if (dismissedNoticeIds.has(a.id)) return false;
-          const isAckedByArr = (a.acknowledgedBy || []).some((id) => user?.id && id === user.id);
-          const isAckedByObj = (a.acknowledgments || []).some(
-            (ack) => (user?.id && ack.tenantId === user.id) || ((ack as any).tenantEmail && tenantEmail && (ack as any).tenantEmail.toLowerCase() === tenantEmail)
-          );
-          const hasAcked = isAckedByArr || isAckedByObj;
-          if (hasAcked && !justAckedIds.has(a.id)) return false;
-          return true;
-        });
-
-        if (visibleAnnouncements.length === 0) return null;
+        if (pendingPayment) {
+          bannerLabel = 'Waiting on your landlord';
+          const pAmount = Number(pendingPayment.amount) || Number(activeRent) || 0;
+          bannerAmount = formatBannerAmount(pAmount, pendingPayment.currency);
+          bannerDesc = 'Your proof of payment was sent. You will get a receipt when it is confirmed.';
+          bannerBg = '#ECFDF5';
+          bannerBorder = '#D1FAE5';
+        } else if (overduePayment) {
+          bannerLabel = 'Payment overdue';
+          const oAmount = Number(overduePayment.amount) || Number(activeRent) || 0;
+          bannerAmount = formatBannerAmount(oAmount, overduePayment.currency);
+          bannerDesc = `Overdue since ${overduePayment.dueDate || 'this cycle'}.`;
+          bannerBg = '#FEF2F2';
+          bannerBorder = '#FECACA';
+        } else if (isDepositPending) {
+          bannerLabel = 'Security deposit due';
+          bannerAmount = `${displayCurrencySymbol}${displayDepositAmount.toLocaleString()}`;
+          bannerDesc = 'Pay your security deposit to activate your lease.';
+          bannerBg = '#FFFBEB';
+          bannerBorder = '#FDE68A';
+        } else if (currentAgreement?.status === 'terminated' || !currentAgreement || currentAgreement?.status !== 'active') {
+          bannerLabel = 'Tenancy Status';
+          bannerAmount = 'No Active Rent Due';
+          bannerDesc = currentAgreement?.status === 'terminated' ? 'Your lease for this unit has concluded.' : 'No active lease or upcoming payment.';
+          bannerBg = '#F8FAFC';
+          bannerBorder = '#E2E8F0';
+        }
 
         return (
           <div style={{ marginBottom: '24px' }}>
-            <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--ink-base)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Megaphone size={18} color="var(--brass, #c59b27)" />
-              Building Announcements & Community Bulletins ({visibleAnnouncements.length})
+            <div
+              style={{
+                background: bannerBg,
+                border: `1px solid ${bannerBorder}`,
+                borderRadius: '12px',
+                padding: '22px 24px',
+                marginBottom: '14px',
+              }}
+            >
+              <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--ink-soft)', marginBottom: '4px' }}>
+                {bannerLabel}
+              </div>
+              <div style={{ fontSize: '28px', fontWeight: 800, color: 'var(--ink)', letterSpacing: '-0.5px', marginBottom: '4px' }}>
+                {bannerAmount}
+              </div>
+              <div style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
+                {bannerDesc}
+              </div>
             </div>
 
-            <div className="bulletins-scroll-container">
-              {visibleAnnouncements.map((a) => {
-                const isUrgent = a.priority === 'urgent' || a.priority === 'emergency';
-                const isAckedByArr = (a.acknowledgedBy || []).some((id) => user?.id && id === user.id);
-                const isAckedByObj = (a.acknowledgments || []).some(
-                  (ack) => (user?.id && ack.tenantId === user.id) || ((ack as any).tenantEmail && tenantEmail && (ack as any).tenantEmail.toLowerCase() === tenantEmail)
-                );
-                const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(a.id);
-
-                return (
-                  <div
-                    key={a.id}
-                    className="panel"
-                    style={{
-                      padding: '8px 12px',
-                      borderRadius: '6px',
-                      borderLeft: isUrgent ? '3px solid #dc2626' : a.isPinned ? '3px solid var(--brass, #c59b27)' : '3px solid var(--border)',
-                      background: isUrgent ? '#fef2f2' : 'var(--surface)',
-                      transition: 'all 0.3s ease',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '2px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
-                        {a.category === 'maintenance' && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#eff6ff', color: '#1d4ed8', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 600, lineHeight: '16px' }}>
-                            <Wrench size={10} /> Maintenance
-                          </span>
-                        )}
-                        {a.category === 'policy' && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#fef3c7', color: '#b45309', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 600, lineHeight: '16px' }}>
-                            <ShieldCheck size={10} /> Policy
-                          </span>
-                        )}
-                        {a.category === 'security' && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#fee2e2', color: '#b91c1c', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 600, lineHeight: '16px' }}>
-                            <AlertCircle size={10} /> Security
-                          </span>
-                        )}
-                        {isUrgent && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', background: '#dc2626', color: '#fff', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 700, lineHeight: '16px' }}>
-                            <Flame size={9} /> Urgent
-                          </span>
-                        )}
-                        {a.isPinned && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', background: '#fef3c7', color: '#92400e', padding: '0px 5px', borderRadius: '3px', fontSize: '9.5px', fontWeight: 700, lineHeight: '16px' }}>
-                            <Pin size={8} /> Pinned
-                          </span>
-                        )}
-                        <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: 'var(--ink-base)', display: 'inline' }}>
-                          {a.title}
-                        </h4>
-                      </div>
-
-                      <span style={{ fontSize: '10.5px', color: 'var(--ink-soft)', flexShrink: 0 }}>
-                        {new Date(a.publishedAt || a.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
-                      </span>
-                    </div>
-
-                    <div style={{ fontSize: '12px', lineHeight: '1.35', color: 'var(--ink)', margin: '2px 0 4px', whiteSpace: 'pre-wrap' }}>
-                      {a.body}
-                    </div>
-
-                    {a.requireAcknowledgment && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
-                        <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>
-                          Notice from <strong style={{ color: 'var(--ink-base)' }}>{a.authorName}</strong> • Compliance acknowledgment required
-                        </div>
-
-                        {hasAcked ? (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', color: '#16a34a', fontWeight: 600, fontSize: '10.5px', background: '#f0fdf4', padding: '1px 7px', borderRadius: '4px', border: '1px solid #bbf7d0' }}>
-                            <CheckCircle2 size={11} /> Acknowledged
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            className={`btn brass small ${ackingNoticeId === a.id ? 'btn-processing' : ''}`}
-                            onClick={() => handleTenantAcknowledge(a.id)}
-                            disabled={ackingNoticeId === a.id}
-                            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, padding: '2px 9px', borderRadius: '9999px', fontSize: '10.5px', height: '23px' }}
-                          >
-                            <ButtonProcessing
-                              loading={ackingNoticeId === a.id}
-                              loadingText="Recording..."
-                              defaultText="Read & Acknowledge"
-                              spinnerSize="xs"
-                            />
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            {/* Quick Action Pills */}
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => navigate('/tenant/support')}
+                style={{ borderRadius: '8px', padding: '8px 14px', fontSize: '13px', fontWeight: 600, background: 'var(--surface)' }}
+              >
+                Report a problem
+              </button>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => navigate('/tenant/lease')}
+                style={{ borderRadius: '8px', padding: '8px 14px', fontSize: '13px', fontWeight: 600, background: 'var(--surface)' }}
+              >
+                My lease
+              </button>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => navigate('/tenant/payments')}
+                style={{ borderRadius: '8px', padding: '8px 14px', fontSize: '13px', fontWeight: 600, background: 'var(--surface)' }}
+              >
+                All payments
+              </button>
             </div>
           </div>
         );
       })()}
 
-      {/* SECTION 1: Pending Tenancy Invitations & Requests Banner */}
-      {myPendingRequests.length > 0 && (
-        <div style={{ marginBottom: '24px' }}>
-          <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--ledger)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Mail size={18} color="var(--brass)" />
-            Pending Tenancy Invitations ({myPendingRequests.length})
-          </div>
+      {/* Unified "Needs you" Section (Invitations, Unacknowledged Announcements, Cash Claims, Settlements, Automated Reminders) */}
+      {(() => {
+        const unackedAnnouncements = myAnnouncements.filter((a) => {
+          if (!a.requireAcknowledgment) return false;
+          if (dismissedNoticeIds.has(a.id)) return false;
+          const isAckedByArr = (a.acknowledgedBy || []).some((id) => user?.id && id === user.id);
+          const isAckedByObj = (a.acknowledgments || []).some(
+            (ack) => (user?.id && ack.tenantId === user.id) || ((ack as any).tenantEmail && tenantEmail && (ack as any).tenantEmail.toLowerCase() === tenantEmail)
+          );
+          return !isAckedByArr && !isAckedByObj && !justAckedIds.has(a.id);
+        });
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {myPendingRequests.map((req) => (
-              <div
-                key={req.id}
-                style={{
-                  background: 'var(--surface)',
-                  border: '2px solid var(--brass)',
-                  borderRadius: '10px',
-                  padding: '20px',
-                  boxShadow: 'var(--shadow-sm)',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: '16px',
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                    <span className="badge amber" style={{ fontSize: '11px' }}>
-                      <Clock size={11} /> Invitation Awaiting Response
-                    </span>
-                    <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                      Received {new Date(req.createdAt).toLocaleDateString()}
-                    </span>
-                  </div>
+        // Filter out invitation reminders (already rendered via myPendingRequests with rich Accept/Decline actions)
+        // and any reminders dismissed or snoozed by the resident
+        const activeRemindersForNeedsYou = (tenantReminders || []).filter((r) => {
+          if (r.id.startsWith('tenant_invitation_')) return false;
+          if (dismissedReminderIds.includes(r.id) || snoozedReminderIds.includes(r.id)) return false;
+          return true;
+        });
 
-                  <h3 style={{ fontSize: '17px', fontWeight: 600, color: 'var(--ink)', marginBottom: '6px' }}>
-                    {req.propertyName} • Unit {req.unitNumber}
-                  </h3>
+        const allNeedsYouCards: React.ReactNode[] = [];
 
-                  <div style={{ fontSize: '13px', color: 'var(--ink-soft)', marginBottom: '8px' }}>
-                    Offered by Landlord <b>{req.ownerName}</b> ({req.ownerEmail})
-                  </div>
+        // 1. Unacknowledged Announcements
+        unackedAnnouncements.forEach((a) => {
+          allNeedsYouCards.push(
+            <div
+              key={`ack-${a.id}`}
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--line)',
+                borderRadius: '10px',
+                padding: '16px 20px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#D97706', display: 'inline-block' }} />
+                <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>{a.title}</span>
+              </div>
+              <div style={{ fontSize: '13px', color: 'var(--ink-soft)', marginBottom: '12px', paddingLeft: '16px' }}>
+                {a.body} {a.authorName ? `· ${a.authorName}` : ''}
+              </div>
+              <div style={{ paddingLeft: '16px' }}>
+                <button
+                  type="button"
+                  className="btn brass small"
+                  onClick={() => handleTenantAcknowledge(a.id)}
+                  disabled={ackingNoticeId === a.id}
+                  style={{ borderRadius: '8px', padding: '6px 14px', fontSize: '12.5px', fontWeight: 600 }}
+                >
+                  {ackingNoticeId === a.id ? 'Saving...' : 'Acknowledge'}
+                </button>
+              </div>
+            </div>
+          );
+        });
 
-                  <div style={{ display: 'flex', gap: '16px', fontSize: '13px', flexWrap: 'wrap' }}>
-                    <div>
-                      <span style={{ color: 'var(--ink-soft)' }}>Monthly Rent:</span>{' '}
-                      <b style={{ color: 'var(--ledger)' }}>
-                        {getCurrencySymbol(req.currency)}
-                        {(req.rent ?? 0).toLocaleString()}
-                      </b>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--ink-soft)' }}>Security Deposit:</span>{' '}
-                      <b>
-                        {getCurrencySymbol(req.currency)}
-                        {(req.deposit ?? 0).toLocaleString()}
-                      </b>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--ink-soft)' }}>Lease Period:</span>{' '}
-                      <span>
-                        {req.leaseStart} to {req.leaseEnd}
-                      </span>
-                    </div>
-                  </div>
-
-                  {req.message && (
-                    <div
-                      style={{
-                        marginTop: '10px',
-                        fontSize: '12.5px',
-                        background: '#FAFAF7',
-                        padding: '8px 12px',
-                        borderRadius: '6px',
-                        border: '1px solid var(--line)',
-                        maxWidth: '100%',
-                      }}
-                    >
-                      <b style={{ color: 'var(--ink)' }}>Note from Landlord:</b> "{req.message}"
-                    </div>
-                  )}
+        // 2. Pending Tenancy Invitations
+        myPendingRequests.forEach((req) => {
+          allNeedsYouCards.push(
+            <div
+              key={`req-${req.id}`}
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--line)',
+                borderRadius: '10px',
+                padding: '18px 20px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '14px',
+              }}
+            >
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
+                  <span style={{ fontWeight: 700, fontSize: '14.5px', color: 'var(--ink)' }}>
+                    Lease offer: {req.propertyName} · Unit {req.unitNumber}
+                  </span>
                 </div>
-
-                <div style={{ display: 'flex', gap: '8px', alignSelf: 'center', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn secondary btn-mobile-full"
-                    onClick={() => openReviewModal(req)}
-                    style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '5px' }}
-                  >
-                    <Eye size={15} color="var(--brass)" /> Review Property & Agreement
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn secondary btn-mobile-full"
-                    disabled={respondingReqId === req.id}
-                    onClick={() => handleDeclineRequest(req)}
-                    style={{ color: 'var(--danger)', fontSize: '13px' }}
-                  >
-                    <XCircle size={15} /> Decline
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`btn brass btn-mobile-full ${respondingReqId === req.id ? 'btn-processing' : ''}`}
-                    onClick={() => handleAcceptRequest(req)}
-                    disabled={respondingReqId === req.id}
-                    style={{ fontWeight: 600, fontSize: '13px', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <ButtonProcessing
-                      loading={respondingReqId === req.id}
-                      loadingText="Accepting..."
-                      defaultText="Accept & Proceed to Sign"
-                      icon={<CheckCircle size={16} />}
-                      spinnerSize="xs"
-                    />
-                  </button>
+                <div style={{ fontSize: '13px', color: 'var(--ink-soft)', paddingLeft: '16px' }}>
+                  {getCurrencySymbol(req.currency)}{(req.rent ?? 0).toLocaleString()}/mo · Deposit {getCurrencySymbol(req.currency)}{(req.deposit ?? 0).toLocaleString()} · From {req.ownerName}
                 </div>
               </div>
-            ))}
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', paddingLeft: '16px' }}>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => openReviewModal(req)}
+                  style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}
+                >
+                  Review details
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  disabled={respondingReqId === req.id}
+                  onClick={() => handleDeclineRequest(req)}
+                  style={{ borderRadius: '8px', fontSize: '12.5px', color: 'var(--danger)' }}
+                >
+                  Decline
+                </button>
+                <button
+                  type="button"
+                  className="btn brass small"
+                  onClick={() => handleAcceptRequest(req)}
+                  disabled={respondingReqId === req.id}
+                  style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}
+                >
+                  {respondingReqId === req.id ? 'Accepting...' : 'Accept'}
+                </button>
+              </div>
+            </div>
+          );
+        });
+
+        // 3. Cash Handover Claims
+        pendingRefundClaimsForMe.forEach((c) => {
+          allNeedsYouCards.push(
+            <div
+              key={`claim-${c.id}`}
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--line)',
+                borderRadius: '10px',
+                padding: '16px 20px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '12px',
+              }}
+            >
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#D97706', display: 'inline-block' }} />
+                  <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>
+                    Cash refund reported: {getCurrencySymbol(c.currency)}{(Number(c.amount) || 0).toLocaleString('en-IN')}
+                    {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(c.currency || 'INR') && (
+                      <span style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
+                        (~{getCurrencySymbol(viewCurrency)}{Math.round(convert(Number(c.amount) || 0, c.currency || 'INR', viewCurrency)).toLocaleString()})
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div style={{ fontSize: '13px', color: 'var(--ink-soft)', paddingLeft: '16px' }}>
+                  Unit {c.unit} · {c.handoverDate} · Reported by {c.claimedByName}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', paddingLeft: '16px' }}>
+                <button
+                  type="button"
+                  className="btn brass small"
+                  onClick={() => confirmCashClaim(c.id)}
+                  style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}
+                >
+                  Confirm received
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  style={{ borderRadius: '8px', fontSize: '12.5px', color: 'var(--danger)' }}
+                  onClick={async () => {
+                    const reason = window.prompt('Reason for declining:');
+                    if (reason && reason.trim()) {
+                      await rejectCashClaim(c.id, reason.trim());
+                    }
+                  }}
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          );
+        });
+
+        // 4. Deposit Settlements
+        mySettlements.forEach((settlement) => {
+          const grossDeposit = Number(settlement.grossDepositHeld ?? (settlement as any).deposit ?? 0);
+          const netRefund = Number(settlement.netRefundableAmount ?? (settlement as any).netRefund ?? grossDeposit);
+          const currency = settlement.currency || DEFAULT_CURRENCY;
+          allNeedsYouCards.push(
+            <div
+              key={`settlement-${settlement.id}`}
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--line)',
+                borderRadius: '10px',
+                padding: '16px 20px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '12px',
+              }}
+            >
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#D97706', display: 'inline-block' }} />
+                  <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>
+                    Move-out deposit settlement · {getCurrencySymbol(currency)}{netRefund.toLocaleString('en-IN')}
+                    {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(currency) && (
+                      <span style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
+                        (~{getCurrencySymbol(viewCurrency)}{Math.round(convert(netRefund, currency, viewCurrency)).toLocaleString()})
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div style={{ fontSize: '13px', color: 'var(--ink-soft)', paddingLeft: '16px' }}>
+                  Unit {settlement.unit} · {settlement.propertyName}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', paddingLeft: '16px' }}>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => downloadDepositSettlementPdf(settlement)}
+                  style={{ borderRadius: '8px', fontSize: '12.5px' }}
+                >
+                  PDF
+                </button>
+                <button
+                  type="button"
+                  className="btn brass small"
+                  onClick={() => setSettlementToReview(settlement)}
+                  style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}
+                >
+                  Review settlement
+                </button>
+              </div>
+            </div>
+          );
+        });
+
+        // 5. Automated Lifecycle & Action Reminders (Lease Signature, Renewal, Inspection, Ticket Rating, Overdue/Due Rent)
+        activeRemindersForNeedsYou.forEach((rem) => {
+          const dotColor =
+            rem.severity === 'urgent'
+              ? '#DC2626'
+              : rem.severity === 'warning'
+              ? '#D97706'
+              : rem.severity === 'positive'
+              ? '#10B981'
+              : '#3B82F6';
+
+          allNeedsYouCards.push(
+            <div
+              key={`rem-${rem.id}`}
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--line)',
+                borderRadius: '10px',
+                padding: '16px 20px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '12px',
+              }}
+            >
+              <div style={{ flex: '1 1 280px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: dotColor, display: 'inline-block', flexShrink: 0 }} />
+                  <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>
+                    {rem.title}
+                  </span>
+                </div>
+                <div style={{ fontSize: '13px', color: 'var(--ink-soft)', paddingLeft: '16px' }}>
+                  {rem.description}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '16px' }}>
+                <button
+                  type="button"
+                  className="btn brass small"
+                  onClick={() => navigate(rem.actionLink)}
+                  style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}
+                >
+                  {rem.actionLabel}
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => handleSnoozeReminder(rem.id)}
+                  title="Snooze for 24 hours"
+                  style={{ borderRadius: '8px', padding: '6px 8px', color: 'var(--ink-soft)', display: 'inline-flex', alignItems: 'center' }}
+                >
+                  <Clock size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => handleDismissReminder(rem.id)}
+                  title="Dismiss reminder"
+                  style={{ borderRadius: '8px', padding: '6px 8px', color: 'var(--ink-soft)', display: 'inline-flex', alignItems: 'center' }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            </div>
+          );
+        });
+
+        if (allNeedsYouCards.length === 0) return null;
+
+        const topTwoCards = allNeedsYouCards.slice(0, 2);
+        const extraCards = allNeedsYouCards.slice(2);
+
+        return (
+          <div style={{ marginBottom: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--ink)' }}>Needs you</span>
+                {allNeedsYouCards.length > 1 && (
+                  <span
+                    style={{
+                      fontSize: '11.5px',
+                      fontWeight: 700,
+                      padding: '1px 8px',
+                      borderRadius: '999px',
+                      background: 'var(--surface-sunken)',
+                      color: 'var(--ink-soft)',
+                      border: '1px solid var(--line)',
+                    }}
+                  >
+                    {allNeedsYouCards.length}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {topTwoCards}
+            </div>
+
+            {extraCards.length > 0 && (
+              <>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateRows: showAllNeedsYou ? '1fr' : '0fr',
+                    opacity: showAllNeedsYou ? 1 : 0,
+                    marginTop: showAllNeedsYou ? '10px' : '0px',
+                    transition: 'grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.22s ease, margin-top 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+                  }}
+                >
+                  <div style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {extraCards}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '10px' }}>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    onClick={() => setShowAllNeedsYou((prev) => !prev)}
+                    style={{
+                      borderRadius: '8px',
+                      padding: '6px 14px',
+                      fontSize: '12.5px',
+                      fontWeight: 600,
+                      color: 'var(--ink-soft)',
+                      background: 'var(--surface)',
+                    }}
+                  >
+                    {showAllNeedsYou ? 'Show less ▴' : `Show ${extraCards.length} more ▾`}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* MODAL: Review Property & Uploaded Agreement Document Before Accepting */}
       {reviewingRequest && (() => {
@@ -2063,7 +2154,7 @@ export const TenantDashboardPage: React.FC = () => {
                   <div style={{ padding: '12px', background: '#FAF9F5', border: '1px solid var(--line)', borderRadius: '8px' }}>
                     <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Agreed Monthly Rent</div>
                     <div style={{ fontWeight: 800, fontSize: '18px', color: 'var(--ledger)', marginTop: '2px' }}>
-                      {getCurrencySymbol(reviewingRequest.currency)}{(Number(reviewingRequest.rent) || 0).toLocaleString()}
+                      <CurrencyAmount amount={reviewingRequest.rent} currency={reviewingRequest.currency} />
                       <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--ink-soft)' }}> / mo</span>
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px' }}>Due 1st of each month</div>
@@ -2072,7 +2163,7 @@ export const TenantDashboardPage: React.FC = () => {
                   <div style={{ padding: '12px', background: '#FAF9F5', border: '1px solid var(--line)', borderRadius: '8px' }}>
                     <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Security Deposit</div>
                     <div style={{ fontWeight: 800, fontSize: '18px', color: 'var(--ink)', marginTop: '2px' }}>
-                      {getCurrencySymbol(reviewingRequest.currency)}{(reviewingRequest.deposit ?? 0).toLocaleString()}
+                      <CurrencyAmount amount={reviewingRequest.deposit} currency={reviewingRequest.currency} />
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px' }}>100% Refundable Security Deposit</div>
                   </div>
@@ -2627,21 +2718,16 @@ export const TenantDashboardPage: React.FC = () => {
               <div className="stat">
                 <div className="num" style={{ color: 'var(--ink)' }}>{pastCurrency}0</div>
                 <div className="lbl">Monthly Rent</div>
-                <div className="delta" style={{ color: '#2E7D32', fontWeight: 600 }}>✓ No Active Rent Due</div>
               </div>
 
               <div className="stat">
                 <div className="num" style={{ color: 'var(--ink)' }}>{pastCurrency}0</div>
                 <div className="lbl">Security Deposit Held</div>
-                <div className="delta" style={{ color: '#2E7D32', fontWeight: 600 }}>
-                  ✓ {pastCurrency}{Number(completedMoveOut.finalRefundAmount !== undefined ? completedMoveOut.finalRefundAmount : (completedMoveOut.deposit || 0)).toLocaleString('en-IN')} Refunded
-                </div>
               </div>
 
               <div className="stat">
                 <div className="num">0</div>
                 <div className="lbl">Active Maintenance Requests</div>
-                <div className="delta">All resident requests closed</div>
               </div>
             </div>
 
@@ -2749,296 +2835,142 @@ export const TenantDashboardPage: React.FC = () => {
           </div>
         ) : (
           /* Brand New Resident Onboarding View (No past leases, waiting for invitation) */
-          <div
-            style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--line)',
-              borderRadius: '12px',
-              padding: '36px 24px',
-              textAlign: 'center',
-              maxWidth: '840px',
-              margin: '20px auto',
-              boxShadow: 'var(--shadow-sm)',
-            }}
-          >
+          myPendingRequests.length === 0 && (
             <div
               style={{
-                width: '56px',
-                height: '56px',
-                borderRadius: '50%',
-                background: 'var(--teal-light)',
-                color: 'var(--teal-primary)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                margin: '0 auto 16px',
-              }}
-            >
-              <Home size={28} />
-            </div>
-
-            <h2 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '8px', color: 'var(--ink)' }}>
-              Welcome to Propithub, {tenantName}!
-            </h2>
-
-            {myPendingRequests.length > 0 ? (
-              <p style={{ fontSize: '14px', color: 'var(--ink)', lineHeight: '1.6', marginBottom: '20px', fontWeight: 500 }}>
-                ⚡ You have <b style={{ color: 'var(--brass)' }}>{myPendingRequests.length} official tenancy invitation{myPendingRequests.length > 1 ? 's' : ''}</b> awaiting your review above! Please inspect the property details and accept the invitation to begin your lease.
-              </p>
-            ) : (
-              <p style={{ fontSize: '13.5px', color: 'var(--ink-soft)', lineHeight: '1.6', marginBottom: '20px' }}>
-                Your tenant resident account is active. When a property owner sends you a tenancy invitation, it will appear right here for your review and one-click acceptance.
-              </p>
-            )}
-
-            <div
-              style={{
-                background: 'var(--surface-sunken)',
+                background: 'var(--surface)',
                 border: '1px solid var(--line)',
-                borderRadius: '8px',
-                padding: '16px',
-                textAlign: 'left',
-                display: 'inline-block',
-                maxWidth: '520px',
-                width: '100%',
-                marginBottom: '20px',
+                borderRadius: '12px',
+                padding: '32px 24px',
+                textAlign: 'center',
               }}
             >
-              <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '8px', color: 'var(--teal-primary)' }}>
-                Your Registered Resident Profile
+              <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--ink)', marginBottom: '6px' }}>
+                No active lease yet
               </div>
-              <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div>
-                  <b style={{ color: 'var(--ink)' }}>Full Name:</b> {tenantName}
-                </div>
-                <div>
-                  <b style={{ color: 'var(--ink)' }}>Email:</b> {user?.email}
-                </div>
-                <div>
-                  <b style={{ color: 'var(--ink)' }}>Phone:</b> {user?.phone || 'Not specified'}
-                </div>
-                <div>
-                  <b style={{ color: 'var(--ink)' }}>Resident ID:</b> <code style={{ background: 'var(--surface)', border: '1px solid var(--line)', padding: '2px 6px', borderRadius: '4px', color: 'var(--ink)' }}>{user?.id}</code>
-                </div>
+              <div style={{ fontSize: '13px', color: 'var(--ink-soft)', marginBottom: '16px' }}>
+                Share your email (<b>{user?.email}</b>) with your landlord to receive a lease invitation, or browse available homes.
               </div>
+              <button
+                type="button"
+                className="btn brass small"
+                onClick={() => navigate('/homes')}
+                style={{ borderRadius: '8px', padding: '8px 16px', fontWeight: 600 }}
+              >
+                Browse homes
+              </button>
             </div>
-
-            <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>
-              💡 <b style={{ color: 'var(--ink)' }}>Tip for residents:</b> Share your registered email (<code style={{ background: 'var(--surface-sunken)', border: '1px solid var(--line)', padding: '2px 6px', borderRadius: '4px', color: 'var(--ink)' }}>{user?.email}</code>) with your property owner so they can search and send your tenancy invitation directly.
-            </div>
-          </div>
+          )
         )
       ) : (
         /* Active Resident Tenancy View */
         <div>
-          {/* Multi-Property Switcher if resident rents multiple units */}
-          {myUnits.length > 1 && (
-            <div
-              className="panel"
-              style={{
-                marginBottom: '16px',
-                background: 'var(--ledger-soft)',
-                border: '1px solid var(--ledger)',
-              }}
-            >
-              <div
-                className="panel-body"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '12px 18px',
-                  flexWrap: 'wrap',
-                  gap: '10px',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                  <span style={{ fontWeight: 600, color: 'var(--ledger)' }}>Multi-Property Resident:</span>
-                  <span style={{ fontSize: '13px' }}>
-                    You rent {myUnits.length} units. Select active unit:
-                  </span>
+          {/* 3 Clean Summary Stat Cards */}
+          <div className="grid grid-3" style={{ gap: '16px', marginBottom: '24px' }}>
+            <div className="stat" style={{ borderRadius: '12px', padding: '20px 22px' }}>
+              <div className="num" style={{ fontSize: '26px', fontWeight: 800, color: 'var(--ink)' }}>
+                {displayCurrencySymbol}{displayRentAmount.toLocaleString()}
+              </div>
+              <div className="lbl" style={{ marginTop: '4px', fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
+                Monthly rent
+              </div>
+              {isDifferentCurrency && (
+                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '4px' }}>
+                  Base: {getCurrencySymbol(rawContractCurrency)}{(Number(activeRent) || 0).toLocaleString()} {rawContractCurrency}
                 </div>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  {myUnits.map((u) => {
-                    const pName = u.propertyName || state.properties.find((p) => p.id === u.propertyId)?.name || 'Residence';
-                    return (
-                      <button
-                        key={u.id}
-                        type="button"
-                        className={`btn small ${selectedUnitId === u.id ? 'brass' : 'secondary'}`}
-                        onClick={() => setSelectedUnitId(u.id)}
-                      >
-                        Unit {u.unitNumber} • {pName}
-                      </button>
-                    );
-                  })}
+              )}
+            </div>
+
+            <div className="stat" style={{ borderRadius: '12px', padding: '20px 22px' }}>
+              <div className="num" style={{ fontSize: '26px', fontWeight: 800, color: 'var(--ink)' }}>
+                {displayCurrencySymbol}{displayDepositAmount.toLocaleString()}
+              </div>
+              <div className="lbl" style={{ marginTop: '4px', fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
+                Security deposit
+              </div>
+              {isDifferentCurrency && (
+                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '4px' }}>
+                  Base: {getCurrencySymbol(rawContractCurrency)}{(Number(activeDeposit) || 0).toLocaleString()} {rawContractCurrency}
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Key Metrics Grid */}
-          <div className="grid grid-3">
-            <div className="stat">
-              <div className="num" style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
-                <span>{activeCurrency}{(Number(activeRent) || 0).toLocaleString()}</span>
-                {convertedRent !== null && (
-                  <span style={{ fontSize: '12.5px', color: 'var(--ink-soft)', fontWeight: 500 }}>
-                    (~{format(convertedRent, viewCurrency)})
-                  </span>
-                )}
-              </div>
-              <div className="lbl">Monthly Rent</div>
-              <div className="delta">Due on 1st of each month</div>
+              )}
             </div>
 
-            <div className="stat">
-              <div className="num" style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
-                <span>{activeCurrency}{(Number(activeDeposit) || 0).toLocaleString()}</span>
-                {convertedDeposit !== null && (
-                  <span style={{ fontSize: '12.5px', color: 'var(--ink-soft)', fontWeight: 500 }}>
-                    (~{format(convertedDeposit, viewCurrency)})
-                  </span>
-                )}
-              </div>
-              <div className="lbl">
-                {(() => {
-                  const depInv = currentAgreement?.depositInvoiceId
-                    ? state.invoices.find((i) => i.id === currentAgreement.depositInvoiceId)
-                    : state.invoices.find((i) => i.leaseAgreementId === currentAgreement?.id && i.invoiceType === 'deposit');
-                  const isPaid = currentAgreement?.depositStatus === 'paid' || depInv?.status === 'paid';
-                  return isPaid ? 'Security Deposit Held' : 'Security Deposit';
-                })()}
-              </div>
-              <div className="delta">
-                {(() => {
-                  const depInv = currentAgreement?.depositInvoiceId
-                    ? state.invoices.find((i) => i.id === currentAgreement.depositInvoiceId)
-                    : state.invoices.find((i) => i.leaseAgreementId === currentAgreement?.id && i.invoiceType === 'deposit');
-                  const isPaid = currentAgreement?.depositStatus === 'paid' || depInv?.status === 'paid';
-                  if (isPaid) return 'Protected under custody';
-                  if (depInv?.status === 'sent') return 'Invoice issued — awaiting payment';
-                  return 'Due after owner approves signed lease';
-                })()}
-              </div>
-            </div>
-
-            <div className="stat">
-              <div className="num">
+            <div className="stat" style={{ borderRadius: '12px', padding: '20px 22px' }}>
+              <div className="num" style={{ fontSize: '26px', fontWeight: 800, color: 'var(--ink)' }}>
                 {myTickets.filter((t) => t.status !== 'resolved').length}
               </div>
-              <div className="lbl">Active Maintenance Requests</div>
-              <div className="delta">Tracked in resident portal</div>
+              <div className="lbl" style={{ marginTop: '4px', fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
+                Open repairs
+              </div>
             </div>
           </div>
 
-          {/* Active Tenancy Details */}
-          <div className="section-title">Active Tenancy Details</div>
-          <div className="panel">
-            {((currentUnit?.images && currentUnit.images[0]) || currentUnit?.image || (currentProperty?.images && currentProperty.images[0])) && (
+          {/* Notices from your landlord */}
+          {(() => {
+            const visibleNotices = myAnnouncements.filter((a) => {
+              if (dismissedNoticeIds.has(a.id)) return false;
+              const isAckedByArr = (a.acknowledgedBy || []).some((id) => user?.id && id === user.id);
+              const isAckedByObj = (a.acknowledgments || []).some(
+                (ack) => (user?.id && ack.tenantId === user.id) || ((ack as any).tenantEmail && tenantEmail && (ack as any).tenantEmail.toLowerCase() === tenantEmail)
+              );
+              const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(a.id);
+              // If it requires acknowledgment and is NOT yet acknowledged, it's already shown in "Needs you" above
+              if (a.requireAcknowledgment && !hasAcked) return false;
+              return true;
+            });
+
+            if (visibleNotices.length === 0) return null;
+
+            return (
               <div
                 style={{
-                  height: '140px',
-                  backgroundImage: `url(${(currentUnit?.images && currentUnit.images[0]) || currentUnit?.image || currentProperty?.images[0]})`,
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center',
-                  borderTopLeftRadius: 'var(--radius)',
-                  borderTopRightRadius: 'var(--radius)',
-                  position: 'relative',
-                  padding: '12px',
-                  display: 'flex',
-                  alignItems: 'flex-end',
+                  background: 'var(--surface)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '12px',
+                  padding: '22px 24px',
+                  marginBottom: '24px',
                 }}
               >
-                <div
-                  style={{
-                    background: 'rgba(0,0,0,0.65)',
-                    color: '#fff',
-                    padding: '4px 10px',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                    fontWeight: 600,
-                  }}
-                >
-                  Unit {currentUnit?.unitNumber} Residence
+                <h3 style={{ margin: '0 0 16px', fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>
+                  Notices from your landlord
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {visibleNotices.map((a, idx) => (
+                    <div
+                      key={a.id}
+                      style={{
+                        paddingBottom: idx < visibleNotices.length - 1 ? '16px' : 0,
+                        borderBottom: idx < visibleNotices.length - 1 ? '1px solid var(--line)' : 'none',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>{a.title}</span>
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            padding: '2px 8px',
+                            borderRadius: '999px',
+                            background: 'var(--surface-sunken)',
+                            color: 'var(--ink-soft)',
+                            textTransform: 'capitalize',
+                          }}
+                        >
+                          {a.priority || 'Standard'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '13.5px', color: 'var(--ink)', lineHeight: 1.5, marginBottom: '4px' }}>
+                        {a.body}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                        {a.authorName || 'Landlord'} · {new Date(a.publishedAt || a.createdAt).toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            )}
-            <div className="panel-body">
-              <div className="kv">
-                <span className="k">Property:</span>
-                <b>{currentProperty?.name || currentUnit?.propertyName || '—'}</b>
-              </div>
-              <div className="kv">
-                <span className="k">Address:</span>
-                <AddressDisplay
-                  address={currentProperty?.address}
-                  fallback="—"
-                  style={{ textAlign: 'right', wordBreak: 'break-word', overflowWrap: 'anywhere', minWidth: 0, justifyContent: 'flex-end' }}
-                />
-              </div>
-              <div className="kv">
-                <span className="k">Assigned Unit:</span>
-                <b>
-                  Unit {currentUnit?.unitNumber} {currentUnit?.unitType ? `(${currentUnit.unitType})` : ''}
-                </b>
-              </div>
-              {currentUnit?.furnishing && (
-                <div className="kv">
-                  <span className="k">Furnishing Status:</span>
-                  <span>{currentUnit.furnishing}</span>
-                </div>
-              )}
-              {(currentAgreement?.start || currentAgreement?.end) && (
-                <div className="kv">
-                  <span className="k">Lease Period:</span>
-                  <span>
-                    {currentAgreement.start || '—'}
-                    {currentAgreement.end ? ` → ${currentAgreement.end}` : ''}
-                  </span>
-                </div>
-              )}
-              {currentAgreement?.rent && (
-                <div className="kv">
-                  <span className="k">Agreed Rent:</span>
-                  <b>
-                    {activeCurrency}{(Number(currentAgreement.rent) || 0).toLocaleString()} / mo
-                    {convertedRent !== null && (
-                      <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '6px' }}>
-                        (~{format(convertedRent, viewCurrency)} / mo)
-                      </span>
-                    )}
-                  </b>
-                </div>
-              )}
-              {(currentAgreement?.ownerId || currentAgreement?.ownerName) && (() => {
-                const ownerUser = state.users?.find((u) => u.id === currentAgreement?.ownerId);
-                const ownerName = currentAgreement?.ownerName || ownerUser?.displayName || (ownerUser as any)?.name || '—';
-                return (
-                  <div className="kv">
-                    <span className="k">Landlord:</span>
-                    <span>{ownerName}</span>
-                  </div>
-                );
-              })()}
-              {currentProperty?.amenities && currentProperty.amenities.length > 0 && (
-                <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--line)' }}>
-                  <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
-                    Building Amenities:
-                  </span>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                    {currentProperty.amenities.map((am) => (
-                      <span key={am} className="badge grey" style={{ fontSize: '11px' }}>
-                        ✓ {am}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-
+            );
+          })()}
         </div>
       )}
 

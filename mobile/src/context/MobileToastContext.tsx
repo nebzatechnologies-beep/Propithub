@@ -43,7 +43,7 @@ export const MobileToastProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [currentToast, setCurrentToast] = useState<ToastData | null>(null);
   const translateY = useRef(new Animated.Value(-100)).current;
   const opacity = useRef(new Animated.Value(0)).current;
-  const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const hideToast = useCallback(() => {
     if (hideTimerRef.current) {

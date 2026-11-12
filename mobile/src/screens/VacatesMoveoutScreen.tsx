@@ -26,12 +26,14 @@ interface VacatesMoveoutScreenProps {
   onProfilePress?: () => void;
   onInspectPress?: (moveOutId?: string) => void;
   onFileDisputePress?: () => void;
+  onNavigate?: (screenKey: string) => void;
 }
 
 export const VacatesMoveoutScreen: React.FC<VacatesMoveoutScreenProps> = ({
   onProfilePress,
   onInspectPress,
   onFileDisputePress,
+  onNavigate,
 }) => {
   const { state, updateMoveOut, addMoveOut, createDepositSettlement } = useMobileAppData();
   const { format, viewCurrency, currencySymbol } = useMobileCurrency();
@@ -251,8 +253,8 @@ export const VacatesMoveoutScreen: React.FC<VacatesMoveoutScreenProps> = ({
 
       {/* Header */}
       <Header
-        title="Move-Outs"
-        onNotificationPress={() => {}}
+        title="Vacates"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
 
@@ -305,10 +307,7 @@ export const VacatesMoveoutScreen: React.FC<VacatesMoveoutScreenProps> = ({
           {displayedMoveOuts.length === 0 ? (
             <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
               <Feather name="check-circle" size={32} color="#10B981" />
-              <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Vacate Notices in this View</Text>
-              <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                All leases are active and in good standing.
-              </Text>
+              <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Vacate Notices</Text>
             </View>
           ) : (
             displayedMoveOuts.map((item) => {

@@ -542,14 +542,14 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
         aria-label="Rental Invoice Studio"
         style={{ width: '96vw', maxWidth: '1180px', height: '92vh', maxHeight: '920px' }}
       >
-        {/* Modal Top Header & Dedicated Tabs */}
+        {/* Modal Top Header */}
         <div
           className="no-print"
           style={{
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            padding: '14px 24px',
+            padding: '12px 24px',
             borderBottom: '1px solid var(--line)',
             background: 'var(--surface)',
             flexWrap: 'wrap',
@@ -559,7 +559,9 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
           {/* Title & Status */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <span style={{ fontSize: '18px', fontWeight: 700, color: 'var(--ink)' }}>
-              {initialInvoice ? `Invoice ${invoiceId}` : 'Generate Invoice'}
+              {activeTab === 'preview'
+                ? (initialInvoice ? `Invoice ${invoiceId}` : 'Invoice Preview')
+                : (initialInvoice ? `Edit Invoice ${invoiceId}` : 'Generate Invoice')}
             </span>
             <span
               className={`invoice-stamp ${
@@ -570,44 +572,116 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
             </span>
           </div>
 
-          {/* DEDICATED PRIMARY TABS: [Edit Controls] vs [Document Preview] */}
-          <div style={{ display: 'flex', background: 'var(--surface-sunken)', padding: '4px', borderRadius: '6px', gap: '4px' }}>
-            <button
-              type="button"
-              className={`btn small ${activeTab === 'edit' ? 'primary' : 'secondary'}`}
-              style={{ border: 'none', padding: '7px 16px', fontWeight: activeTab === 'edit' ? 600 : 500 }}
-              onClick={() => setActiveTab('edit')}
-            >
-              <Edit3 size={15} style={{ marginRight: '6px' }} /> 1. Edit & Configure Details
-            </button>
-            <button
-              type="button"
-              className={`btn small ${activeTab === 'preview' ? 'primary' : 'secondary'}`}
-              style={{ border: 'none', padding: '7px 16px', fontWeight: activeTab === 'preview' ? 600 : 500 }}
-              onClick={() => setActiveTab('preview')}
-            >
-              <Eye size={15} style={{ marginRight: '6px' }} /> 2. Official Document Preview & Voucher
-            </button>
-          </div>
-
-          {/* Quick Header Actions */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button
-              type="button"
-              className="btn secondary small"
-              onClick={() => window.print()}
-              title="Print official invoice voucher"
-            >
-              <Printer size={15} style={{ marginRight: '4px' }} /> Print / PDF
-            </button>
-            <button
-              type="button"
-              className="btn brass small"
-              onClick={() => handleSaveInvoice()}
-            >
-              <CheckCircle size={15} style={{ marginRight: '4px' }} />
-              {initialInvoice ? 'Save Changes' : 'Save & Dispatch'}
-            </button>
+          {/* Header Actions */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            {activeTab === 'preview' ? (
+              <>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() =>
+                    downloadSingleInvoicePDF({
+                      id: invoiceId || 'INV-PREVIEW',
+                      ownerId,
+                      currency: currency || DEFAULT_CURRENCY_SYMBOL,
+                      tenant: tenantName || 'Resident',
+                      tenantId,
+                      unit: unitNumber || 'Premises',
+                      amount: subtotal,
+                      tax: enableTax ? taxAmount : 0,
+                      total: grandTotal,
+                      due: dueDate,
+                      status,
+                      invoiceType,
+                      issueDate,
+                      propertyName,
+                      tenantTaxNo,
+                      tenantPhone,
+                      tenantEmail,
+                      billingPeriodStart,
+                      billingPeriodEnd,
+                      items,
+                      discount,
+                      lateFeeApplied: Number(lateFeeApplied) || 0,
+                      lateFeeWaived: initialInvoice?.lateFeeWaived,
+                      lateFeeCalculation: initialInvoice?.lateFeeCalculation,
+                      issuerName,
+                      issuerTaxNo,
+                      issuerAddress,
+                      issuerPhone,
+                      issuerEmail,
+                      bankDetails: {
+                        bankName,
+                        accountName,
+                        accountNumber,
+                        ifscOrRouting,
+                        upiId,
+                      },
+                      documentTitle,
+                      custodyMechanism: invoiceType === 'deposit' ? custodyMechanism : undefined,
+                      depositClassification: invoiceType === 'deposit' ? depositClassification : undefined,
+                      refundTimelineDays: invoiceType === 'deposit' ? Number(refundTimelineDays) || 14 : undefined,
+                      termsAndConditions,
+                      notes,
+                      signatoryName,
+                      signatureUrl: signatureUrl || undefined,
+                    })
+                  }
+                  title="Download official PDF invoice"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Download size={14} /> Download PDF
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => window.print()}
+                  title="Print invoice"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Printer size={14} /> Print
+                </button>
+                {initialInvoice && status !== 'paid' && (
+                  <button
+                    type="button"
+                    className={`btn brass small ${isMarkingPaid ? 'btn-processing' : ''}`}
+                    disabled={isMarkingPaid || isSavingInvoice}
+                    onClick={async () => {
+                      setIsMarkingPaid(true);
+                      await new Promise((r) => setTimeout(r, 450));
+                      await markInvoicePaid(initialInvoice.id, 'Cash / Manual Reconcile');
+                      setStatus('paid');
+                      setIsMarkingPaid(false);
+                      showToast(`Invoice ${initialInvoice.id} marked as PAID.`);
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <CheckCircle size={14} /> Mark Settled as Paid
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => setActiveTab('edit')}
+                  title="Edit invoice details"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Edit3 size={14} /> Edit
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => setActiveTab('preview')}
+                  title="View formatted document"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Eye size={14} /> View Document
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="modal-close"
@@ -1252,9 +1326,9 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
         {activeTab === 'preview' && (
           <div
             style={{
-                  flex: 1,
+              flex: 1,
               overflowY: 'auto',
-              padding: '32px 20px 64px',
+              padding: '24px 20px 48px',
               background: '#EEF0EC',
               display: 'flex',
               flexDirection: 'column',
@@ -1262,102 +1336,6 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
               justifyContent: 'flex-start',
             }}
           >
-            {/* Document Controls Bar */}
-            <div
-              className="no-print"
-              style={{
-                width: '100%',
-                maxWidth: '780px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '16px',
-              }}
-            >
-              <button
-                type="button"
-                className="btn secondary small"
-                onClick={() => setActiveTab('edit')}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <ArrowLeft size={14} /> Back to Edit Details
-              </button>
-
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  className="btn secondary small"
-                  onClick={() =>
-                    downloadSingleInvoicePDF({
-                      id: invoiceId || 'INV-PREVIEW',
-                      ownerId,
-                currency: currency || DEFAULT_CURRENCY_SYMBOL,
-                      tenant: tenantName || 'Resident',
-                      tenantId,
-                      unit: unitNumber || 'Premises',
-                      amount: subtotal,
-                      tax: enableTax ? taxAmount : 0,
-                      total: grandTotal,
-                      due: dueDate,
-                      status,
-                      invoiceType,
-                      issueDate,
-                      propertyName,
-                      tenantTaxNo,
-                      tenantPhone,
-                      tenantEmail,
-                      billingPeriodStart,
-                      billingPeriodEnd,
-                      items,
-                      discount,
-                      lateFeeApplied: Number(lateFeeApplied) || 0,
-                      lateFeeWaived: initialInvoice?.lateFeeWaived,
-                      lateFeeCalculation: initialInvoice?.lateFeeCalculation,
-                      issuerName,
-                      issuerTaxNo,
-                      issuerAddress,
-                      issuerPhone,
-                      issuerEmail,
-                      bankDetails: {
-                        bankName,
-                        accountName,
-                        accountNumber,
-                        ifscOrRouting,
-                        upiId,
-                      },
-                      documentTitle,
-                      custodyMechanism: invoiceType === 'deposit' ? custodyMechanism : undefined,
-                      depositClassification: invoiceType === 'deposit' ? depositClassification : undefined,
-                      refundTimelineDays: invoiceType === 'deposit' ? Number(refundTimelineDays) || 14 : undefined,
-                      termsAndConditions,
-                      notes,
-                      signatoryName,
-                      signatureUrl: signatureUrl || undefined,
-                    })
-                  }
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <Download size={14} /> Download PDF
-                </button>
-                <button
-                  type="button"
-                  className="btn secondary small"
-                  onClick={() => window.print()}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <Printer size={14} /> Print / Save PDF
-                </button>
-                <button
-                  type="button"
-                  className="btn brass small"
-                  onClick={() => handleSaveInvoice()}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <CheckCircle size={14} /> Save & Issue
-                </button>
-              </div>
-            </div>
-
             {/* Official Printable A4 Invoice Sheet */}
             <RentalInvoiceDocument
               invoice={{
@@ -1411,44 +1389,20 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
 
         )}
 
-        {/* Modal Bottom Bar */}
-        <div
-          className="no-print"
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '12px 24px',
-            background: 'var(--surface)',
-            borderTop: '1px solid var(--line)',
-          }}
-        >
-          <div>
-            {initialInvoice && status !== 'paid' && (
-              <button
-                type="button"
-                className={`btn secondary small ${isMarkingPaid ? 'btn-processing' : ''}`}
-                disabled={isMarkingPaid || isSavingInvoice}
-                onClick={async () => {
-                  setIsMarkingPaid(true);
-                  await new Promise((r) => setTimeout(r, 450));
-                  await markInvoicePaid(initialInvoice.id, 'Cash / Manual Reconcile');
-                  setStatus('paid');
-                  setIsMarkingPaid(false);
-                  showToast(`Invoice ${initialInvoice.id} marked as PAID.`);
-                }}
-              >
-                <ButtonProcessing
-                  loading={isMarkingPaid}
-                  loadingText="Marking Settled..."
-                  defaultText="Mark Settled as Paid"
-                  icon={<CheckCircle size={14} style={{ marginRight: '4px', color: 'var(--ledger)' }} />}
-                />
-              </button>
-            )}
-          </div>
-
-          <div style={{ display: 'flex', gap: '10px' }}>
+        {/* Modal Bottom Bar: Only shown in Edit mode */}
+        {activeTab === 'edit' && (
+          <div
+            className="no-print"
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              alignItems: 'center',
+              padding: '12px 24px',
+              background: 'var(--surface)',
+              borderTop: '1px solid var(--line)',
+              gap: '10px',
+            }}
+          >
             <button
               type="button"
               className="btn secondary"
@@ -1471,7 +1425,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
               />
             </button>
           </div>
-        </div>
+        )}
 
       </div>
     </div>

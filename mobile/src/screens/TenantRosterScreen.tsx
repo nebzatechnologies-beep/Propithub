@@ -668,7 +668,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
   };
 
   // Dispatch Formal Tenancy Request
-  const handleSendRequest = () => {
+  const handleSendRequest = async () => {
     const cleanCandName = candidateName.trim();
     const cleanCandEmail = candidateEmail.trim().toLowerCase();
     const cleanCandPhone = candidatePhone.trim();
@@ -722,7 +722,41 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
 
     const existingTenant = state.tenants.find((t) => t.email?.toLowerCase().trim() === cleanCandEmail);
     const existingUser = (state.users || []).find((u) => u.email?.toLowerCase().trim() === cleanCandEmail);
-    const targetTenantId = existingTenant?.id || existingUser?.id || `usr_${Date.now()}`;
+    let targetTenantId = existingTenant?.id || existingUser?.id;
+
+    if (!targetTenantId) {
+      try {
+        const provId = await addTenant(
+          {
+            id: `usr_tenant_${Date.now()}`,
+            name: cleanCandName,
+            email: cleanCandEmail,
+            phone: cleanCandPhone,
+            unit: targetUnit ? targetUnit.unitNumber : '',
+            propertyId: targetProp ? targetProp.id : '',
+            propertyName: targetProp ? targetProp.name : 'Residence',
+            ownerId: user?.id || '',
+            leaseStart: reqStart,
+            leaseEnd: reqEnd,
+            rent: Number(reqRent) || 0,
+            deposit: Number(reqDeposit) || 0,
+            currency: targetProp?.currency || viewCurrency || 'USD',
+            kycStatus: 'pending',
+            status: 'invited',
+            rating: 5,
+          },
+          'Tenant@123'
+        );
+        if (provId) {
+          targetTenantId = provId;
+        }
+      } catch (pErr) {
+        console.warn('Candidate provisioning warning:', pErr);
+      }
+    }
+    if (!targetTenantId) {
+      targetTenantId = `usr_${Date.now()}`;
+    }
 
     const newReq: MobileTenancyRequest = {
       id: `req_${Date.now()}`,
@@ -773,12 +807,14 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
     showAlert({
       type: 'success',
       title: 'Tenancy Offer Dispatched',
-      message: `Formal tenancy agreement sent to ${newReq.tenantName} for Unit ${newReq.unitNumber}. Unit reserved pending tenant acceptance.`,
+      message: `Formal tenancy agreement sent to ${newReq.tenantName} for Unit ${newReq.unitNumber}. An active resident account was provisioned with temporary login credentials.`,
       details: [
         { label: 'Candidate', value: newReq.tenantName, icon: 'user' },
         { label: 'Unit', value: `Unit ${newReq.unitNumber}`, icon: 'home' },
-        { label: 'Candidate Email', value: newReq.tenantEmail, icon: 'mail' },
+        { label: 'Account Email', value: newReq.tenantEmail, icon: 'mail' },
+        { label: 'Login Password', value: 'Tenant@123', icon: 'key' },
         { label: 'Monthly Rent', value: `${currencySymbol}${newReq.rent.toLocaleString()}/mo`, icon: 'dollar-sign' },
+        { label: 'Status', value: 'Unit Reserved • Account Ready', icon: 'shield' },
       ],
       primaryButtonText: 'Done',
     });
@@ -815,8 +851,8 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
 
       {/* Header */}
       <Header
-        title="Tenant Directory"
-        onNotificationPress={() => { }}
+        title="Tenants"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
 
@@ -957,10 +993,6 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
                           <Text style={[styles.metricValue, { color: colors.navy }]}>
                             {format(t.deposit, t.currency || viewCurrency)}
                           </Text>
-                        </View>
-                        <View style={styles.metricItem}>
-                          <Text style={[styles.metricLabel, { color: colors.inkSoft }]}>Rating / Due</Text>
-                          <Text style={[styles.metricValue, { color: colors.navy }]}>{t.rating ? `★ ${t.rating}` : 'Unrated'} • 1st of mo</Text>
                         </View>
                       </View>
 

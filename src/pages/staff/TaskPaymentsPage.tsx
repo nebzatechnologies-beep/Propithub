@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { StaffMember } from '../../types';
 import { CreditCard, CheckCircle2 } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
@@ -108,7 +109,7 @@ export const StaffTaskPaymentsPage: React.FC = () => {
         <div className="panel-body">
           {myTickets.length === 0 ? (
             <div style={{ color: 'var(--ink-soft)', padding: '24px 16px', textAlign: 'center' }}>
-              No task payments recorded yet. Completed repair tickets with fee charges will appear here.
+              No task payments recorded yet.
             </div>
           ) : (
             <>
@@ -120,7 +121,7 @@ export const StaffTaskPaymentsPage: React.FC = () => {
                       <tr>
                         <th>Ticket</th>
                         <th>Payer</th>
-                        <th>Amount</th>
+                        <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                         <th>Method</th>
                         <th>Status</th>
                         <th>Action</th>
@@ -129,20 +130,12 @@ export const StaffTaskPaymentsPage: React.FC = () => {
                     <tbody>
                       {myTickets.map((t) => {
                         const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency || (t as any).currency || staffRawCurrency;
-                        const ticketDisplayCurr = getCurrencySymbol(unitCurr) || staffCurrency;
-                        const isDifferent = normalizeCurrencyCode(unitCurr) !== normalizeCurrencyCode(activeCurrencyCode);
-                        const convertedAmt = isDifferent ? convert(t.payment.amount || 0, unitCurr, activeCurrencyCode) : null;
                         return (
                           <tr key={t.id}>
                             <td><b>{t.id}</b></td>
                             <td style={{ textTransform: 'capitalize' }}>{t.payment.payer}</td>
                             <td style={{ fontWeight: 600 }}>
-                              {ticketDisplayCurr}{t.payment.amount?.toLocaleString()}
-                              {convertedAmt !== null && (
-                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '5px' }}>
-                                  ({format(convertedAmt, activeCurrencyCode)})
-                                </span>
-                              )}
+                              <CurrencyAmount amount={t.payment.amount || 0} currency={unitCurr} />
                             </td>
                             <td>{t.payment.method || '—'}</td>
                             <td>
@@ -210,15 +203,12 @@ export const StaffTaskPaymentsPage: React.FC = () => {
               <div className="staff-mobile-cards">
                 {myTickets.map((t) => {
                   const unitCurr = state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency || (t as any).currency || staffRawCurrency;
-                  const ticketDisplayCurr = getCurrencySymbol(unitCurr) || staffCurrency;
-                  const isDifferent = normalizeCurrencyCode(unitCurr) !== normalizeCurrencyCode(activeCurrencyCode);
-                  const convertedAmt = isDifferent ? convert(t.payment.amount || 0, unitCurr, activeCurrencyCode) : null;
                   return (
                     <div key={t.id} className="staff-card">
                       <div className="staff-card-header">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                          <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{t.id}</b>
-                          <span className="badge grey" style={{ textTransform: 'capitalize' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                          <b style={{ fontSize: '13px', color: 'var(--ink)' }}>{t.id}</b>
+                          <span className="badge grey" style={{ textTransform: 'capitalize', flexShrink: 0 }}>
                             Payer: {t.payment.payer}
                           </span>
                         </div>
@@ -230,6 +220,7 @@ export const StaffTaskPaymentsPage: React.FC = () => {
                               ? 'brass'
                               : 'amber'
                           }`}
+                          style={{ flexShrink: 0 }}
                         >
                           {t.payment.status === 'confirmed'
                             ? 'Settled'
@@ -241,12 +232,7 @@ export const StaffTaskPaymentsPage: React.FC = () => {
 
                       <div style={{ margin: '8px 0', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
                         <div style={{ fontSize: '20px', fontWeight: 700, color: t.payment.status === 'confirmed' ? 'var(--ledger)' : 'var(--ink)' }}>
-                          {ticketDisplayCurr}{t.payment.amount?.toLocaleString()}
-                          {convertedAmt !== null && (
-                            <span style={{ fontSize: '13px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
-                              ({format(convertedAmt, activeCurrencyCode)})
-                            </span>
-                          )}
+                          <CurrencyAmount amount={t.payment.amount || 0} currency={unitCurr} />
                         </div>
                         <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
                           Method: <b>{t.payment.method || 'Standard'}</b>

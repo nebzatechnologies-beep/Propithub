@@ -11,6 +11,7 @@ export const ConnectionsPage: React.FC = () => {
   const { state, savePlatformGateways, saveCommsConfig, saveNotificationToggles, showToast } = useAppData();
   const { user } = useAuth();
   const [subTab, setSubTab] = useState<'gateways' | 'comms' | 'whatsapp' | 'ai'>('gateways');
+  const [expandedGateway, setExpandedGateway] = useState<string | null>(null);
   const [testingComms, setTestingComms] = useState<'sms' | 'email' | 'whatsapp' | 'ai' | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -441,432 +442,750 @@ export const ConnectionsPage: React.FC = () => {
       </div>
 
       {subTab === 'gateways' ? (
-        <div>
+        <div style={{ width: '100%' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: 600, color: 'var(--ink)' }}>
+            Online Gateways
+          </h3>
 
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {/* Stripe */}
+            {(() => {
+              const isEnabled = !!g.stripe?.enabled;
+              const isConnected = !!g.stripe?.connected;
+              const isOpen = expandedGateway === 'stripe';
+              return (
+                <div
+                  style={{
+                    border: '1px solid var(--line-strong, #E2E8F0)',
+                    borderRadius: '10px',
+                    background: 'var(--surface)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '14px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
+                    }}
+                    onClick={() => setExpandedGateway(isOpen ? null : 'stripe')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                        Stripe
+                      </span>
+                      <span className={`badge ${isConnected ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                        {isConnected ? 'Connected' : 'Not connected'}
+                      </span>
+                    </div>
 
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <label
+                        className={`toggle ${isEnabled ? 'on' : ''}`}
+                        onClick={() => handleToggleGateway('stripe')}
+                        title={isEnabled ? 'Disable Stripe' : 'Enable Stripe'}
+                      >
+                        <span className="track" />
+                      </label>
 
-          {/* Stripe Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3>Stripe</h3>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${g.stripe?.connected ? 'green' : 'grey'}`}>
-                  {g.stripe?.connected ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${g.stripe?.enabled ? 'on' : ''}`}
-                  onClick={() => handleToggleGateway('stripe')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Publishable key</label>
-                  <input
-                    type="text"
-                    value={stripePub}
-                    onChange={(e) => setStripePub(e.target.value)}
-                    placeholder="pk_live_..."
-                  />
-                </div>
-                <div className="field">
-                  <label>Secret key</label>
-                  <input
-                    type="password"
-                    value={stripeSecret}
-                    onChange={(e) => setStripeSecret(e.target.value)}
-                    placeholder="sk_live_..."
-                  />
-                </div>
-              </div>
-              <button
-                type="button"
-                className={`btn brass btn-mobile-full ${savingKey === 'stripe' ? 'btn-processing' : ''}`}
-                onClick={saveStripeKeys}
-                disabled={savingKey === 'stripe'}
-              >
-                <ButtonProcessing
-                  loading={savingKey === 'stripe'}
-                  loadingText="Saving Stripe Keys..."
-                  defaultText="Save Stripe keys"
-                />
-              </button>
-            </div>
-          </div>
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                        onClick={() => setExpandedGateway(isOpen ? null : 'stripe')}
+                      >
+                        {isOpen ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
 
-          {/* Razorpay Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3>Razorpay</h3>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${g.razorpay?.connected ? 'green' : 'grey'}`}>
-                  {g.razorpay?.connected ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${g.razorpay?.enabled ? 'on' : ''}`}
-                  onClick={() => handleToggleGateway('razorpay')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Key ID</label>
-                  <input
-                    type="text"
-                    value={razorpayKey}
-                    onChange={(e) => setRazorpayKey(e.target.value)}
-                    placeholder="rzp_live_..."
-                  />
+                  {isOpen && (
+                    <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Publishable key</label>
+                          <input
+                            type="text"
+                            value={stripePub}
+                            onChange={(e) => setStripePub(e.target.value)}
+                            placeholder="pk_live_..."
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Secret key</label>
+                          <input
+                            type="password"
+                            value={stripeSecret}
+                            onChange={(e) => setStripeSecret(e.target.value)}
+                            placeholder="sk_live_..."
+                          />
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className={`btn brass small ${savingKey === 'stripe' ? 'btn-processing' : ''}`}
+                        onClick={saveStripeKeys}
+                        disabled={savingKey === 'stripe'}
+                      >
+                        <ButtonProcessing
+                          loading={savingKey === 'stripe'}
+                          loadingText="Saving..."
+                          defaultText="Save"
+                        />
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div className="field">
-                  <label>Key secret</label>
-                  <input
-                    type="password"
-                    value={razorpaySecret}
-                    onChange={(e) => setRazorpaySecret(e.target.value)}
-                    placeholder="Key secret"
-                  />
-                </div>
-              </div>
-              <button
-                type="button"
-                className={`btn brass btn-mobile-full ${savingKey === 'razorpay' ? 'btn-processing' : ''}`}
-                onClick={saveRazorpayKeys}
-                disabled={savingKey === 'razorpay'}
-              >
-                <ButtonProcessing
-                  loading={savingKey === 'razorpay'}
-                  loadingText="Saving Razorpay Keys..."
-                  defaultText="Save Razorpay keys"
-                />
-              </button>
-            </div>
-          </div>
+              );
+            })()}
 
-          {/* PayPal Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3>PayPal</h3>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${g.paypal?.connected ? 'green' : 'grey'}`}>
-                  {g.paypal?.connected ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${g.paypal?.enabled ? 'on' : ''}`}
-                  onClick={() => handleToggleGateway('paypal')}
+            {/* Razorpay */}
+            {(() => {
+              const isEnabled = !!g.razorpay?.enabled;
+              const isConnected = !!g.razorpay?.connected;
+              const isOpen = expandedGateway === 'razorpay';
+              return (
+                <div
+                  style={{
+                    border: '1px solid var(--line-strong, #E2E8F0)',
+                    borderRadius: '10px',
+                    background: 'var(--surface)',
+                    overflow: 'hidden',
+                  }}
                 >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Client ID</label>
-                  <input
-                    type="text"
-                    value={paypalClient}
-                    onChange={(e) => setPaypalClient(e.target.value)}
-                    placeholder="Client ID"
-                  />
-                </div>
-                <div className="field">
-                  <label>Client secret</label>
-                  <input
-                    type="password"
-                    value={paypalSecret}
-                    onChange={(e) => setPaypalSecret(e.target.value)}
-                    placeholder="Client secret"
-                  />
-                </div>
-              </div>
-              <button type="button" className="btn brass btn-mobile-full" onClick={savePayPalKeys}>
-                Save PayPal keys
-              </button>
-            </div>
-          </div>
+                  <div
+                    style={{
+                      padding: '14px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
+                    }}
+                    onClick={() => setExpandedGateway(isOpen ? null : 'razorpay')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                        Razorpay
+                      </span>
+                      <span className={`badge ${isConnected ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                        {isConnected ? 'Connected' : 'Not connected'}
+                      </span>
+                    </div>
 
-          {/* Easebuzz Card (Full Live Production) */}
-          <div className="panel">
-            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-              <div>
-                <h3 style={{ margin: 0, color: 'var(--ink)' }}>Easebuzz Payment Gateway</h3>
-                <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
-                  Live Production Gateway • Cards, Netbanking (50+ banks), UPI & Wallets
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <label
+                        className={`toggle ${isEnabled ? 'on' : ''}`}
+                        onClick={() => handleToggleGateway('razorpay')}
+                        title={isEnabled ? 'Disable Razorpay' : 'Enable Razorpay'}
+                      >
+                        <span className="track" />
+                      </label>
+
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                        onClick={() => setExpandedGateway(isOpen ? null : 'razorpay')}
+                      >
+                        {isOpen ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Key ID</label>
+                          <input
+                            type="text"
+                            value={razorpayKey}
+                            onChange={(e) => setRazorpayKey(e.target.value)}
+                            placeholder="rzp_live_..."
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Key secret</label>
+                          <input
+                            type="password"
+                            value={razorpaySecret}
+                            onChange={(e) => setRazorpaySecret(e.target.value)}
+                            placeholder="Key secret"
+                          />
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className={`btn brass small ${savingKey === 'razorpay' ? 'btn-processing' : ''}`}
+                        onClick={saveRazorpayKeys}
+                        disabled={savingKey === 'razorpay'}
+                      >
+                        <ButtonProcessing
+                          loading={savingKey === 'razorpay'}
+                          loadingText="Saving..."
+                          defaultText="Save"
+                        />
+                      </button>
+                    </div>
+                  )}
                 </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${g.easebuzz?.connected ? 'green' : 'grey'}`}>
-                  {g.easebuzz?.connected ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${g.easebuzz?.enabled !== false ? 'on' : ''}`}
-                  onClick={() => handleToggleGateway('easebuzz')}
+              );
+            })()}
+
+            {/* PayPal */}
+            {(() => {
+              const isEnabled = !!g.paypal?.enabled;
+              const isConnected = !!g.paypal?.connected;
+              const isOpen = expandedGateway === 'paypal';
+              return (
+                <div
+                  style={{
+                    border: '1px solid var(--line-strong, #E2E8F0)',
+                    borderRadius: '10px',
+                    background: 'var(--surface)',
+                    overflow: 'hidden',
+                  }}
                 >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Merchant Key</label>
-                  <input
-                    type="text"
-                    value={easebuzzKey}
-                    onChange={(e) => setEasebuzzKey(e.target.value)}
-                    placeholder="e.g. 2PBP7IAB82"
-                  />
+                  <div
+                    style={{
+                      padding: '14px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
+                    }}
+                    onClick={() => setExpandedGateway(isOpen ? null : 'paypal')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                        PayPal
+                      </span>
+                      <span className={`badge ${isConnected ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                        {isConnected ? 'Connected' : 'Not connected'}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <label
+                        className={`toggle ${isEnabled ? 'on' : ''}`}
+                        onClick={() => handleToggleGateway('paypal')}
+                        title={isEnabled ? 'Disable PayPal' : 'Enable PayPal'}
+                      >
+                        <span className="track" />
+                      </label>
+
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                        onClick={() => setExpandedGateway(isOpen ? null : 'paypal')}
+                      >
+                        {isOpen ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Client ID</label>
+                          <input
+                            type="text"
+                            value={paypalClient}
+                            onChange={(e) => setPaypalClient(e.target.value)}
+                            placeholder="Client ID"
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Client secret</label>
+                          <input
+                            type="password"
+                            value={paypalSecret}
+                            onChange={(e) => setPaypalSecret(e.target.value)}
+                            placeholder="Client secret"
+                          />
+                        </div>
+                      </div>
+                      <button type="button" className="btn brass small" onClick={savePayPalKeys}>
+                        Save
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div className="field">
-                  <label>Merchant Salt</label>
-                  <input
-                    type="password"
-                    value={easebuzzSalt}
-                    onChange={(e) => setEasebuzzSalt(e.target.value)}
-                    placeholder="e.g. DA95CD24ED..."
-                  />
+              );
+            })()}
+
+            {/* Easebuzz */}
+            {(() => {
+              const isEnabled = g.easebuzz?.enabled !== false;
+              const isConnected = !!g.easebuzz?.connected;
+              const isOpen = expandedGateway === 'easebuzz';
+              return (
+                <div
+                  style={{
+                    border: '1px solid var(--line-strong, #E2E8F0)',
+                    borderRadius: '10px',
+                    background: 'var(--surface)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '14px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
+                    }}
+                    onClick={() => setExpandedGateway(isOpen ? null : 'easebuzz')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                        Easebuzz
+                      </span>
+                      <span className={`badge ${isConnected ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                        {isConnected ? 'Connected' : 'Not connected'}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <label
+                        className={`toggle ${isEnabled ? 'on' : ''}`}
+                        onClick={() => handleToggleGateway('easebuzz')}
+                        title={isEnabled ? 'Disable Easebuzz' : 'Enable Easebuzz'}
+                      >
+                        <span className="track" />
+                      </label>
+
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                        onClick={() => setExpandedGateway(isOpen ? null : 'easebuzz')}
+                      >
+                        {isOpen ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Merchant Key</label>
+                          <input
+                            type="text"
+                            value={easebuzzKey}
+                            onChange={(e) => setEasebuzzKey(e.target.value)}
+                            placeholder="e.g. 2PBP7IAB82"
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Merchant Salt</label>
+                          <input
+                            type="password"
+                            value={easebuzzSalt}
+                            onChange={(e) => setEasebuzzSalt(e.target.value)}
+                            placeholder="e.g. DA95CD24ED..."
+                          />
+                        </div>
+                      </div>
+                      <div className="field" style={{ marginBottom: '12px' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Sub-merchant ID (Optional)</label>
+                        <input
+                          type="text"
+                          value={easebuzzSubMerchant}
+                          onChange={(e) => setEasebuzzSubMerchant(e.target.value)}
+                          placeholder="Optional Sub-merchant ID"
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className={`btn brass small ${savingKey === 'easebuzz' ? 'btn-processing' : ''}`}
+                          onClick={saveEasebuzzKeys}
+                          disabled={savingKey === 'easebuzz'}
+                        >
+                          <ButtonProcessing
+                            loading={savingKey === 'easebuzz'}
+                            loadingText="Saving..."
+                            defaultText="Save"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          onClick={handleTestEasebuzz}
+                          disabled={testingEasebuzz}
+                        >
+                          {testingEasebuzz ? 'Testing...' : 'Test Connection'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-              <div className="field">
-                <label>Sub-merchant ID (Optional - for Split Payouts / Aggregation)</label>
-                <input
-                  type="text"
-                  value={easebuzzSubMerchant}
-                  onChange={(e) => setEasebuzzSubMerchant(e.target.value)}
-                  placeholder="Optional Sub-merchant ID"
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '12px' }}>
-                <button
-                  type="button"
-                  className={`btn brass btn-mobile-full ${savingKey === 'easebuzz' ? 'btn-processing' : ''}`}
-                  onClick={saveEasebuzzKeys}
-                  disabled={savingKey === 'easebuzz'}
-                >
-                  <ButtonProcessing
-                    loading={savingKey === 'easebuzz'}
-                    loadingText="Saving Easebuzz Keys..."
-                    defaultText="Save Easebuzz keys"
-                  />
-                </button>
-                <button
-                  type="button"
-                  className="btn secondary btn-mobile-full"
-                  onClick={handleTestEasebuzz}
-                  disabled={testingEasebuzz}
-                >
-                  {testingEasebuzz ? 'Pinging Gateway...' : '⚡ Test Live Endpoint'}
-                </button>
-              </div>
-            </div>
+              );
+            })()}
           </div>
         </div>
       ) : subTab === 'comms' ? (
-        <div>
-          {/* Twilio */}
-          <div className="panel">
-            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-              <div>
-                <h3>Twilio — SMS & push</h3>
-              </div>
-              <span className={`badge ${state.commsConfig.twilioConnected ? 'green' : 'grey'}`}>
-                {state.commsConfig.twilioConnected ? 'Connected' : 'Not connected'}
-              </span>
-            </div>
-            <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Account SID</label>
-                  <input
-                    type="text"
-                    value={twSid}
-                    onChange={(e) => setTwSid(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Auth token</label>
-                  <input
-                    type="password"
-                    value={twAuth}
-                    onChange={(e) => setTwAuth(e.target.value)}
-                    placeholder="e.g. 32-character Auth Token"
-                  />
-                </div>
-              </div>
-              <div className="field">
-                <label>Default sender number</label>
-                <input
-                  type="text"
-                  value={twNum}
-                  onChange={(e) => setTwNum(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label>Live Test Destination Mobile (E.164 format with Country Code)</label>
-                <input
-                  type="text"
-                  value={testPhone}
-                  onChange={(e) => setTestPhone(e.target.value)}
-                  placeholder="+919876543210"
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className={`btn brass btn-mobile-full ${savingKey === 'twilio' ? 'btn-processing' : ''}`}
-                  onClick={saveTwilio}
-                  disabled={savingKey === 'twilio'}
-                >
-                  <ButtonProcessing
-                    loading={savingKey === 'twilio'}
-                    loadingText="Saving Twilio..."
-                    defaultText="Save Twilio settings"
-                  />
-                </button>
-                <button
-                  type="button"
-                  className={`btn secondary btn-mobile-full ${testingComms === 'sms' ? 'btn-processing' : ''}`}
-                  disabled={testingComms === 'sms'}
-                  onClick={() => handleTestComms('sms')}
-                >
-                  <ButtonProcessing
-                    loading={testingComms === 'sms'}
-                    loadingText="Dispatching SMS..."
-                    defaultText="Send Test SMS"
-                  />
-                </button>
-              </div>
-            </div>
-          </div>
+        <div style={{ width: '100%' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: 600, color: 'var(--ink)' }}>
+            SMS &amp; Email Providers
+          </h3>
 
-          {/* SendGrid */}
-          <div className="panel">
-            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-              <div>
-                <h3>SendGrid — Email</h3>
-                <div className="hint">Transactional receipts, lease contracts, and dispute notifications.</div>
-              </div>
-              <span className={`badge ${state.commsConfig.sendgridConnected ? 'green' : 'grey'}`}>
-                {state.commsConfig.sendgridConnected ? 'Connected' : 'Not connected'}
-              </span>
-            </div>
-            <div className="panel-body">
-              <div className="field">
-                <label>API key</label>
-                <input
-                  type="password"
-                  value={sgKey}
-                  onChange={(e) => setSgKey(e.target.value)}
-                  placeholder="SG.••••••••••••••••"
-                />
-              </div>
-              <div className="field">
-                <label>Sender identity</label>
-                <input
-                  type="text"
-                  value={sgFrom}
-                  onChange={(e) => setSgFrom(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label>Live Test Destination Email Address</label>
-                <input
-                  type="email"
-                  value={testEmail}
-                  onChange={(e) => setTestEmail(e.target.value)}
-                  placeholder="admin@propithub.com"
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className={`btn brass btn-mobile-full ${savingKey === 'sendgrid' ? 'btn-processing' : ''}`}
-                  onClick={saveSendgrid}
-                  disabled={savingKey === 'sendgrid'}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '22px' }}>
+            {/* Twilio */}
+            {(() => {
+              const isConnected = !!state.commsConfig.twilioConnected;
+              const isOpen = expandedGateway === 'twilio';
+              return (
+                <div
+                  style={{
+                    border: '1px solid var(--line-strong, #E2E8F0)',
+                    borderRadius: '10px',
+                    background: 'var(--surface)',
+                    overflow: 'hidden',
+                  }}
                 >
-                  <ButtonProcessing
-                    loading={savingKey === 'sendgrid'}
-                    loadingText="Saving SendGrid..."
-                    defaultText="Save SendGrid settings"
-                  />
-                </button>
-                <button
-                  type="button"
-                  className={`btn secondary btn-mobile-full ${testingComms === 'email' ? 'btn-processing' : ''}`}
-                  disabled={testingComms === 'email'}
-                  onClick={() => handleTestComms('email')}
+                  <div
+                    style={{
+                      padding: '14px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
+                    }}
+                    onClick={() => setExpandedGateway(isOpen ? null : 'twilio')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                        Twilio — SMS &amp; Push
+                      </span>
+                      <span className={`badge ${isConnected ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                        {isConnected ? 'Connected' : 'Not connected'}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                        onClick={() => setExpandedGateway(isOpen ? null : 'twilio')}
+                      >
+                        {isOpen ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Account SID</label>
+                          <input
+                            type="text"
+                            value={twSid}
+                            onChange={(e) => setTwSid(e.target.value)}
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Auth token</label>
+                          <input
+                            type="password"
+                            value={twAuth}
+                            onChange={(e) => setTwAuth(e.target.value)}
+                            placeholder="e.g. 32-character Auth Token"
+                          />
+                        </div>
+                      </div>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Default sender number</label>
+                          <input
+                            type="text"
+                            value={twNum}
+                            onChange={(e) => setTwNum(e.target.value)}
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Test Destination Mobile (E.164)</label>
+                          <input
+                            type="text"
+                            value={testPhone}
+                            onChange={(e) => setTestPhone(e.target.value)}
+                            placeholder="+919876543210"
+                          />
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className={`btn brass small ${savingKey === 'twilio' ? 'btn-processing' : ''}`}
+                          onClick={saveTwilio}
+                          disabled={savingKey === 'twilio'}
+                        >
+                          <ButtonProcessing
+                            loading={savingKey === 'twilio'}
+                            loadingText="Saving..."
+                            defaultText="Save"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn secondary small ${testingComms === 'sms' ? 'btn-processing' : ''}`}
+                          disabled={testingComms === 'sms'}
+                          onClick={() => handleTestComms('sms')}
+                        >
+                          <ButtonProcessing
+                            loading={testingComms === 'sms'}
+                            loadingText="Sending..."
+                            defaultText="Send Test SMS"
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* SendGrid */}
+            {(() => {
+              const isConnected = !!state.commsConfig.sendgridConnected;
+              const isOpen = expandedGateway === 'sendgrid';
+              return (
+                <div
+                  style={{
+                    border: '1px solid var(--line-strong, #E2E8F0)',
+                    borderRadius: '10px',
+                    background: 'var(--surface)',
+                    overflow: 'hidden',
+                  }}
                 >
-                  <ButtonProcessing
-                    loading={testingComms === 'email'}
-                    loadingText="Dispatching Email..."
-                    defaultText="Send Test Email"
-                  />
-                </button>
-              </div>
-            </div>
+                  <div
+                    style={{
+                      padding: '14px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
+                    }}
+                    onClick={() => setExpandedGateway(isOpen ? null : 'sendgrid')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                        SendGrid — Email
+                      </span>
+                      <span className={`badge ${isConnected ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                        {isConnected ? 'Connected' : 'Not connected'}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                        onClick={() => setExpandedGateway(isOpen ? null : 'sendgrid')}
+                      >
+                        {isOpen ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>API key</label>
+                          <input
+                            type="password"
+                            value={sgKey}
+                            onChange={(e) => setSgKey(e.target.value)}
+                            placeholder="SG.••••••••••••••••"
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Sender identity</label>
+                          <input
+                            type="text"
+                            value={sgFrom}
+                            onChange={(e) => setSgFrom(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="field" style={{ marginBottom: '12px' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Test Destination Email Address</label>
+                        <input
+                          type="email"
+                          value={testEmail}
+                          onChange={(e) => setTestEmail(e.target.value)}
+                          placeholder="admin@propithub.com"
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className={`btn brass small ${savingKey === 'sendgrid' ? 'btn-processing' : ''}`}
+                          onClick={saveSendgrid}
+                          disabled={savingKey === 'sendgrid'}
+                        >
+                          <ButtonProcessing
+                            loading={savingKey === 'sendgrid'}
+                            loadingText="Saving..."
+                            defaultText="Save"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn secondary small ${testingComms === 'email' ? 'btn-processing' : ''}`}
+                          disabled={testingComms === 'email'}
+                          onClick={() => handleTestComms('email')}
+                        >
+                          <ButtonProcessing
+                            loading={testingComms === 'email'}
+                            loadingText="Sending..."
+                            defaultText="Send Test Email"
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Notification Events */}
-          <div className="section-title">Notification events (platform-wide defaults)</div>
-          <div className="panel">
-            <div className="panel-body">
-              <p className="hint" style={{ marginBottom: '14px' }}>
-                Configure which transactional trigger events automatically dispatch notifications to users.
-              </p>
-              {Object.keys(localNotifs).map((ev) => (
+          <h3 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: 600, color: 'var(--ink)' }}>
+            Notification Events
+          </h3>
+          {(() => {
+            const activeCount = Object.values(localNotifs).filter(Boolean).length;
+            const totalCount = Object.keys(localNotifs).length;
+            const isOpen = expandedGateway === 'notif_events';
+            return (
+              <div
+                style={{
+                  border: '1px solid var(--line-strong, #E2E8F0)',
+                  borderRadius: '10px',
+                  background: 'var(--surface)',
+                  overflow: 'hidden',
+                }}
+              >
                 <div
-                  key={ev}
-                  className="kv"
                   style={{
+                    padding: '14px 18px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    padding: '10px 0',
-                    borderBottom: '1px solid var(--line)',
+                    cursor: 'pointer',
+                    background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                   }}
+                  onClick={() => setExpandedGateway(isOpen ? null : 'notif_events')}
                 >
-                  <span className="k" style={{ fontWeight: 500 }}>
-                    {ev.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                  </span>
-                  <label
-                    className={`toggle ${localNotifs[ev] ? 'on' : ''}`}
-                    onClick={() => toggleLocalNotif(ev)}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                      Platform Event Triggers
+                    </span>
+                    <span className="badge green" style={{ fontSize: '11px' }}>
+                      {activeCount}/{totalCount} Active
+                    </span>
+                  </div>
+
+                  <div
+                    style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <span className="track" />
-                  </label>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'notif_events')}
+                    >
+                      {isOpen ? 'Close' : 'Configure'}
+                    </button>
+                  </div>
                 </div>
-              ))}
-              <div style={{ marginTop: '16px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className="btn brass btn-mobile-full"
-                  onClick={handleSaveNotificationRules}
-                >
-                  Save Notification Rules
-                </button>
-                <button
-                  type="button"
-                  className="btn secondary btn-mobile-full"
-                  onClick={handleResetNotificationDefaults}
-                >
-                  Reset to Defaults
-                </button>
+
+                {isOpen && (
+                  <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '8px 20px', marginBottom: '14px' }}>
+                      {Object.keys(localNotifs).map((ev) => (
+                        <div
+                          key={ev}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '8px 10px',
+                            background: 'var(--surface)',
+                            border: '1px solid var(--line)',
+                            borderRadius: '6px',
+                          }}
+                        >
+                          <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--ink)' }}>
+                            {ev.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                          </span>
+                          <label
+                            className={`toggle ${localNotifs[ev] ? 'on' : ''}`}
+                            onClick={() => toggleLocalNotif(ev)}
+                          >
+                            <span className="track" />
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                      <button
+                        type="button"
+                        className="btn brass small"
+                        onClick={handleSaveNotificationRules}
+                      >
+                        Save Rules
+                      </button>
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        onClick={handleResetNotificationDefaults}
+                      >
+                        Reset Defaults
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          </div>
+            );
+          })()}
         </div>
       ) : subTab === 'whatsapp' ? (
         <div>
@@ -879,7 +1198,6 @@ export const ConnectionsPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 style={{ margin: 0 }}>Meta WhatsApp Cloud API — Business Operations</h3>
-                  <div className="hint">Single verified WhatsApp number serving automated resident rent reminders, maintenance reporting, and landlord summaries.</div>
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -1146,7 +1464,6 @@ export const ConnectionsPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 style={{ margin: 0 }}>Google Gemini Multimodal AI Engine</h3>
-                  <div className="hint">Powers real-time receipt OCR, maintenance photo damage classification, and natural language chat understanding.</div>
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -1221,10 +1538,6 @@ export const ConnectionsPage: React.FC = () => {
           <div className="section-title">Multimodal WhatsApp AI Modules</div>
           <div className="panel">
             <div className="panel-body">
-              <p className="hint" style={{ marginBottom: '16px' }}>
-                Toggle which multimodal capabilities are active on incoming resident and landlord WhatsApp messages.
-              </p>
-
               {/* Module 1: Receipt OCR */}
               <div className="kv" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
@@ -1317,7 +1630,6 @@ export const ConnectionsPage: React.FC = () => {
             <div className="panel-head">
               <div>
                 <h3 style={{ margin: 0 }}>AI Health &amp; Model Response Console</h3>
-                <div className="hint">Run a test prompt to verify your Google Gemini API key and latency.</div>
               </div>
             </div>
             <div className="panel-body">

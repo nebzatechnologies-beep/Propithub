@@ -1,24 +1,18 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useCurrency } from '../../context/CurrencyContext';
-import { PlatformInvoice } from '../../types';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
+import { PlatformInvoice, PlatformInvoiceTemplateConfig } from '../../types';
 import {
   FileText,
-  CheckCircle2,
-  Clock,
-  AlertCircle,
-  Printer,
-  Send,
-  DollarSign,
-  Plus,
+  CheckCircle,
   Download,
-  Calendar,
-  Filter,
+  Eye,
+  Plus,
+  Send,
+  Building,
   LayoutTemplate,
   Save,
-  Eye,
-  ShieldCheck,
-  Building,
   CreditCard,
   Percent,
 } from 'lucide-react';
@@ -28,21 +22,159 @@ import { ButtonProcessing } from '../../components/common/Spinner';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { getCurrencySymbol, getLocaleForCurrency } from '../../lib/currencyService';
+import { getTodayDateString, getDaysFromNowString } from '../../lib/dates';
 
 export const PlatformInvoicesPage: React.FC = () => {
-  const { state, savePlatformInvoice, markPlatformInvoicePaid, savePlatformInvoiceTemplate, logCommunication, showToast } = useAppData();
+  const {
+    state,
+    savePlatformInvoice,
+    markPlatformInvoicePaid,
+    savePlatformInvoiceTemplate,
+    logCommunication,
+    showToast,
+  } = useAppData();
   const { viewCurrency, convert, format } = useCurrency();
 
+  // Top subtab switcher: 'history' (Invoices & Studio) vs 'template' (Invoice Template & Live Preview)
   const [activeTab, setActiveTab] = useState<'history' | 'template'>('history');
 
+  // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'issued' | 'paid' | 'overdue' | 'void'>('all');
-  const [timelineFilter, setTimelineFilter] = useState<'all' | 'this_month' | 'last_month' | 'this_quarter' | 'custom'>('all');
-  const [customStartDate, setCustomStartDate] = useState('');
-  const [customEndDate, setCustomEndDate] = useState('');
-  const [isSavingTmpl, setIsSavingTmpl] = useState(false);
+  const [timelineFilter, setTimelineFilter] = useState<'all' | 'this_month' | 'last_month' | 'this_quarter'>('all');
   const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
+  const [voidingId, setVoidingId] = useState<string | null>(null);
   const [remindingId, setRemindingId] = useState<string | null>(null);
+
+  // Modal State for viewing formatted invoice
+  const [isStudioOpen, setIsStudioOpen] = useState(false);
+  const [studioInvoice, setStudioInvoice] = useState<PlatformInvoice | null>(null);
+  const [studioMode, setStudioMode] = useState<'create' | 'edit' | 'preview'>('preview');
+
+  // Inline "Invoice Studio" form state (quick invoice issuance)
+  const owners = useMemo(() => state.users.filter((u) => u.role === 'owner'), [state.users]);
+  const activePlans = useMemo(() => state.plans.filter((p) => !p.isArchived), [state.plans]);
+
+  const [formOwnerId, setFormOwnerId] = useState('');
+  const [formPlanId, setFormPlanId] = useState(activePlans[0]?.id || 'p1');
+  const [formAmountOverride, setFormAmountOverride] = useState('');
+  const [formTaxPercent, setFormTaxPercent] = useState<number>(0);
+  const [formPeriodStart, setFormPeriodStart] = useState(getTodayDateString());
+  const [formPeriodEnd, setFormPeriodEnd] = useState(getDaysFromNowString(30));
+  const [formDueDate, setFormDueDate] = useState(getDaysFromNowString(7));
+  const [formNotes, setFormNotes] = useState('');
+  const [isIssuing, setIsIssuing] = useState(false);
+
+  // Platform Invoice Template & Live Preview state
+  const defaultTmpl: PlatformInvoiceTemplateConfig = state.platformInvoiceTemplate || {
+    issuerName: 'Propithub SaaS Technologies Inc.',
+    issuerTaxNo: 'US-EIN: 84-2918472',
+    issuerAddress: '100 Montgomery St, Suite 1800, San Francisco, CA 94104',
+    issuerPhone: '+1 (800) 555-PROP',
+    issuerEmail: 'billing@propithub.com',
+    taxLabel: 'Sales Tax / VAT',
+    taxPercent: 0,
+    termsAndConditions: `1. Propithub SaaS Cloud platform subscription is billed in advance on a recurring schedule.
+2. Failure to settle this invoice by the due date may result in automated API rate-limiting or temporary suspension of tenant portal dispatches.
+3. Tax is billed in accordance with the jurisdiction of the corporate entity.
+4. All software licenses are governed by the Propithub Master Software License Agreement (MSLA).
+5. For corporate accounting reconciliations, wire confirmation must reference the Invoice ID above.`,
+    includeTerms: true,
+    signatoryName: 'Platform Chief Financial Controller',
+    signatoryRole: 'Authorized Financial Signatory',
+    notes: 'Thank you for choosing Propithub for your real estate portfolio operations.',
+    bankName: 'Silicon Valley Bank / JPMorgan Chase',
+    accountName: 'Propithub Technologies Inc. — Operating Treasury',
+    accountNumber: '987000124890',
+    swiftCode: 'SVBKUS6SXXX',
+  };
+
+  const [tmplIssuerName, setTmplIssuerName] = useState(defaultTmpl.issuerName);
+  const [tmplIssuerTaxNo, setTmplIssuerTaxNo] = useState(defaultTmpl.issuerTaxNo);
+  const [tmplIssuerAddress, setTmplIssuerAddress] = useState(defaultTmpl.issuerAddress);
+  const [tmplIssuerPhone, setTmplIssuerPhone] = useState(defaultTmpl.issuerPhone);
+  const [tmplIssuerEmail, setTmplIssuerEmail] = useState(defaultTmpl.issuerEmail);
+  const [tmplTaxLabel, setTmplTaxLabel] = useState(defaultTmpl.taxLabel || 'Sales Tax / VAT');
+  const [tmplTaxPercent, setTmplTaxPercent] = useState<number>(defaultTmpl.taxPercent || 0);
+  const [tmplTerms, setTmplTerms] = useState(defaultTmpl.termsAndConditions);
+  const [tmplIncludeTerms, setTmplIncludeTerms] = useState(defaultTmpl.includeTerms !== false);
+  const [tmplSignatory, setTmplSignatory] = useState(defaultTmpl.signatoryName);
+  const [tmplSignatoryRole, setTmplSignatoryRole] = useState(defaultTmpl.signatoryRole || 'Authorized Financial Signatory');
+  const [tmplNotes, setTmplNotes] = useState(defaultTmpl.notes);
+  const [tmplBankName, setTmplBankName] = useState(defaultTmpl.bankName || 'Silicon Valley Bank / JPMorgan Chase');
+  const [tmplAccountName, setTmplAccountName] = useState(defaultTmpl.accountName || 'Propithub Technologies Inc. — Operating Treasury');
+  const [tmplAccountNumber, setTmplAccountNumber] = useState(defaultTmpl.accountNumber || '987000124890');
+  const [tmplSwift, setTmplSwift] = useState(defaultTmpl.swiftCode || 'SVBKUS6SXXX');
+  const [tmplViewMode, setTmplViewMode] = useState<'split' | 'edit' | 'preview'>('split');
+  const [isSavingTmpl, setIsSavingTmpl] = useState(false);
+
+  // Sync state if template updates in Firestore
+  useEffect(() => {
+    if (state.platformInvoiceTemplate) {
+      const pt = state.platformInvoiceTemplate;
+      if (pt.issuerName) setTmplIssuerName(pt.issuerName);
+      if (pt.issuerTaxNo !== undefined) setTmplIssuerTaxNo(pt.issuerTaxNo);
+      if (pt.issuerAddress) setTmplIssuerAddress(pt.issuerAddress);
+      if (pt.issuerPhone) setTmplIssuerPhone(pt.issuerPhone);
+      if (pt.issuerEmail) setTmplIssuerEmail(pt.issuerEmail);
+      if (pt.taxLabel) setTmplTaxLabel(pt.taxLabel);
+      if (pt.taxPercent !== undefined) setTmplTaxPercent(pt.taxPercent);
+      if (pt.termsAndConditions) setTmplTerms(pt.termsAndConditions);
+      if (pt.includeTerms !== undefined) setTmplIncludeTerms(pt.includeTerms);
+      if (pt.signatoryName) setTmplSignatory(pt.signatoryName);
+      if (pt.signatoryRole) setTmplSignatoryRole(pt.signatoryRole);
+      if (pt.notes) setTmplNotes(pt.notes);
+      if (pt.bankName) setTmplBankName(pt.bankName);
+      if (pt.accountName) setTmplAccountName(pt.accountName);
+      if (pt.accountNumber) setTmplAccountNumber(pt.accountNumber);
+      if (pt.swiftCode) setTmplSwift(pt.swiftCode);
+    }
+  }, [state.platformInvoiceTemplate]);
+
+  const handleSavePlatformTemplate = async () => {
+    setIsSavingTmpl(true);
+    await new Promise((r) => setTimeout(r, 400));
+    await savePlatformInvoiceTemplate({
+      issuerName: tmplIssuerName,
+      issuerTaxNo: tmplIssuerTaxNo,
+      issuerAddress: tmplIssuerAddress,
+      issuerPhone: tmplIssuerPhone,
+      issuerEmail: tmplIssuerEmail,
+      taxLabel: tmplTaxLabel,
+      taxPercent: tmplTaxPercent,
+      termsAndConditions: tmplTerms,
+      includeTerms: tmplIncludeTerms,
+      signatoryName: tmplSignatory,
+      signatoryRole: tmplSignatoryRole,
+      notes: tmplNotes,
+      bankName: tmplBankName,
+      accountName: tmplAccountName,
+      accountNumber: tmplAccountNumber,
+      swiftCode: tmplSwift,
+    });
+    setIsSavingTmpl(false);
+    showToast('Platform invoice template saved! All issued platform invoices will use this format.');
+  };
+
+  const invoices = state.platformInvoices || [];
+
+  const resolveOwnerDisplayName = (inv: PlatformInvoice): string => {
+    if (inv.ownerName && inv.ownerName !== 'Property Owner' && inv.ownerName !== 'Owner') {
+      return inv.ownerName;
+    }
+    const resolvedUser = state.users.find(
+      (u) =>
+        u.id === inv.ownerId ||
+        (u.email && inv.ownerEmail && u.email.toLowerCase() === inv.ownerEmail.toLowerCase())
+    );
+    return (
+      resolvedUser?.displayName?.trim() ||
+      resolvedUser?.email?.split('@')[0] ||
+      inv.ownerEmail?.split('@')[0] ||
+      inv.ownerName ||
+      'Owner'
+    );
+  };
 
   const formatInvoiceDate = (dateStr?: string) => {
     if (!dateStr) return '—';
@@ -54,85 +186,16 @@ export const PlatformInvoicesPage: React.FC = () => {
       return dateStr;
     }
   };
-  
-  // Live Studio Modal State (For Manual Ad-Hoc Invoicing)
-  const [isStudioOpen, setIsStudioOpen] = useState(false);
-  const [studioInvoice, setStudioInvoice] = useState<PlatformInvoice | null>(null);
-  const [studioMode, setStudioMode] = useState<'create' | 'edit' | 'preview'>('create');
-
-  // SaaS General Template Configuration State (For Automatic Invoices on Subscription Payment)
-  const defaultTmpl = state.platformInvoiceTemplate || {
-    issuerName: 'Propithub Technologies Inc.',
-    issuerTaxNo: 'US-EIN 84-2910391 / VAT-EU982148',
-    issuerAddress: '500 Howard Street, Suite 400, San Francisco, CA 94105, USA',
-    issuerPhone: '+1 (800) 555-PROP',
-    issuerEmail: 'billing@propithub.com',
-    taxLabel: 'Sales Tax / VAT',
-    taxPercent: 0,
-    termsAndConditions: `1. All SaaS subscription and licensing fees are billed in advance according to the selected tier.
-2. Invoices are payable within 14 calendar days from the date of issuance.
-3. Overdue platform balances may result in temporary restriction of multi-unit management services.
-4. All tax charges are assessed based on the customer's registered business jurisdiction.
-5. Inquiries regarding platform invoices must be submitted to billing@propithub.com within 5 business days.`,
-    signatoryName: 'Elena Rostova',
-    signatoryRole: 'Chief Financial Officer & Corporate Controller',
-    notes: 'Thank you for partnering with Propithub for your real estate operations.',
-    bankName: 'Silicon Valley Bank / First Republic',
-    accountName: 'Propithub Technologies Inc - Corporate Treasury',
-    accountNumber: '987000124890',
-    swiftCode: 'SVBKUS6SXXX',
-  };
-
-  const [tmplIssuerName, setTmplIssuerName] = useState(defaultTmpl.issuerName);
-  const [tmplIssuerTaxNo, setTmplIssuerTaxNo] = useState(defaultTmpl.issuerTaxNo);
-  const [tmplIssuerAddress, setTmplIssuerAddress] = useState(defaultTmpl.issuerAddress);
-  const [tmplIssuerPhone, setTmplIssuerPhone] = useState(defaultTmpl.issuerPhone);
-  const [tmplIssuerEmail, setTmplIssuerEmail] = useState(defaultTmpl.issuerEmail);
-  const [tmplTaxLabel, setTmplTaxLabel] = useState(defaultTmpl.taxLabel || 'Sales Tax / VAT');
-  const [tmplTaxPercent, setTmplTaxPercent] = useState(defaultTmpl.taxPercent || 0);
-  const [tmplTerms, setTmplTerms] = useState(defaultTmpl.termsAndConditions);
-  const [tmplSignatory, setTmplSignatory] = useState(defaultTmpl.signatoryName);
-  const [tmplSignatoryRole, setTmplSignatoryRole] = useState(defaultTmpl.signatoryRole || 'Chief Financial Officer & Corporate Controller');
-  const [tmplNotes, setTmplNotes] = useState(defaultTmpl.notes);
-  const [tmplBankName, setTmplBankName] = useState(defaultTmpl.bankName || 'Silicon Valley Bank / First Republic');
-  const [tmplAccountName, setTmplAccountName] = useState(defaultTmpl.accountName || 'Propithub Technologies Inc - Corporate Treasury');
-  const [tmplAccountNumber, setTmplAccountNumber] = useState(defaultTmpl.accountNumber || '987000124890');
-  const [tmplSwift, setTmplSwift] = useState(defaultTmpl.swiftCode || 'SVBKUS6SXXX');
-  const [tmplViewMode, setTmplViewMode] = useState<'split' | 'edit' | 'preview'>('split');
-
-  const handleSavePlatformTemplate = async () => {
-    setIsSavingTmpl(true);
-    await new Promise((r) => setTimeout(r, 450));
-    await savePlatformInvoiceTemplate({
-      issuerName: tmplIssuerName,
-      issuerTaxNo: tmplIssuerTaxNo,
-      issuerAddress: tmplIssuerAddress,
-      issuerPhone: tmplIssuerPhone,
-      issuerEmail: tmplIssuerEmail,
-      taxLabel: tmplTaxLabel,
-      taxPercent: tmplTaxPercent,
-      termsAndConditions: tmplTerms,
-      signatoryName: tmplSignatory,
-      signatoryRole: tmplSignatoryRole,
-      notes: tmplNotes,
-      bankName: tmplBankName,
-      accountName: tmplAccountName,
-      accountNumber: tmplAccountNumber,
-      swiftCode: tmplSwift,
-    });
-    setIsSavingTmpl(false);
-    showToast('Platform SaaS invoice general format saved! All automated subscription invoices will use this format.');
-  };
-
-  const invoices = state.platformInvoices || [];
 
   const { filteredInvoices, timelineLabel } = useMemo(() => {
     let label = 'All Platform Billing Periods';
     const now = new Date();
 
     const filtered = invoices.filter((inv) => {
+      const ownerDisplayName = resolveOwnerDisplayName(inv);
       const matchesSearch =
         inv.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        ownerDisplayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         inv.ownerName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         inv.ownerEmail.toLowerCase().includes(searchQuery.toLowerCase()) ||
         inv.planName.toLowerCase().includes(searchQuery.toLowerCase());
@@ -169,20 +232,14 @@ export const PlatformInvoicesPage: React.FC = () => {
           invQuarter === currentQuarter
         );
       }
-      if (timelineFilter === 'custom') {
-        label = `Custom Range (${customStartDate || 'Start'} to ${customEndDate || 'Present'})`;
-        if (customStartDate && new Date(dateStr) < new Date(customStartDate)) return false;
-        if (customEndDate && new Date(dateStr) > new Date(customEndDate + 'T23:59:59')) return false;
-        return true;
-      }
 
       return true;
     });
 
     return { filteredInvoices: filtered, timelineLabel: label };
-  }, [invoices, searchQuery, statusFilter, timelineFilter, customStartDate, customEndDate]);
+  }, [invoices, searchQuery, statusFilter, timelineFilter]);
 
-  // Calculate high-level stats normalized to USD then converted to viewCurrency
+  // High-level KPI Stats
   const totalCollectedUSD = useMemo(() => {
     return invoices
       .filter((i) => i.status === 'paid')
@@ -197,50 +254,138 @@ export const PlatformInvoicesPage: React.FC = () => {
 
   const overdueCount = invoices.filter((i) => i.status === 'overdue').length;
 
-  const handleMarkPaid = async (inv: PlatformInvoice) => {
-    const method = window.prompt(
-      `Confirm manual payment for Invoice ${inv.id} ($${inv.total}):\nEnter payment method (e.g., Stripe, Bank Wire, UPI):`,
-      'Bank Wire / Stripe'
-    );
-    if (method === null) return;
-    setMarkingPaidId(inv.id);
-    await new Promise((r) => setTimeout(r, 450));
-    await markPlatformInvoicePaid(inv.id, method || 'Bank Wire');
-    showToast(`Invoice ${inv.id} marked as PAID.`);
-    if (studioInvoice && studioInvoice.id === inv.id) {
-      setStudioInvoice({
-        ...inv,
-        status: 'paid',
-        paidAt: new Date().toISOString(),
-        paymentMethod: method || 'Bank Wire',
-      });
+  // Issue Invoice via inline Invoice Studio
+  const handleIssueInvoice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formOwnerId) {
+      showToast('Please select a property owner');
+      return;
     }
+    const targetOwner = state.users.find((u) => u.id === formOwnerId);
+    const targetPlan = activePlans.find((p) => p.id === formPlanId) || activePlans[0];
+    const baseAmount = formAmountOverride ? Number(formAmountOverride) : (targetPlan?.price || 0);
+    const taxAmt = formTaxPercent > 0 ? (baseAmount * formTaxPercent) / 100 : 0;
+    const total = baseAmount + taxAmt;
+    const invId = `PI-${Date.now().toString().slice(-4)}`;
+
+    setIsIssuing(true);
+    await new Promise((r) => setTimeout(r, 350));
+
+    const targetOwnerName =
+      targetOwner?.displayName?.trim() ||
+      (targetOwner as any)?.name?.trim() ||
+      targetOwner?.email?.split('@')[0] ||
+      'Owner';
+
+    const newInv: PlatformInvoice = {
+      id: invId,
+      ownerId: formOwnerId,
+      ownerName: targetOwnerName,
+      ownerEmail: targetOwner?.email || '',
+      planId: targetPlan?.id || 'p1',
+      planName: targetPlan?.name || 'Subscription Plan',
+      periodStart: formPeriodStart,
+      periodEnd: formPeriodEnd,
+      amount: baseAmount,
+      tax: taxAmt,
+      total,
+      currency: 'USD',
+      status: 'issued',
+      issueDate: getTodayDateString(),
+      dueDate: formDueDate,
+      notes: formNotes || 'Platform SaaS subscription',
+      issuerTaxNo: tmplIssuerTaxNo || state.platformInvoiceTemplate?.issuerTaxNo,
+      termsAndConditions: tmplTerms || state.platformInvoiceTemplate?.termsAndConditions || 'Standard platform subscription terms apply.',
+      includeTerms: tmplIncludeTerms,
+      signatoryName: tmplSignatory || state.platformInvoiceTemplate?.signatoryName || 'Platform Administrator',
+    };
+
+    await savePlatformInvoice(newInv);
+    setIsIssuing(false);
+    showToast(`Invoice ${invId} issued to ${targetOwnerName}.`);
+    setFormAmountOverride('');
+    setFormNotes('');
+  };
+
+  // Preview draft from Invoice Studio
+  const handlePreviewDraft = () => {
+    if (!formOwnerId) {
+      showToast('Please select a property owner to preview draft');
+      return;
+    }
+    const targetOwner = state.users.find((u) => u.id === formOwnerId);
+    const targetPlan = activePlans.find((p) => p.id === formPlanId) || activePlans[0];
+    const baseAmount = formAmountOverride ? Number(formAmountOverride) : (targetPlan?.price || 0);
+    const taxAmt = formTaxPercent > 0 ? (baseAmount * formTaxPercent) / 100 : 0;
+    const draftInv: PlatformInvoice = {
+      id: `PI-DRAFT-${Date.now().toString().slice(-4)}`,
+      ownerId: formOwnerId,
+      ownerName:
+        targetOwner?.displayName?.trim() ||
+        (targetOwner as any)?.name?.trim() ||
+        targetOwner?.email?.split('@')[0] ||
+        'Owner',
+      ownerEmail: targetOwner?.email || '',
+      planId: targetPlan?.id || 'p1',
+      planName: targetPlan?.name || 'Subscription Plan',
+      periodStart: formPeriodStart,
+      periodEnd: formPeriodEnd,
+      amount: baseAmount,
+      tax: taxAmt,
+      total: baseAmount + taxAmt,
+      currency: 'USD',
+      status: 'issued',
+      issueDate: getTodayDateString(),
+      dueDate: formDueDate,
+      notes: formNotes || 'Platform SaaS subscription',
+      issuerTaxNo: tmplIssuerTaxNo || state.platformInvoiceTemplate?.issuerTaxNo,
+      termsAndConditions: tmplTerms || state.platformInvoiceTemplate?.termsAndConditions || 'Standard platform subscription terms apply.',
+      includeTerms: tmplIncludeTerms,
+      signatoryName: tmplSignatory || state.platformInvoiceTemplate?.signatoryName || 'Platform Administrator',
+    };
+    setStudioInvoice(draftInv);
+    setStudioMode('preview');
+    setIsStudioOpen(true);
+  };
+
+  // Mark Paid action
+  const handleMarkPaid = async (inv: PlatformInvoice) => {
+    setMarkingPaidId(inv.id);
+    await new Promise((r) => setTimeout(r, 350));
+    await markPlatformInvoicePaid(inv.id, 'Admin Reconciled / Paid');
+    showToast(`Invoice ${inv.id} marked as PAID. Owner plan updated.`);
     setMarkingPaidId(null);
   };
 
+  // Void action
+  const handleVoidInvoice = async (inv: PlatformInvoice) => {
+    if (!window.confirm(`Are you sure you want to void invoice ${inv.id}?`)) return;
+    setVoidingId(inv.id);
+    await new Promise((r) => setTimeout(r, 300));
+    await savePlatformInvoice({ ...inv, status: 'void' });
+    showToast(`Invoice ${inv.id} marked as VOID.`);
+    setVoidingId(null);
+  };
+
+  // Send reminder notice
   const handleSendReminder = async (inv: PlatformInvoice) => {
     setRemindingId(inv.id);
     try {
-      // Resolve the owner's contact details from users list
-      const ownerUser = state.users.find((u) => u.id === inv.ownerId);
-
       const notifId = `notif_${Date.now()}_${inv.ownerId}`;
       const notif = {
         id: notifId,
         userId: inv.ownerId,
         title: '🚨 Platform Invoice Payment Due',
-        body: `Your PropItHub platform subscription invoice #${inv.id} for ${getCurrencySymbol(inv.currency)}${(inv.amount || 0).toLocaleString(getLocaleForCurrency(inv.currency))} is outstanding. Please settle to maintain uninterrupted access.`,
+        body: `Your Propithub platform subscription invoice #${inv.id} for ${getCurrencySymbol(inv.currency)}${(inv.amount || 0).toLocaleString(getLocaleForCurrency(inv.currency))} is outstanding. Please settle to maintain uninterrupted access.`,
         link: '/owner/plan',
         isRead: false,
         createdAt: new Date().toISOString(),
       };
 
-      // 1. Persist notification to Firestore so owner sees it on next login
       if (isFirebaseConfigured && inv.ownerId) {
         setDoc(doc(db, 'notifications', notifId), notif).catch(console.warn);
       }
 
-      // 2. Fire SMS + Email via configured Twilio / SendGrid
       await logCommunication({
         type: 'platform_invoice_reminder',
         category: 'subscription',
@@ -248,716 +393,499 @@ export const PlatformInvoicesPage: React.FC = () => {
         body: notif.body,
         channels: ['in_app', 'sms', 'email'],
         recipientId: inv.ownerId,
-        recipientName: inv.ownerName,
+        recipientName: resolveOwnerDisplayName(inv),
         recipientRole: 'owner',
-        recipientContact: {
-          email: inv.ownerEmail || ownerUser?.email,
-          phone: ownerUser?.phone,
-        },
+        recipientContact: { email: inv.ownerEmail },
         senderId: 'superadmin',
-        senderName: 'Platform Admin',
+        senderName: 'Platform Administrator',
         senderRole: 'superadmin',
-        relatedEntityId: inv.id,
         deliveryStatus: { inApp: 'delivered', email: 'skipped', sms: 'skipped' },
       });
 
-      showToast(`✓ Payment reminder dispatched to ${inv.ownerName} (${inv.ownerEmail}) via SMS, Email & In-App.`);
-    } catch (err) {
-      console.error('Invoice reminder dispatch error:', err);
-      showToast(`Reminder sent to ${inv.ownerName} via in-app notification.`);
+      showToast(`Reminder sent to owner for Invoice ${inv.id}.`);
+    } catch {
+      showToast(`Reminder logged for Invoice ${inv.id}.`);
     } finally {
       setRemindingId(null);
     }
   };
 
   return (
-    <div>
-      {/* Top Tabs Navigation */}
+    <div style={{ maxWidth: '1280px', margin: '0 auto', paddingBottom: '40px' }}>
+      {/* Primary Sub-Tabs Navigation */}
       <div className="tabs" style={{ marginBottom: '20px' }}>
-        <div
+        <button
+          type="button"
           className={`tab ${activeTab === 'history' ? 'active' : ''}`}
           onClick={() => setActiveTab('history')}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'none', border: 'none', cursor: 'pointer' }}
         >
           <FileText size={15} />
-          Issued Platform Invoices & Bulk Downloads
-        </div>
-        <div
+          Invoices
+        </button>
+        <button
+          type="button"
           className={`tab ${activeTab === 'template' ? 'active' : ''}`}
           onClick={() => setActiveTab('template')}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'none', border: 'none', cursor: 'pointer' }}
         >
           <LayoutTemplate size={15} />
-          Auto-Invoice Template & Format (SaaS General Format)
-        </div>
+          Invoice Template
+        </button>
       </div>
 
-      {/* TAB 1: ISSUED PLATFORM INVOICES & BULK DOWNLOADS */}
+      {/* TAB 1: ALL INVOICES & STUDIO */}
       {activeTab === 'history' && (
         <div>
-          {/* Top Banner / Actions */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="btn secondary btn-mobile-full"
-                onClick={() => exportPlatformInvoicesCSV(filteredInvoices)}
-                title="Export all currently filtered invoices to CSV spreadsheet"
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <Download size={14} /> Export CSV
-              </button>
-              <button
-                type="button"
-                className="btn secondary btn-mobile-full"
-                onClick={() => downloadBulkPlatformInvoicesPDF(filteredInvoices, timelineLabel)}
-                title="Download consolidated PDF report of platform invoices"
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <FileText size={14} /> Bulk Download PDF ({filteredInvoices.length})
-              </button>
-              <button
-                type="button"
-                className="btn secondary btn-mobile-full"
-                onClick={() => setActiveTab('template')}
-                title="Configure the general template and format used for automatic SaaS invoices"
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <LayoutTemplate size={14} /> Auto-Invoice Format
-              </button>
-              <button
-                type="button"
-                className="btn brass btn-mobile-full"
-                onClick={() => {
-                  setStudioInvoice(null);
-                  setStudioMode('create');
-                  setIsStudioOpen(true);
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-              >
-                <Plus size={16} /> Issue Invoice (Manual)
-              </button>
-            </div>
-          </div>
-
-          {/* Metrics Row */}
-          <div className="grid grid-4" style={{ marginBottom: '20px' }}>
+          {/* KPI Stats Row */}
+          <div className="grid grid-4" style={{ marginBottom: '22px' }}>
             <div className="stat">
               <div className="num" style={{ color: 'var(--ink)' }}>
                 {format(convert(totalCollectedUSD, 'USD', viewCurrency), viewCurrency)}
               </div>
-              <div className="lbl">Total Collected (SaaS)</div>
-              <div className="delta" style={{ color: 'var(--green)' }}>✓ Reconciled to ledger</div>
+              <div className="lbl">Total Collected</div>
             </div>
             <div className="stat">
               <div className="num" style={{ color: 'var(--brass)' }}>
                 {format(convert(pendingAmountUSD, 'USD', viewCurrency), viewCurrency)}
               </div>
               <div className="lbl">Outstanding Billed</div>
-              <div className="delta">Pending settlements</div>
             </div>
             <div className="stat">
               <div className="num">{invoices.length}</div>
               <div className="lbl">Total Platform Invoices</div>
-              <div className="delta">{invoices.filter((i) => i.status === 'paid').length} settled</div>
             </div>
             <div className="stat">
               <div className="num" style={{ color: overdueCount > 0 ? '#DC2626' : 'var(--ink)' }}>{overdueCount}</div>
               <div className="lbl">Past Due Accounts</div>
-              <div className="delta" style={{ color: overdueCount > 0 ? '#DC2626' : 'var(--ink-soft)' }}>
-                {overdueCount > 0 ? 'Requires follow-up' : 'All accounts current'}
-              </div>
             </div>
           </div>
 
-          {/* Timeline & Status Filters Bar */}
-          <div className="panel" style={{ marginBottom: '20px', background: '#FAFAF7', border: '1px solid var(--line)' }}>
-            <div className="panel-body" style={{ padding: '14px 18px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                
-                {/* Timeline quick filter tabs */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', alignItems: 'center', gap: '4px', marginRight: '4px' }}>
-                    <Calendar size={14} /> Timeline:
-                  </span>
-                  {(
-                    [
-                      { id: 'all', label: 'All Time' },
-                      { id: 'this_month', label: 'This Month' },
-                      { id: 'last_month', label: 'Last Month' },
-                      { id: 'this_quarter', label: 'This Quarter' },
-                      { id: 'custom', label: 'Custom Range' },
-                    ] as const
-                  ).map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`btn small ${timelineFilter === item.id ? 'primary' : 'secondary'}`}
-                      style={{
-                        padding: '4px 10px',
-                        fontSize: '12px',
-                        fontWeight: timelineFilter === item.id ? 600 : 400,
-                      }}
-                      onClick={() => setTimelineFilter(item.id)}
+          {/* CARD 1: INVOICE STUDIO (Streamlined creation matching HTML simulator) */}
+          <div className="panel" style={{ marginBottom: '24px' }}>
+            <div className="panel-head" style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--ink)' }}>Invoice Studio</div>
+              </div>
+            </div>
+            <div className="panel-body" style={{ padding: '20px' }}>
+              <form onSubmit={handleIssueInvoice}>
+                <div className="grid grid-4" style={{ gap: '14px', marginBottom: '14px' }}>
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Property Owner *</label>
+                    <select
+                      value={formOwnerId}
+                      onChange={(e) => setFormOwnerId(e.target.value)}
+                      required
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
                     >
-                      {item.label}
-                    </button>
-                  ))}
+                      <option value="">Choose owner...</option>
+                      {owners.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.displayName || (o as any).name || o.email} ({o.email})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Subscription Tier</label>
+                    <select
+                      value={formPlanId}
+                      onChange={(e) => setFormPlanId(e.target.value)}
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                    >
+                      {activePlans.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} (USD {p.price}/mo)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Amount Override (blank = plan price)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={formAmountOverride}
+                      onChange={(e) => setFormAmountOverride(e.target.value)}
+                      placeholder="e.g. 79"
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                    />
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Tax %</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={formTaxPercent}
+                      onChange={(e) => setFormTaxPercent(Number(e.target.value) || 0)}
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                    />
+                  </div>
                 </div>
 
-                {/* Status selector */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <Filter size={13} /> Status:
-                  </span>
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value as any)}
-                    style={{ padding: '4px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--line)' }}
+                <div className="grid grid-4" style={{ gap: '14px', marginBottom: '16px' }}>
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Period Start</label>
+                    <input
+                      type="date"
+                      value={formPeriodStart}
+                      onChange={(e) => setFormPeriodStart(e.target.value)}
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                    />
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Period End</label>
+                    <input
+                      type="date"
+                      value={formPeriodEnd}
+                      onChange={(e) => setFormPeriodEnd(e.target.value)}
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                    />
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Due Date</label>
+                    <input
+                      type="date"
+                      value={formDueDate}
+                      onChange={(e) => setFormDueDate(e.target.value)}
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                    />
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600 }}>Notes</label>
+                    <input
+                      type="text"
+                      value={formNotes}
+                      onChange={(e) => setFormNotes(e.target.value)}
+                      placeholder="e.g. Multi-property cloud plan"
+                      style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    onClick={handlePreviewDraft}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                   >
-                    <option value="all">All Statuses ({invoices.length})</option>
-                    <option value="issued">Issued ({invoices.filter((i) => i.status === 'issued').length})</option>
-                    <option value="paid">Paid ({invoices.filter((i) => i.status === 'paid').length})</option>
-                    <option value="overdue">Overdue ({invoices.filter((i) => i.status === 'overdue').length})</option>
-                    <option value="void">Void ({invoices.filter((i) => i.status === 'void').length})</option>
+                    <Eye size={14} /> Preview Draft
+                  </button>
+                  <button
+                    type="submit"
+                    className={`btn brass ${isIssuing ? 'btn-processing' : ''}`}
+                    disabled={isIssuing}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <ButtonProcessing
+                      loading={isIssuing}
+                      loadingText="Issuing Invoice..."
+                      defaultText="Issue Invoice"
+                      icon={<Plus size={15} />}
+                    />
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          {/* CARD 2: ALL INVOICES (Minimal table matching HTML simulator) */}
+          <div className="panel">
+            <div className="panel-head" style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', flexWrap: 'wrap', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--ink)' }}>All Invoices</div>
+                    <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                      {filteredInvoices.length} {filteredInvoices.length === 1 ? 'record' : 'records'} found
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      onClick={() => exportPlatformInvoicesCSV(filteredInvoices)}
+                      title="Export all currently filtered invoices to CSV spreadsheet"
+                      style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 10px', fontSize: '11.5px' }}
+                    >
+                      <Download size={13} /> Export CSV
+                    </button>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      onClick={() => downloadBulkPlatformInvoicesPDF(filteredInvoices, timelineLabel)}
+                      title="Download consolidated PDF report of platform invoices"
+                      style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 10px', fontSize: '11.5px' }}
+                    >
+                      <FileText size={13} /> Bulk Download PDF ({filteredInvoices.length})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick Filters */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    placeholder="Search owner or ID..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    style={{ padding: '5px 10px', fontSize: '12px', width: '180px' }}
+                  />
+
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    {(['all', 'issued', 'paid', 'overdue', 'void'] as const).map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        className={`btn small ${statusFilter === st ? 'primary' : 'secondary'}`}
+                        style={{ padding: '4px 10px', fontSize: '11.5px', textTransform: 'capitalize' }}
+                        onClick={() => setStatusFilter(st)}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+
+                  <select
+                    value={timelineFilter}
+                    onChange={(e) => setTimelineFilter(e.target.value as any)}
+                    style={{ padding: '5px 8px', fontSize: '12px' }}
+                  >
+                    <option value="all">All Time</option>
+                    <option value="this_month">This Month</option>
+                    <option value="last_month">Last Month</option>
+                    <option value="this_quarter">This Quarter</option>
                   </select>
                 </div>
               </div>
-
-              {/* Custom Date Pickers */}
-              {timelineFilter === 'custom' && (
-                <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed var(--line)', display: 'flex', gap: '12px', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>From:</span>
-                    <input
-                      type="date"
-                      value={customStartDate}
-                      onChange={(e) => setCustomStartDate(e.target.value)}
-                      style={{ padding: '4px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--line)' }}
-                    />
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>To:</span>
-                    <input
-                      type="date"
-                      value={customEndDate}
-                      onChange={(e) => setCustomEndDate(e.target.value)}
-                      style={{ padding: '4px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--line)' }}
-                    />
-                  </div>
-                </div>
-              )}
             </div>
-          </div>
 
-          {/* Search bar */}
-          <div style={{ marginBottom: '16px' }}>
-            <input
-              type="text"
-              placeholder="Search by invoice ID, owner name, email, or subscription plan..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ width: '100%', padding: '10px 14px', borderRadius: 'var(--radius)', border: '1px solid var(--line)' }}
-            />
-          </div>
-
-          {/* Invoices Table */}
-          <div className="panel">
             <div className="panel-body" style={{ padding: 0 }}>
-              <div className="desktop-table-view">
-                <div className="table-wrap">
-                  <table>
-                    <thead>
+              <div className="desktop-table-container">
+                <table className="table" style={{ margin: 0, width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: '110px' }}>Invoice</th>
+                      <th>Owner</th>
+                      <th>Plan</th>
+                      <th>Period</th>
+                      <th style={{ textAlign: 'right' }}>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
+                      <th style={{ textAlign: 'center' }}>Status</th>
+                      <th style={{ textAlign: 'right', width: '220px' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredInvoices.length === 0 ? (
                       <tr>
-                        <th>Invoice ID</th>
-                        <th>Owner / Subscriber</th>
-                        <th>Plan / Tier</th>
-                        <th>Amount</th>
-                        <th>Mode of Payment</th>
-                        <th>Issued Date</th>
-                        <th>Due Date</th>
-                        <th>Status</th>
-                        <th>Actions</th>
+                        <td colSpan={7} style={{ textAlign: 'center', padding: '36px', color: 'var(--ink-soft)' }}>
+                          No platform invoices found.
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {filteredInvoices.length === 0 ? (
-                        <tr>
-                          <td colSpan={9} style={{ textAlign: 'center', padding: '40px', color: 'var(--ink-soft)' }}>
-                            No platform invoices match the selected criteria.
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredInvoices.map((inv) => {
-                          const isPaid = inv.status === 'paid';
-                          const isOverdue = inv.status === 'overdue';
+                    ) : (
+                      filteredInvoices.map((inv) => {
+                        const isPaid = inv.status === 'paid';
+                        const isDue = inv.status === 'issued' || inv.status === 'overdue';
 
-                          return (
-                            <tr key={inv.id}>
-                              <td>
-                                <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--ink)' }}>
-                                  {inv.id}
-                                </span>
-                              </td>
-                              <td>
-                                <div style={{ fontWeight: 600 }}>{inv.ownerName}</div>
-                                <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>{inv.ownerEmail}</div>
-                              </td>
-                              <td>
-                                <span className="badge" style={{ background: 'var(--surface-sunken)', color: 'var(--ink)', fontWeight: 600 }}>
-                                  {inv.planName}
-                                </span>
-                                {inv.billingCycle && (
-                                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'capitalize', marginTop: '2px' }}>
-                                    {inv.billingCycle}
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                <div style={{ fontWeight: 700, fontSize: '14px' }}>
-                                  {format(convert(inv.total || inv.amount || 0, inv.currency || 'USD', viewCurrency), viewCurrency)}
-                                </div>
-                                {inv.tax ? (
-                                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
-                                    +{format(convert(inv.tax, inv.currency || 'USD', viewCurrency), viewCurrency)} {inv.taxLabel || 'Tax'}
-                                  </div>
-                                ) : null}
-                              </td>
-                              <td>
-                                {inv.paymentMethod ? (
-                                  <div>
-                                    <span
-                                      className="badge"
-                                      style={{
-                                        background: 'var(--surface-sunken)',
-                                        color: 'var(--ink)',
-                                        fontWeight: 700,
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '4px',
-                                        fontSize: '11px',
-                                      }}
-                                    >
-                                      {inv.paymentMethod.toLowerCase().includes('easebuzz')
-                                        ? '⚡ Easebuzz'
-                                        : inv.paymentMethod.toLowerCase().includes('stripe')
-                                        ? '💳 Stripe'
-                                        : inv.paymentMethod.toLowerCase().includes('razorpay')
-                                        ? '⚡ Razorpay'
-                                        : inv.paymentMethod.toLowerCase().includes('upi')
-                                        ? '📱 UPI'
-                                        : inv.paymentMethod.toLowerCase().includes('paypal')
-                                        ? '🅿️ PayPal'
-                                        : inv.paymentMethod.toLowerCase().includes('bank')
-                                        ? '🏦 Bank Wire'
-                                        : inv.paymentMethod.toLowerCase().includes('cash')
-                                        ? '💵 Cash'
-                                        : inv.paymentMethod}
-                                    </span>
-                                    {inv.transactionRef && (
-                                      <div
-                                        style={{ fontSize: '10px', color: 'var(--ink-soft)', fontFamily: 'monospace', marginTop: '2px' }}
-                                        title={`Txn Ref: ${inv.transactionRef}`}
-                                      >
-                                        {inv.transactionRef.length > 16 ? `${inv.transactionRef.slice(0, 16)}...` : inv.transactionRef}
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : isPaid ? (
-                                  <span className="badge green" style={{ fontSize: '11px' }}>
-                                    ✓ Reconciled
-                                  </span>
-                                ) : (
-                                  <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                                    —
-                                  </span>
-                                )}
-                              </td>
-                              <td>{formatInvoiceDate(inv.issueDate)}</td>
-                              <td>
-                                <span style={{ color: isOverdue ? '#DC2626' : 'inherit', fontWeight: isOverdue ? 600 : 400 }}>
-                                  {formatInvoiceDate(inv.dueDate)}
-                                </span>
-                              </td>
-                              <td>
-                                <span
-                                  className={`badge ${
-                                    isPaid
-                                      ? 'green'
-                                      : isOverdue
-                                      ? 'red'
-                                      : inv.status === 'issued'
-                                      ? 'amber'
-                                      : 'secondary'
-                                  }`}
+                        return (
+                          <tr key={inv.id}>
+                            <td>
+                              <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '12.5px' }}>
+                                {inv.id}
+                              </span>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 600, fontSize: '13.5px' }}>{resolveOwnerDisplayName(inv)}</div>
+                              <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>{inv.ownerEmail}</div>
+                            </td>
+                            <td>
+                              <span className="badge" style={{ background: 'var(--surface-sunken)', color: 'var(--ink)', fontWeight: 600 }}>
+                                {inv.planName}
+                              </span>
+                            </td>
+                            <td style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>
+                              {formatInvoiceDate(inv.periodStart)} to {formatInvoiceDate(inv.periodEnd)}
+                            </td>
+                            <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '14px' }}>
+                              <CurrencyAmount amount={inv.total || inv.amount || 0} currency={inv.currency || 'USD'} />
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <span
+                                className={`badge ${
+                                  isPaid ? 'green' : inv.status === 'overdue' ? 'red' : inv.status === 'issued' ? 'amber' : 'grey'
+                                }`}
+                                style={{ textTransform: 'capitalize' }}
+                              >
+                                {inv.status}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  onClick={() => {
+                                    setStudioInvoice(inv);
+                                    setStudioMode('preview');
+                                    setIsStudioOpen(true);
+                                  }}
+                                  title="View official document"
                                 >
-                                  {inv.status.toUpperCase()}
-                                </span>
-                              </td>
-                              <td>
-                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                  <button
-                                    type="button"
-                                    className="btn secondary small"
-                                    onClick={() => {
-                                      setStudioInvoice(inv);
-                                      setStudioMode('preview');
-                                      setIsStudioOpen(true);
-                                    }}
-                                    title="Preview formal printable invoice voucher"
-                                  >
-                                    View
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn secondary small"
-                                    onClick={() => downloadSinglePlatformInvoicePDF(inv)}
-                                    title="Download single PDF invoice"
-                                  >
-                                    <Download size={12} /> PDF
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn secondary small"
-                                    onClick={() => {
-                                      setStudioInvoice(inv);
-                                      setStudioMode('edit');
-                                      setIsStudioOpen(true);
-                                    }}
-                                    title="Edit invoice parameters & terms"
-                                  >
-                                    Edit
-                                  </button>
-                                  {!isPaid && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className={`btn brass small ${markingPaidId === inv.id ? 'btn-processing' : ''}`}
-                                        disabled={markingPaidId === inv.id}
-                                        onClick={() => handleMarkPaid(inv)}
-                                        title="Mark invoice as paid upon bank or stripe settlement"
-                                      >
-                                        <ButtonProcessing
-                                          loading={markingPaidId === inv.id}
-                                          loadingText="Updating..."
-                                          defaultText="Mark Paid"
-                                        />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={`btn secondary small ${remindingId === inv.id ? 'btn-processing' : ''}`}
-                                        disabled={remindingId === inv.id}
-                                        onClick={() => handleSendReminder(inv)}
-                                        title="Send reminder notice"
-                                      >
-                                        <ButtonProcessing
-                                          loading={remindingId === inv.id}
-                                          loadingText="..."
-                                          defaultText=""
-                                          icon={<Send size={12} />}
-                                        />
-                                      </button>
-                                    </>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Mobile Card View */}
-              <div className="mobile-card-view" style={{ padding: '12px' }}>
-                {filteredInvoices.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '24px', color: 'var(--ink-soft)' }}>
-                    No platform invoices match the selected criteria.
-                  </div>
-                ) : (
-                  filteredInvoices.map((inv) => {
-                    const isPaid = inv.status === 'paid';
-                    const isOverdue = inv.status === 'overdue';
-
-                    return (
-                      <div key={inv.id} className="staff-card" style={{ padding: '14px', marginBottom: '12px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                          <div>
-                            <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '13px', color: 'var(--ink)' }}>
-                              {inv.id}
-                            </span>
-                            <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)', marginTop: '2px' }}>
-                              {inv.ownerName}
-                            </div>
-                            <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>{inv.ownerEmail}</div>
-                          </div>
-                          <span
-                            className={`badge ${
-                              isPaid
-                                ? 'green'
-                                : isOverdue
-                                ? 'red'
-                                : inv.status === 'issued'
-                                ? 'amber'
-                                : 'secondary'
-                            }`}
-                          >
-                            {inv.status.toUpperCase()}
-                          </span>
-                        </div>
-
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', marginBottom: '10px' }}>
-                          <span className="badge" style={{ background: 'var(--surface-sunken)', color: 'var(--ink)', fontWeight: 600 }}>
-                            {inv.planName}
-                          </span>
-                          {inv.billingCycle && (
-                            <span className="badge grey" style={{ textTransform: 'capitalize' }}>
-                              {inv.billingCycle}
-                            </span>
-                          )}
-                          <span style={{ fontWeight: 800, fontSize: '15px', marginLeft: 'auto', color: 'var(--brass)' }}>
-                            {getCurrencySymbol(inv.currency)}{((inv.total || inv.amount) ?? 0).toLocaleString(getLocaleForCurrency(inv.currency))}
-                          </span>
-                        </div>
-
-                        <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span>
-                            Mode:{' '}
-                            {inv.paymentMethod ? (
-                              <strong style={{ color: 'var(--ink)' }}>
-                                {inv.paymentMethod.toLowerCase().includes('easebuzz')
-                                  ? '⚡ Easebuzz'
-                                  : inv.paymentMethod.toLowerCase().includes('razorpay')
-                                  ? '⚡ Razorpay'
-                                  : inv.paymentMethod.toLowerCase().includes('stripe')
-                                  ? '💳 Stripe'
-                                  : inv.paymentMethod.toLowerCase().includes('upi')
-                                  ? '📱 UPI'
-                                  : inv.paymentMethod.toLowerCase().includes('paypal')
-                                  ? '🅿️ PayPal'
-                                  : inv.paymentMethod.toLowerCase().includes('bank')
-                                  ? '🏦 Bank Wire'
-                                  : inv.paymentMethod}
-                              </strong>
-                            ) : isPaid ? (
-                              <span className="badge green" style={{ fontSize: '10px' }}>Reconciled</span>
-                            ) : (
-                              '—'
-                            )}
-                          </span>
-                          {inv.transactionRef && (
-                            <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--ink-soft)' }} title={`Txn: ${inv.transactionRef}`}>
-                              Ref: {inv.transactionRef.length > 12 ? `${inv.transactionRef.slice(0, 12)}...` : inv.transactionRef}
-                            </span>
-                          )}
-                        </div>
-
-                        <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '12px', display: 'flex', justifyContent: 'space-between' }}>
-                          <span>Issued: {formatInvoiceDate(inv.issueDate)}</span>
-                          <span style={{ color: isOverdue ? '#DC2626' : 'inherit', fontWeight: isOverdue ? 700 : 400 }}>
-                            Due: {formatInvoiceDate(inv.dueDate)}
-                          </span>
-                        </div>
-
-                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                          <button
-                            type="button"
-                            className="btn secondary small btn-mobile-full"
-                            style={{ flex: '1 1 auto' }}
-                            onClick={() => {
-                              setStudioInvoice(inv);
-                              setStudioMode('preview');
-                              setIsStudioOpen(true);
-                            }}
-                          >
-                            View
-                          </button>
-                          <button
-                            type="button"
-                            className="btn secondary small btn-mobile-full"
-                            style={{ flex: '1 1 auto' }}
-                            onClick={() => downloadSinglePlatformInvoicePDF(inv)}
-                          >
-                            <Download size={12} /> PDF
-                          </button>
-                          <button
-                            type="button"
-                            className="btn secondary small btn-mobile-full"
-                            style={{ flex: '1 1 auto' }}
-                            onClick={() => {
-                              setStudioInvoice(inv);
-                              setStudioMode('edit');
-                              setIsStudioOpen(true);
-                            }}
-                          >
-                            Edit
-                          </button>
-                          {!isPaid && (
-                            <>
-                              <button
-                                type="button"
-                                className={`btn brass small btn-mobile-full ${markingPaidId === inv.id ? 'btn-processing' : ''}`}
-                                style={{ flex: '1 1 auto' }}
-                                disabled={markingPaidId === inv.id}
-                                onClick={() => handleMarkPaid(inv)}
-                              >
-                                <ButtonProcessing
-                                  loading={markingPaidId === inv.id}
-                                  loadingText="Updating..."
-                                  defaultText="Mark Paid"
-                                />
-                              </button>
-                              <button
-                                type="button"
-                                className={`btn secondary small btn-mobile-full ${remindingId === inv.id ? 'btn-processing' : ''}`}
-                                style={{ flex: '1 1 auto' }}
-                                disabled={remindingId === inv.id}
-                                onClick={() => handleSendReminder(inv)}
-                              >
-                                <ButtonProcessing
-                                  loading={remindingId === inv.id}
-                                  loadingText="Sending..."
-                                  defaultText="Reminder"
-                                  icon={<Send size={12} />}
-                                />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
+                                  <Eye size={12} style={{ marginRight: '3px' }} /> View
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  onClick={() => downloadSinglePlatformInvoicePDF(inv)}
+                                  title="Download PDF"
+                                >
+                                  <Download size={12} />
+                                </button>
+                                {isDue && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className={`btn brass small ${markingPaidId === inv.id ? 'btn-processing' : ''}`}
+                                      disabled={markingPaidId === inv.id}
+                                      onClick={() => handleMarkPaid(inv)}
+                                      title="Mark invoice paid"
+                                    >
+                                      <ButtonProcessing
+                                        loading={markingPaidId === inv.id}
+                                        loadingText="..."
+                                        defaultText="Mark paid"
+                                      />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn secondary small ${voidingId === inv.id ? 'btn-processing' : ''}`}
+                                      disabled={voidingId === inv.id}
+                                      onClick={() => handleVoidInvoice(inv)}
+                                      title="Void invoice"
+                                      style={{ color: '#DC2626' }}
+                                    >
+                                      Void
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn secondary small ${remindingId === inv.id ? 'btn-processing' : ''}`}
+                                      disabled={remindingId === inv.id}
+                                      onClick={() => handleSendReminder(inv)}
+                                      title="Send reminder notice"
+                                    >
+                                      <ButtonProcessing
+                                        loading={remindingId === inv.id}
+                                        loadingText="..."
+                                        defaultText=""
+                                        icon={<Send size={12} />}
+                                      />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 2: DEFAULT SAAS INVOICE FORMAT & LIVE PREVIEW (AUTOMATED BILLING FORMAT) */}
+      {/* TAB 2: INVOICE TEMPLATE & LIVE PREVIEW (Matching minimal HTML-model layout) */}
       {activeTab === 'template' && (
         <div>
-          {/* Top Banner with Save and View Controls */}
+          {/* Top Brief Card with Readiness Indicator & View Switcher */}
           <div
+            className="panel"
             style={{
+              marginBottom: '20px',
+              padding: '14px 20px',
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
-              marginBottom: '18px',
-              padding: '16px 20px',
-              background: '#FFFFFF',
-              borderRadius: 'var(--radius)',
-              border: '1px solid var(--line)',
               flexWrap: 'wrap',
               gap: '12px',
+              background: 'var(--surface)',
             }}
           >
             <div>
-              <div style={{ fontSize: '17px', fontWeight: 700, color: 'var(--ink)' }}>
-                SaaS Subscription Invoice Format & Live Template
+              <div style={{ fontSize: '13.5px', color: 'var(--ink)' }}>
+                The official invoice a property owner receives for platform subscriptions. Fill in the sections below and watch it update live.
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--green)', fontWeight: 600, marginTop: '2px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <CheckCircle size={13} /> Ready to use · Platform plan, owner details, amounts and dates fill in automatically.
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', background: 'var(--surface-sunken)', padding: '3px', borderRadius: '6px', gap: '3px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className={`btn small ${tmplViewMode === 'split' ? 'primary' : 'secondary'}`}
-                  onClick={() => setTmplViewMode('split')}
-                  style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                >
-                  Split View
-                </button>
-                <button
-                  type="button"
-                  className={`btn small ${tmplViewMode === 'edit' ? 'primary' : 'secondary'}`}
-                  onClick={() => setTmplViewMode('edit')}
-                  style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                >
-                  Edit Only
-                </button>
-                <button
-                  type="button"
-                  className={`btn small ${tmplViewMode === 'preview' ? 'primary' : 'secondary'}`}
-                  onClick={() => setTmplViewMode('preview')}
-                  style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                >
-                  Full Document Preview
-                </button>
-              </div>
-
+            <div style={{ display: 'flex', gap: '4px', background: 'var(--surface-sunken)', padding: '3px', borderRadius: '6px' }}>
               <button
                 type="button"
-                className={`btn brass btn-mobile-full ${isSavingTmpl ? 'btn-processing' : ''}`}
-                disabled={isSavingTmpl}
-                onClick={handleSavePlatformTemplate}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                className={`btn small ${tmplViewMode === 'split' ? 'primary' : 'secondary'}`}
+                onClick={() => setTmplViewMode('split')}
+                style={{ border: 'none', padding: '4px 10px', fontSize: '11.5px' }}
               >
-                <ButtonProcessing
-                  loading={isSavingTmpl}
-                  loadingText="Saving SaaS Format..."
-                  defaultText="Save General SaaS Format"
-                  icon={<Save size={15} />}
-                />
+                Split View
+              </button>
+              <button
+                type="button"
+                className={`btn small ${tmplViewMode === 'edit' ? 'primary' : 'secondary'}`}
+                onClick={() => setTmplViewMode('edit')}
+                style={{ border: 'none', padding: '4px 10px', fontSize: '11.5px' }}
+              >
+                Edit Only
+              </button>
+              <button
+                type="button"
+                className={`btn small ${tmplViewMode === 'preview' ? 'primary' : 'secondary'}`}
+                onClick={() => setTmplViewMode('preview')}
+                style={{ border: 'none', padding: '4px 10px', fontSize: '11.5px' }}
+              >
+                Full Preview
               </button>
             </div>
           </div>
 
-          {/* Main Content Grid: Editor & Live Document Preview */}
           <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns:
-                tmplViewMode === 'split' ? 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))' : '1fr',
-              gap: '24px',
-              alignItems: 'flex-start',
-            }}
+            className={`invoice-template-split-grid ${tmplViewMode === 'split' ? 'split-mode' : ''}`}
           >
-            {/* COLUMN 1: TEMPLATE CONFIGURATION FORMS */}
+            {/* LEFT COLUMN: 3 CONVERSATIONAL SECTIONS (EDIT MODE) */}
             {(tmplViewMode === 'split' || tmplViewMode === 'edit') && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-                {/* 1. Corporate Identity & Tax Registration */}
-                <div className="panel">
-                  <div className="panel-head" style={{ padding: '12px 18px' }}>
-                    <div style={{ fontWeight: 700, fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Building size={16} color="var(--brass)" /> 1. Propithub SaaS Legal Identity & Tax Registration
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {/* Section 1: Who is this from? */}
+                <div className="panel" style={{ margin: 0 }}>
+                  <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
+                    <div>
+                      <b style={{ fontSize: '13.5px' }}>1. Who is this from?</b>
                     </div>
                   </div>
-                  <div className="panel-body" style={{ padding: '18px' }}>
-                    <div className="grid grid-2" style={{ gap: '14px' }}>
-                      <div className="field" style={{ margin: 0 }}>
-                        <label>Corporate Legal Entity Name *</label>
-                        <input
-                          type="text"
-                          value={tmplIssuerName}
-                          onChange={(e) => setTmplIssuerName(e.target.value)}
-                          placeholder="e.g. Propithub Technologies Inc."
-                        />
-                      </div>
-                      <div className="field" style={{ margin: 0 }}>
-                        <label>Corporate Tax ID / EIN / VAT *</label>
-                        <input
-                          type="text"
-                          value={tmplIssuerTaxNo}
-                          onChange={(e) => setTmplIssuerTaxNo(e.target.value)}
-                          placeholder="e.g. US-EIN 84-2910391 / VAT-EU982148"
-                        />
-                      </div>
-                    </div>
-                    <div className="field" style={{ margin: '12px 0 0' }}>
-                      <label>Global Headquarters Address</label>
+                  <div className="panel-body" style={{ padding: '16px 18px' }}>
+                    <div className="field" style={{ marginBottom: '12px' }}>
+                      <label>Platform legal entity name</label>
                       <input
                         type="text"
-                        value={tmplIssuerAddress}
-                        onChange={(e) => setTmplIssuerAddress(e.target.value)}
-                        placeholder="500 Howard Street, Suite 400, San Francisco, CA 94105, USA"
+                        value={tmplIssuerName}
+                        onChange={(e) => setTmplIssuerName(e.target.value)}
+                        placeholder="e.g. Propithub SaaS Technologies Inc."
                       />
                     </div>
-                    <div className="grid grid-2" style={{ gap: '14px', marginTop: '12px' }}>
+                    <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Corporate Support Phone</label>
+                        <label>Support phone</label>
                         <input
                           type="text"
                           value={tmplIssuerPhone}
@@ -966,7 +894,7 @@ export const PlatformInvoicesPage: React.FC = () => {
                         />
                       </div>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Corporate Billing Email</label>
+                        <label>Billing email</label>
                         <input
                           type="email"
                           value={tmplIssuerEmail}
@@ -975,20 +903,18 @@ export const PlatformInvoicesPage: React.FC = () => {
                         />
                       </div>
                     </div>
-                  </div>
-                </div>
-
-                {/* 2. SaaS Tax Configuration */}
-                <div className="panel">
-                  <div className="panel-head" style={{ padding: '12px 18px' }}>
-                    <div style={{ fontWeight: 700, fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Percent size={16} color="var(--brass)" /> 2. SaaS Subscription Tax Rate Configuration
+                    <div className="field" style={{ margin: 0, marginBottom: '12px' }}>
+                      <label>Corporate headquarters address</label>
+                      <input
+                        type="text"
+                        value={tmplIssuerAddress}
+                        onChange={(e) => setTmplIssuerAddress(e.target.value)}
+                        placeholder="100 Montgomery St, Suite 1800, San Francisco, CA"
+                      />
                     </div>
-                  </div>
-                  <div className="panel-body" style={{ padding: '18px' }}>
-                    <div className="grid grid-2" style={{ gap: '14px' }}>
+                    <div className="grid grid-2" style={{ gap: '12px' }}>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Tax Label on Invoice</label>
+                        <label>Tax name</label>
                         <input
                           type="text"
                           value={tmplTaxLabel}
@@ -997,38 +923,30 @@ export const PlatformInvoicesPage: React.FC = () => {
                         />
                       </div>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Default Tax Rate (%)</label>
+                        <label>Rate (%)</label>
                         <input
                           type="number"
-                          value={tmplTaxPercent === 0 ? '' : tmplTaxPercent}
-                          onWheel={(e) => (e.target as HTMLElement).blur()}
-                          onChange={(e) => {
-                            const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                            setTmplTaxPercent(cleaned === '' ? 0 : Number(cleaned));
-                          }}
-                          placeholder="0"
                           min="0"
                           max="100"
+                          value={tmplTaxPercent}
+                          onChange={(e) => setTmplTaxPercent(Number(e.target.value) || 0)}
                         />
                       </div>
                     </div>
-                    <p className="hint" style={{ marginTop: '8px', fontSize: '11.5px' }}>
-                      Tax will be dynamically computed and itemized on all SaaS subscription invoices generated automatically.
-                    </p>
                   </div>
                 </div>
 
-                {/* 3. Global Bank Wire & Settlement Accounts */}
-                <div className="panel">
-                  <div className="panel-head" style={{ padding: '12px 18px' }}>
-                    <div style={{ fontWeight: 700, fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <CreditCard size={16} color="var(--brass)" /> 3. Treasury Bank Wire Remittance Details
+                {/* Section 2: How should owners pay? */}
+                <div className="panel" style={{ margin: 0 }}>
+                  <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
+                    <div>
+                      <b style={{ fontSize: '13.5px' }}>2. How should owners pay?</b>
                     </div>
                   </div>
-                  <div className="panel-body" style={{ padding: '18px' }}>
-                    <div className="grid grid-2" style={{ gap: '14px' }}>
+                  <div className="panel-body" style={{ padding: '16px 18px' }}>
+                    <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Treasury Bank Name</label>
+                        <label>Treasury bank name</label>
                         <input
                           type="text"
                           value={tmplBankName}
@@ -1037,18 +955,18 @@ export const PlatformInvoicesPage: React.FC = () => {
                         />
                       </div>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Account Holder Name</label>
+                        <label>Account holder name</label>
                         <input
                           type="text"
                           value={tmplAccountName}
                           onChange={(e) => setTmplAccountName(e.target.value)}
-                          placeholder="e.g. Propithub Technologies Inc - Corporate Treasury"
+                          placeholder="Propithub Technologies Inc. — Operating Treasury"
                         />
                       </div>
                     </div>
-                    <div className="grid grid-2" style={{ gap: '14px', marginTop: '12px' }}>
+                    <div className="grid grid-2" style={{ gap: '12px' }}>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Account / IBAN Number</label>
+                        <label>Account number or IBAN</label>
                         <input
                           type="text"
                           value={tmplAccountNumber}
@@ -1057,7 +975,7 @@ export const PlatformInvoicesPage: React.FC = () => {
                         />
                       </div>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>SWIFT / BIC / Routing Code</label>
+                        <label>SWIFT / BIC / Routing code</label>
                         <input
                           type="text"
                           value={tmplSwift}
@@ -1069,273 +987,323 @@ export const PlatformInvoicesPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 4. Terms & Conditions & Signatory */}
-                <div className="panel">
-                  <div className="panel-head" style={{ padding: '12px 18px' }}>
-                    <div style={{ fontWeight: 700, fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <ShieldCheck size={16} color="var(--brass)" /> 4. Master SaaS Clauses & Corporate Signatory
-                    </div>
-                  </div>
-                  <div className="panel-body" style={{ padding: '18px' }}>
+                {/* Collapsible: More options */}
+                <details style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '12px 18px' }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '13px', color: 'var(--ink)' }}>
+                    More options <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 400 }}>· Tax ID / EIN, signatory, footer notes & terms</span>
+                  </summary>
+                  <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <div className="field" style={{ margin: 0 }}>
-                      <label>Terms & Conditions (T&C Clauses on Voucher)</label>
-                      <textarea
-                        rows={5}
-                        value={tmplTerms}
-                        onChange={(e) => setTmplTerms(e.target.value)}
-                        style={{ fontFamily: 'monospace', fontSize: '12px', lineHeight: 1.5 }}
+                      <label>Tax registration number (GSTIN / PAN / VAT / EIN)</label>
+                      <input
+                        type="text"
+                        value={tmplIssuerTaxNo}
+                        onChange={(e) => setTmplIssuerTaxNo(e.target.value)}
+                        placeholder="e.g. US-EIN: 84-2918472"
                       />
                     </div>
-                    <div className="grid grid-2" style={{ gap: '14px', marginTop: '14px' }}>
+                    <div className="grid grid-2" style={{ gap: '12px' }}>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Authorized Signatory Name</label>
+                        <label>Signed by (name)</label>
                         <input
                           type="text"
                           value={tmplSignatory}
                           onChange={(e) => setTmplSignatory(e.target.value)}
-                          placeholder="e.g. Elena Rostova"
+                          placeholder="Platform Chief Financial Controller"
                         />
                       </div>
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Signatory Corporate Role / Title</label>
+                        <label>Signatory role / title</label>
                         <input
                           type="text"
                           value={tmplSignatoryRole}
                           onChange={(e) => setTmplSignatoryRole(e.target.value)}
-                          placeholder="e.g. Chief Financial Officer & Corporate Controller"
+                          placeholder="Authorized Financial Signatory"
                         />
                       </div>
                     </div>
-                    <div className="field" style={{ margin: '14px 0 0' }}>
-                      <label>Footer Remittance Remark / Partnership Note</label>
+                    <div className="field" style={{ margin: 0 }}>
+                      <label>Note at the bottom</label>
                       <input
                         type="text"
                         value={tmplNotes}
                         onChange={(e) => setTmplNotes(e.target.value)}
-                        placeholder="Thank you for partnering with Propithub for your real estate operations."
+                        placeholder="Thank you for choosing Propithub for your real estate portfolio operations."
+                      />
+                    </div>
+                    <div className="field" style={{ margin: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <label style={{ margin: 0 }}>Terms & Conditions (one per line)</label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', fontWeight: 600, color: 'var(--ink)', cursor: 'pointer', margin: 0 }}>
+                          <input
+                            type="checkbox"
+                            checked={tmplIncludeTerms}
+                            onChange={(e) => setTmplIncludeTerms(e.target.checked)}
+                            style={{ width: '15px', height: '15px', accentColor: 'var(--brass)', cursor: 'pointer' }}
+                          />
+                          Show on invoice
+                        </label>
+                      </div>
+                      <textarea
+                        rows={4}
+                        value={tmplTerms}
+                        onChange={(e) => setTmplTerms(e.target.value)}
+                        style={{ fontSize: '12px', lineHeight: '1.4' }}
                       />
                     </div>
                   </div>
-                </div>
+                </details>
 
-                {/* Save Button */}
-                <button
-                  type="button"
-                  className="btn brass"
-                  onClick={handleSavePlatformTemplate}
-                  style={{ padding: '12px', fontSize: '14px', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
-                >
-                  <Save size={16} /> Save General SaaS Format (Apply to Automated Platform Subscriptions)
-                </button>
+                {/* Single Clean Save Button */}
+                <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '6px' }}>
+                  <button
+                    type="button"
+                    className={`btn brass ${isSavingTmpl ? 'btn-processing' : ''}`}
+                    disabled={isSavingTmpl}
+                    onClick={handleSavePlatformTemplate}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px' }}
+                  >
+                    <ButtonProcessing
+                      loading={isSavingTmpl}
+                      loadingText="Saving Template..."
+                      defaultText="Save Platform Invoice Format"
+                      icon={<Save size={15} />}
+                    />
+                  </button>
+                </div>
               </div>
             )}
 
-            {/* COLUMN 2: LIVE A4 SAAS VOUCHER PREVIEW */}
+            {/* RIGHT COLUMN: CLEAN MODERN LIVE PREVIEW (MATCHING OWNER & HTML MODEL) */}
             {(tmplViewMode === 'split' || tmplViewMode === 'preview') && (
-              <div
-                style={{
-                  background: 'var(--surface-sunken)',
-                  padding: '24px 18px',
-                  borderRadius: 'var(--radius)',
-                  border: '1px solid var(--line)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                }}
-              >
-                <div style={{ width: '100%', maxWidth: '820px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink)' }}>
-                    <Eye size={15} color="var(--brass)" /> Live SaaS Document Preview (Subscriber Receipt)
-                  </div>
-                  <span className="badge green" style={{ fontSize: '11px' }}>
-                    LIVE REACTIVE PREVIEW
-                  </span>
+              <div className="invoice-template-preview-col">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <b style={{ fontSize: '12.5px', color: 'var(--ink)' }}>Live preview</b>
+                  <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Sample subscription billing</span>
                 </div>
 
-                {/* Official A4 Invoice Voucher Sheet */}
                 <div
+                  className="invoice-sheet invoice-template-preview-sheet"
                   style={{
-                    width: '100%',
-                    maxWidth: '820px',
-                    background: 'var(--surface)',
-                    padding: '36px 32px',
-                    borderRadius: '6px',
-                    boxShadow: '0 8px 30px rgba(0,0,0,0.06)',
-                    border: '1px solid var(--line)',
+                    background: '#FFFFFF',
+                    border: '1px solid #E5E7EB',
+                    borderRadius: '8px',
+                    padding: '28px 30px',
+                    boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
+                    fontSize: '12.5px',
+                    color: '#111827',
+                    fontFamily: "'Inter', sans-serif",
                   }}
                 >
-                  {/* Voucher Header */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid var(--line)', paddingBottom: '16px', marginBottom: '20px' }}>
+                  {/* Header */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px', marginBottom: '18px' }}>
                     <div>
-                      <div style={{ fontSize: '24px', fontWeight: 800, letterSpacing: '-0.5px' }}>
-                        PROPIT<span style={{ color: 'var(--brass)' }}>HUB</span>
+                      <div style={{ fontSize: '16px', fontWeight: 800, color: '#111827' }}>
+                        {tmplIssuerName || 'Propithub SaaS Technologies Inc.'}
                       </div>
-                      <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)', marginTop: '4px' }}>
-                        {tmplIssuerName || 'Propithub Technologies Inc.'}
-                      </div>
-                      {tmplIssuerTaxNo && (
-                        <div style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--brass)', marginTop: '2px' }}>
-                          TAX REG: {tmplIssuerTaxNo}
-                        </div>
-                      )}
-                      <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px', maxWidth: '280px', lineHeight: 1.4 }}>
-                        {tmplIssuerAddress}
-                      </div>
-                      <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                        {tmplIssuerPhone} {tmplIssuerPhone && tmplIssuerEmail ? '•' : ''} {tmplIssuerEmail}
+                      <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '2px', lineHeight: '1.4' }}>
+                        {tmplIssuerAddress ? <>{tmplIssuerAddress}<br /></> : null}
+                        {tmplIssuerEmail ? <>{tmplIssuerEmail}<br /></> : null}
+                        {tmplIssuerPhone ? <>{tmplIssuerPhone}<br /></> : null}
+                        {tmplIssuerTaxNo ? <div style={{ color: '#059669', fontWeight: 600 }}>{tmplIssuerTaxNo}</div> : null}
+                        {!tmplIssuerAddress && !tmplIssuerEmail && !tmplIssuerPhone && !tmplIssuerTaxNo && 'Your address, email & phone'}
                       </div>
                     </div>
-
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '19px', fontWeight: 800, color: 'var(--ink)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                        SAAS SUBSCRIPTION INVOICE
+                      <div style={{ fontSize: '15px', fontWeight: 800, color: '#111827' }}>TAX INVOICE</div>
+                      <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '2px' }}>
+                        PLATFORM SUBSCRIPTION RECEIPT<br />
+                        No. PI-2026-0042<br />
+                        {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </div>
-                      <div style={{ fontFamily: 'monospace', fontSize: '13px', fontWeight: 700, color: 'var(--brass)', marginTop: '4px' }}>
-                        #PINV-AUTO-DEMO
-                      </div>
-                      <div style={{ marginTop: '6px', display: 'inline-block', padding: '3px 8px', background: '#DCFCE7', color: '#166534', border: '1px solid #86EFAC', borderRadius: '4px', fontSize: '11px', fontWeight: 800 }}>
-                        SETTLED / PAID
-                      </div>
-                      <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '6px' }}>
-                        Date: {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Billed To Subscriber */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '22px', background: 'var(--surface-sunken)', padding: '14px', borderRadius: '4px', border: '1px solid var(--line)' }}>
-                    <div>
-                      <div style={{ fontSize: '10px', fontWeight: 800, color: 'var(--ink-soft)', textTransform: 'uppercase' }}>
-                        SUBSCRIBER (PROPERTY OWNER)
-                      </div>
-                      <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)', marginTop: '2px' }}>
-                        Apex Property Group LLC
-                      </div>
-                      <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
-                        owner@apexproperties.com
-                      </div>
-                      <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                        Units Managed: 24 Units
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '10px', fontWeight: 800, color: 'var(--ink-soft)', textTransform: 'uppercase' }}>
-                        BILLING SPECIFICATIONS
-                      </div>
-                      <div style={{ fontSize: '11.5px', marginTop: '2px' }}>
-                        <b>Tier:</b> Growth Pro Tier (Monthly)
-                      </div>
-                      <div style={{ fontSize: '11.5px' }}>
-                        <b>Payment Gateway:</b> Stripe / Razorpay Instant Reconcile
-                      </div>
-                      <div style={{ fontSize: '11.5px' }}>
-                        <b>Settlement:</b> Automated Credit Card / NetBanking
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Line Items Table */}
-                  <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '16px' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '2px solid var(--ink)', fontSize: '10.5px', textTransform: 'uppercase', color: 'var(--ink-soft)' }}>
-                        <th style={{ textAlign: 'left', padding: '6px 0' }}>Plan Description</th>
-                        <th style={{ textAlign: 'center', padding: '6px 8px' }}>Period</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Subtotal</th>
-                      </tr>
-                    </thead>
-                    <tbody style={{ fontSize: '12px' }}>
-                      <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                        <td style={{ padding: '8px 0' }}>
-                          <div style={{ fontWeight: 600 }}>Propithub Growth Pro SaaS Subscription</div>
-                          <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>
-                            Includes automated rent ledger, multi-unit tenant portals, and payment gateway settlement.
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'center', padding: '8px' }}>30 Days</td>
-                        <td style={{ textAlign: 'right', padding: '8px 0', fontWeight: 600 }}>$99.00</td>
-                      </tr>
-                    </tbody>
-                  </table>
-
-                  {/* Summary Totals */}
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '20px' }}>
-                    <div style={{ width: '220px', fontSize: '12px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
-                        <span style={{ color: 'var(--ink-soft)' }}>Subtotal:</span>
-                        <span>$99.00</span>
-                      </div>
-                      {tmplTaxPercent > 0 && (
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
-                          <span style={{ color: 'var(--ink-soft)' }}>{tmplTaxLabel || 'Tax'} ({tmplTaxPercent}%):</span>
-                          <span>${((99 * tmplTaxPercent) / 100).toFixed(2)}</span>
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderTop: '2px solid var(--line)', marginTop: '4px', fontSize: '14px', fontWeight: 800 }}>
-                        <span>Total Paid:</span>
-                        <span style={{ color: 'var(--brass)' }}>
-                          ${(99 + (99 * tmplTaxPercent) / 100).toFixed(2)}
+                      <div style={{ marginTop: '6px' }}>
+                        <span className="badge green" style={{ fontSize: '10.5px', textTransform: 'uppercase' }}>
+                          PAID & RECONCILED
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Bank Wire Details Box */}
-                  <div style={{ background: 'var(--surface-sunken)', padding: '12px 14px', borderRadius: '4px', border: '1px solid var(--line)', marginBottom: '18px' }}>
-                    <div style={{ fontSize: '10.5px', fontWeight: 800, color: 'var(--ink)', textTransform: 'uppercase', marginBottom: '6px' }}>
-                      Treasury Remittance & Settlement Account
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '11px', color: 'var(--ink)' }}>
-                      <div><b style={{ color: 'var(--ink-soft)' }}>Bank:</b> {tmplBankName}</div>
-                      <div><b style={{ color: 'var(--ink-soft)' }}>Account Name:</b> {tmplAccountName}</div>
-                      <div><b style={{ color: 'var(--ink-soft)' }}>Account / IBAN:</b> {tmplAccountNumber}</div>
-                      <div><b style={{ color: 'var(--ink-soft)' }}>SWIFT / Routing:</b> {tmplSwift}</div>
-                    </div>
-                  </div>
+                  {/* Two-Column Bill To & Timeline */}
+                  {(() => {
+                    const samplePrice = 79;
+                    const sampleTax = tmplTaxPercent > 0 ? Math.round((samplePrice * tmplTaxPercent) / 100) : 0;
+                    const sampleTotal = samplePrice + sampleTax;
 
-                  {/* Terms & Conditions */}
-                  <div style={{ marginBottom: '16px', fontSize: '9.5px', color: 'var(--ink-soft)', lineHeight: 1.4 }}>
-                    <div style={{ fontWeight: 700, textTransform: 'uppercase', marginBottom: '3px', color: 'var(--ink)' }}>
-                      Terms & Conditions
-                    </div>
-                    <div style={{ whiteSpace: 'pre-line' }}>{tmplTerms}</div>
-                  </div>
+                    return (
+                      <>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '18px', fontSize: '12px' }}>
+                          <div>
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                              BILL TO (SUBSCRIBER)
+                            </div>
+                            <b style={{ color: '#111827' }}>Apex Estates Ltd · Owner Account</b>
+                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                              Plan: Growth Tier (USD 79/mo)
+                            </div>
+                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                              Phone: +1 415-555-0199 · Email: owner@apexestates.com
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                              INVOICE SCHEDULE & TIMELINE
+                            </div>
+                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                              Issue Date: {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            </div>
+                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                              Payment Due Date: {new Date(Date.now() + 7 * 86400000).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            </div>
+                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                              Billing Cycle: Monthly Platform Cloud Plan
+                            </div>
+                          </div>
+                        </div>
 
-                  {/* Signatory & Notes */}
-                  <div style={{ borderTop: '1px solid var(--line)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '10.5px', color: 'var(--ink-soft)' }}>
-                    <div>
-                      <div style={{ fontStyle: 'italic' }}>{tmplNotes}</div>
-                      <div style={{ marginTop: '4px' }}>Propithub SaaS Automated Billing Infrastructure • ISO/IEC 27001 Certified</div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontFamily: 'cursive', fontSize: '15px', color: 'var(--ink)', fontWeight: 600 }}>
-                        {tmplSignatory}
-                      </div>
-                      <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--ink)' }}>{tmplSignatory}</div>
-                      <div style={{ fontSize: '9px' }}>{tmplSignatoryRole}</div>
-                    </div>
-                  </div>
+                        {/* Line Items Table */}
+                        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid #E5E7EB', color: '#9CA3AF', fontSize: '10px', textTransform: 'uppercase' }}>
+                              <th style={{ textAlign: 'left', padding: '6px 0', fontWeight: 700 }}>Description / Item Details</th>
+                              <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 700 }}>Amount (USD)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                              <td style={{ padding: '8px 0', fontWeight: 600, color: '#111827' }}>
+                                Growth Plan Cloud License — Monthly SaaS subscription
+                              </td>
+                              <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827' }}>
+                                ${samplePrice.toFixed(2)}
+                              </td>
+                            </tr>
+                            {tmplTaxPercent > 0 && (
+                              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                                <td style={{ padding: '8px 0', color: '#6B7280' }}>
+                                  {tmplTaxLabel || 'Tax'} {tmplTaxPercent}%
+                                </td>
+                                <td style={{ padding: '8px 0', textAlign: 'right', color: '#6B7280' }}>
+                                  ${sampleTax.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
 
+                        {/* Totals */}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '18px' }}>
+                          <div style={{ width: '220px', fontSize: '12px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', color: '#6B7280' }}>
+                              <span>Subtotal:</span>
+                              <span>${samplePrice.toFixed(2)}</span>
+                            </div>
+                            {tmplTaxPercent > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', color: '#6B7280' }}>
+                                <span>{tmplTaxLabel || 'Tax'}:</span>
+                                <span>${sampleTax.toFixed(2)}</span>
+                              </div>
+                            )}
+                            <div
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                padding: '6px 0',
+                                borderTop: '1px solid #111827',
+                                fontWeight: 800,
+                                fontSize: '13.5px',
+                                color: '#111827',
+                                marginTop: '4px',
+                              }}
+                            >
+                              <span>Grand Total:</span>
+                              <span>${sampleTotal.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Remittance Box */}
+                        {(tmplBankName || tmplAccountNumber) && (
+                          <div
+                            style={{
+                              background: '#F9FAFB',
+                              border: '1px solid #E5E7EB',
+                              borderRadius: '6px',
+                              padding: '10px 14px',
+                              marginBottom: '16px',
+                              fontSize: '11px',
+                              lineHeight: '1.5',
+                            }}
+                          >
+                            <div style={{ fontWeight: 700, color: '#059669', fontSize: '10px', textTransform: 'uppercase', marginBottom: '3px' }}>
+                              OFFICIAL SETTLEMENT BANK & REMITTANCE DETAILS:
+                            </div>
+                            <div>
+                              Bank: <b>{tmplBankName || '—'}</b> · Beneficiary: <b>{tmplAccountName || '—'}</b>
+                            </div>
+                            <div>
+                              A/C No: <b>{tmplAccountNumber || '—'}</b> · SWIFT / Routing: <b>{tmplSwift || '—'}</b>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Terms & Conditions Clauses */}
+                        {tmplIncludeTerms && tmplTerms && (
+                          <div
+                            style={{
+                              borderTop: '1px solid #F3F4F6',
+                              paddingTop: '12px',
+                              marginBottom: '16px',
+                              fontSize: '10.5px',
+                              color: '#6B7280',
+                              lineHeight: '1.45',
+                            }}
+                          >
+                            <div style={{ fontWeight: 700, color: '#111827', textTransform: 'uppercase', fontSize: '10px', marginBottom: '4px' }}>
+                              SUBSCRIPTION TERMS & CONDITIONS:
+                            </div>
+                            {tmplTerms.split('\n').filter(Boolean).map((t, idx) => (
+                              <div key={idx} style={{ marginBottom: '2px' }}>{t}</div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Signatory Footer */}
+                        <div
+                          style={{
+                            borderTop: '1px solid #E5E7EB',
+                            paddingTop: '12px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'flex-end',
+                            fontSize: '10.5px',
+                            color: '#6B7280',
+                          }}
+                        >
+                          <div>
+                            <div>{tmplNotes || 'Thank you for choosing Propithub for your real estate portfolio operations.'}</div>
+                            <div style={{ marginTop: '2px', color: '#9CA3AF' }}>Propithub Real Estate Cloud Operating Platform</div>
+                          </div>
+                          <div style={{ textAlign: 'right', minWidth: '160px' }}>
+                            <div style={{ fontWeight: 600, color: '#111827' }}>
+                              {tmplSignatory || 'Platform Administrator'}
+                            </div>
+                            <div style={{ fontSize: '9.5px', color: '#9CA3AF' }}>
+                              {tmplSignatoryRole || 'Authorized Financial Signatory'}
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
-
-                {/* Bottom Save Shortcut */}
-                <div style={{ marginTop: '16px', width: '100%', maxWidth: '820px', display: 'flex', justifyContent: 'flex-end' }}>
-                  <button
-                    type="button"
-                    className="btn brass"
-                    onClick={handleSavePlatformTemplate}
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Save size={15} /> Save As Default SaaS Billing Format
-                  </button>
-                </div>
-
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Live Production Platform Invoice Studio & Preview Modal */}
+      {/* Pure Document View Modal */}
       <PlatformInvoiceStudioModal
         isOpen={isStudioOpen}
         onClose={() => setIsStudioOpen(false)}

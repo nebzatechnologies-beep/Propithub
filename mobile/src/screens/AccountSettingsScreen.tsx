@@ -246,9 +246,19 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
               <Feather name="arrow-left" size={20} color={colors.ink} />
             </TouchableOpacity>
           )}
-          <View style={styles.logoBadge}>
-            <Feather name="settings" size={18} color="#FFFFFF" />
+          <View
+            style={[
+              styles.logoBadge,
+              {
+                backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+                borderWidth: 1,
+                borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : 'rgba(16, 185, 129, 0.2)',
+              },
+            ]}
+          >
+            <PropithubIcon size={18} />
           </View>
+          <Text style={{ fontSize: 16, fontWeight: '700', color: colors.ink }}>Settings</Text>
         </View>
         <TouchableOpacity
           onPress={onSignOut || logout}
@@ -457,31 +467,6 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
                     </TouchableOpacity>
                   );
                 })}
-              </View>
-
-              {/* Dynamic Status Note */}
-              <View
-                style={{
-                  marginTop: 12,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  backgroundColor: isDark ? 'rgba(30, 41, 59, 0.6)' : '#F8FAFC',
-                  paddingHorizontal: 10,
-                  paddingVertical: 8,
-                  borderRadius: 8,
-                  borderWidth: 1,
-                  borderColor: colors.lineLight,
-                  gap: 8,
-                }}
-              >
-                <Feather name="info" size={13} color={colors.inkSoft} />
-                <Text style={{ fontSize: 11, color: colors.inkSoft, flex: 1, lineHeight: 16 }}>
-                  {themeMode === 'system'
-                    ? `System mode active. Auto-syncs with phone settings (${isDark ? 'device dark mode active' : 'device light mode active'}).`
-                    : themeMode === 'dark'
-                      ? 'Night mode forced. Charcoal slate styling eliminates glare and optimizes OLED battery.'
-                      : 'Light mode forced. High clarity daylight contrast across all views and ledgers.'}
-                </Text>
               </View>
             </View>
 
@@ -789,7 +774,6 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
             <View style={styles.toggleRow}>
               <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={[styles.toggleTitle, { color: colors.ink }]}>Email Invoices & Receipts</Text>
-                <Text style={[styles.toggleSub, { color: colors.inkSoft }]}>Receive automated PDF receipts and invoices</Text>
               </View>
               <Switch
                 value={emailInvoices}
@@ -804,7 +788,6 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
             <View style={styles.toggleRow}>
               <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={[styles.toggleTitle, { color: colors.ink }]}>Maintenance Alerts</Text>
-                <Text style={[styles.toggleSub, { color: colors.inkSoft }]}>Real-time updates on ticket dispatch & resolution</Text>
               </View>
               <Switch
                 value={emailMaintenance}
@@ -819,7 +802,6 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
             <View style={styles.toggleRow}>
               <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={[styles.toggleTitle, { color: colors.ink }]}>Building Announcements</Text>
-                <Text style={[styles.toggleSub, { color: colors.inkSoft }]}>Receive official notices and emergency broadcasts</Text>
               </View>
               <Switch
                 value={emailAnnouncements}
@@ -834,7 +816,6 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
             <View style={styles.toggleRow}>
               <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={[styles.toggleTitle, { color: colors.ink }]}>In-App Reminders</Text>
-                <Text style={[styles.toggleSub, { color: colors.inkSoft }]}>Display badge counts and dashboard notifications</Text>
               </View>
               <Switch
                 value={inAppReminders}
@@ -849,7 +830,6 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
             <View style={styles.toggleRow}>
               <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={[styles.toggleTitle, { color: colors.ink }]}>Urgent SMS Alerts</Text>
-                <Text style={[styles.toggleSub, { color: colors.inkSoft }]}>Critical rent overdue notices and security broadcasts</Text>
               </View>
               <Switch
                 value={smsAlerts}
@@ -884,11 +864,8 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
                     <Feather name="clock" size={16} color="#10B981" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.cardTitle, { color: colors.ink, marginBottom: 2, fontSize: 14 }]}>
+                    <Text style={[styles.cardTitle, { color: colors.ink, marginBottom: 0, fontSize: 14 }]}>
                       Automated Rental Reminders
-                    </Text>
-                    <Text style={{ fontSize: 11.5, color: colors.inkSoft }}>
-                      Proactive rent due notices and device push alerts sent to tenants
                     </Text>
                   </View>
                 </View>
@@ -896,9 +873,6 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
                 <View style={styles.toggleRow}>
                   <View style={{ flex: 1, paddingRight: 10 }}>
                     <Text style={[styles.toggleTitle, { color: colors.ink }]}>Enable Automated Reminders</Text>
-                    <Text style={[styles.toggleSub, { color: colors.inkSoft }]}>
-                      Alert tenants before invoice due dates with instant 1-click checkout links
-                    </Text>
                   </View>
                   <Switch
                     value={ownerReminderEnabled}

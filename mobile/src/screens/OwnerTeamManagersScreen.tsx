@@ -13,6 +13,7 @@ import {
   Share,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileTheme } from '../context/MobileThemeContext';
@@ -27,11 +28,13 @@ import { getCleanAddressText } from '../lib/addressUtils';
 export interface OwnerTeamManagersScreenProps {
   initialTab?: 'managers' | 'payouts';
   onNavigate?: (screenKey: string) => void;
+  onProfilePress?: () => void;
 }
 
 export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = ({
   initialTab = 'managers',
   onNavigate,
+  onProfilePress,
 }) => {
   const { colors, isDark } = useMobileTheme();
   const { state, saveManager, deleteManager, reassignManagerProperty, recordManagerPayout } = useMobileAppData();
@@ -276,35 +279,18 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
       <ScreenStatusBar />
 
       {/* Screen Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-        <View style={styles.headerLeft}>
-          {onNavigate && (
-            <TouchableOpacity
-              onPress={() => onNavigate('owner_dashboard')}
-              style={[styles.backBtn, isDark && { backgroundColor: '#1E293B' }]}
-              activeOpacity={0.7}
-            >
-              <Feather name="arrow-left" size={20} color={colors.text} />
-            </TouchableOpacity>
-          )}
-          <View style={[styles.logoBadge, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.3)' }]}>
-            <PropithubIcon size={20} />
-          </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.text }]}>Team</Text>
-          </View>
-        </View>
-        <View style={[styles.ownerBadge, isDark && { backgroundColor: '#1E293B', borderColor: colors.border }]}>
-          <Text style={[styles.ownerBadgeText, { color: colors.text }]}>OWNER</Text>
-        </View>
-      </View>
+      <Header
+        title="Team"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       <ScrollView
         style={[styles.scroll, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Field Staff / Maintenance Notice Link (Web Parity) */}
+        {/* Compact Field Staff / Maintenance Shortcut */}
         <TouchableOpacity
           style={[
             styles.fieldStaffNotice,
@@ -319,9 +305,9 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
           <View style={styles.fieldStaffNoticeLeft}>
             <Feather
               name="tool"
-              size={15}
+              size={14}
               color={isDark ? '#38BDF8' : '#0284C7'}
-              style={{ marginRight: 8 }}
+              style={{ marginRight: 6 }}
             />
             <Text
               style={[
@@ -329,7 +315,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                 isDark && { color: '#38BDF8' },
               ]}
             >
-              Need maintenance techs or plumbers? Go to Maintenance Staff & Dispatch
+              Maintenance Technicians & Dispatch
             </Text>
           </View>
           <Feather name="chevron-right" size={14} color={isDark ? '#38BDF8' : '#0284C7'} />

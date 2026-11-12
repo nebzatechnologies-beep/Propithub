@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import {
   View,
@@ -13,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
@@ -74,6 +76,40 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
     'Painting restoration fee applies if property returned with damages beyond ordinary wear.',
   ]);
 
+  useEffect(() => {
+    let mounted = true;
+    const loadPrefill = async () => {
+      try {
+        const raw = await AsyncStorage.getItem('propithub_mobile_lease_prefill');
+        if (!raw) return;
+        await AsyncStorage.removeItem('propithub_mobile_lease_prefill');
+        if (!mounted) return;
+        const data = JSON.parse(raw);
+        if (data.propertyId) setSelectedPropertyId(data.propertyId);
+        if (data.isSingleAsset) {
+          setLeaseScope('master');
+          setSelectedUnitNum('Entire Property (Master Tenancy)');
+        } else if (data.unitNumber) {
+          setLeaseScope('unit');
+          setSelectedUnitNum(data.unitNumber);
+        }
+        if (data.tenantName) setTenantName(data.tenantName);
+        if (data.tenantEmail) setTenantEmail(data.tenantEmail);
+        if (data.tenantPhone) setTenantPhone(data.tenantPhone);
+        if (data.rent) setRent(String(data.rent));
+        if (data.deposit) setDeposit(String(data.deposit));
+        if (data.startDate) setStartDate(data.startDate);
+        if (data.endDate) setEndDate(data.endDate);
+      } catch {
+        // ignore prefill errors
+      }
+    };
+    loadPrefill();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const handleAddClause = () => {
     if (customClause.trim()) {
       setClauses([...clauses, customClause.trim()]);
@@ -95,8 +131,8 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
     const finalUnit = isMaster ? 'Entire Property (Master Tenancy)' : selectedUnitNum;
     const newAgr: MobileAgreement = {
       id: agrId,
-      ownerId: user.id,
-      ownerName: user.displayName || 'Property Owner',
+      ownerId: user?.ownerId || user?.id || '',
+      ownerName: user?.displayName || 'Property Owner',
       propertyId: selectedProperty?.id || '',
       propertyName: selectedProperty?.name || 'Property Premises',
       unit: finalUnit,
@@ -144,14 +180,11 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
             <Ionicons name="arrow-back" size={20} color={colors.navy} />
           </TouchableOpacity>
           <View style={styles.logoBadge}>
-            <Feather name="file-text" size={18} color="#FFFFFF" />
+            <PropithubIcon size={18} />
           </View>
           <View>
-            <Text style={styles.headerTitle}>Lease Drafting Studio</Text>
+            <Text style={styles.headerTitle}>Issue Lease</Text>
           </View>
-        </View>
-        <View style={styles.stampBadge}>
-          <Text style={styles.stampBadgeText}>E-STAMP VERIFIED</Text>
         </View>
       </View>
 

@@ -4,9 +4,10 @@ import {
   getAuth,
   createUserWithEmailAndPassword,
   signOut,
+  inMemoryPersistence,
 } from 'firebase/auth';
-// @ts-ignore - Exported by firebase/auth in the React Native runtime bundle
-import { getReactNativePersistence } from 'firebase/auth';
+// @ts-ignore - Exported by @firebase/auth in the React Native runtime bundle
+import { getReactNativePersistence } from '@firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initializeFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
@@ -33,9 +34,11 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Firebase Auth with native AsyncStorage persistence
 export const auth = (() => {
   try {
-    return initializeAuth(app, {
-      persistence: getReactNativePersistence(AsyncStorage),
-    });
+    const persistence =
+      typeof getReactNativePersistence === 'function' && AsyncStorage
+        ? getReactNativePersistence(AsyncStorage)
+        : undefined;
+    return initializeAuth(app, persistence ? { persistence } : undefined);
   } catch (_e) {
     return getAuth(app);
   }
@@ -57,7 +60,9 @@ export const createSecondaryAuthUser = async (email: string, password: string): 
   const secondaryAppName = `SecondaryMobileApp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
   try {
-    const secondaryAuth = getAuth(secondaryApp);
+    const secondaryAuth = initializeAuth(secondaryApp, {
+      persistence: inMemoryPersistence,
+    });
     const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
     const uid = cred.user.uid;
     await signOut(secondaryAuth);

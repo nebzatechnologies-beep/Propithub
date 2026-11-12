@@ -585,30 +585,6 @@ export const OwnerMessagesPage: React.FC = () => {
     }
   };
 
-  const getPriorityBadge = (priority: AnnouncementPriority) => {
-    switch (priority) {
-      case 'emergency':
-      case 'urgent':
-        return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase' }}>
-            <Flame size={12} /> Urgent
-          </span>
-        );
-      case 'important':
-        return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fffbeb', color: '#d97706', border: '1px solid #fde68a', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase' }}>
-            Important
-          </span>
-        );
-      default:
-        return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'var(--surface-sunken)', color: 'var(--ink-soft)', border: '1px solid #e2e8f0', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
-            Standard
-          </span>
-        );
-    }
-  };
-
   const getPropertyScopeName = (scope: Announcement['targetScope']) => {
     if (scope.allProperties) return 'All Properties (Portfolio-Wide)';
     const prop = myProperties.find((p) => scope.propertyIds.includes(p.id));
@@ -626,80 +602,16 @@ export const OwnerMessagesPage: React.FC = () => {
 
   return (
     <div style={{ width: '100%' }}>
-      {/* Page Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-
-            {/* <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 800, color: 'var(--ink-base)' }}>
-              Announcements
-            </h1> */}
-          </div>
-        </div>
-
-        <button
-          type="button"
-          className="btn brass"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 18px', fontWeight: 700, fontSize: '14px' }}
-          onClick={() => handleOpenEditor()}
-        >
-          <Plus size={16} /> New Announcement
-        </button>
-      </div>
-
-      {/* Top Executive KPI Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
-        <div className="panel" style={{ padding: '18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ background: 'var(--surface-sunken)', color: 'var(--teal-primary)', padding: '12px', borderRadius: '8px' }}>
-            <Megaphone size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Active Bulletins</div>
-            <div style={{ fontSize: '24px', fontWeight: 800, color: 'var(--ink)' }}>{stats.publishedCount}</div>
-          </div>
-        </div>
-
-        <div className="panel" style={{ padding: '18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ background: 'var(--surface-sunken)', color: 'var(--amber)', padding: '12px', borderRadius: '8px' }}>
-            <Pin size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Pinned Notices</div>
-            <div style={{ fontSize: '24px', fontWeight: 800, color: 'var(--ink)' }}>{stats.pinnedCount}</div>
-          </div>
-        </div>
-
-        <div className="panel" style={{ padding: '18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ background: 'var(--surface-sunken)', color: 'var(--ledger)', padding: '12px', borderRadius: '8px' }}>
-            <Users size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Resident Reach</div>
-            <div style={{ fontSize: '24px', fontWeight: 800, color: 'var(--ink)' }}>{stats.totalReach} members</div>
-          </div>
-        </div>
-
-        <div className="panel" style={{ padding: '18px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ background: 'var(--surface-sunken)', color: '#A855F7', padding: '12px', borderRadius: '8px' }}>
-            <CheckCircle2 size={22} />
-          </div>
-          <div>
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Acknowledgment Rate</div>
-            <div style={{ fontSize: '24px', fontWeight: 800, color: '#A855F7' }}>{stats.hasAckRequired ? `${stats.complianceRate}%` : 'N/A'}</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Tabs & Filter Bar */}
-      <div className="panel" style={{ marginBottom: '20px', padding: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', borderBottom: '1px solid var(--border)', paddingBottom: '14px', marginBottom: '16px' }}>
+      {/* Control Bar: Tabs, Search & New Announcement */}
+      <div className="panel" style={{ marginBottom: '20px', padding: '14px 16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', borderBottom: '1px solid var(--line)', paddingBottom: '12px', marginBottom: '12px' }}>
           {/* Status Tabs */}
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
             <button
               type="button"
               className={`btn small ${activeTab === 'published' ? 'brass' : 'secondary'}`}
               onClick={() => setActiveTab('published')}
-              style={{ fontWeight: 600 }}
+              style={{ fontWeight: 600, fontSize: '12.5px' }}
             >
               Published ({stats.publishedCount})
             </button>
@@ -707,7 +619,7 @@ export const OwnerMessagesPage: React.FC = () => {
               type="button"
               className={`btn small ${activeTab === 'scheduled' ? 'brass' : 'secondary'}`}
               onClick={() => setActiveTab('scheduled')}
-              style={{ fontWeight: 600 }}
+              style={{ fontWeight: 600, fontSize: '12.5px' }}
             >
               Scheduled ({stats.scheduledCount})
             </button>
@@ -715,7 +627,7 @@ export const OwnerMessagesPage: React.FC = () => {
               type="button"
               className={`btn small ${activeTab === 'draft' ? 'brass' : 'secondary'}`}
               onClick={() => setActiveTab('draft')}
-              style={{ fontWeight: 600 }}
+              style={{ fontWeight: 600, fontSize: '12.5px' }}
             >
               Drafts ({stats.draftsCount})
             </button>
@@ -723,36 +635,47 @@ export const OwnerMessagesPage: React.FC = () => {
               type="button"
               className={`btn small ${activeTab === 'archived' ? 'brass' : 'secondary'}`}
               onClick={() => setActiveTab('archived')}
-              style={{ fontWeight: 600 }}
+              style={{ fontWeight: 600, fontSize: '12.5px' }}
             >
               Archived ({stats.archivedCount})
             </button>
           </div>
 
-          {/* Search Input */}
-          <div style={{ position: 'relative', flex: '1 1 240px', maxWidth: '340px' }}>
-            <Search size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-soft)' }} />
-            <input
-              type="text"
-              placeholder="Search announcements..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ width: '100%', padding: '7px 12px 7px 32px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)' }}
-            />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', flex: '1 1 auto', justifyContent: 'flex-end' }}>
+            {/* Search Input */}
+            <div style={{ position: 'relative', width: '220px' }}>
+              <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-soft)' }} />
+              <input
+                type="text"
+                placeholder="Search notices..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ width: '100%', padding: '6px 10px 6px 30px', fontSize: '12.5px', borderRadius: '6px', border: '1px solid var(--line)' }}
+              />
+            </div>
+
+            {/* New Announcement Button */}
+            <button
+              type="button"
+              className="btn brass small"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+              onClick={() => handleOpenEditor()}
+            >
+              <Plus size={15} /> New Announcement
+            </button>
           </div>
         </div>
 
         {/* Filters Row */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', color: 'var(--ink-soft)', fontWeight: 600 }}>
-            <Filter size={14} /> Filter By:
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600 }}>
+            <Filter size={13} /> Filter:
           </div>
 
-          {/* Property Selector */}
           <select
             value={selectedPropertyFilter}
             onChange={(e) => setSelectedPropertyFilter(e.target.value)}
-            style={{ padding: '6px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+            style={{ padding: '4px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--line)', background: 'var(--surface)' }}
           >
             <option value="all">All Properties</option>
             {myProperties.map((p) => (
@@ -760,11 +683,10 @@ export const OwnerMessagesPage: React.FC = () => {
             ))}
           </select>
 
-          {/* Category Selector */}
           <select
             value={selectedCategoryFilter}
             onChange={(e) => setSelectedCategoryFilter(e.target.value)}
-            style={{ padding: '6px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+            style={{ padding: '4px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--line)', background: 'var(--surface)' }}
           >
             <option value="all">All Categories</option>
             <option value="general">General Notices</option>
@@ -774,11 +696,10 @@ export const OwnerMessagesPage: React.FC = () => {
             <option value="community">Community Events</option>
           </select>
 
-          {/* Priority Selector */}
           <select
             value={selectedPriorityFilter}
             onChange={(e) => setSelectedPriorityFilter(e.target.value)}
-            style={{ padding: '6px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+            style={{ padding: '4px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--line)', background: 'var(--surface)' }}
           >
             <option value="all">All Priorities</option>
             <option value="normal">Standard Priority</option>
@@ -796,9 +717,9 @@ export const OwnerMessagesPage: React.FC = () => {
                 setSelectedPriorityFilter('all');
                 setSearchQuery('');
               }}
-              style={{ fontSize: '12px' }}
+              style={{ fontSize: '11.5px', padding: '3px 8px' }}
             >
-              Reset Filters
+              Reset
             </button>
           )}
         </div>
@@ -838,60 +759,73 @@ export const OwnerMessagesPage: React.FC = () => {
             const targetCount = announcement.targetScope.allProperties
               ? myTenants.length
               : myTenants.filter((t) => announcement.targetScope.propertyIds.includes(t.propertyId || '')).length;
-
-            const ackPercent = targetCount > 0 ? Math.min(100, Math.round((acksCount / targetCount) * 100)) : 0;
+            const displayTarget = Math.max(acksCount, targetCount, 1);
+            const ackPercent = Math.min(100, Math.round((acksCount / displayTarget) * 100));
 
             const isUrgent = announcement.priority === 'urgent' || announcement.priority === 'emergency';
+            const isImportant = announcement.priority === 'important';
+            const audienceText =
+              announcement.targetScope.targetRoles.includes('tenant') && announcement.targetScope.targetRoles.includes('staff')
+                ? 'Tenants & Staff'
+                : announcement.targetScope.targetRoles.includes('staff')
+                  ? 'Staff & Managers Only'
+                  : 'All Tenants';
 
             return (
               <div
                 key={announcement.id}
                 className="panel"
                 style={{
-                  padding: '22px 24px',
-                  borderRadius: '10px',
+                  padding: '18px 20px',
+                  borderRadius: '8px',
                   borderLeft: isUrgent
-                    ? '4px solid #dc2626'
+                    ? '3px solid #dc2626'
                     : announcement.isPinned
-                      ? '4px solid var(--brass, #c59b27)'
-                      : '4px solid var(--line)',
+                      ? '3px solid var(--brass, #10B981)'
+                      : '3px solid transparent',
                   position: 'relative',
-                  transition: 'box-shadow 0.2s ease, transform 0.2s ease',
+                  transition: 'box-shadow 0.2s ease',
+                  marginBottom: '14px',
                 }}
               >
-                {/* Header Badges & Actions */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                {/* Header: Priority/Category & Quick Actions */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                     {getCategoryBadge(announcement.category)}
-                    {getPriorityBadge(announcement.priority)}
+
+                    {isUrgent ? (
+                      <span className="badge red" style={{ fontSize: '11px', fontWeight: 700 }}>
+                        <Flame size={11} /> Urgent
+                      </span>
+                    ) : isImportant ? (
+                      <span className="badge amber" style={{ fontSize: '11px', fontWeight: 700 }}>
+                        Important
+                      </span>
+                    ) : null}
 
                     {announcement.isPinned && (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fef3c7', color: '#92400e', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700 }}>
-                        <Pin size={11} /> Pinned to Top
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', color: '#b45309', fontSize: '11px', fontWeight: 600 }}>
+                        📌 Pinned
                       </span>
                     )}
 
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'var(--surface-sunken)', color: 'var(--ink-soft)', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
-                      <Building size={12} /> {getPropertyScopeName(announcement.targetScope)}
-                    </span>
-
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'var(--surface-sunken)', color: 'var(--ink-soft)', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
-                      <Users size={12} /> {announcement.targetScope.targetRoles.includes('tenant') && announcement.targetScope.targetRoles.includes('staff') ? 'Tenants & Staff' : announcement.targetScope.targetRoles.includes('staff') ? 'Staff & Managers Only' : 'All Tenants'}
+                    <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                      • {getPropertyScopeName(announcement.targetScope)} • {audienceText}
                     </span>
                   </div>
 
-                  {/* Actions Dropdown / Quick Buttons */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  {/* Actions */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {announcement.status === 'published' && (
                       <button
                         type="button"
-                        className="btn secondary small"
+                        className={`btn small ${announcement.isPinned ? 'brass' : 'secondary'}`}
                         onClick={() => togglePinAnnouncement(announcement.id)}
-                        title={announcement.isPinned ? 'Unpin announcement' : 'Pin to top of resident dashboard'}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px' }}
+                        title={announcement.isPinned ? 'Unpin announcement' : 'Pin to top'}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '3px 8px' }}
                       >
-                        <Pin size={13} style={{ transform: announcement.isPinned ? 'rotate(45deg)' : 'none', color: announcement.isPinned ? '#b45309' : 'inherit' }} />
-                        {announcement.isPinned ? 'Unpin' : 'Pin'}
+                        <Pin size={12} style={{ transform: announcement.isPinned ? 'rotate(45deg)' : 'none' }} />
+                        {announcement.isPinned ? 'Pinned' : 'Pin'}
                       </button>
                     )}
 
@@ -900,9 +834,9 @@ export const OwnerMessagesPage: React.FC = () => {
                         type="button"
                         className="btn brass small"
                         onClick={() => handleQuickPublish(announcement)}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px' }}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '3px 8px' }}
                       >
-                        <Send size={13} /> Publish Now
+                        <Send size={12} /> Publish
                       </button>
                     )}
 
@@ -911,9 +845,9 @@ export const OwnerMessagesPage: React.FC = () => {
                       className="btn secondary small"
                       onClick={() => handleOpenEditor(announcement)}
                       title="Edit Notice"
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px' }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '3px 8px' }}
                     >
-                      <FileEdit size={13} /> Edit
+                      <FileEdit size={12} /> Edit
                     </button>
 
                     {announcement.status === 'published' && (
@@ -922,9 +856,9 @@ export const OwnerMessagesPage: React.FC = () => {
                         className="btn secondary small"
                         onClick={() => archiveAnnouncement(announcement.id)}
                         title="Archive notice"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px' }}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '3px 8px' }}
                       >
-                        <Archive size={13} /> Archive
+                        <Archive size={12} /> Archive
                       </button>
                     )}
 
@@ -933,100 +867,66 @@ export const OwnerMessagesPage: React.FC = () => {
                       className="btn secondary small"
                       onClick={() => handleDelete(announcement.id, announcement.title)}
                       title="Delete notice"
-                      style={{ color: '#dc2626', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}
+                      style={{ color: '#dc2626', display: 'inline-flex', alignItems: 'center', padding: '3px 7px' }}
                     >
-                      <Trash2 size={13} />
+                      <Trash2 size={12} />
                     </button>
                   </div>
                 </div>
 
                 {/* Announcement Headline */}
-                <h2 style={{ margin: '0 0 8px 0', fontSize: '17px', fontWeight: 800, color: 'var(--ink-base)', lineHeight: 1.3 }}>
+                <h3 style={{ margin: '0 0 4px 0', fontSize: '16.5px', fontWeight: 700, color: 'var(--ink)', lineHeight: 1.3 }}>
                   {announcement.title}
-                </h2>
+                </h3>
 
                 {/* Timestamp & Metadata */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '14px', flexWrap: 'wrap' }}>
-                  <span>
-                    By <strong style={{ color: 'var(--ink-base)' }}>{announcement.authorName}</strong>
-                  </span>
-                  <span>•</span>
-                  {announcement.status === 'scheduled' && scheduledDateStr ? (
-                    <span style={{ color: '#2563eb', display: 'inline-flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}>
-                      <Clock size={12} /> Scheduled for {scheduledDateStr}
-                    </span>
-                  ) : (
-                    <span>Published: {pubDateStr}</span>
-                  )}
-                  {expiresDateStr && (
-                    <>
-                      <span>•</span>
-                      <span style={{ color: '#d97706' }}>Expires: {expiresDateStr}</span>
-                    </>
-                  )}
+                <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '12px' }}>
+                  By <strong style={{ color: 'var(--ink)' }}>{announcement.authorName || 'Owner'}</strong> • {announcement.status === 'scheduled' && scheduledDateStr ? `Scheduled for ${scheduledDateStr}` : `Published ${pubDateStr}`}{expiresDateStr ? ` • Expires: ${expiresDateStr}` : ''}
                 </div>
 
-                {/* Body Content */}
+                {/* Body Content - Clean typography */}
                 <div
                   style={{
-                    background: 'var(--surface-sunken)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    padding: '14px 16px',
                     fontSize: '13.5px',
                     lineHeight: '1.6',
-                    color: 'var(--ink-base)',
+                    color: 'var(--ink)',
                     whiteSpace: 'pre-wrap',
-                    marginBottom: '16px',
+                    marginBottom: '14px',
                   }}
                 >
                   {announcement.body}
                 </div>
 
-                {/* Compliance & Acknowledgment Bar */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', paddingTop: '10px', borderTop: '1px solid var(--line)' }}>
+                {/* Footer: Clean Acknowledgment Pill (No Debug ID) */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--line)' }}>
                   {announcement.requireAcknowledgment ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: '260px' }}>
-                      <div style={{ flex: '1', maxWidth: '300px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', marginBottom: '4px' }}>
-                          <span style={{ fontWeight: 600, color: 'var(--ink-base)' }}>
-                            Resident Acknowledgment
-                          </span>
-                          <span style={{ fontWeight: 700, color: ackPercent === 100 ? '#16a34a' : 'var(--ink-base)' }}>
-                            {acksCount} / {targetCount} ({ackPercent}%)
-                          </span>
-                        </div>
-                        <div style={{ width: '100%', height: '6px', background: 'var(--line-strong)', borderRadius: '4px', overflow: 'hidden' }}>
-                          <div
-                            style={{
-                              width: `${ackPercent}%`,
-                              height: '100%',
-                              background: ackPercent === 100 ? '#16a34a' : 'var(--brass, #c59b27)',
-                              borderRadius: '4px',
-                              transition: 'width 0.3s ease',
-                            }}
-                          />
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        onClick={() => setInspectedAnnouncement(announcement)}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '11.5px', whiteSpace: 'nowrap' }}
-                      >
-                        <Eye size={12} /> View Sign-Offs
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      className="badge"
+                      style={{
+                        background: ackPercent === 100 ? 'var(--ledger-soft)' : 'var(--surface-sunken)',
+                        color: ackPercent === 100 ? 'var(--ledger)' : 'var(--ink)',
+                        border: '1px solid var(--line)',
+                        padding: '4px 10px',
+                        fontSize: '11.5px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}
+                      onClick={() => setInspectedAnnouncement(announcement)}
+                      title="Click to view resident sign-offs"
+                    >
+                      <CheckCircle2 size={13} color={ackPercent === 100 ? 'var(--ledger)' : 'var(--ink-soft)'} />
+                      <span>{acksCount} of {displayTarget} Acknowledged</span>
+                      <span style={{ color: 'var(--ink-soft)', fontSize: '10px' }}>▾</span>
+                    </button>
                   ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--ink-soft)' }}>
-                      <Eye size={14} /> Read receipts enabled • Informational notice
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: 'var(--ink-soft)' }}>
+                      <Eye size={13} /> Informational Notice
                     </div>
                   )}
-
-                  <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
-                    ID: <code style={{ fontFamily: 'monospace' }}>{announcement.id}</code>
-                  </div>
                 </div>
               </div>
             );

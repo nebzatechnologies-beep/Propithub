@@ -4,15 +4,187 @@ import { useAppData } from '../../context/AppDataContext';
 import {
   LandingFeatureItem,
   LandingStepItem,
-  LandingPricingTier,
-  LandingTestimonialItem,
   LandingFaqItem,
-  PolicySectionItem,
+  LandingDuoCardItem,
+  LandingRolePortalItem,
+  LandingLandlordSectionConfig,
 } from '../../types';
 import { INITIAL_STATE } from '../../lib/store';
 import { Plus, Trash2, ExternalLink } from 'lucide-react';
 import { PropithubIcon } from '../../components/common/PropithubLogo';
-import { DEFAULT_CURRENCY , DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, getLocaleForCurrency } from '../../lib/currencyService';
+import { getCurrencySymbol, getLocaleForCurrency } from '../../lib/currencyService';
+
+const DEFAULT_ROLE_PORTALS: LandingRolePortalItem[] = [
+  {
+    id: 'role-owner',
+    title: 'Property Owners',
+    color: '#0f766e',
+    bullets: [
+      'Live rent tracking & collections',
+      'Digital leases & ledger',
+      '1-tap vacant listing',
+    ],
+  },
+  {
+    id: 'role-manager',
+    title: 'Property Managers',
+    color: '#b45309',
+    bullets: [
+      'Multi-owner portfolio control',
+      'Repair dispatch & messaging',
+      'Viewings & applicant screening',
+    ],
+  },
+  {
+    id: 'role-tenant',
+    title: 'Tenants',
+    color: '#2563eb',
+    bullets: [
+      'Online rent & auto-reminders',
+      'Payment proofs & receipts',
+      'Maintenance requests with photos',
+    ],
+  },
+  {
+    id: 'role-staff',
+    title: 'Maintenance Technicians',
+    color: '#c2410c',
+    bullets: [
+      'Mobile work order queue',
+      'Task status & photo proofs',
+      'Payout tracking & logs',
+    ],
+  },
+  {
+    id: 'role-admin',
+    title: 'Platform Admins',
+    color: '#6d28d9',
+    bullets: [
+      'Plans, pricing & policies',
+      'Public listing moderation',
+      'Security & gateway audits',
+    ],
+  },
+];
+
+const DEFAULT_FEATURES: LandingFeatureItem[] = [
+  {
+    id: 'f-1',
+    icon: '📝',
+    title: 'Digital Leases & E-Signing',
+    description: 'Generate compliant leases, customize addendums, and collect e-signatures from all co-signers in minutes.',
+  },
+  {
+    id: 'f-2',
+    icon: '💳',
+    title: 'Automated Invoicing & Gateways',
+    description: 'Integrate Stripe, Razorpay, PayPal, Easebuzz, or direct UPI/Bank wire with automatic receipt generation.',
+  },
+  {
+    id: 'f-3',
+    icon: '💱',
+    title: 'Multi-Currency Ledger',
+    description: 'Track rental revenue and security deposits in USD, GBP, EUR, AED, INR, and CAD with live currency conversion.',
+  },
+  {
+    id: 'f-4',
+    icon: '🛠️',
+    title: 'Maintenance Dispatch',
+    description: 'Tenants submit photo repair requests; assign them to maintenance technicians with instant progress tracking.',
+  },
+  {
+    id: 'f-5',
+    icon: '👥',
+    title: 'Tenant Self-Service Portal',
+    description: 'Tenants view real-time balance sheets, pay rent with one tap, download tax receipts, and report issues.',
+  },
+  {
+    id: 'f-6',
+    icon: '📊',
+    title: 'Real-Time Financial Reports',
+    description: 'Export income statements, occupancy charts, security deposit reserves, and tax summaries to PDF or Excel.',
+  },
+];
+
+const DEFAULT_STEPS: LandingStepItem[] = [
+  {
+    id: 's-1',
+    stepNumber: '1',
+    title: 'List or find in minutes',
+    description:
+      'Owners import properties and publish vacant units with photos and pricing. Renters filter by bedrooms, budget, and neighborhood.',
+  },
+  {
+    id: 's-2',
+    stepNumber: '2',
+    title: 'Enquire, view & sign digitally',
+    description:
+      'Renters schedule viewings directly with the host, review contract terms, and complete legal digital lease execution online.',
+  },
+  {
+    id: 's-3',
+    stepNumber: '3',
+    title: 'Pay rent & manage everything',
+    description:
+      'Security deposits and recurring rent flow through connected gateways (Stripe, Razorpay, UPI, Wire). Instant receipts and ledger updates.',
+  },
+];
+
+const DEFAULT_FAQS: LandingFaqItem[] = [
+  {
+    id: 'faq-1',
+    question: 'How do I get my property listed on the Browse Homes page?',
+    answer:
+      'Once you add your property and vacant units in the Owner or Manager portal, simply click "Publish" on any vacant unit. It will immediately appear on the global Browse Homes marketplace for prospective renters to view and submit enquiries.',
+  },
+  {
+    id: 'faq-2',
+    question: 'How do renters pay rent, and which payment gateways are supported?',
+    answer:
+      'Propithub supports direct online payment gateways including Stripe, Razorpay, PayPal, Easebuzz, direct UPI (QR code / VPA), and manual Bank Wire (NEFT/RTGS/IMPS). Tenants pay directly from their portal or mobile app.',
+  },
+  {
+    id: 'faq-3',
+    question: 'Are digital leases legally binding?',
+    answer:
+      'Yes. Propithub leases include electronic signature logs, timestamp verification, IP tracking, and tamper-evident PDF archiving compliant with ESIGN and international electronic transaction frameworks.',
+  },
+  {
+    id: 'faq-4',
+    question: 'Can I manage properties across multiple countries and currencies?',
+    answer:
+      'Absolutely. Propithub natively handles multi-currency properties (USD, EUR, GBP, AED, INR, CAD, AUD, SGD) and automatically displays currency conversions for international renters and multi-country portfolios.',
+  },
+];
+
+const DEFAULT_LANDLORDS_SECTION: LandingLandlordSectionConfig = {
+  kicker: 'For landlords and managers',
+  title: 'Run the whole rental operation from one screen',
+  subtitle:
+    'See what needs your attention today, approve actions in one click, and let automated payment schedules handle the rest.',
+  bullets: [
+    'Automatic rent collection, overdue late fee enforcement, and automated invoice delivery',
+    'Digital lease agreements with built-in electronic signatures and legal PDF archiving',
+    'Publish vacant units straight to the global marketplace and reply to tenant enquiries in one inbox',
+    'Delegated manager & maintenance contractor accounts with strict owner permission safeguards',
+  ],
+  primaryCtaText: 'Start 14-day free trial',
+  primaryCtaLink: '/register',
+  secondaryCtaText: 'Sign in to owner portal',
+  secondaryCtaLink: '/login',
+  mockupGreeting: 'Good evening, Landlord',
+  mockupSubtext: '3 items require attention',
+  mockupItems: [
+    { text: 'Signed lease ready to review (Unit 4B)', action: 'Approve lease' },
+    { text: 'Bank transfer payment proof received', action: 'Confirm £2,250' },
+    { text: 'New viewing enquiry for 2-bed flat', action: 'Reply to Sarah' },
+  ],
+  mockupKpis: [
+    { value: '99.2%', label: 'Rent collected' },
+    { value: '3', label: 'Vacant units' },
+    { value: '4.9 ★', label: 'Tenant rating' },
+  ],
+};
 
 export const LandingCmsPage: React.FC = () => {
   const { state, updateState, saveLandingConfig, saveUnit, showToast } = useAppData();
@@ -20,10 +192,22 @@ export const LandingCmsPage: React.FC = () => {
 
   const cfg = state.landingConfig;
 
-  // Active Tab in CMS
+  // Active Tab in CMS — 100% matched to the redesigned LandingPage.tsx
   const [activeTab, setActiveTab] = useState<
-    'sections' | 'hero' | 'features' | 'howItWorks' | 'pricing' | 'testimonials' | 'faq' | 'ctaFooter' | 'listings' | 'legal'
+    | 'sections'
+    | 'hero'
+    | 'howItWorks'
+    | 'landlords'
+    | 'features'
+    | 'roles'
+    | 'pricing'
+    | 'listings'
+    | 'faq'
+    | 'ctaFooter'
+    | 'legal'
   >('sections');
+
+  const [legalSubTab, setLegalSubTab] = useState<'terms' | 'privacy' | 'refund' | 'contact'>('terms');
 
   // 1. Branding & Top Bar & Favicon
   const [brandName, setBrandName] = useState(cfg.brandName || 'propit');
@@ -34,377 +218,222 @@ export const LandingCmsPage: React.FC = () => {
   const [announcementEnabled, setAnnouncementEnabled] = useState(cfg.announcement?.enabled ?? false);
   const [announcementBadge, setAnnouncementBadge] = useState(cfg.announcement?.badge || 'New Release');
   const [announcementText, setAnnouncementText] = useState(
-    cfg.announcement?.text || 'PropTech 4.6 is live — Multi-gateway rent collections & automated reconciliation.'
+    cfg.announcement?.text || 'Propithub Global Marketplace is live — Multi-gateway rent collections & verified home listings.'
   );
-  const [announcementLinkText, setAnnouncementLinkText] = useState(cfg.announcement?.linkText || 'Explore Features →');
-  const [announcementLinkUrl, setAnnouncementLinkUrl] = useState(cfg.announcement?.linkUrl || '#features');
+  const [announcementLinkText, setAnnouncementLinkText] = useState(cfg.announcement?.linkText || 'Browse Homes →');
+  const [announcementLinkUrl, setAnnouncementLinkUrl] = useState(cfg.announcement?.linkUrl || '/homes');
 
   // Section Visibility
   const [showAnnouncement, setShowAnnouncement] = useState(cfg.sections?.showAnnouncement ?? false);
   const [showHero, setShowHero] = useState(cfg.sections?.showHero ?? true);
   const [showStats, setShowStats] = useState(cfg.sections?.showStats ?? true);
-  const [showFeatures, setShowFeatures] = useState(cfg.sections?.showFeatures ?? true);
-  const [showHowItWorks, setShowHowItWorks] = useState(cfg.sections?.showHowItWorks ?? true);
-  const [showPricing, setShowPricing] = useState(cfg.sections?.showPricing ?? true);
+  const [showDuoCards, setShowDuoCards] = useState(cfg.sections?.showDuoCards ?? true);
   const [showListings, setShowListings] = useState(cfg.sections?.showListings ?? true);
-  const [showTestimonials, setShowTestimonials] = useState(cfg.sections?.showTestimonials ?? true);
+  const [showWorld, setShowWorld] = useState(cfg.sections?.showWorld ?? true);
+  const [showHowItWorks, setShowHowItWorks] = useState(cfg.sections?.showHowItWorks ?? true);
+  const [showLandlords, setShowLandlords] = useState(cfg.sections?.showLandlords ?? true);
+  const [showFeatures, setShowFeatures] = useState(cfg.sections?.showFeatures ?? true);
+  const [showRoles, setShowRoles] = useState(cfg.sections?.showRoles ?? true);
+  const [showPricing, setShowPricing] = useState(cfg.sections?.showPricing ?? true);
   const [showFaq, setShowFaq] = useState(cfg.sections?.showFaq ?? true);
   const [showCtaBanner, setShowCtaBanner] = useState(cfg.sections?.showCtaBanner ?? true);
   const [showFooter, setShowFooter] = useState(cfg.sections?.showFooter ?? true);
 
-  // 2. Hero Content
-  const [heroKicker, setHeroKicker] = useState(cfg.heroKicker || 'PropTech 4.6 • Enterprise Cloud Property OS');
-  const [headline, setHeadline] = useState(cfg.headline || 'Smart Property Management for the Modern Era');
+  // 2. Hero Content & KPI Card & Two-Up Duo Cards
+  const [headline, setHeadline] = useState(
+    cfg.headline && !cfg.headline.includes('Modern Era')
+      ? cfg.headline
+      : 'Run every rental. Find a home anywhere.'
+  );
   const [subheadline, setSubheadline] = useState(
-    cfg.subheadline ||
-      'Streamline leasing, automate rent collection, assign maintenance, and manage tenants from one unified cloud platform. Owned & Developed by NEBZA Technologies Private Limited.'
+    cfg.subheadline && !cfg.subheadline.includes('NEBZA')
+      ? cfg.subheadline
+      : 'The unified rental workspace for landlords, property managers, and renters across 38 countries. One platform for leases, rent collection, and vacant unit listings.'
   );
-  const [ctaText, setCtaText] = useState(cfg.ctaText || 'Start 14-Day Free Trial →');
+  const [ctaText, setCtaText] = useState(cfg.ctaText || 'List and manage your property');
   const [ctaLink, setCtaLink] = useState(cfg.ctaLink || '/register');
-  const [secondaryCtaText, setSecondaryCtaText] = useState(cfg.secondaryCtaText || 'Sign In to Portal');
   const [secondaryCtaLink, setSecondaryCtaLink] = useState(cfg.secondaryCtaLink || '/login');
-  const [trustPills, setTrustPills] = useState<string[]>(
-    cfg.trustPills || ['✓ No credit card required', '✓ Instant cloud setup', '✓ All 4 portals included']
-  );
-  const [ratingText, setRatingText] = useState(
-    cfg.ratingText || '4.9/5 rated across 24 countries by property teams'
-  );
-  const [mockupPropertyName, setMockupPropertyName] = useState(
-    cfg.heroMockup?.propertyName || 'Sunset Heights Luxury Residences'
-  );
-  const [mockupLocationText, setMockupLocationText] = useState(
-    cfg.heroMockup?.locationText || 'Springfield, IL • 24 Units • Automated Ledger'
-  );
-  const [mockupBadgeText, setMockupBadgeText] = useState(cfg.heroMockup?.badgeText || '✓ 96.4% Occupied');
 
-  // Stats
-  const [stat1Number, setStat1Number] = useState(cfg.stats?.stat1Number || '15,000+');
-  const [stat1Label, setStat1Label] = useState(cfg.stats?.stat1Label || 'Properties on the ledger');
-  const [stat2Number, setStat2Number] = useState(cfg.stats?.stat2Number || '45,000+');
-  const [stat2Label, setStat2Label] = useState(cfg.stats?.stat2Label || 'Tenants connected');
-  const [stat3Number, setStat3Number] = useState(cfg.stats?.stat3Number || '$120M+');
-  const [stat3Label, setStat3Label] = useState(cfg.stats?.stat3Label || 'Collected annually');
-  const [stat4Number, setStat4Number] = useState(cfg.stats?.stat4Number || '99.98%');
-  const [stat4Label, setStat4Label] = useState(cfg.stats?.stat4Label || 'Platform uptime');
+  // Hero KPI Stats Card
+  const [stat1Number, setStat1Number] = useState(cfg.stats?.stat1Number || '');
+  const [stat1Label, setStat1Label] = useState(cfg.stats?.stat1Label || '');
+  const [stat2Number, setStat2Number] = useState(cfg.stats?.stat2Number || '$42M+');
+  const [stat2Label, setStat2Label] = useState(cfg.stats?.stat2Label || 'Rent processed across 8 currencies');
+  const [stat3Number, setStat3Number] = useState(cfg.stats?.stat3Number || '');
+  const [stat3Label, setStat3Label] = useState(cfg.stats?.stat3Label || 'Properties tracked on Propithub');
+  const [stat4Number, setStat4Number] = useState(cfg.stats?.stat4Number || '99.2%');
+  const [stat4Label, setStat4Label] = useState(cfg.stats?.stat4Label || 'On-time automated rent collection rate');
 
-  // 3. Features
-  const [featuresKicker, setFeaturesKicker] = useState(cfg.featuresKicker || "What's inside");
-  const [featuresTitle, setFeaturesTitle] = useState(cfg.featuresTitle || 'Six jobs, one ledger');
-  const [featuresSubtitle, setFeaturesSubtitle] = useState(
-    cfg.featuresSubtitle ||
-      'Everything an owner, a tenant, and a maintainer each need to do — reading from the same set of records, so no one is working off an outdated spreadsheet.'
+  // Two-Up Persona Duo Cards
+  const [seekerCard, setSeekerCard] = useState<LandingDuoCardItem>(
+    cfg.duoCards?.seeker || {
+      title: 'Looking for a home?',
+      description:
+        'Browse verified rentals worldwide. Save favorites, book viewings, sign leases online, and pay rent in any currency without hidden broker fees.',
+      ctaText: 'Browse all homes →',
+      ctaLink: '/homes',
+    }
   );
-  const [featuresList, setFeaturesList] = useState<LandingFeatureItem[]>(
-    cfg.featuresList && cfg.featuresList.length > 0
-      ? cfg.featuresList
-      : [
-          {
-            id: 'f-1',
-            icon: '💳',
-            title: 'Rent collection',
-            description:
-              "Recurring invoices go out on the lease's own schedule. Tenants pay by Stripe, PayPal, Razorpay, or bank transfer, and every payment reconciles against the ledger automatically.",
-          },
-          {
-            id: 'f-2',
-            icon: '📝',
-            title: 'Digital leases',
-            description:
-              "Draft, sign, and store lease agreements without printing a page. Renewal dates surface on the owner's dashboard weeks before they're due.",
-          },
-          {
-            id: 'f-3',
-            icon: '🛠️',
-            title: 'Maintenance desk',
-            description:
-              'Tenants log a request with a photo. Owners assign it to a maintainer in one tap. The maintainer updates status from their phone, and everyone sees the same ticket.',
-          },
-          {
-            id: 'f-4',
-            icon: '📊',
-            title: 'Portfolio overview',
-            description:
-              "Every property and unit, tracked for occupancy and cash flow from one dashboard — whether it's a duplex or two hundred doors.",
-          },
-          {
-            id: 'f-5',
-            icon: '👥',
-            title: 'Team & permissions',
-            description:
-              'Bring on a property manager or an accountant and give them access to exactly the modules their job needs, nothing more.',
-          },
-          {
-            id: 'f-6',
-            icon: '💬',
-            title: 'Messaging',
-            description:
-              'Send a rent reminder or a building-wide notice by bulk SMS or email, straight from the same screen where you manage tenants.',
-          },
-        ]
+  const [ownerCard, setOwnerCard] = useState<LandingDuoCardItem>(
+    cfg.duoCards?.owner || {
+      title: 'Own or manage property?',
+      description:
+        'Collect rent automatically, sign legal digital leases, and handle repairs with dispatched contractors. Publish vacant units in one click to fill them faster.',
+      ctaText: 'Start 14-day free trial →',
+      ctaLink: '/register',
+    }
+  );
+
+  // 3. Featured Homes & Around the World Copy
+  const [listingsTitle, setListingsTitle] = useState(cfg.listingsTitle || 'Featured homes around the world');
+  const [worldKicker, setWorldKicker] = useState(cfg.worldKicker || 'Around the world');
+  const [worldTitle, setWorldTitle] = useState(cfg.worldTitle || '');
+  const [worldSubtitle, setWorldSubtitle] = useState(
+    cfg.worldSubtitle ||
+      'Connect with verified rental residences across top global financial hubs and lifestyle destinations.'
   );
 
   // 4. How It Works
-  const [howItWorksKicker, setHowItWorksKicker] = useState(cfg.howItWorksKicker || 'Getting started');
+  const [howItWorksKicker, setHowItWorksKicker] = useState(cfg.howItWorksKicker || 'How it works');
   const [howItWorksTitle, setHowItWorksTitle] = useState(
-    cfg.howItWorksTitle || 'Three afternoons, not three months'
+    cfg.howItWorksTitle && !cfg.howItWorksTitle.includes('Three afternoons')
+      ? cfg.howItWorksTitle
+      : 'From first enquiry to first rent, in three steps'
   );
   const [howItWorksSubtitle, setHowItWorksSubtitle] = useState(
-    cfg.howItWorksSubtitle || 'Most owners are collecting their first online rent payment inside a week.'
+    cfg.howItWorksSubtitle && !cfg.howItWorksSubtitle.includes('inside a week')
+      ? cfg.howItWorksSubtitle
+      : 'Landlords and renters meet on the same unified ledger, so nothing is lost in disjointed emails or manual paperwork.'
   );
   const [howItWorksSteps, setHowItWorksSteps] = useState<LandingStepItem[]>(
-    cfg.howItWorksSteps && cfg.howItWorksSteps.length > 0
-      ? cfg.howItWorksSteps
-      : [
-          {
-            id: 's-1',
-            stepNumber: '01',
-            title: 'List your properties',
-            description:
-              "Add buildings, units, and rent amounts — or import them from the spreadsheet you're already keeping.",
-          },
-          {
-            id: 's-2',
-            stepNumber: '02',
-            title: 'Invite everyone in',
-            description:
-              'Tenants get a portal to pay rent and file repairs. Maintainers get a queue of the work assigned to them.',
-          },
-          {
-            id: 's-3',
-            stepNumber: '03',
-            title: 'Let the ledger run itself',
-            description:
-              "Invoices go out on schedule, payments reconcile on their own, and lease renewals show up before they're due.",
-          },
-        ]
+    cfg.howItWorksSteps && cfg.howItWorksSteps.length > 0 ? cfg.howItWorksSteps : DEFAULT_STEPS
   );
 
-  // 5. Pricing Plans
-  const [pricingKicker, setPricingKicker] = useState(cfg.pricingKicker || 'Plans');
-  const [pricingTitle, setPricingTitle] = useState(cfg.pricingTitle || 'Priced by the size of your portfolio');
+  // 5. For Landlords & Managers Section
+  const [landlordsSection, setLandlordsSection] = useState<LandingLandlordSectionConfig>(
+    cfg.landlordsSection || DEFAULT_LANDLORDS_SECTION
+  );
+
+  // 6. Core Features
+  const [featuresKicker, setFeaturesKicker] = useState(
+    cfg.featuresKicker && cfg.featuresKicker !== "What's inside" ? cfg.featuresKicker : 'Features'
+  );
+  const [featuresTitle, setFeaturesTitle] = useState(
+    cfg.featuresTitle && cfg.featuresTitle !== 'Six jobs, one ledger'
+      ? cfg.featuresTitle
+      : 'Everything a modern rental portfolio needs'
+  );
+  const [featuresSubtitle, setFeaturesSubtitle] = useState(
+    cfg.featuresSubtitle && !cfg.featuresSubtitle.includes('outdated spreadsheet')
+      ? cfg.featuresSubtitle
+      : 'One unified cloud workspace replacing fragmented spreadsheets, PDF templates, and manual messaging.'
+  );
+  const [featuresList, setFeaturesList] = useState<LandingFeatureItem[]>(
+    cfg.featuresList && cfg.featuresList.length > 0 ? cfg.featuresList : DEFAULT_FEATURES
+  );
+
+  // 7. Stakeholder Portals (5 Roles)
+  const [rolesKicker, setRolesKicker] = useState(cfg.rolesKicker || 'What you can do');
+  const [rolesTitle, setRolesTitle] = useState(cfg.rolesTitle || 'Tailored portals for every stakeholder');
+  const [rolesSubtitle, setRolesSubtitle] = useState(
+    !cfg.rolesSubtitle || cfg.rolesSubtitle === 'Each person accesses only what they need with zero clutter.'
+      ? 'Dedicated workspaces for every role.'
+      : cfg.rolesSubtitle
+  );
+  const [rolePortals, setRolePortals] = useState<LandingRolePortalItem[]>(
+    cfg.rolePortals && cfg.rolePortals.length > 0 ? cfg.rolePortals : DEFAULT_ROLE_PORTALS
+  );
+
+  // 8. Pricing Header
+  const [pricingKicker, setPricingKicker] = useState(cfg.pricingKicker || 'Pricing');
+  const [pricingTitle, setPricingTitle] = useState(cfg.pricingTitle || 'Simple, transparent pricing');
   const [pricingSubtitle, setPricingSubtitle] = useState(
     cfg.pricingSubtitle ||
-      'Every plan includes the full ledger — invoicing, leases, payments, and messaging. Upgrade as your unit count grows.'
-  );
-  const [pricingPlans, setPricingPlans] = useState<LandingPricingTier[]>(
-    cfg.pricingPlans && cfg.pricingPlans.length > 0
-      ? cfg.pricingPlans
-      : [
-          {
-            id: 'p-1',
-            name: 'Starter',
-            price: '$29',
-            period: '/month',
-            description: 'Essential management for independent landlords.',
-            popular: false,
-            features: [
-              '5 Properties',
-              '20 Rental Units',
-              '20 Tenants',
-              '2 Maintainers',
-              'Automated recurring invoices',
-              'Digital lease agreements',
-              'Online payment gateways',
-            ],
-            ctaText: 'Choose Starter',
-            ctaLink: '/register',
-          },
-          {
-            id: 'p-2',
-            name: 'Professional',
-            price: '$79',
-            period: '/month',
-            description: 'Scale multi-family portfolios with full automation.',
-            popular: true,
-            features: [
-              '50 Properties',
-              '200 Rental Units',
-              '200 Tenants',
-              '10 Maintainers',
-              'Automated recurring invoices',
-              'Digital lease agreements',
-              'Online payment gateways',
-              'Bulk SMS & Email Messaging',
-              'Role & Permission Management',
-            ],
-            ctaText: 'Choose Professional',
-            ctaLink: '/register',
-          },
-          {
-            id: 'p-3',
-            name: 'Enterprise',
-            price: '$149',
-            period: '/month',
-            description: 'Full enterprise suite for large property management firms.',
-            popular: false,
-            features: [
-              '500 Properties',
-              '2,000 Rental Units',
-              '2,000 Tenants',
-              '500 Maintainers',
-              'All Addons & Modules Included',
-              'Custom Domain Support',
-              'Priority Dedicated SLA Support',
-            ],
-            ctaText: 'Choose Enterprise',
-            ctaLink: '/register',
-          },
-        ]
+      'Every plan includes a 14-day free trial. Publishing vacant units to the global rental hub is included for free.'
   );
 
-  // 6. Testimonials
-  const [testimonialsKicker, setTestimonialsKicker] = useState(
-    cfg.testimonialsKicker || 'From the ledger’s users'
-  );
-  const [testimonialsTitle, setTestimonialsTitle] = useState(
-    cfg.testimonialsTitle || 'Owners, managers, and tenants on propithub'
-  );
-  const [testimonialsSubtitle, setTestimonialsSubtitle] = useState(
-    cfg.testimonialsSubtitle ||
-      'Everything an owner, a tenant, and a maintainer each need to do — reading from the same set of records.'
-  );
-  const [testimonialsList, setTestimonialsList] = useState<LandingTestimonialItem[]>(
-    cfg.testimonialsList && cfg.testimonialsList.length > 0
-      ? cfg.testimonialsList
-      : [
-          {
-            id: 't-1',
-            quote:
-              "“I used to chase four tenants across three group chats. Now I open one screen and know exactly who's paid.”",
-            name: 'Dara Whitfield',
-            role: 'owner, 4 rental houses',
-            stars: 5,
-          },
-          {
-            id: 't-2',
-            quote:
-              '“Work orders used to live in my head. Now a maintainer sees the ticket the second a tenant files it.”',
-            name: 'Marcus Odell',
-            role: 'portfolio manager, 60 units',
-            stars: 5,
-          },
-          {
-            id: 't-3',
-            quote:
-              '“Paying rent takes me ninety seconds, and I finally have a place to put in a repair request with photos.”',
-            name: 'Priya Nandakumar',
-            role: 'tenant',
-            stars: 5,
-          },
-        ]
-  );
-
-  // 7. FAQs
-  const [faqKicker, setFaqKicker] = useState(cfg.faqKicker || 'Questions');
-  const [faqTitle, setFaqTitle] = useState(cfg.faqTitle || 'Frequently Asked Questions');
-  const [faqSubtitle, setFaqSubtitle] = useState(
-    cfg.faqSubtitle || 'Everything you need to know about Propithub features, billing, and security.'
-  );
+  // 9. FAQs
+  const [faqKicker, setFaqKicker] = useState(cfg.faqKicker || 'FAQ');
+  const [faqTitle, setFaqTitle] = useState(cfg.faqTitle || 'Frequently asked questions');
+  const [faqSubtitle, setFaqSubtitle] = useState(cfg.faqSubtitle || '');
   const [faqList, setFaqList] = useState<LandingFaqItem[]>(
-    cfg.faqList && cfg.faqList.length > 0
-      ? cfg.faqList
-      : [
-          {
-            id: 'faq-1',
-            question: 'How quickly can I onboard properties and tenants?',
-            answer:
-              'Within 10 minutes. You can directly add properties, units, and register tenants with lease amounts and security deposits.',
-          },
-          {
-            id: 'faq-2',
-            question: 'Does Propithub handle rent payments directly?',
-            answer:
-              'Yes, owners can connect their own Stripe, PayPal, Razorpay accounts or UPI QR / Bank details to accept rent without platform lock-in.',
-          },
-          {
-            id: 'faq-3',
-            question: 'Can tenants sign lease agreements digitally?',
-            answer:
-              'Yes, digital lease agreements with e-signature and PDF downloads are built into both the Owner and Tenant portals.',
-          },
-          {
-            id: 'faq-4',
-            question: 'How do maintenance tickets work?',
-            answer:
-              'Tenants file tickets with descriptions and photos. Owners assign staff maintainers who can update ticket status and complete work orders.',
-          },
-          {
-            id: 'faq-5',
-            question: 'Can I cancel or change my plan anytime?',
-            answer: 'Yes, plans can be upgraded or changed anytime without penalties from your Owner Dashboard.',
-          },
-        ]
+    cfg.faqList && cfg.faqList.length > 0 ? cfg.faqList : DEFAULT_FAQS
   );
 
-  // 8. CTA Banner & Footer
+  // 10. CTA Banner & Footer
   const [ctaBannerTitle, setCtaBannerTitle] = useState(
-    cfg.ctaBannerTitle || 'Ready to close the books on manual rent collection?'
+    cfg.ctaBannerTitle || 'Find a home, or fill one faster.'
   );
   const [ctaBannerSubtitle, setCtaBannerSubtitle] = useState(
-    cfg.ctaBannerSubtitle || 'Join the owners, managers, and firms already running their portfolio on propithub.'
+    cfg.ctaBannerSubtitle ||
+      'Join thousands of property owners, managers, and tenants running their rental operations on Propithub.'
   );
   const [ctaBannerPrimaryText, setCtaBannerPrimaryText] = useState(
-    cfg.ctaBannerPrimaryText || 'Register as a property owner'
+    cfg.ctaBannerPrimaryText || 'Start 14-day free trial'
   );
-  const [ctaBannerPrimaryLink, setCtaBannerPrimaryLink] = useState(cfg.ctaBannerPrimaryLink || '/register');
+  const [ctaBannerPrimaryLink, setCtaBannerPrimaryLink] = useState(
+    cfg.ctaBannerPrimaryLink || '/register'
+  );
   const [ctaBannerSecondaryText, setCtaBannerSecondaryText] = useState(
-    cfg.ctaBannerSecondaryText || 'Sign in to your portal'
+    cfg.ctaBannerSecondaryText || 'Browse homes'
   );
   const [ctaBannerSecondaryLink, setCtaBannerSecondaryLink] = useState(
-    cfg.ctaBannerSecondaryLink || '/login'
+    cfg.ctaBannerSecondaryLink || '/homes'
   );
-
-  const [footerBrandDescription, setFooterBrandDescription] = useState(
-    cfg.footerBrandDescription ||
-      'Enterprise cloud property management platform engineered to streamline leasing, automate billing, and connect owners, tenants, and maintenance crews.'
-  );
-  const [footerCompanyName, setFooterCompanyName] = useState(
-    cfg.footerCompanyName || 'NEBZA Technologies Private Limited'
-  );
-  const [footerEmail, setFooterEmail] = useState(cfg.footerEmail || 'admin@propithub.com');
-  const [footerPhone, setFooterPhone] = useState(cfg.footerPhone || '+1 (555) 010-0001');
   const [footerCopyright, setFooterCopyright] = useState(
-    cfg.footerCopyright ||
-      '© 2026 Propithub. Owned and Developed by NEBZA Technologies Private Limited. All Rights Reserved.'
+    cfg.footerCopyright || `© ${new Date().getFullYear()} Propithub Inc. All rights reserved.`
+  );
+  const [showAppStoreLinks, setShowAppStoreLinks] = useState(cfg.showAppStoreLinks ?? true);
+  const [playStoreUrl, setPlayStoreUrl] = useState(
+    cfg.playStoreUrl ?? 'https://play.google.com/store/apps'
+  );
+  const [appStoreUrl, setAppStoreUrl] = useState(
+    cfg.appStoreUrl ?? 'https://apps.apple.com'
+  );
+  const [appStoreLabel, setAppStoreLabel] = useState(
+    cfg.appStoreLabel ?? 'Get the mobile app'
   );
 
-  // Legal & Support Pages State
-  const [legalSubTab, setLegalSubTab] = useState<'terms' | 'privacy' | 'refund' | 'contact'>('terms');
+  // 11. Legal Pages State
   const [legalTerms, setLegalTerms] = useState(
-    cfg.legalPages?.terms || INITIAL_STATE.landingConfig.legalPages?.terms || {
-      title: 'Terms of Use',
-      subtitle: 'Please review the terms and covenants governing your use of Propithub software and services.',
-      lastUpdated: 'September 18, 2026',
-      sections: [],
-    }
+    cfg.legalPages?.terms ||
+      INITIAL_STATE.landingConfig.legalPages?.terms || {
+        title: 'Terms of Service',
+        subtitle: 'Standard platform terms governing property owners, managers, and tenants.',
+        lastUpdated: 'January 2026',
+        sections: [],
+      }
   );
   const [legalPrivacy, setLegalPrivacy] = useState(
-    cfg.legalPages?.privacy || INITIAL_STATE.landingConfig.legalPages?.privacy || {
-      title: 'Privacy Policy',
-      subtitle: 'How Propithub collects, encrypts, safeguards, and processes personal and tenancy data.',
-      lastUpdated: 'September 18, 2026',
-      sections: [],
-    }
+    cfg.legalPages?.privacy ||
+      INITIAL_STATE.landingConfig.legalPages?.privacy || {
+        title: 'Privacy Policy',
+        subtitle: 'How we protect, encrypt, and process tenant and property owner data.',
+        lastUpdated: 'January 2026',
+        sections: [],
+      }
   );
   const [legalRefund, setLegalRefund] = useState(
-    cfg.legalPages?.refund || INITIAL_STATE.landingConfig.legalPages?.refund || {
-      title: 'Refund Policy',
-      subtitle: 'Clear, transparent rules regarding platform subscription cancellations and security deposit returns.',
-      lastUpdated: 'September 18, 2026',
-      sections: [],
-    }
+    cfg.legalPages?.refund ||
+      INITIAL_STATE.landingConfig.legalPages?.refund || {
+        title: 'Refund & Cancellation Policy',
+        subtitle: 'Clear guidelines on SaaS subscription billing and security deposit refunds.',
+        lastUpdated: 'January 2026',
+        sections: [],
+      }
   );
   const [legalContact, setLegalContact] = useState(
-    cfg.legalPages?.contact || INITIAL_STATE.landingConfig.legalPages?.contact || {
-      title: 'Contact Support & Help Desk',
-      subtitle: 'Our customer success and engineering team is available to assist property owners and residents.',
-      email: 'support@propithub.com',
-      phone: '+91 (800) 555-0199',
-      address: 'Tower B, 4th Floor, Financial District, Gachibowli, Hyderabad, Telangana 500032, India',
-      businessHours: 'Monday – Saturday: 9:00 AM – 7:00 PM IST',
-      responseTimeNotice: 'Average response turnaround within 2 hours for urgent priority tickets.',
-      faqs: [],
-    }
+    cfg.legalPages?.contact ||
+      INITIAL_STATE.landingConfig.legalPages?.contact || {
+        title: 'Contact Support & Help Desk',
+        subtitle: 'Our customer success and engineering team is available to assist property owners and residents.',
+        email: 'support@propithub.com',
+        phone: '+91 (800) 555-0199',
+        address: 'Tower B, 4th Floor, Financial District, Gachibowli, Hyderabad, Telangana 500032, India',
+        businessHours: 'Monday – Saturday: 9:00 AM – 7:00 PM IST',
+        responseTimeNotice: 'Average response turnaround within 2 hours for urgent priority tickets.',
+        faqs: [],
+      }
   );
 
   // Save All
@@ -426,29 +455,23 @@ export const LandingCmsPage: React.FC = () => {
         showAnnouncement,
         showHero,
         showStats,
-        showFeatures,
-        showHowItWorks,
-        showPricing,
+        showDuoCards,
         showListings,
-        showTestimonials,
+        showWorld,
+        showHowItWorks,
+        showLandlords,
+        showFeatures,
+        showRoles,
+        showPricing,
         showFaq,
         showCtaBanner,
         showFooter,
       },
-      heroKicker,
       headline,
       subheadline,
       ctaText,
       ctaLink,
-      secondaryCtaText,
       secondaryCtaLink,
-      trustPills,
-      ratingText,
-      heroMockup: {
-        propertyName: mockupPropertyName,
-        locationText: mockupLocationText,
-        badgeText: mockupBadgeText,
-      },
       stats: {
         stat1Number,
         stat1Label,
@@ -459,25 +482,30 @@ export const LandingCmsPage: React.FC = () => {
         stat4Number,
         stat4Label,
       },
-      featuresKicker,
-      featuresTitle,
-      featuresSubtitle,
-      featuresList,
+      duoCards: {
+        seeker: seekerCard,
+        owner: ownerCard,
+      },
+      listingsTitle,
+      worldKicker,
+      worldTitle,
+      worldSubtitle,
       howItWorksKicker,
       howItWorksTitle,
       howItWorksSubtitle,
       howItWorksSteps,
+      landlordsSection,
+      featuresKicker,
+      featuresTitle,
+      featuresSubtitle,
+      featuresList,
+      rolesKicker,
+      rolesTitle,
+      rolesSubtitle,
+      rolePortals,
       pricingKicker,
       pricingTitle,
       pricingSubtitle,
-      pricingPlans,
-      listingsKicker: 'Vacant Units',
-      listingsTitle: 'Available Listings',
-      listingsSubtitle: 'Direct verified rentals from property owners across Propithub',
-      testimonialsKicker,
-      testimonialsTitle,
-      testimonialsSubtitle,
-      testimonialsList,
       faqKicker,
       faqTitle,
       faqSubtitle,
@@ -488,11 +516,11 @@ export const LandingCmsPage: React.FC = () => {
       ctaBannerPrimaryLink,
       ctaBannerSecondaryText,
       ctaBannerSecondaryLink,
-      footerBrandDescription,
-      footerCompanyName,
-      footerEmail,
-      footerPhone,
       footerCopyright,
+      showAppStoreLinks,
+      playStoreUrl,
+      appStoreUrl,
+      appStoreLabel,
       legalPages: {
         terms: legalTerms,
         privacy: legalPrivacy,
@@ -500,363 +528,218 @@ export const LandingCmsPage: React.FC = () => {
         contact: legalContact,
       },
     });
-    showToast('✓ Landing page CMS & legal policies updated and persisted across refreshes.');
+    showToast('✓ Landing page CMS saved and synchronized live across the platform.');
   };
 
   // Reset Defaults
   const handleResetDefaults = async () => {
     if (!window.confirm('Reset all landing page sections and content to factory defaults?')) return;
-    const defaultData = {
+
+    setBrandName('propit');
+    setBrandAccent('hub');
+    setFaviconUrl('/favicon.svg');
+    setBrowserTitle('Propithub — Property Operations Platform');
+    setBrandTagline('Multi-Country Rental Operations');
+    setAnnouncementEnabled(false);
+    setShowAnnouncement(false);
+    setShowHero(true);
+    setShowStats(true);
+    setShowDuoCards(true);
+    setShowListings(true);
+    setShowWorld(true);
+    setShowHowItWorks(true);
+    setShowLandlords(true);
+    setShowFeatures(true);
+    setShowRoles(true);
+    setShowPricing(true);
+    setShowFaq(true);
+    setShowCtaBanner(true);
+    setShowFooter(true);
+
+    setHeadline('Run every rental. Find a home anywhere.');
+    setSubheadline(
+      'The unified rental workspace for landlords, property managers, and renters across 38 countries. One platform for leases, rent collection, and vacant unit listings.'
+    );
+    setCtaText('List and manage your property');
+    setCtaLink('/register');
+    setSecondaryCtaLink('/login');
+
+    setStat1Number('');
+    setStat1Label('');
+    setStat2Number('$42M+');
+    setStat2Label('Rent processed across 8 currencies');
+    setStat3Number('');
+    setStat3Label('Properties tracked on Propithub');
+    setStat4Number('99.2%');
+    setStat4Label('On-time automated rent collection rate');
+
+    const defaultSeeker: LandingDuoCardItem = {
+      title: 'Looking for a home?',
+      description:
+        'Browse verified rentals worldwide. Save favorites, book viewings, sign leases online, and pay rent in any currency without hidden broker fees.',
+      ctaText: 'Browse all homes →',
+      ctaLink: '/homes',
+    };
+    const defaultOwner: LandingDuoCardItem = {
+      title: 'Own or manage property?',
+      description:
+        'Collect rent automatically, sign legal digital leases, and handle repairs with dispatched contractors. Publish vacant units in one click to fill them faster.',
+      ctaText: 'Start 14-day free trial →',
+      ctaLink: '/register',
+    };
+    setSeekerCard(defaultSeeker);
+    setOwnerCard(defaultOwner);
+
+    setListingsTitle('Featured homes around the world');
+    setWorldKicker('Around the world');
+    setWorldTitle('');
+    setWorldSubtitle(
+      'Connect with verified rental residences across top global financial hubs and lifestyle destinations.'
+    );
+
+    setHowItWorksKicker('How it works');
+    setHowItWorksTitle('From first enquiry to first rent, in three steps');
+    setHowItWorksSubtitle(
+      'Landlords and renters meet on the same unified ledger, so nothing is lost in disjointed emails or manual paperwork.'
+    );
+    setHowItWorksSteps(DEFAULT_STEPS);
+
+    setLandlordsSection(DEFAULT_LANDLORDS_SECTION);
+
+    setFeaturesKicker('Features');
+    setFeaturesTitle('Everything a modern rental portfolio needs');
+    setFeaturesSubtitle(
+      'One unified cloud workspace replacing fragmented spreadsheets, PDF templates, and manual messaging.'
+    );
+    setFeaturesList(DEFAULT_FEATURES);
+
+    setRolesKicker('What you can do');
+    setRolesTitle('Tailored portals for every stakeholder');
+    setRolesSubtitle('Each person accesses only what they need with zero clutter.');
+    setRolePortals(DEFAULT_ROLE_PORTALS);
+
+    setPricingKicker('Pricing');
+    setPricingTitle('Simple, transparent pricing');
+    setPricingSubtitle(
+      'Every plan includes a 14-day free trial. Publishing vacant units to the global rental hub is included for free.'
+    );
+
+    setFaqKicker('FAQ');
+    setFaqTitle('Frequently asked questions');
+    setFaqSubtitle('');
+    setFaqList(DEFAULT_FAQS);
+
+    setCtaBannerTitle('Find a home, or fill one faster.');
+    setCtaBannerSubtitle(
+      'Join thousands of property owners, managers, and tenants running their rental operations on Propithub.'
+    );
+    setCtaBannerPrimaryText('Start 14-day free trial');
+    setCtaBannerPrimaryLink('/register');
+    setCtaBannerSecondaryText('Browse homes');
+    setCtaBannerSecondaryLink('/homes');
+    setFooterCopyright(`© ${new Date().getFullYear()} Propithub Inc. All rights reserved.`);
+    setShowAppStoreLinks(true);
+    setPlayStoreUrl('https://play.google.com/store/apps');
+    setAppStoreUrl('https://apps.apple.com');
+    setAppStoreLabel('Get the mobile app');
+
+    await saveLandingConfig({
       brandName: 'propit',
       brandAccent: 'hub',
+      faviconUrl: '/favicon.svg',
+      browserTitle: 'Propithub — Property Operations Platform',
+      brandTagline: 'Multi-Country Rental Operations',
       announcement: {
         enabled: false,
         badge: 'New Release',
-        text: 'PropTech 4.6 is live — Multi-gateway rent collections & automated reconciliation.',
-        linkText: 'Explore Features →',
-        linkUrl: '#features',
+        text: 'Propithub Global Marketplace is live — Multi-gateway rent collections & verified home listings.',
+        linkText: 'Browse Homes →',
+        linkUrl: '/homes',
       },
       sections: {
         showAnnouncement: false,
         showHero: true,
         showStats: true,
-        showFeatures: true,
-        showHowItWorks: true,
-        showPricing: true,
+        showDuoCards: true,
         showListings: true,
-        showTestimonials: true,
+        showWorld: true,
+        showHowItWorks: true,
+        showLandlords: true,
+        showFeatures: true,
+        showRoles: true,
+        showPricing: true,
         showFaq: true,
         showCtaBanner: true,
         showFooter: true,
       },
-      heroKicker: 'PropTech 4.6 • Enterprise Cloud Property OS',
-      headline: 'Smart Property Management for the Modern Era',
+      headline: 'Run every rental. Find a home anywhere.',
       subheadline:
-        'Streamline leasing, automate rent collection, assign maintenance, and manage tenants from one unified cloud platform. Owned & Developed by NEBZA Technologies Private Limited.',
-      ctaText: 'Start 14-Day Free Trial →',
+        'The unified rental workspace for landlords, property managers, and renters across 38 countries. One platform for leases, rent collection, and vacant unit listings.',
+      ctaText: 'List and manage your property',
       ctaLink: '/register',
-      secondaryCtaText: 'Sign In to Portal',
       secondaryCtaLink: '/login',
-      trustPills: ['✓ No credit card required', '✓ Instant cloud setup', '✓ All 4 portals included'],
-      ratingText: '4.9/5 rated across 24 countries by property teams',
-      heroMockup: {
-        propertyName: 'Sunset Heights Luxury Residences',
-        locationText: 'Springfield, IL • 24 Units • Automated Ledger',
-        badgeText: '✓ 96.4% Occupied',
-      },
       stats: {
-        stat1Number: '15,000+',
-        stat1Label: 'Properties on the ledger',
-        stat2Number: '45,000+',
-        stat2Label: 'Tenants connected',
-        stat3Number: '$120M+',
-        stat3Label: 'Collected annually',
-        stat4Number: '99.98%',
-        stat4Label: 'Platform uptime',
+        stat1Number: '',
+        stat1Label: '',
+        stat2Number: '$42M+',
+        stat2Label: 'Rent processed across 8 currencies',
+        stat3Number: '',
+        stat3Label: 'Properties tracked on Propithub',
+        stat4Number: '99.2%',
+        stat4Label: 'On-time automated rent collection rate',
       },
-      featuresKicker: "What's inside",
-      featuresTitle: 'Six jobs, one ledger',
+      duoCards: {
+        seeker: defaultSeeker,
+        owner: defaultOwner,
+      },
+      listingsTitle: 'Featured homes around the world',
+      worldKicker: 'Around the world',
+      worldTitle: '',
+      worldSubtitle:
+        'Connect with verified rental residences across top global financial hubs and lifestyle destinations.',
+      howItWorksKicker: 'How it works',
+      howItWorksTitle: 'From first enquiry to first rent, in three steps',
+      howItWorksSubtitle:
+        'Landlords and renters meet on the same unified ledger, so nothing is lost in disjointed emails or manual paperwork.',
+      howItWorksSteps: DEFAULT_STEPS,
+      landlordsSection: DEFAULT_LANDLORDS_SECTION,
+      featuresKicker: 'Features',
+      featuresTitle: 'Everything a modern rental portfolio needs',
       featuresSubtitle:
-        'Everything an owner, a tenant, and a maintainer each need to do — reading from the same set of records, so no one is working off an outdated spreadsheet.',
-      featuresList: [
-        {
-          id: 'f-1',
-          icon: '💳',
-          title: 'Rent collection',
-          description:
-            "Recurring invoices go out on the lease's own schedule. Tenants pay by Stripe, PayPal, Razorpay, or bank transfer, and every payment reconciles against the ledger automatically.",
-        },
-        {
-          id: 'f-2',
-          icon: '📝',
-          title: 'Digital leases',
-          description:
-            "Draft, sign, and store lease agreements without printing a page. Renewal dates surface on the owner's dashboard weeks before they're due.",
-        },
-        {
-          id: 'f-3',
-          icon: '🛠️',
-          title: 'Maintenance desk',
-          description:
-            'Tenants log a request with a photo. Owners assign it to a maintainer in one tap. The maintainer updates status from their phone, and everyone sees the same ticket.',
-        },
-        {
-          id: 'f-4',
-          icon: '📊',
-          title: 'Portfolio overview',
-          description:
-            "Every property and unit, tracked for occupancy and cash flow from one dashboard — whether it's a duplex or two hundred doors.",
-        },
-        {
-          id: 'f-5',
-          icon: '👥',
-          title: 'Team & permissions',
-          description:
-            'Bring on a property manager or an accountant and give them access to exactly the modules their job needs, nothing more.',
-        },
-        {
-          id: 'f-6',
-          icon: '💬',
-          title: 'Messaging',
-          description:
-            'Send a rent reminder or a building-wide notice by bulk SMS or email, straight from the same screen where you manage tenants.',
-        },
-      ],
-      howItWorksKicker: 'Getting started',
-      howItWorksTitle: 'Three afternoons, not three months',
-      howItWorksSubtitle: 'Most owners are collecting their first online rent payment inside a week.',
-      howItWorksSteps: [
-        {
-          id: 's-1',
-          stepNumber: '01',
-          title: 'List your properties',
-          description:
-            "Add buildings, units, and rent amounts — or import them from the spreadsheet you're already keeping.",
-        },
-        {
-          id: 's-2',
-          stepNumber: '02',
-          title: 'Invite everyone in',
-          description:
-            'Tenants get a portal to pay rent and file repairs. Maintainers get a queue of the work assigned to them.',
-        },
-        {
-          id: 's-3',
-          stepNumber: '03',
-          title: 'Let the ledger run itself',
-          description:
-            "Invoices go out on schedule, payments reconcile on their own, and lease renewals show up before they're due.",
-        },
-      ],
-      pricingKicker: 'Plans',
-      pricingTitle: 'Priced by the size of your portfolio',
+        'One unified cloud workspace replacing fragmented spreadsheets, PDF templates, and manual messaging.',
+      featuresList: DEFAULT_FEATURES,
+      rolesKicker: 'What you can do',
+      rolesTitle: 'Tailored portals for every stakeholder',
+      rolesSubtitle: 'Dedicated workspaces for every role.',
+      rolePortals: DEFAULT_ROLE_PORTALS,
+      pricingKicker: 'Pricing',
+      pricingTitle: 'Simple, transparent pricing',
       pricingSubtitle:
-        'Every plan includes the full ledger — invoicing, leases, payments, and messaging. Upgrade as your unit count grows.',
-      pricingPlans: [
-        {
-          id: 'p-1',
-          name: 'Starter',
-          price: '$29',
-          period: '/month',
-          description: 'Essential management for independent landlords.',
-          popular: false,
-          features: [
-            '5 Properties',
-            '20 Rental Units',
-            '20 Tenants',
-            '2 Maintainers',
-            'Automated recurring invoices',
-            'Digital lease agreements',
-            'Online payment gateways',
-          ],
-          ctaText: 'Choose Starter',
-          ctaLink: '/register',
-        },
-        {
-          id: 'p-2',
-          name: 'Professional',
-          price: '$79',
-          period: '/month',
-          description: 'Scale multi-family portfolios with full automation.',
-          popular: true,
-          features: [
-            '50 Properties',
-            '200 Rental Units',
-            '200 Tenants',
-            '10 Maintainers',
-            'Automated recurring invoices',
-            'Digital lease agreements',
-            'Online payment gateways',
-            'Bulk SMS & Email Messaging',
-            'Role & Permission Management',
-          ],
-          ctaText: 'Choose Professional',
-          ctaLink: '/register',
-        },
-        {
-          id: 'p-3',
-          name: 'Enterprise',
-          price: '$149',
-          period: '/month',
-          description: 'Full enterprise suite for large property management firms.',
-          popular: false,
-          features: [
-            '500 Properties',
-            '2,000 Rental Units',
-            '2,000 Tenants',
-            '500 Maintainers',
-            'All Addons & Modules Included',
-            'Custom Domain Support',
-            'Priority Dedicated SLA Support',
-          ],
-          ctaText: 'Choose Enterprise',
-          ctaLink: '/register',
-        },
-      ],
-      testimonialsKicker: 'From the ledger’s users',
-      testimonialsTitle: 'Owners, managers, and tenants on propithub',
-      testimonialsSubtitle:
-        'Everything an owner, a tenant, and a maintainer each need to do — reading from the same set of records.',
-      testimonialsList: [
-        {
-          id: 't-1',
-          quote:
-            "“I used to chase four tenants across three group chats. Now I open one screen and know exactly who's paid.”",
-          name: 'Dara Whitfield',
-          role: 'owner, 4 rental houses',
-          stars: 5,
-        },
-        {
-          id: 't-2',
-          quote:
-            '“Work orders used to live in my head. Now a maintainer sees the ticket the second a tenant files it.”',
-          name: 'Marcus Odell',
-          role: 'portfolio manager, 60 units',
-          stars: 5,
-        },
-        {
-          id: 't-3',
-          quote:
-            '“Paying rent takes me ninety seconds, and I finally have a place to put in a repair request with photos.”',
-          name: 'Priya Nandakumar',
-          role: 'tenant',
-          stars: 5,
-        },
-      ],
-      faqKicker: 'Questions',
-      faqTitle: 'Frequently Asked Questions',
-      faqSubtitle: 'Everything you need to know about Propithub features, billing, and security.',
-      faqList: [
-        {
-          id: 'faq-1',
-          question: 'How quickly can I onboard properties and tenants?',
-          answer:
-            'Within 10 minutes. You can directly add properties, units, and register tenants with lease amounts and security deposits.',
-        },
-        {
-          id: 'faq-2',
-          question: 'Does Propithub handle rent payments directly?',
-          answer:
-            'Yes, owners can connect their own Stripe, PayPal, Razorpay accounts or UPI QR / Bank details to accept rent without platform lock-in.',
-        },
-        {
-          id: 'faq-3',
-          question: 'Can tenants sign lease agreements digitally?',
-          answer:
-            'Yes, digital lease agreements with e-signature and PDF downloads are built into both the Owner and Tenant portals.',
-        },
-        {
-          id: 'faq-4',
-          question: 'How do maintenance tickets work?',
-          answer:
-            'Tenants file tickets with descriptions and photos. Owners assign staff maintainers who can update ticket status and complete work orders.',
-        },
-        {
-          id: 'faq-5',
-          question: 'Can I cancel or change my plan anytime?',
-          answer: 'Yes, plans can be upgraded or changed anytime without penalties from your Owner Dashboard.',
-        },
-      ],
-      ctaBannerTitle: 'Ready to close the books on manual rent collection?',
-      ctaBannerSubtitle: 'Join the owners, managers, and firms already running their portfolio on propithub.',
-      ctaBannerPrimaryText: 'Register as a property owner',
+        'Every plan includes a 14-day free trial. Publishing vacant units to the global rental hub is included for free.',
+      faqKicker: 'FAQ',
+      faqTitle: 'Frequently asked questions',
+      faqSubtitle: '',
+      faqList: DEFAULT_FAQS,
+      ctaBannerTitle: 'Find a home, or fill one faster.',
+      ctaBannerSubtitle:
+        'Join thousands of property owners, managers, and tenants running their rental operations on Propithub.',
+      ctaBannerPrimaryText: 'Start 14-day free trial',
       ctaBannerPrimaryLink: '/register',
-      ctaBannerSecondaryText: 'Sign in to your portal',
-      ctaBannerSecondaryLink: '/login',
-      footerBrandDescription:
-        'Enterprise cloud property management platform engineered to streamline leasing, automate billing, and connect owners, tenants, and maintenance crews.',
-      footerCompanyName: 'NEBZA Technologies Private Limited',
-      footerEmail: 'admin@propithub.com',
-      footerPhone: '+1 (555) 010-0001',
-      footerCopyright:
-        '© 2026 Propithub. Owned and Developed by NEBZA Technologies Private Limited. All Rights Reserved.',
-    };
-
-    setBrandName(defaultData.brandName);
-    setBrandAccent(defaultData.brandAccent);
-    setFaviconUrl('/favicon.svg');
-    setBrowserTitle('Propithub — Property Operations Platform');
-    setBrandTagline('Multi-Country Rental Operations');
-    setAnnouncementEnabled(defaultData.announcement.enabled);
-    setAnnouncementBadge(defaultData.announcement.badge);
-    setAnnouncementText(defaultData.announcement.text);
-    setAnnouncementLinkText(defaultData.announcement.linkText);
-    setAnnouncementLinkUrl(defaultData.announcement.linkUrl);
-
-    setShowAnnouncement(defaultData.sections.showAnnouncement);
-    setShowHero(defaultData.sections.showHero);
-    setShowStats(defaultData.sections.showStats);
-    setShowFeatures(defaultData.sections.showFeatures);
-    setShowHowItWorks(defaultData.sections.showHowItWorks);
-    setShowPricing(defaultData.sections.showPricing);
-    setShowListings(defaultData.sections.showListings);
-    setShowTestimonials(defaultData.sections.showTestimonials);
-    setShowFaq(defaultData.sections.showFaq);
-    setShowCtaBanner(defaultData.sections.showCtaBanner);
-    setShowFooter(defaultData.sections.showFooter);
-
-    setHeroKicker(defaultData.heroKicker);
-    setHeadline(defaultData.headline);
-    setSubheadline(defaultData.subheadline);
-    setCtaText(defaultData.ctaText);
-    setCtaLink(defaultData.ctaLink);
-    setSecondaryCtaText(defaultData.secondaryCtaText);
-    setSecondaryCtaLink(defaultData.secondaryCtaLink);
-    setTrustPills(defaultData.trustPills);
-    setRatingText(defaultData.ratingText);
-    setMockupPropertyName(defaultData.heroMockup.propertyName);
-    setMockupLocationText(defaultData.heroMockup.locationText);
-    setMockupBadgeText(defaultData.heroMockup.badgeText);
-
-    setStat1Number(defaultData.stats.stat1Number);
-    setStat1Label(defaultData.stats.stat1Label);
-    setStat2Number(defaultData.stats.stat2Number);
-    setStat2Label(defaultData.stats.stat2Label);
-    setStat3Number(defaultData.stats.stat3Number);
-    setStat3Label(defaultData.stats.stat3Label);
-    setStat4Number(defaultData.stats.stat4Number);
-    setStat4Label(defaultData.stats.stat4Label);
-
-    setFeaturesKicker(defaultData.featuresKicker);
-    setFeaturesTitle(defaultData.featuresTitle);
-    setFeaturesSubtitle(defaultData.featuresSubtitle);
-    setFeaturesList(defaultData.featuresList);
-
-    setHowItWorksKicker(defaultData.howItWorksKicker);
-    setHowItWorksTitle(defaultData.howItWorksTitle);
-    setHowItWorksSubtitle(defaultData.howItWorksSubtitle);
-    setHowItWorksSteps(defaultData.howItWorksSteps);
-
-    setPricingKicker(defaultData.pricingKicker);
-    setPricingTitle(defaultData.pricingTitle);
-    setPricingSubtitle(defaultData.pricingSubtitle);
-    setPricingPlans(defaultData.pricingPlans);
-
-    setTestimonialsKicker(defaultData.testimonialsKicker);
-    setTestimonialsTitle(defaultData.testimonialsTitle);
-    setTestimonialsSubtitle(defaultData.testimonialsSubtitle);
-    setTestimonialsList(defaultData.testimonialsList);
-
-    setFaqKicker(defaultData.faqKicker);
-    setFaqTitle(defaultData.faqTitle);
-    setFaqSubtitle(defaultData.faqSubtitle);
-    setFaqList(defaultData.faqList);
-
-    setCtaBannerTitle(defaultData.ctaBannerTitle);
-    setCtaBannerSubtitle(defaultData.ctaBannerSubtitle);
-    setCtaBannerPrimaryText(defaultData.ctaBannerPrimaryText);
-    setCtaBannerPrimaryLink(defaultData.ctaBannerPrimaryLink);
-    setCtaBannerSecondaryText(defaultData.ctaBannerSecondaryText);
-    setCtaBannerSecondaryLink(defaultData.ctaBannerSecondaryLink);
-
-    setFooterBrandDescription(defaultData.footerBrandDescription);
-    setFooterCompanyName(defaultData.footerCompanyName);
-    setFooterEmail(defaultData.footerEmail);
-    setFooterPhone(defaultData.footerPhone);
-    setFooterCopyright(defaultData.footerCopyright);
-
-    await saveLandingConfig(defaultData);
-    showToast('Landing page reset to platform defaults and saved.');
+      ctaBannerSecondaryText: 'Browse homes',
+      ctaBannerSecondaryLink: '/homes',
+      footerCopyright: `© ${new Date().getFullYear()} Propithub Inc. All rights reserved.`,
+      showAppStoreLinks: true,
+      playStoreUrl: 'https://play.google.com/store/apps',
+      appStoreUrl: 'https://apps.apple.com',
+      appStoreLabel: 'Get the mobile app',
+      legalPages: {
+        terms: legalTerms,
+        privacy: legalPrivacy,
+        refund: legalRefund,
+        contact: legalContact,
+      },
+    });
+    showToast('Landing page reset to defaults and saved.');
   };
 
   const handleToggleUnitListing = async (unitId: string, currentStatus: boolean, unitName: string) => {
@@ -867,6 +750,10 @@ export const LandingCmsPage: React.FC = () => {
       showToast(`${unitName} ${!currentStatus ? 'listed publicly' : 'delisted from landing page'}.`);
     }
   };
+
+  const activeLivePlans = state.plans
+    .filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial')
+    .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
 
   return (
     <div>
@@ -885,10 +772,10 @@ export const LandingCmsPage: React.FC = () => {
       >
         <div>
           <div style={{ fontWeight: 800, fontSize: '15px', color: 'var(--ink)' }}>
-            Super Admin • Full Control Landing Page CMS
+            Super Admin • Full Dynamic Landing Page CMS
           </div>
           <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-            Modify branding, hero, impact stats, features, how it works, pricing tiers, reviews, FAQs, CTA banner, and footer in real-time.
+            Every section on the public landing page is 100% controlled here in real time.
           </div>
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -896,9 +783,15 @@ export const LandingCmsPage: React.FC = () => {
             type="button"
             className="btn secondary small btn-mobile-full"
             onClick={() => window.open('/', '_blank')}
-            title="Open landing page in new tab"
           >
             View Live Landing Page ↗
+          </button>
+          <button
+            type="button"
+            className="btn secondary small btn-mobile-full"
+            onClick={() => window.open('/homes', '_blank')}
+          >
+            View Browse Homes ↗
           </button>
           <button type="button" className="btn brass small btn-mobile-full" onClick={handleSaveAll}>
             ✓ Save All Changes
@@ -909,7 +802,7 @@ export const LandingCmsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Navigation Tabs for CMS Control - Wrapped Pill Style (No Scrollbars) */}
+      {/* Navigation Tabs — 100% Matched to LandingPage.tsx Sections */}
       <div
         style={{
           display: 'flex',
@@ -925,15 +818,16 @@ export const LandingCmsPage: React.FC = () => {
       >
         {[
           { id: 'sections', label: '🎛️ Sections & Brand' },
-          { id: 'hero', label: '🚀 Hero & Stats' },
-          { id: 'features', label: `✨ Feature Cards (${featuresList.length})` },
+          { id: 'hero', label: '🚀 Hero, KPIs & Duo Cards' },
+          { id: 'listings', label: `🏠 Homes & Global Hub (${state.units.filter((u) => u.isListedPublicly).length})` },
           { id: 'howItWorks', label: `🪜 How It Works (${howItWorksSteps.length})` },
-          { id: 'pricing', label: `💳 Pricing Plans (${state.plans.filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial').length} Live)` },
-          { id: 'testimonials', label: `💬 Testimonials (${testimonialsList.length})` },
+          { id: 'landlords', label: '🏢 For Landlords & Mockup' },
+          { id: 'features', label: `✨ Core Features (${featuresList.length})` },
+          { id: 'roles', label: `👥 Stakeholder Portals (${rolePortals.length})` },
+          { id: 'pricing', label: `💳 Pricing (${activeLivePlans.length} Live Plans)` },
           { id: 'faq', label: `❓ FAQs (${faqList.length})` },
           { id: 'ctaFooter', label: '📣 CTA & Footer' },
-          { id: 'listings', label: '🏠 Vacant Listings Moderation' },
-          { id: 'legal', label: '⚖️ Policies & Support Pages' },
+          { id: 'legal', label: '⚖️ Legal & Support Pages' },
         ].map((tab) => {
           const isActive = activeTab === tab.id;
           return (
@@ -954,7 +848,6 @@ export const LandingCmsPage: React.FC = () => {
                 alignItems: 'center',
                 gap: '6px',
                 transition: 'all 0.15s ease',
-                boxShadow: isActive ? '0 2px 8px rgba(16, 185, 129, 0.25)' : 'none',
               }}
             >
               {tab.label}
@@ -963,326 +856,131 @@ export const LandingCmsPage: React.FC = () => {
         })}
       </div>
 
-      {/* TAB 1: Sections Visibility & Top Branding */}
+      {/* TAB 1: Sections Visibility & Brand Identity */}
       {activeTab === 'sections' && (
         <div style={{ marginTop: '16px' }}>
-          {/* Brand Identity & Favicon Studio */}
           <div className="panel">
-            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span>Dynamic Favicon & Brand Identity</span>
-                  <span style={{ fontSize: '11px', background: 'var(--brand-surface, #e0f2fe)', color: 'var(--brand, #0284c7)', padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
-                    Live Synchronized
-                  </span>
-                </h3>
-                <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                  Dynamically customize the website favicon icon and the text beside it across browser tabs and navigation bars.
-                </div>
-              </div>
+            <div className="panel-head">
+              <h3>Dynamic Favicon & Brand Identity</h3>
             </div>
-
-            <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {/* LIVE SIMULATION PREVIEW CARDS */}
+            <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px' }}>
-                
-                {/* 1. Browser Tab Preview */}
                 <div style={{ background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: '10px', padding: '12px 14px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--ink-soft)', marginBottom: '8px' }}>
-                    🌐 Browser Tab Preview (Live)
+                  <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--ink-soft)', marginBottom: '8px' }}>
+                    🌐 Browser Tab Preview
                   </div>
-                  <div style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    background: 'var(--surface)',
-                    border: '1px solid var(--line)',
-                    borderRadius: '8px 8px 0 0',
-                    padding: '8px 12px',
-                    maxWidth: '100%',
-                    boxShadow: '0 2px 5px rgba(0,0,0,0.04)'
-                  }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '8px', padding: '8px 12px' }}>
                     {faviconUrl ? (
-                      <img
-                        src={faviconUrl}
-                        alt="Favicon"
-                        style={{ width: '16px', height: '16px', objectFit: 'contain', borderRadius: '2px' }}
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = '/favicon.svg';
-                        }}
-                      />
+                      <img src={faviconUrl} alt="Favicon" style={{ width: '16px', height: '16px', objectFit: 'contain' }} />
                     ) : (
                       <PropithubIcon size={16} color="#10B981" />
                     )}
-                    <span style={{
-                      fontSize: '12.5px',
-                      fontWeight: 500,
-                      color: 'var(--ink)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      maxWidth: '220px'
-                    }}>
-                      {browserTitle || `${brandName}${brandAccent ? brandAccent : ''} — Property Operations Platform`}
+                    <span style={{ fontSize: '12.5px', fontWeight: 500, color: 'var(--ink)' }}>
+                      {browserTitle || `${brandName}${brandAccent} — Property Operations Platform`}
                     </span>
-                    <span style={{ fontSize: '11px', color: 'var(--ink-soft)', cursor: 'default', marginLeft: '4px' }}>✕</span>
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '8px' }}>
-                    This exact favicon icon & title text will display in user browser tabs and bookmarks.
                   </div>
                 </div>
 
-                {/* 2. Top Navigation Bar Preview */}
                 <div style={{ background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: '10px', padding: '12px 14px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--ink-soft)', marginBottom: '8px' }}>
-                    🏷️ Navbar Header Preview (Live)
+                  <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--ink-soft)', marginBottom: '8px' }}>
+                    🏷️ Navbar Brand Preview
                   </div>
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    background: 'var(--surface)',
-                    border: '1px solid var(--line)',
-                    borderRadius: '8px',
-                    padding: '10px 14px',
-                    boxShadow: '0 2px 5px rgba(0,0,0,0.04)'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-                      {faviconUrl ? (
-                        <img
-                          src={faviconUrl}
-                          alt="Logo Icon"
-                          style={{ width: '22px', height: '22px', objectFit: 'contain' }}
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src = '/favicon.svg';
-                          }}
-                        />
-                      ) : (
-                        <PropithubIcon size={22} color="#10B981" />
-                      )}
-                      <span style={{ fontSize: '17px', fontWeight: 800, letterSpacing: '-0.3px', color: 'var(--ink)' }}>
-                        {brandName || 'propit'}
-                        <span style={{ color: 'var(--brand, #10B981)' }}>{brandAccent || 'hub'}</span>
-                      </span>
-                    </div>
-                    {brandTagline && (
-                      <span style={{ fontSize: '11px', color: 'var(--ink-soft)', background: 'var(--surface-sunken)', padding: '2px 8px', borderRadius: '4px' }}>
-                        {brandTagline}
-                      </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '9px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '8px', padding: '8px 12px' }}>
+                    {faviconUrl ? (
+                      <img src={faviconUrl} alt="Logo" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
+                    ) : (
+                      <PropithubIcon size={22} color="#10B981" />
                     )}
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '8px' }}>
-                    The logo icon and styled brand typography rendered on top headers and footers.
-                  </div>
-                </div>
-
-              </div>
-
-              {/* FAVICON CONTROL SECTION */}
-              <div style={{ borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
-                <h4 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--ink)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>1. Favicon Configuration (Icon Image)</span>
-                </h4>
-
-                <div className="row" style={{ alignItems: 'flex-start' }}>
-                  <div className="field" style={{ flex: '2 1 280px' }}>
-                    <label>Favicon URL or File Path</label>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        type="text"
-                        value={faviconUrl}
-                        onChange={(e) => setFaviconUrl(e.target.value)}
-                        placeholder="e.g. /favicon.svg, https://... or base64"
-                        style={{ flex: 1 }}
-                      />
-                      {faviconUrl && (
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => setFaviconUrl('/favicon.svg')}
-                          title="Reset to default icon"
-                        >
-                          Default
-                        </button>
-                      )}
-                    </div>
-                    <div className="hint">Direct image link (.svg, .png, .ico, .webp) or choose a preset / upload below.</div>
-                  </div>
-
-                  <div className="field" style={{ flex: '1 1 200px' }}>
-                    <label>Upload Custom Icon</label>
-                    <input
-                      type="file"
-                      accept=".svg,.png,.ico,.webp,.jpg"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onload = (event) => {
-                            if (typeof event.target?.result === 'string') {
-                              setFaviconUrl(event.target.result);
-                              showToast('Favicon uploaded & applied to preview!');
-                            }
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                      }}
-                      style={{ fontSize: '12px' }}
-                    />
-                    <div className="hint">Upload a transparent PNG, ICO, or SVG.</div>
-                  </div>
-                </div>
-
-                {/* Quick Icon Presets */}
-                <div style={{ marginTop: '10px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Quick Icon Presets:</label>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn secondary small"
-                      onClick={() => setFaviconUrl('/favicon.svg')}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', padding: '4px 10px' }}
-                    >
-                      <img src="/favicon.svg" alt="Default" style={{ width: '14px', height: '14px' }} />
-                      Default Emerald Building
-                    </button>
-                    <button
-                      type="button"
-                      className="btn secondary small"
-                      onClick={() => setFaviconUrl("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%230284c7'%3E%3Cpath d='M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z'/%3E%3C/svg%3E")}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', padding: '4px 10px' }}
-                    >
-                      🛡️ Blue Shield Security
-                    </button>
-                    <button
-                      type="button"
-                      className="btn secondary small"
-                      onClick={() => setFaviconUrl("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2310b981'%3E%3Cpath d='M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z'/%3E%3C/svg%3E")}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', padding: '4px 10px' }}
-                    >
-                      🏠 Emerald Modern Home
-                    </button>
-                    <button
-                      type="button"
-                      className="btn secondary small"
-                      onClick={() => setFaviconUrl("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%237c3aed'%3E%3Cpath d='M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z'/%3E%3C/svg%3E")}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', padding: '4px 10px' }}
-                    >
-                      📊 Indigo Enterprise Ledger
-                    </button>
+                    <span style={{ fontSize: '17px', fontWeight: 800, color: 'var(--ink)' }}>
+                      {brandName || 'propit'}
+                      <span style={{ color: 'var(--brand, #10B981)' }}>{brandAccent || 'hub'}</span>
+                    </span>
                   </div>
                 </div>
               </div>
 
-              {/* TEXT BESIDE IT (BRAND & BROWSER TAB TITLE) */}
-              <div style={{ borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
-                <h4 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--ink)', marginBottom: '10px' }}>
-                  2. Text Beside It (Brand Logo & Browser Tab Text)
-                </h4>
-
-                <div className="row">
-                  <div className="field">
-                    <label>Brand Prefix Text</label>
-                    <input
-                      type="text"
-                      value={brandName}
-                      onChange={(e) => setBrandName(e.target.value)}
-                      placeholder="propit"
-                    />
-                    <div className="hint">The primary brand name beside the logo icon (e.g. propit, Nexus, Horizon).</div>
-                  </div>
-
-                  <div className="field">
-                    <label>Brand Accent Suffix</label>
-                    <input
-                      type="text"
-                      value={brandAccent}
-                      onChange={(e) => setBrandAccent(e.target.value)}
-                      placeholder="hub"
-                    />
-                    <div className="hint">Colored brand suffix (e.g. hub, Cloud, OS, 360).</div>
-                  </div>
+              <div className="row">
+                <div className="field" style={{ flex: 2 }}>
+                  <label>Favicon / Logo URL</label>
+                  <input
+                    type="text"
+                    value={faviconUrl}
+                    onChange={(e) => setFaviconUrl(e.target.value)}
+                    placeholder="/favicon.svg or https://..."
+                  />
                 </div>
-
-                <div className="row" style={{ marginTop: '12px' }}>
-                  <div className="field" style={{ flex: 2 }}>
-                    <label>Browser Tab Title (Text beside favicon in browser tab)</label>
-                    <input
-                      type="text"
-                      value={browserTitle}
-                      onChange={(e) => setBrowserTitle(e.target.value)}
-                      placeholder="Propithub — Property Operations Platform"
-                    />
-                    <div className="hint">The exact text that appears right next to the favicon in the browser tab and search results.</div>
-                  </div>
-
-                  <div className="field" style={{ flex: 1 }}>
-                    <label>Brand Tagline / Operations Suffix</label>
-                    <input
-                      type="text"
-                      value={brandTagline}
-                      onChange={(e) => setBrandTagline(e.target.value)}
-                      placeholder="Multi-Country Rental Operations"
-                    />
-                    <div className="hint">Header subtitle and platform descriptor.</div>
-                  </div>
+                <div className="field" style={{ flex: 1 }}>
+                  <label>Upload Custom Icon</label>
+                  <input
+                    type="file"
+                    accept=".svg,.png,.ico,.webp,.jpg"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                          if (typeof ev.target?.result === 'string') {
+                            setFaviconUrl(ev.target.result);
+                            showToast('Favicon uploaded!');
+                          }
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                  />
                 </div>
               </div>
 
+              <div className="row">
+                <div className="field">
+                  <label>Brand Prefix</label>
+                  <input type="text" value={brandName} onChange={(e) => setBrandName(e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>Brand Accent Suffix</label>
+                  <input type="text" value={brandAccent} onChange={(e) => setBrandAccent(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2 }}>
+                  <label>Browser Tab Title</label>
+                  <input type="text" value={browserTitle} onChange={(e) => setBrowserTitle(e.target.value)} />
+                </div>
+              </div>
             </div>
           </div>
 
           <div className="panel" style={{ marginTop: '16px' }}>
             <div className="panel-head">
-              <h3>Announcement top banner</h3>
+              <h3>Optional Top Announcement Bar</h3>
             </div>
             <div className="panel-body">
-              <div className="field" style={{ marginBottom: '14px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={announcementEnabled}
-                    onChange={(e) => setAnnouncementEnabled(e.target.checked)}
-                  />
-                  <b>Show top announcement bar on landing page</b>
-                </label>
-              </div>
-              {announcementEnabled && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: '12px' }}>
+                <input
+                  type="checkbox"
+                  checked={announcementEnabled && showAnnouncement}
+                  onChange={(e) => {
+                    setAnnouncementEnabled(e.target.checked);
+                    setShowAnnouncement(e.target.checked);
+                  }}
+                />
+                <b>Display top announcement bar above header</b>
+              </label>
+              {announcementEnabled && showAnnouncement && (
                 <div className="row">
                   <div className="field">
-                    <label>Badge Pill Text</label>
-                    <input
-                      type="text"
-                      value={announcementBadge}
-                      onChange={(e) => setAnnouncementBadge(e.target.value)}
-                      placeholder="New Release"
-                    />
+                    <label>Badge Text</label>
+                    <input type="text" value={announcementBadge} onChange={(e) => setAnnouncementBadge(e.target.value)} />
                   </div>
                   <div className="field" style={{ flex: 2 }}>
-                    <label>Announcement Message</label>
-                    <input
-                      type="text"
-                      value={announcementText}
-                      onChange={(e) => setAnnouncementText(e.target.value)}
-                      placeholder="PropTech 4.6 is live..."
-                    />
+                    <label>Announcement Text</label>
+                    <input type="text" value={announcementText} onChange={(e) => setAnnouncementText(e.target.value)} />
                   </div>
                   <div className="field">
-                    <label>Link Label & URL</label>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <input
-                        type="text"
-                        value={announcementLinkText}
-                        onChange={(e) => setAnnouncementLinkText(e.target.value)}
-                        placeholder="Explore →"
-                      />
-                      <input
-                        type="text"
-                        value={announcementLinkUrl}
-                        onChange={(e) => setAnnouncementLinkUrl(e.target.value)}
-                        placeholder="#features"
-                      />
-                    </div>
+                    <label>Link Label</label>
+                    <input type="text" value={announcementLinkText} onChange={(e) => setAnnouncementLinkText(e.target.value)} />
+                  </div>
+                  <div className="field">
+                    <label>Link URL</label>
+                    <input type="text" value={announcementLinkUrl} onChange={(e) => setAnnouncementLinkUrl(e.target.value)} />
                   </div>
                 </div>
               )}
@@ -1291,206 +989,115 @@ export const LandingCmsPage: React.FC = () => {
 
           <div className="panel" style={{ marginTop: '16px' }}>
             <div className="panel-head">
-              <h3>Section visibility master switches</h3>
+              <h3>Landing Page Section Visibility Switches</h3>
             </div>
             <div className="panel-body">
-              <p className="hint" style={{ marginBottom: '16px' }}>
-                Toggle which sections are visible to public visitors on the landing page:
-              </p>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-                  gap: '14px',
-                }}
-              >
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showHero}
-                    onChange={(e) => setShowHero(e.target.checked)}
-                  />
-                  <span>Hero & Live Mockup</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showStats}
-                    onChange={(e) => setShowStats(e.target.checked)}
-                  />
-                  <span>Impact Stats Strip</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showFeatures}
-                    onChange={(e) => setShowFeatures(e.target.checked)}
-                  />
-                  <span>Features Cards</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showHowItWorks}
-                    onChange={(e) => setShowHowItWorks(e.target.checked)}
-                  />
-                  <span>How It Works Steps</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showPricing}
-                    onChange={(e) => setShowPricing(e.target.checked)}
-                  />
-                  <span>Pricing Packages</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showListings}
-                    onChange={(e) => setShowListings(e.target.checked)}
-                  />
-                  <span>Available Vacant Listings</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showTestimonials}
-                    onChange={(e) => setShowTestimonials(e.target.checked)}
-                  />
-                  <span>Reviews & Testimonials</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showFaq}
-                    onChange={(e) => setShowFaq(e.target.checked)}
-                  />
-                  <span>FAQ Accordion</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showCtaBanner}
-                    onChange={(e) => setShowCtaBanner(e.target.checked)}
-                  />
-                  <span>Bottom CTA Banner</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={showFooter}
-                    onChange={(e) => setShowFooter(e.target.checked)}
-                  />
-                  <span>Enterprise SaaS Footer</span>
-                </label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '14px' }}>
+                {[
+                  { label: 'Hero & Global Home Search', checked: showHero, set: setShowHero },
+                  { label: 'Hero KPI Stats Card', checked: showStats, set: setShowStats },
+                  { label: 'Two-Up Persona Duo Cards', checked: showDuoCards, set: setShowDuoCards },
+                  { label: 'Featured Homes Carousel', checked: showListings, set: setShowListings },
+                  { label: 'Around the World (Countries)', checked: showWorld, set: setShowWorld },
+                  { label: 'How It Works (Steps)', checked: showHowItWorks, set: setShowHowItWorks },
+                  { label: 'For Landlords & Managers', checked: showLandlords, set: setShowLandlords },
+                  { label: 'Core Features Grid', checked: showFeatures, set: setShowFeatures },
+                  { label: 'Stakeholder Portals (5 Roles)', checked: showRoles, set: setShowRoles },
+                  { label: 'Subscription Pricing Plans', checked: showPricing, set: setShowPricing },
+                  { label: 'Frequently Asked Questions', checked: showFaq, set: setShowFaq },
+                  { label: 'Bottom CTA Banner', checked: showCtaBanner, set: setShowCtaBanner },
+                  { label: 'Footer & Legal Links', checked: showFooter, set: setShowFooter },
+                ].map((s, idx) => (
+                  <label key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={s.checked} onChange={(e) => s.set(e.target.checked)} />
+                    <span>{s.label}</span>
+                  </label>
+                ))}
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 2: Hero Section & Stats Strip */}
+      {/* TAB 2: Hero, KPI Card & Two-Up Persona Duo Cards */}
       {activeTab === 'hero' && (
         <div style={{ marginTop: '16px' }}>
           <div className="panel">
             <div className="panel-head">
-              <h3>Hero section copy & calls to action</h3>
+              <h3>Hero Headline, Subtitle & Call-to-Actions</h3>
             </div>
             <div className="panel-body">
               <div className="field">
-                <label>Kicker Badge / Tagline</label>
-                <input
-                  type="text"
-                  value={heroKicker}
-                  onChange={(e) => setHeroKicker(e.target.value)}
-                  placeholder="PropTech 4.6 • Enterprise Cloud Property OS"
-                />
+                <label>Main Hero Headline (H1)</label>
+                <input type="text" value={headline} onChange={(e) => setHeadline(e.target.value)} />
               </div>
-
-              <div className="field">
-                <label>Main Headline</label>
-                <input
-                  type="text"
-                  value={headline}
-                  onChange={(e) => setHeadline(e.target.value)}
-                  placeholder="Smart Property Management for the Modern Era"
-                />
+              <div className="field" style={{ marginTop: '10px' }}>
+                <label>Hero Subheadline Paragraph</label>
+                <textarea rows={2} value={subheadline} onChange={(e) => setSubheadline(e.target.value)} />
               </div>
-
-              <div className="field">
-                <label>Subheadline / Lead Paragraph</label>
-                <textarea
-                  rows={3}
-                  value={subheadline}
-                  onChange={(e) => setSubheadline(e.target.value)}
-                />
+              <div className="row" style={{ marginTop: '10px' }}>
+                <div className="field">
+                  <label>Primary CTA Button Text</label>
+                  <input type="text" value={ctaText} onChange={(e) => setCtaText(e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>Primary CTA Link</label>
+                  <input type="text" value={ctaLink} onChange={(e) => setCtaLink(e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>Header Login Button Link</label>
+                  <input type="text" value={secondaryCtaLink} onChange={(e) => setSecondaryCtaLink(e.target.value)} />
+                </div>
               </div>
+            </div>
+          </div>
 
+          <div className="panel" style={{ marginTop: '16px' }}>
+            <div className="panel-head">
+              <h3>Hero Right-Side KPI Card (4 Metrics)</h3>
+            </div>
+            <div className="panel-body">
+              <p className="hint" style={{ marginBottom: '12px' }}>
+                Leave a number blank to automatically show live counts from your database (e.g., live listed homes & properties).
+              </p>
               <div className="row">
                 <div className="field">
-                  <label>Primary CTA Text</label>
-                  <input
-                    type="text"
-                    value={ctaText}
-                    onChange={(e) => setCtaText(e.target.value)}
-                    placeholder="Start 14-Day Free Trial →"
-                  />
+                  <label>KPI 1 Number (Blank = Live Listings Count)</label>
+                  <input type="text" value={stat1Number} onChange={(e) => setStat1Number(e.target.value)} placeholder="Auto (Live Homes Count)" />
                 </div>
-                <div className="field">
-                  <label>Primary CTA Link Target</label>
-                  <input
-                    type="text"
-                    value={ctaLink}
-                    onChange={(e) => setCtaLink(e.target.value)}
-                    placeholder="/register"
-                  />
-                </div>
-                <div className="field">
-                  <label>Secondary CTA Text</label>
-                  <input
-                    type="text"
-                    value={secondaryCtaText}
-                    onChange={(e) => setSecondaryCtaText(e.target.value)}
-                    placeholder="Sign In to Portal"
-                  />
-                </div>
-                <div className="field">
-                  <label>Secondary CTA Link Target</label>
-                  <input
-                    type="text"
-                    value={secondaryCtaLink}
-                    onChange={(e) => setSecondaryCtaLink(e.target.value)}
-                    placeholder="/login"
-                  />
-                </div>
-              </div>
-
-              <div className="row" style={{ marginTop: '8px' }}>
                 <div className="field" style={{ flex: 2 }}>
-                  <label>Trust Checkmark Pills (comma separated)</label>
-                  <input
-                    type="text"
-                    value={trustPills.join(', ')}
-                    onChange={(e) =>
-                      setTrustPills(
-                        e.target.value
-                          .split(',')
-                          .map((s) => s.trim())
-                          .filter(Boolean)
-                      )
-                    }
-                    placeholder="✓ No credit card required, ✓ Instant cloud setup, ✓ All 4 portals included"
-                  />
+                  <label>KPI 1 Label</label>
+                  <input type="text" value={stat1Label} onChange={(e) => setStat1Label(e.target.value)} placeholder="Verified homes in X countries" />
                 </div>
+              </div>
+              <div className="row" style={{ marginTop: '8px' }}>
                 <div className="field">
-                  <label>Social Proof Rating Text</label>
-                  <input
-                    type="text"
-                    value={ratingText}
-                    onChange={(e) => setRatingText(e.target.value)}
-                    placeholder="4.9/5 rated across 24 countries by property teams"
-                  />
+                  <label>KPI 2 Number</label>
+                  <input type="text" value={stat2Number} onChange={(e) => setStat2Number(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2 }}>
+                  <label>KPI 2 Label</label>
+                  <input type="text" value={stat2Label} onChange={(e) => setStat2Label(e.target.value)} />
+                </div>
+              </div>
+              <div className="row" style={{ marginTop: '8px' }}>
+                <div className="field">
+                  <label>KPI 3 Number (Blank = Live Properties Count)</label>
+                  <input type="text" value={stat3Number} onChange={(e) => setStat3Number(e.target.value)} placeholder="Auto (Live Properties Count)" />
+                </div>
+                <div className="field" style={{ flex: 2 }}>
+                  <label>KPI 3 Label</label>
+                  <input type="text" value={stat3Label} onChange={(e) => setStat3Label(e.target.value)} />
+                </div>
+              </div>
+              <div className="row" style={{ marginTop: '8px' }}>
+                <div className="field">
+                  <label>KPI 4 Number</label>
+                  <input type="text" value={stat4Number} onChange={(e) => setStat4Number(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2 }}>
+                  <label>KPI 4 Label</label>
+                  <input type="text" value={stat4Label} onChange={(e) => setStat4Label(e.target.value)} />
                 </div>
               </div>
             </div>
@@ -1498,109 +1105,52 @@ export const LandingCmsPage: React.FC = () => {
 
           <div className="panel" style={{ marginTop: '16px' }}>
             <div className="panel-head">
-              <h3>Hero interactive mockup preview details</h3>
+              <h3>Two-Up Persona Cards (Home Seekers vs. Property Owners)</h3>
             </div>
             <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Mockup Property Title</label>
-                  <input
-                    type="text"
-                    value={mockupPropertyName}
-                    onChange={(e) => setMockupPropertyName(e.target.value)}
-                  />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px' }}>
+                <div style={{ border: '1px solid var(--border)', borderRadius: '10px', padding: '14px', background: 'var(--surface-subtle)' }}>
+                  <b style={{ display: 'block', marginBottom: '10px', fontSize: '14px' }}>Left Card — Home Seekers</b>
+                  <div className="field">
+                    <label>Card Title</label>
+                    <input type="text" value={seekerCard.title} onChange={(e) => setSeekerCard({ ...seekerCard, title: e.target.value })} />
+                  </div>
+                  <div className="field" style={{ marginTop: '8px' }}>
+                    <label>Description</label>
+                    <textarea rows={3} value={seekerCard.description} onChange={(e) => setSeekerCard({ ...seekerCard, description: e.target.value })} />
+                  </div>
+                  <div className="row" style={{ marginTop: '8px' }}>
+                    <div className="field">
+                      <label>Button Text</label>
+                      <input type="text" value={seekerCard.ctaText} onChange={(e) => setSeekerCard({ ...seekerCard, ctaText: e.target.value })} />
+                    </div>
+                    <div className="field">
+                      <label>Button Link</label>
+                      <input type="text" value={seekerCard.ctaLink} onChange={(e) => setSeekerCard({ ...seekerCard, ctaLink: e.target.value })} />
+                    </div>
+                  </div>
                 </div>
-                <div className="field">
-                  <label>Mockup Property Subtitle & Units</label>
-                  <input
-                    type="text"
-                    value={mockupLocationText}
-                    onChange={(e) => setMockupLocationText(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Occupancy Badge Text</label>
-                  <input
-                    type="text"
-                    value={mockupBadgeText}
-                    onChange={(e) => setMockupBadgeText(e.target.value)}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
 
-          <div className="panel" style={{ marginTop: '16px' }}>
-            <div className="panel-head">
-              <h3>Impact stats strip</h3>
-            </div>
-            <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Stat 1 Value</label>
-                  <input
-                    type="text"
-                    value={stat1Number}
-                    onChange={(e) => setStat1Number(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Stat 1 Label</label>
-                  <input
-                    type="text"
-                    value={stat1Label}
-                    onChange={(e) => setStat1Label(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Stat 2 Value</label>
-                  <input
-                    type="text"
-                    value={stat2Number}
-                    onChange={(e) => setStat2Number(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Stat 2 Label</label>
-                  <input
-                    type="text"
-                    value={stat2Label}
-                    onChange={(e) => setStat2Label(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="row" style={{ marginTop: '12px' }}>
-                <div className="field">
-                  <label>Stat 3 Value</label>
-                  <input
-                    type="text"
-                    value={stat3Number}
-                    onChange={(e) => setStat3Number(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Stat 3 Label</label>
-                  <input
-                    type="text"
-                    value={stat3Label}
-                    onChange={(e) => setStat3Label(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Stat 4 Value</label>
-                  <input
-                    type="text"
-                    value={stat4Number}
-                    onChange={(e) => setStat4Number(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Stat 4 Label</label>
-                  <input
-                    type="text"
-                    value={stat4Label}
-                    onChange={(e) => setStat4Label(e.target.value)}
-                  />
+                <div style={{ border: '1px solid var(--border)', borderRadius: '10px', padding: '14px', background: 'var(--surface-subtle)' }}>
+                  <b style={{ display: 'block', marginBottom: '10px', fontSize: '14px' }}>Right Card — Property Owners & Managers</b>
+                  <div className="field">
+                    <label>Card Title</label>
+                    <input type="text" value={ownerCard.title} onChange={(e) => setOwnerCard({ ...ownerCard, title: e.target.value })} />
+                  </div>
+                  <div className="field" style={{ marginTop: '8px' }}>
+                    <label>Description</label>
+                    <textarea rows={3} value={ownerCard.description} onChange={(e) => setOwnerCard({ ...ownerCard, description: e.target.value })} />
+                  </div>
+                  <div className="row" style={{ marginTop: '8px' }}>
+                    <div className="field">
+                      <label>Button Text</label>
+                      <input type="text" value={ownerCard.ctaText} onChange={(e) => setOwnerCard({ ...ownerCard, ctaText: e.target.value })} />
+                    </div>
+                    <div className="field">
+                      <label>Button Link</label>
+                      <input type="text" value={ownerCard.ctaLink} onChange={(e) => setOwnerCard({ ...ownerCard, ctaLink: e.target.value })} />
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1608,124 +1158,99 @@ export const LandingCmsPage: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 3: Features */}
-      {activeTab === 'features' && (
+      {/* TAB 3: Featured Homes, Global Hub Copy & Vacant Listings Moderation */}
+      {activeTab === 'listings' && (
         <div style={{ marginTop: '16px' }}>
           <div className="panel">
             <div className="panel-head">
-              <h3>Features header copy</h3>
+              <h3>Featured Homes & Around the World Section Headings</h3>
             </div>
             <div className="panel-body">
               <div className="row">
+                <div className="field" style={{ flex: 2 }}>
+                  <label>Featured Homes Section Title</label>
+                  <input type="text" value={listingsTitle} onChange={(e) => setListingsTitle(e.target.value)} />
+                </div>
                 <div className="field">
-                  <label>Section Kicker</label>
+                  <label>Around the World Eyebrow</label>
+                  <input type="text" value={worldKicker} onChange={(e) => setWorldKicker(e.target.value)} />
+                </div>
+              </div>
+              <div className="row" style={{ marginTop: '8px' }}>
+                <div className="field">
+                  <label>Around the World Title (Blank = Auto Country Count)</label>
                   <input
                     type="text"
-                    value={featuresKicker}
-                    onChange={(e) => setFeaturesKicker(e.target.value)}
+                    value={worldTitle}
+                    onChange={(e) => setWorldTitle(e.target.value)}
+                    placeholder="Explore homes across X countries"
                   />
                 </div>
                 <div className="field" style={{ flex: 2 }}>
-                  <label>Section Title</label>
-                  <input
-                    type="text"
-                    value={featuresTitle}
-                    onChange={(e) => setFeaturesTitle(e.target.value)}
-                  />
+                  <label>Around the World Subtitle</label>
+                  <input type="text" value={worldSubtitle} onChange={(e) => setWorldSubtitle(e.target.value)} />
                 </div>
-              </div>
-              <div className="field">
-                <label>Section Subtitle</label>
-                <textarea
-                  rows={2}
-                  value={featuresSubtitle}
-                  onChange={(e) => setFeaturesSubtitle(e.target.value)}
-                />
               </div>
             </div>
           </div>
 
           <div className="panel" style={{ marginTop: '16px' }}>
-            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3>Manage feature cards ({featuresList.length})</h3>
-              <button
-                type="button"
-                className="btn brass small"
-                onClick={() => {
-                  const newCard: LandingFeatureItem = {
-                    id: 'f-' + Date.now(),
-                    icon: '⚡',
-                    title: 'New Feature',
-                    description: 'Feature description explaining modern property efficiency.',
-                  };
-                  setFeaturesList([...featuresList, newCard]);
-                }}
-              >
-                + Add Feature Card
-              </button>
+            <div className="panel-head">
+              <h3>Live Public Listings Moderation ({state.units.length} Total Units)</h3>
             </div>
             <div className="panel-body">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {featuresList.map((item, idx) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      padding: '16px',
-                      background: 'var(--surface-subtle)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                      <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--ink)' }}>
-                        Card #{idx + 1}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        style={{ color: '#EF4444' }}
-                        onClick={() => setFeaturesList(featuresList.filter((f) => f.id !== item.id))}
-                      >
-                        Delete Card
-                      </button>
-                    </div>
-                    <div className="row">
-                      <div className="field" style={{ maxWidth: '90px' }}>
-                        <label>Icon / Emoji</label>
-                        <input
-                          type="text"
-                          value={item.icon}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setFeaturesList(featuresList.map((f) => (f.id === item.id ? { ...f, icon: val } : f)));
-                          }}
-                        />
-                      </div>
-                      <div className="field" style={{ flex: 1 }}>
-                        <label>Title</label>
-                        <input
-                          type="text"
-                          value={item.title}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setFeaturesList(featuresList.map((f) => (f.id === item.id ? { ...f, title: val } : f)));
-                          }}
-                        />
-                      </div>
-                    </div>
-                    <div className="field" style={{ marginTop: '8px' }}>
-                      <label>Description</label>
-                      <textarea
-                        rows={2}
-                        value={item.description}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setFeaturesList(featuresList.map((f) => (f.id === item.id ? { ...f, description: val } : f)));
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Unit</th>
+                      <th>Property</th>
+                      <th>Country</th>
+                      <th>Rent</th>
+                      <th>Public Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {state.units.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ color: 'var(--ink-soft)', padding: '16px 10px' }}>
+                          No units created yet in any owner account.
+                        </td>
+                      </tr>
+                    ) : (
+                      state.units.map((u) => (
+                        <tr key={u.id}>
+                          <td>
+                            <b>{u.unitNumber || u.id}</b>
+                          </td>
+                          <td>{u.propertyName || 'Property'}</td>
+                          <td>
+                            <span className="badge grey">{u.country || 'Global'}</span>
+                          </td>
+                          <td style={{ fontWeight: 600 }}>
+                            {getCurrencySymbol(u.currency)}
+                            {u.rent?.toLocaleString(getLocaleForCurrency(u.currency))}/mo
+                          </td>
+                          <td>
+                            <span className={`badge ${u.isListedPublicly ? 'green' : 'grey'}`}>
+                              {u.isListedPublicly ? 'Publicly Listed' : 'Unlisted'}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn secondary small"
+                              onClick={() => handleToggleUnitListing(u.id, !!u.isListedPublicly, u.unitNumber || u.id)}
+                            >
+                              {u.isListedPublicly ? 'Delist' : 'Publish Publicly'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -1737,713 +1262,705 @@ export const LandingCmsPage: React.FC = () => {
         <div style={{ marginTop: '16px' }}>
           <div className="panel">
             <div className="panel-head">
-              <h3>How It Works header copy</h3>
+              <h3>How It Works Section Header</h3>
             </div>
             <div className="panel-body">
               <div className="row">
                 <div className="field">
-                  <label>Section Kicker</label>
-                  <input
-                    type="text"
-                    value={howItWorksKicker}
-                    onChange={(e) => setHowItWorksKicker(e.target.value)}
-                  />
+                  <label>Eyebrow</label>
+                  <input type="text" value={howItWorksKicker} onChange={(e) => setHowItWorksKicker(e.target.value)} />
                 </div>
                 <div className="field" style={{ flex: 2 }}>
                   <label>Section Title</label>
-                  <input
-                    type="text"
-                    value={howItWorksTitle}
-                    onChange={(e) => setHowItWorksTitle(e.target.value)}
-                  />
+                  <input type="text" value={howItWorksTitle} onChange={(e) => setHowItWorksTitle(e.target.value)} />
                 </div>
               </div>
-              <div className="field">
+              <div className="field" style={{ marginTop: '8px' }}>
                 <label>Section Subtitle</label>
-                <textarea
-                  rows={2}
-                  value={howItWorksSubtitle}
-                  onChange={(e) => setHowItWorksSubtitle(e.target.value)}
-                />
+                <textarea rows={2} value={howItWorksSubtitle} onChange={(e) => setHowItWorksSubtitle(e.target.value)} />
               </div>
             </div>
           </div>
 
           <div className="panel" style={{ marginTop: '16px' }}>
             <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3>Manage step cards ({howItWorksSteps.length})</h3>
+              <h3>Step Cards ({howItWorksSteps.length})</h3>
               <button
                 type="button"
                 className="btn brass small"
                 onClick={() => {
-                  const newStep: LandingStepItem = {
-                    id: 's-' + Date.now(),
-                    stepNumber: `0${howItWorksSteps.length + 1}`,
-                    title: 'New Step Title',
-                    description: 'Instructions on onboarding and automatic workflow operations.',
-                  };
-                  setHowItWorksSteps([...howItWorksSteps, newStep]);
+                  setHowItWorksSteps([
+                    ...howItWorksSteps,
+                    {
+                      id: 's-' + Date.now(),
+                      stepNumber: `${howItWorksSteps.length + 1}`,
+                      title: 'New Step Title',
+                      description: 'Describe how this step works.',
+                    },
+                  ]);
                 }}
               >
-                + Add Step Card
+                + Add Step
               </button>
             </div>
+            <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {howItWorksSteps.map((step, idx) => (
+                <div key={step.id} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <b>Step #{idx + 1}</b>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      style={{ color: '#EF4444' }}
+                      onClick={() => setHowItWorksSteps(howItWorksSteps.filter((s) => s.id !== step.id))}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <div className="row">
+                    <div className="field" style={{ maxWidth: '100px' }}>
+                      <label>Step Number</label>
+                      <input
+                        type="text"
+                        value={step.stepNumber}
+                        onChange={(e) =>
+                          setHowItWorksSteps(howItWorksSteps.map((s) => (s.id === step.id ? { ...s, stepNumber: e.target.value } : s)))
+                        }
+                      />
+                    </div>
+                    <div className="field" style={{ flex: 1 }}>
+                      <label>Step Title</label>
+                      <input
+                        type="text"
+                        value={step.title}
+                        onChange={(e) =>
+                          setHowItWorksSteps(howItWorksSteps.map((s) => (s.id === step.id ? { ...s, title: e.target.value } : s)))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="field" style={{ marginTop: '8px' }}>
+                    <label>Description</label>
+                    <textarea
+                      rows={2}
+                      value={step.description}
+                      onChange={(e) =>
+                        setHowItWorksSteps(howItWorksSteps.map((s) => (s.id === step.id ? { ...s, description: e.target.value } : s)))
+                      }
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: For Landlords & Managers Section + Interactive Mockup */}
+      {activeTab === 'landlords' && (
+        <div style={{ marginTop: '16px' }}>
+          <div className="panel">
+            <div className="panel-head">
+              <h3>For Landlords & Managers Copy & Bullets</h3>
+            </div>
             <div className="panel-body">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {howItWorksSteps.map((step, idx) => (
-                  <div
-                    key={step.id}
-                    style={{
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      padding: '16px',
-                      background: 'var(--surface-subtle)',
-                    }}
+              <div className="row">
+                <div className="field">
+                  <label>Eyebrow</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.kicker}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, kicker: e.target.value })}
+                  />
+                </div>
+                <div className="field" style={{ flex: 2 }}>
+                  <label>Headline</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.title}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, title: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="field" style={{ marginTop: '8px' }}>
+                <label>Lead Paragraph</label>
+                <textarea
+                  rows={2}
+                  value={landlordsSection.subtitle}
+                  onChange={(e) => setLandlordsSection({ ...landlordsSection, subtitle: e.target.value })}
+                />
+              </div>
+
+              <div style={{ marginTop: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ fontWeight: 700, fontSize: '13px' }}>Checklist Bullets ({landlordsSection.bullets.length})</label>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    onClick={() =>
+                      setLandlordsSection({
+                        ...landlordsSection,
+                        bullets: [...landlordsSection.bullets, 'New landlord capability bullet'],
+                      })
+                    }
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                      <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--ink)' }}>
-                        Step #{idx + 1}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        style={{ color: '#EF4444' }}
-                        onClick={() => setHowItWorksSteps(howItWorksSteps.filter((s) => s.id !== step.id))}
-                      >
-                        Delete Step
-                      </button>
-                    </div>
-                    <div className="row">
-                      <div className="field" style={{ maxWidth: '110px' }}>
-                        <label>Badge / Number</label>
-                        <input
-                          type="text"
-                          value={step.stepNumber}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setHowItWorksSteps(howItWorksSteps.map((s) => (s.id === step.id ? { ...s, stepNumber: val } : s)));
-                          }}
-                        />
-                      </div>
-                      <div className="field" style={{ flex: 1 }}>
-                        <label>Step Headline</label>
-                        <input
-                          type="text"
-                          value={step.title}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setHowItWorksSteps(howItWorksSteps.map((s) => (s.id === step.id ? { ...s, title: val } : s)));
-                          }}
-                        />
-                      </div>
-                    </div>
-                    <div className="field" style={{ marginTop: '8px' }}>
-                      <label>Step Description</label>
-                      <textarea
-                        rows={2}
-                        value={step.description}
+                    + Add Bullet
+                  </button>
+                </div>
+                {landlordsSection.bullets.map((b, idx) => (
+                  <div key={idx} style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                    <input
+                      type="text"
+                      value={b}
+                      onChange={(e) => {
+                        const updated = [...landlordsSection.bullets];
+                        updated[idx] = e.target.value;
+                        setLandlordsSection({ ...landlordsSection, bullets: updated });
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      style={{ color: '#EF4444' }}
+                      onClick={() =>
+                        setLandlordsSection({
+                          ...landlordsSection,
+                          bullets: landlordsSection.bullets.filter((_, i) => i !== idx),
+                        })
+                      }
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="row" style={{ marginTop: '12px' }}>
+                <div className="field">
+                  <label>Primary CTA Text</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.primaryCtaText}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, primaryCtaText: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Primary CTA Link</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.primaryCtaLink}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, primaryCtaLink: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Secondary CTA Text</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.secondaryCtaText}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, secondaryCtaText: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Secondary CTA Link</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.secondaryCtaLink}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, secondaryCtaLink: e.target.value })}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="panel" style={{ marginTop: '16px' }}>
+            <div className="panel-head">
+              <h3>Interactive Landlord Dashboard Mockup Card</h3>
+            </div>
+            <div className="panel-body">
+              <div className="row">
+                <div className="field">
+                  <label>Mockup Header Greeting</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.mockupGreeting}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, mockupGreeting: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Mockup Attention Subtext</label>
+                  <input
+                    type="text"
+                    value={landlordsSection.mockupSubtext}
+                    onChange={(e) => setLandlordsSection({ ...landlordsSection, mockupSubtext: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <label style={{ fontWeight: 700, fontSize: '13px', display: 'block', marginBottom: '8px' }}>
+                  Action Rows in Mockup
+                </label>
+                {landlordsSection.mockupItems.map((m, idx) => (
+                  <div key={idx} className="row" style={{ marginBottom: '8px' }}>
+                    <div className="field" style={{ flex: 2 }}>
+                      <input
+                        type="text"
+                        value={m.text}
                         onChange={(e) => {
-                          const val = e.target.value;
-                          setHowItWorksSteps(howItWorksSteps.map((s) => (s.id === step.id ? { ...s, description: val } : s)));
+                          const updated = [...landlordsSection.mockupItems];
+                          updated[idx] = { ...updated[idx], text: e.target.value };
+                          setLandlordsSection({ ...landlordsSection, mockupItems: updated });
+                        }}
+                      />
+                    </div>
+                    <div className="field" style={{ flex: 1 }}>
+                      <input
+                        type="text"
+                        value={m.action}
+                        onChange={(e) => {
+                          const updated = [...landlordsSection.mockupItems];
+                          updated[idx] = { ...updated[idx], action: e.target.value };
+                          setLandlordsSection({ ...landlordsSection, mockupItems: updated });
                         }}
                       />
                     </div>
                   </div>
                 ))}
               </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <label style={{ fontWeight: 700, fontSize: '13px', display: 'block', marginBottom: '8px' }}>
+                  Bottom KPI Pills in Mockup
+                </label>
+                <div className="row">
+                  {landlordsSection.mockupKpis.map((k, idx) => (
+                    <div key={idx} className="field">
+                      <label>KPI #{idx + 1} Value & Label</label>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <input
+                          type="text"
+                          value={k.value}
+                          onChange={(e) => {
+                            const updated = [...landlordsSection.mockupKpis];
+                            updated[idx] = { ...updated[idx], value: e.target.value };
+                            setLandlordsSection({ ...landlordsSection, mockupKpis: updated });
+                          }}
+                        />
+                        <input
+                          type="text"
+                          value={k.label}
+                          onChange={(e) => {
+                            const updated = [...landlordsSection.mockupKpis];
+                            updated[idx] = { ...updated[idx], label: e.target.value };
+                            setLandlordsSection({ ...landlordsSection, mockupKpis: updated });
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 5: Pricing Plans */}
-      {activeTab === 'pricing' && (
+      {/* TAB 6: Core Features */}
+      {activeTab === 'features' && (
         <div style={{ marginTop: '16px' }}>
           <div className="panel">
             <div className="panel-head">
-              <h3>Pricing header copy</h3>
+              <h3>Core Features Section Header</h3>
             </div>
             <div className="panel-body">
               <div className="row">
                 <div className="field">
-                  <label>Section Kicker</label>
-                  <input
-                    type="text"
-                    value={pricingKicker}
-                    onChange={(e) => setPricingKicker(e.target.value)}
-                  />
+                  <label>Eyebrow</label>
+                  <input type="text" value={featuresKicker} onChange={(e) => setFeaturesKicker(e.target.value)} />
                 </div>
                 <div className="field" style={{ flex: 2 }}>
                   <label>Section Title</label>
-                  <input
-                    type="text"
-                    value={pricingTitle}
-                    onChange={(e) => setPricingTitle(e.target.value)}
-                  />
+                  <input type="text" value={featuresTitle} onChange={(e) => setFeaturesTitle(e.target.value)} />
                 </div>
               </div>
-              <div className="field">
+              <div className="field" style={{ marginTop: '8px' }}>
                 <label>Section Subtitle</label>
-                <textarea
-                  rows={2}
-                  value={pricingSubtitle}
-                  onChange={(e) => setPricingSubtitle(e.target.value)}
-                />
+                <textarea rows={2} value={featuresSubtitle} onChange={(e) => setFeaturesSubtitle(e.target.value)} />
               </div>
             </div>
           </div>
 
           <div className="panel" style={{ marginTop: '16px' }}>
-            <div
-              className="panel-head"
-              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}
-            >
-              <div>
-                <h3 style={{ margin: 0 }}>Active Admin Subscription Plans ({state.plans.filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial').length})</h3>
-                <div className="hint" style={{ marginTop: '2px' }}>
-                  These plans are rendered directly on the public landing page and used for owner signups and billing.
-                </div>
-              </div>
+            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3>Feature Cards ({featuresList.length})</h3>
               <button
                 type="button"
-                className="btn secondary small"
-                onClick={() => navigate('/superadmin/plans')}
+                className="btn brass small"
+                onClick={() =>
+                  setFeaturesList([
+                    ...featuresList,
+                    {
+                      id: 'f-' + Date.now(),
+                      icon: '✨',
+                      title: 'New Platform Feature',
+                      description: 'Describe how this feature helps landlords, managers, or tenants.',
+                    },
+                  ])
+                }
               >
-                Go to Full Subscription Plans Console ↗
+                + Add Feature Card
+              </button>
+            </div>
+            <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {featuresList.map((item, idx) => (
+                <div key={item.id} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <b>Feature #{idx + 1}</b>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      style={{ color: '#EF4444' }}
+                      onClick={() => setFeaturesList(featuresList.filter((f) => f.id !== item.id))}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <div className="row">
+                    <div className="field" style={{ maxWidth: '100px' }}>
+                      <label>Icon / Emoji</label>
+                      <input
+                        type="text"
+                        value={item.icon}
+                        onChange={(e) =>
+                          setFeaturesList(featuresList.map((f) => (f.id === item.id ? { ...f, icon: e.target.value } : f)))
+                        }
+                      />
+                    </div>
+                    <div className="field" style={{ flex: 1 }}>
+                      <label>Title</label>
+                      <input
+                        type="text"
+                        value={item.title}
+                        onChange={(e) =>
+                          setFeaturesList(featuresList.map((f) => (f.id === item.id ? { ...f, title: e.target.value } : f)))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="field" style={{ marginTop: '8px' }}>
+                    <label>Description</label>
+                    <textarea
+                      rows={2}
+                      value={item.description}
+                      onChange={(e) =>
+                        setFeaturesList(featuresList.map((f) => (f.id === item.id ? { ...f, description: e.target.value } : f)))
+                      }
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 7: Stakeholder Portals (5 Roles) */}
+      {activeTab === 'roles' && (
+        <div style={{ marginTop: '16px' }}>
+          <div className="panel">
+            <div className="panel-head">
+              <h3>Stakeholder Portals Section Header</h3>
+            </div>
+            <div className="panel-body">
+              <div className="row">
+                <div className="field">
+                  <label>Eyebrow</label>
+                  <input type="text" value={rolesKicker} onChange={(e) => setRolesKicker(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2 }}>
+                  <label>Section Title</label>
+                  <input type="text" value={rolesTitle} onChange={(e) => setRolesTitle(e.target.value)} />
+                </div>
+              </div>
+              <div className="field" style={{ marginTop: '8px' }}>
+                <label>Section Subtitle</label>
+                <input type="text" value={rolesSubtitle} onChange={(e) => setRolesSubtitle(e.target.value)} />
+              </div>
+            </div>
+          </div>
+
+          <div className="panel" style={{ marginTop: '16px' }}>
+            <div className="panel-head">
+              <h3>Stakeholder Role Cards ({rolePortals.length})</h3>
+            </div>
+            <div className="panel-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: '14px' }}>
+              {rolePortals.map((rp, rIdx) => (
+                <div
+                  key={rp.id}
+                  style={{
+                    border: '1px solid var(--border)',
+                    borderTop: `4px solid ${rp.color || '#0f766e'}`,
+                    borderRadius: '10px',
+                    padding: '14px',
+                    background: 'var(--surface-subtle)',
+                  }}
+                >
+                  <div className="row">
+                    <div className="field" style={{ flex: 1 }}>
+                      <label>Role Title</label>
+                      <input
+                        type="text"
+                        value={rp.title}
+                        onChange={(e) => {
+                          const updated = [...rolePortals];
+                          updated[rIdx] = { ...updated[rIdx], title: e.target.value };
+                          setRolePortals(updated);
+                        }}
+                      />
+                    </div>
+                    <div className="field" style={{ maxWidth: '80px' }}>
+                      <label>Color</label>
+                      <input
+                        type="color"
+                        value={rp.color || '#0f766e'}
+                        onChange={(e) => {
+                          const updated = [...rolePortals];
+                          updated[rIdx] = { ...updated[rIdx], color: e.target.value };
+                          setRolePortals(updated);
+                        }}
+                        style={{ height: '36px', padding: '2px', cursor: 'pointer' }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ marginTop: '10px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
+                      Bullet Points
+                    </label>
+                    {rp.bullets.map((b, bIdx) => (
+                      <div key={bIdx} style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
+                        <input
+                          type="text"
+                          value={b}
+                          onChange={(e) => {
+                            const updated = [...rolePortals];
+                            const nextBullets = [...updated[rIdx].bullets];
+                            nextBullets[bIdx] = e.target.value;
+                            updated[rIdx] = { ...updated[rIdx], bullets: nextBullets };
+                            setRolePortals(updated);
+                          }}
+                          style={{ flex: 1, fontSize: '12.5px' }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 8: Pricing Section & Live Plans */}
+      {activeTab === 'pricing' && (
+        <div style={{ marginTop: '16px' }}>
+          <div className="panel">
+            <div className="panel-head">
+              <h3>Pricing Section Header</h3>
+            </div>
+            <div className="panel-body">
+              <div className="row">
+                <div className="field">
+                  <label>Eyebrow</label>
+                  <input type="text" value={pricingKicker} onChange={(e) => setPricingKicker(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2 }}>
+                  <label>Section Title</label>
+                  <input type="text" value={pricingTitle} onChange={(e) => setPricingTitle(e.target.value)} />
+                </div>
+              </div>
+              <div className="field" style={{ marginTop: '8px' }}>
+                <label>Section Subtitle</label>
+                <textarea rows={2} value={pricingSubtitle} onChange={(e) => setPricingSubtitle(e.target.value)} />
+              </div>
+            </div>
+          </div>
+
+          <div className="panel" style={{ marginTop: '16px' }}>
+            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Live Subscription Plans Sourced from Admin Plans Console</h3>
+                <div className="hint" style={{ marginTop: '3px' }}>
+                  The public landing page dynamically renders the live commercial plans configured by the administrator in the Plans Console.
+                </div>
+              </div>
+              <button type="button" className="btn brass" onClick={() => navigate('/superadmin/plans')}>
+                Manage Subscription Plans Console ↗
               </button>
             </div>
             <div className="panel-body">
               <div
                 style={{
-                  padding: '12px 16px',
-                  background: 'rgba(16, 185, 129, 0.08)',
-                  border: '1px solid rgba(16, 185, 129, 0.25)',
+                  padding: '16px',
+                  background: 'var(--surface-subtle)',
                   borderRadius: '8px',
-                  marginBottom: '16px',
-                  fontSize: '13px',
-                  color: 'var(--ink)',
+                  border: '1px solid var(--line)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '16px',
+                  flexWrap: 'wrap',
                 }}
               >
-                💡 <b>Direct Admin Sync:</b> Any change you make here or in <b>Superadmin → Plans</b> immediately updates the pricing cards, unit/property limits, and subscription checkout on the live landing page.
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
-                {state.plans
-                  .filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial')
-                  .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0))
-                  .map((plan) => (
-                    <div
-                      key={plan.id}
-                      style={{
-                        border: plan.isPopular ? '2px solid var(--primary, #0D9488)' : '1px solid var(--border)',
-                        borderRadius: '10px',
-                        padding: '16px',
-                        background: 'var(--surface-subtle)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'space-between',
-                        position: 'relative',
-                      }}
-                    >
-                      <div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ fontWeight: 800, fontSize: '15px', color: 'var(--ink)' }}>
-                              {plan.name}
-                            </span>
-                            {plan.isPopular && (
-                              <span className="badge green" style={{ fontSize: '10px', fontWeight: 800 }}>
-                                Popular
-                              </span>
-                            )}
-                          </div>
-                          <span className="badge green" style={{ fontSize: '12px', fontWeight: 700 }}>
-                            ${plan.price} / mo
-                          </span>
-                        </div>
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12.5px', color: 'var(--ink-soft)' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span>Max Properties:</span>
-                            <b style={{ color: 'var(--ink)' }}>{plan.properties >= 999 ? 'Unlimited' : plan.properties}</b>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span>Max Units:</span>
-                            <b style={{ color: 'var(--ink)' }}>{plan.units >= 9999 ? 'Unlimited' : plan.units}</b>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span>Max Tenants:</span>
-                            <b style={{ color: 'var(--ink)' }}>{plan.tenants >= 9999 ? 'Unlimited' : plan.tenants}</b>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span>Max Managers:</span>
-                            <b style={{ color: 'var(--ink)' }}>{plan.managers ?? 0}</b>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span>Max Staff:</span>
-                            <b style={{ color: 'var(--ink)' }}>{plan.staff ?? 0}</b>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span>Active Subscribers:</span>
-                            <b style={{ color: 'var(--brass)' }}>{plan.owners} owners</b>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--border)' }}>
-                        <div className="row" style={{ marginBottom: '8px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label style={{ fontSize: '11px' }}>Quick Price ($/mo)</label>
-                            <input
-                              type="number"
-                              value={plan.price}
-                              onChange={(e) => {
-                                const newPrice = parseFloat(e.target.value) || 0;
-                                updateState((prev) => ({
-                                  ...prev,
-                                  plans: prev.plans.map((p) => (p.id === plan.id ? { ...p, price: newPrice } : p)),
-                                }));
-                              }}
-                              style={{ padding: '4px 8px', fontSize: '12px' }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 6: Testimonials */}
-      {activeTab === 'testimonials' && (
-        <div style={{ marginTop: '16px' }}>
-          <div className="panel">
-            <div className="panel-head">
-              <h3>Testimonials header copy</h3>
-            </div>
-            <div className="panel-body">
-              <div className="row">
-                <div className="field">
-                  <label>Section Kicker</label>
-                  <input
-                    type="text"
-                    value={testimonialsKicker}
-                    onChange={(e) => setTestimonialsKicker(e.target.value)}
-                  />
-                </div>
-                <div className="field" style={{ flex: 2 }}>
-                  <label>Section Title</label>
-                  <input
-                    type="text"
-                    value={testimonialsTitle}
-                    onChange={(e) => setTestimonialsTitle(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="field">
-                <label>Section Subtitle</label>
-                <textarea
-                  rows={2}
-                  value={testimonialsSubtitle}
-                  onChange={(e) => setTestimonialsSubtitle(e.target.value)}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="panel" style={{ marginTop: '16px' }}>
-            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3>Customer reviews & testimonials ({testimonialsList.length})</h3>
-              <button
-                type="button"
-                className="btn brass small"
-                onClick={() => {
-                  const newTesti: LandingTestimonialItem = {
-                    id: 't-' + Date.now(),
-                    quote: '“Propithub transformed our rental accounting completely.”',
-                    name: 'Alex Johnson',
-                    role: 'Property Owner, 12 Units',
-                    stars: 5,
-                  };
-                  setTestimonialsList([...testimonialsList, newTesti]);
-                }}
-              >
-                + Add Review
-              </button>
-            </div>
-            <div className="panel-body">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {testimonialsList.map((testi, idx) => (
-                  <div
-                    key={testi.id}
-                    style={{
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      padding: '16px',
-                      background: 'var(--surface-subtle)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                      <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--ink)' }}>
-                        Review #{idx + 1}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        style={{ color: '#EF4444' }}
-                        onClick={() => setTestimonialsList(testimonialsList.filter((t) => t.id !== testi.id))}
-                      >
-                        Delete Review
-                      </button>
-                    </div>
-                    <div className="field">
-                      <label>Customer Quote</label>
-                      <textarea
-                        rows={2}
-                        value={testi.quote}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, quote: val } : t)));
-                        }}
-                      />
-                    </div>
-                    <div className="row" style={{ marginTop: '8px' }}>
-                      <div className="field">
-                        <label>Author Full Name</label>
-                        <input
-                          type="text"
-                          value={testi.name}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, name: val } : t)));
-                          }}
-                        />
-                      </div>
-                      <div className="field">
-                        <label>Author Role / Designation</label>
-                        <input
-                          type="text"
-                          value={testi.role}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, role: val } : t)));
-                          }}
-                        />
-                      </div>
-                      <div className="field" style={{ maxWidth: '100px' }}>
-                        <label>Stars (1-5)</label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={5}
-                          value={testi.stars}
-                          onChange={(e) => {
-                            const val = parseInt(e.target.value, 10) || 5;
-                            setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, stars: val } : t)));
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* ── Avatar Controls ── */}
-                    <div
-                      style={{
-                        marginTop: '12px',
-                        padding: '12px',
-                        borderRadius: '6px',
-                        background: 'var(--surface)',
-                        border: '1px solid var(--border)',
-                      }}
-                    >
-                      <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink-faint)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                        Profile Avatar
-                      </div>
-
-                      {/* Live avatar preview */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '12px' }}>
-                        <div
-                          style={{
-                            width: '52px',
-                            height: '52px',
-                            borderRadius: '50%',
-                            background: testi.avatarBg || '#6366f1',
-                            overflow: 'hidden',
-                            flexShrink: 0,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            border: '2px solid var(--border)',
-                          }}
-                        >
-                          {testi.avatarUrl ? (
-                            <img
-                              src={testi.avatarUrl}
-                              alt={testi.name}
-                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                            />
-                          ) : (
-                            <span style={{ color: testi.avatarColor || '#fff', fontWeight: 700, fontSize: '18px' }}>
-                              {testi.avatarIcon || (testi.name ? testi.name.charAt(0).toUpperCase() : '?')}
-                            </span>
-                          )}
-                        </div>
-                        <span style={{ fontSize: '12px', color: 'var(--ink-faint)' }}>
-                          Live preview — image takes priority over initials
-                        </span>
-                      </div>
-
-                      <div className="row" style={{ gap: '12px' }}>
-                        <div className="field" style={{ flex: 2 }}>
-                          <label>Avatar Image URL</label>
-                          <input
-                            type="url"
-                            placeholder="https://example.com/photo.jpg"
-                            value={testi.avatarUrl || ''}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, avatarUrl: val } : t)));
-                            }}
-                          />
-                        </div>
-                        <div className="field" style={{ flex: '0 0 110px' }}>
-                          <label>Background Color</label>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <input
-                              type="color"
-                              value={testi.avatarBg || '#6366f1'}
-                              style={{ width: '38px', height: '34px', padding: '2px', borderRadius: '4px', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, avatarBg: val } : t)));
-                              }}
-                            />
-                            <input
-                              type="text"
-                              value={testi.avatarBg || '#6366f1'}
-                              style={{ fontSize: '12px' }}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, avatarBg: val } : t)));
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <div className="field" style={{ flex: '0 0 90px' }}>
-                          <label>Initials / Icon</label>
-                          <input
-                            type="text"
-                            maxLength={2}
-                            placeholder="e.g. AJ"
-                            value={testi.avatarIcon || ''}
-                            onChange={(e) => {
-                              const val = e.target.value.toUpperCase();
-                              setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, avatarIcon: val } : t)));
-                            }}
-                          />
-                        </div>
-                        <div className="field" style={{ flex: '0 0 100px' }}>
-                          <label>Text Color</label>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <input
-                              type="color"
-                              value={testi.avatarColor || '#ffffff'}
-                              style={{ width: '38px', height: '34px', padding: '2px', borderRadius: '4px', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, avatarColor: val } : t)));
-                              }}
-                            />
-                            <input
-                              type="text"
-                              value={testi.avatarColor || '#ffffff'}
-                              style={{ fontSize: '12px' }}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setTestimonialsList(testimonialsList.map((t) => (t.id === testi.id ? { ...t, avatarColor: val } : t)));
-                              }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--ink)', fontSize: '14px' }}>
+                    Active Commercial Plans Sourced on Landing Page ({activeLivePlans.length}):
                   </div>
-                ))}
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
+                    {activeLivePlans.map((plan) => (
+                      <span
+                        key={plan.id}
+                        className="badge"
+                        style={{
+                          background: plan.isPopular ? 'var(--brass-gold, #f59e0b)' : 'var(--surface-sunken)',
+                          color: plan.isPopular ? '#ffffff' : 'var(--ink)',
+                          fontWeight: 700,
+                          padding: '6px 12px',
+                          fontSize: '12.5px',
+                        }}
+                      >
+                        {plan.name} (${plan.price}/mo) {plan.isPopular ? '★ Most Popular' : ''} {plan.popularBoostDays ? `· 🔥 ${plan.popularBoostDays}d boost` : ''}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--ink-soft)', maxWidth: '340px' }}>
+                  All limits, pricing, and popular listing boost days configured in <b>SuperAdmin Plans</b> reflect instantly across the public landing page.
+                </div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 7: FAQ */}
+      {/* TAB 9: FAQs */}
       {activeTab === 'faq' && (
         <div style={{ marginTop: '16px' }}>
           <div className="panel">
             <div className="panel-head">
-              <h3>FAQ header copy</h3>
+              <h3>FAQ Section Header</h3>
             </div>
             <div className="panel-body">
               <div className="row">
                 <div className="field">
-                  <label>Section Kicker</label>
-                  <input
-                    type="text"
-                    value={faqKicker}
-                    onChange={(e) => setFaqKicker(e.target.value)}
-                  />
+                  <label>Eyebrow</label>
+                  <input type="text" value={faqKicker} onChange={(e) => setFaqKicker(e.target.value)} />
                 </div>
                 <div className="field" style={{ flex: 2 }}>
                   <label>Section Title</label>
-                  <input
-                    type="text"
-                    value={faqTitle}
-                    onChange={(e) => setFaqTitle(e.target.value)}
-                  />
+                  <input type="text" value={faqTitle} onChange={(e) => setFaqTitle(e.target.value)} />
                 </div>
               </div>
-              <div className="field">
-                <label>Section Subtitle</label>
-                <textarea
-                  rows={2}
-                  value={faqSubtitle}
-                  onChange={(e) => setFaqSubtitle(e.target.value)}
-                />
+              <div className="field" style={{ marginTop: '8px' }}>
+                <label>Optional Subtitle</label>
+                <input type="text" value={faqSubtitle} onChange={(e) => setFaqSubtitle(e.target.value)} />
               </div>
             </div>
           </div>
 
           <div className="panel" style={{ marginTop: '16px' }}>
             <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3>FAQ questions & answers ({faqList.length})</h3>
+              <h3>FAQ Questions & Answers ({faqList.length})</h3>
               <button
                 type="button"
                 className="btn brass small"
-                onClick={() => {
-                  const newFaq: LandingFaqItem = {
-                    id: 'faq-' + Date.now(),
-                    question: 'New Frequently Asked Question',
-                    answer: 'Detailed response outlining feature functionality and policy.',
-                  };
-                  setFaqList([...faqList, newFaq]);
-                }}
+                onClick={() =>
+                  setFaqList([
+                    ...faqList,
+                    {
+                      id: 'faq-' + Date.now(),
+                      question: 'New Frequently Asked Question?',
+                      answer: 'Provide a clear, helpful answer here.',
+                    },
+                  ])
+                }
               >
-                + Add FAQ Item
+                + Add FAQ
               </button>
             </div>
-            <div className="panel-body">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {faqList.map((faq, idx) => (
-                  <div
-                    key={faq.id}
-                    style={{
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      padding: '16px',
-                      background: 'var(--surface-subtle)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                      <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--ink)' }}>
-                        FAQ #{idx + 1}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        style={{ color: '#EF4444' }}
-                        onClick={() => setFaqList(faqList.filter((f) => f.id !== faq.id))}
-                      >
-                        Delete FAQ
-                      </button>
-                    </div>
-                    <div className="field">
-                      <label>Question</label>
-                      <input
-                        type="text"
-                        value={faq.question}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setFaqList(faqList.map((f) => (f.id === faq.id ? { ...f, question: val } : f)));
-                        }}
-                      />
-                    </div>
-                    <div className="field" style={{ marginTop: '8px' }}>
-                      <label>Answer</label>
-                      <textarea
-                        rows={3}
-                        value={faq.answer}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setFaqList(faqList.map((f) => (f.id === faq.id ? { ...f, answer: val } : f)));
-                        }}
-                      />
-                    </div>
+            <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {faqList.map((faq, idx) => (
+                <div key={faq.id} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <b>FAQ #{idx + 1}</b>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      style={{ color: '#EF4444' }}
+                      onClick={() => setFaqList(faqList.filter((f) => f.id !== faq.id))}
+                    >
+                      Delete
+                    </button>
                   </div>
-                ))}
-              </div>
+                  <div className="field">
+                    <label>Question</label>
+                    <input
+                      type="text"
+                      value={faq.question}
+                      onChange={(e) =>
+                        setFaqList(faqList.map((f) => (f.id === faq.id ? { ...f, question: e.target.value } : f)))
+                      }
+                    />
+                  </div>
+                  <div className="field" style={{ marginTop: '8px' }}>
+                    <label>Answer</label>
+                    <textarea
+                      rows={3}
+                      value={faq.answer}
+                      onChange={(e) =>
+                        setFaqList(faqList.map((f) => (f.id === faq.id ? { ...f, answer: e.target.value } : f)))
+                      }
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 8: CTA Banner & Footer */}
+      {/* TAB 10: CTA Banner & Footer */}
       {activeTab === 'ctaFooter' && (
         <div style={{ marginTop: '16px' }}>
           <div className="panel">
             <div className="panel-head">
-              <h3>Bottom call to action banner</h3>
+              <h3>Bottom Call-to-Action Banner</h3>
             </div>
             <div className="panel-body">
               <div className="field">
                 <label>Banner Headline</label>
-                <input
-                  type="text"
-                  value={ctaBannerTitle}
-                  onChange={(e) => setCtaBannerTitle(e.target.value)}
-                />
+                <input type="text" value={ctaBannerTitle} onChange={(e) => setCtaBannerTitle(e.target.value)} />
               </div>
-              <div className="field">
+              <div className="field" style={{ marginTop: '8px' }}>
                 <label>Banner Subtitle</label>
-                <textarea
-                  rows={2}
-                  value={ctaBannerSubtitle}
-                  onChange={(e) => setCtaBannerSubtitle(e.target.value)}
-                />
+                <textarea rows={2} value={ctaBannerSubtitle} onChange={(e) => setCtaBannerSubtitle(e.target.value)} />
               </div>
-              <div className="row">
+              <div className="row" style={{ marginTop: '8px' }}>
                 <div className="field">
                   <label>Primary Button Text</label>
-                  <input
-                    type="text"
-                    value={ctaBannerPrimaryText}
-                    onChange={(e) => setCtaBannerPrimaryText(e.target.value)}
-                  />
+                  <input type="text" value={ctaBannerPrimaryText} onChange={(e) => setCtaBannerPrimaryText(e.target.value)} />
                 </div>
                 <div className="field">
-                  <label>Primary Button Link Target</label>
-                  <input
-                    type="text"
-                    value={ctaBannerPrimaryLink}
-                    onChange={(e) => setCtaBannerPrimaryLink(e.target.value)}
-                  />
+                  <label>Primary Button Link</label>
+                  <input type="text" value={ctaBannerPrimaryLink} onChange={(e) => setCtaBannerPrimaryLink(e.target.value)} />
                 </div>
                 <div className="field">
                   <label>Secondary Button Text</label>
-                  <input
-                    type="text"
-                    value={ctaBannerSecondaryText}
-                    onChange={(e) => setCtaBannerSecondaryText(e.target.value)}
-                  />
+                  <input type="text" value={ctaBannerSecondaryText} onChange={(e) => setCtaBannerSecondaryText(e.target.value)} />
                 </div>
                 <div className="field">
-                  <label>Secondary Button Link Target</label>
-                  <input
-                    type="text"
-                    value={ctaBannerSecondaryLink}
-                    onChange={(e) => setCtaBannerSecondaryLink(e.target.value)}
-                  />
+                  <label>Secondary Button Link</label>
+                  <input type="text" value={ctaBannerSecondaryLink} onChange={(e) => setCtaBannerSecondaryLink(e.target.value)} />
                 </div>
               </div>
             </div>
@@ -2451,183 +1968,74 @@ export const LandingCmsPage: React.FC = () => {
 
           <div className="panel" style={{ marginTop: '16px' }}>
             <div className="panel-head">
-              <h3>Footer & corporate identity</h3>
+              <h3>Footer Copyright</h3>
             </div>
             <div className="panel-body">
               <div className="field">
-                <label>Platform Description in Footer</label>
-                <textarea
-                  rows={2}
-                  value={footerBrandDescription}
-                  onChange={(e) => setFooterBrandDescription(e.target.value)}
+                <label>Copyright Notice Text</label>
+                <input type="text" value={footerCopyright} onChange={(e) => setFooterCopyright(e.target.value)} />
+              </div>
+            </div>
+          </div>
+
+          <div className="panel" style={{ marginTop: '16px' }}>
+            <div className="panel-head">
+              <h3>📱 Mobile App Store Downloads (Footer)</h3>
+            </div>
+            <div className="panel-body">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: '14px' }}>
+                <input
+                  type="checkbox"
+                  checked={showAppStoreLinks}
+                  onChange={(e) => setShowAppStoreLinks(e.target.checked)}
                 />
-              </div>
-              <div className="row">
-                <div className="field">
-                  <label>Corporate Legal Entity / Owner Name</label>
-                  <input
-                    type="text"
-                    value={footerCompanyName}
-                    onChange={(e) => setFooterCompanyName(e.target.value)}
-                    placeholder="NEBZA Technologies Private Limited"
-                  />
-                </div>
-                <div className="field">
-                  <label>Contact Email</label>
-                  <input
-                    type="text"
-                    value={footerEmail}
-                    onChange={(e) => setFooterEmail(e.target.value)}
-                    placeholder="admin@propithub.com"
-                  />
-                </div>
-                <div className="field">
-                  <label>Contact Phone</label>
-                  <input
-                    type="text"
-                    value={footerPhone}
-                    onChange={(e) => setFooterPhone(e.target.value)}
-                    placeholder="+1 (555) 010-0001"
-                  />
-                </div>
-              </div>
-              <div className="field" style={{ marginTop: '8px' }}>
-                <label>Copyright Notice</label>
+                <span style={{ fontWeight: 600 }}>Show App Store & Google Play Badges in Footer</span>
+              </label>
+
+              <div className="field">
+                <label>Badges Header Label</label>
                 <input
                   type="text"
-                  value={footerCopyright}
-                  onChange={(e) => setFooterCopyright(e.target.value)}
+                  placeholder="e.g. Get the mobile app"
+                  value={appStoreLabel}
+                  onChange={(e) => setAppStoreLabel(e.target.value)}
                 />
               </div>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* TAB 9: Vacant Listings Moderation */}
-      {activeTab === 'listings' && (
-        <div style={{ marginTop: '16px' }}>
-          <div className="section-title">Available listings moderation</div>
-          <div className="panel">
-            <div className="panel-body">
-              <p className="hint" style={{ marginBottom: '16px' }}>
-                Vacant units listed across owner accounts are visible to the public. As superadmin, you have full authority to audit, delist, or restore any unit from the landing page.
-              </p>
-              <div className="desktop-table-view">
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Unit</th>
-                        <th>Property</th>
-                        <th>Country</th>
-                        <th>Rent</th>
-                        <th>Status</th>
-                        <th>Moderation</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {state.units.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} style={{ color: 'var(--ink-soft)', padding: '16px 10px' }}>
-                            No units created yet in any owner account.
-                          </td>
-                        </tr>
-                      ) : (
-                        state.units.map((u) => (
-                          <tr key={u.id}>
-                            <td style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              {((u.images && u.images[0]) || u.image) ? (
-                                <img
-                                  src={(u.images && u.images[0]) || u.image}
-                                  alt={`Unit ${u.unitNumber}`}
-                                  style={{ width: '28px', height: '28px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border)' }}
-                                />
-                              ) : null}
-                              <b>{u.unitNumber || u.id}</b>
-                            </td>
-                            <td>{u.propertyName || 'Property'}</td>
-                            <td><span className="badge grey">{u.country || 'India'}</span></td>
-                            <td style={{ fontWeight: 600 }}>{getCurrencySymbol(u.currency)}{u.rent?.toLocaleString(getLocaleForCurrency(u.currency))}/mo</td>
-                            <td>
-                              <span className={`badge ${u.isListedPublicly ? 'green' : 'grey'}`}>
-                                {u.isListedPublicly ? 'Publicly Listed' : 'Unlisted'}
-                              </span>
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                onClick={() => handleToggleUnitListing(u.id, !!u.isListedPublicly, u.unitNumber || u.id)}
-                              >
-                                {u.isListedPublicly ? 'Delist' : 'List Publicly'}
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+              <div className="row" style={{ marginTop: '10px' }}>
+                <div className="field">
+                  <label>Google Play Store URL</label>
+                  <input
+                    type="url"
+                    placeholder="https://play.google.com/store/apps/details?id=com.propithub.app"
+                    value={playStoreUrl}
+                    onChange={(e) => setPlayStoreUrl(e.target.value)}
+                  />
+                  <small style={{ color: 'var(--ink-soft)', marginTop: '4px', display: 'block' }}>
+                    Leave blank to hide the Google Play badge.
+                  </small>
+                </div>
+                <div className="field">
+                  <label>Apple App Store URL</label>
+                  <input
+                    type="url"
+                    placeholder="https://apps.apple.com/app/propithub/id123456789"
+                    value={appStoreUrl}
+                    onChange={(e) => setAppStoreUrl(e.target.value)}
+                  />
+                  <small style={{ color: 'var(--ink-soft)', marginTop: '4px', display: 'block' }}>
+                    Leave blank to hide the App Store badge.
+                  </small>
                 </div>
               </div>
-
-              {/* Mobile Card View */}
-              <div className="mobile-card-view">
-                {state.units.length === 0 ? (
-                  <div style={{ color: 'var(--ink-soft)', padding: '16px 10px', textAlign: 'center' }}>
-                    No units created yet in any owner account.
-                  </div>
-                ) : (
-                  state.units.map((u) => (
-                    <div key={u.id} className="staff-card" style={{ padding: '14px', marginBottom: '12px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-                        {((u.images && u.images[0]) || u.image) ? (
-                          <img
-                            src={(u.images && u.images[0]) || u.image}
-                            alt={`Unit ${u.unitNumber}`}
-                            style={{ width: '40px', height: '40px', borderRadius: '6px', objectFit: 'cover', border: '1px solid var(--border)' }}
-                          />
-                        ) : null}
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>
-                            Unit {u.unitNumber || u.id}
-                          </div>
-                          <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                            {u.propertyName || 'Property'}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <span className="badge grey">{u.country || 'India'}</span>
-                        <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>
-                          {getCurrencySymbol(u.currency)}{u.rent?.toLocaleString(getLocaleForCurrency(u.currency))}/mo
-                        </span>
-                        <span className={`badge ${u.isListedPublicly ? 'green' : 'grey'}`}>
-                          {u.isListedPublicly ? 'Publicly Listed' : 'Unlisted'}
-                        </span>
-                      </div>
-
-                      <button
-                        type="button"
-                        className="btn secondary small btn-mobile-full"
-                        onClick={() => handleToggleUnitListing(u.id, !!u.isListedPublicly, u.unitNumber || u.id)}
-                      >
-                        {u.isListedPublicly ? 'Delist from Landing Page' : 'List Publicly on Landing Page'}
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 10. Legal Policies & Support Pages CMS Tab */}
+      {/* TAB 11: Legal Policies & Support Pages */}
       {activeTab === 'legal' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Sub-Tabs: Terms / Privacy / Refund / Contact */}
           <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid var(--border)', paddingBottom: '12px', flexWrap: 'wrap' }}>
             {[
               { id: 'terms', label: '📄 Terms of Use', path: '/terms' },
@@ -2640,349 +2048,125 @@ export const LandingCmsPage: React.FC = () => {
                   type="button"
                   className={`btn small ${legalSubTab === sub.id ? 'brass' : 'secondary'}`}
                   onClick={() => setLegalSubTab(sub.id as any)}
-                  style={{ padding: '6px 14px' }}
                 >
                   {sub.label}
                 </button>
                 <button
                   type="button"
                   className="btn secondary small"
-                  title={`Open ${sub.path} in new window`}
                   onClick={() => window.open(sub.path, '_blank')}
-                  style={{ padding: '6px 8px' }}
                 >
                   <ExternalLink size={12} />
                 </button>
               </div>
             ))}
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
-              <button
-                type="button"
-                className="btn brass small"
-                onClick={handleSaveAll}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
-              >
-                ✓ Save All Policy Changes
-              </button>
-            </div>
           </div>
 
-          {/* Terms of Use Editor */}
-          {legalSubTab === 'terms' && (
-            <div className="panel">
-              <div className="panel-body">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '16px' }}>Edit Terms of Use Content</h3>
-                    <span className="hint" style={{ fontSize: '12.5px' }}>Live at /terms — governs user covenants, liabilities, and lease record keeping.</span>
+          {(legalSubTab === 'terms' || legalSubTab === 'privacy' || legalSubTab === 'refund') && (() => {
+            const currentDoc =
+              legalSubTab === 'terms' ? legalTerms : legalSubTab === 'privacy' ? legalPrivacy : legalRefund;
+            const setDocState =
+              legalSubTab === 'terms' ? setLegalTerms : legalSubTab === 'privacy' ? setLegalPrivacy : setLegalRefund;
+            return (
+              <div className="panel">
+                <div className="panel-body">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Edit {currentDoc.title}</h3>
+                    <button
+                      type="button"
+                      className="btn brass small"
+                      onClick={() =>
+                        setDocState({
+                          ...currentDoc,
+                          sections: [
+                            ...currentDoc.sections,
+                            {
+                              id: `${legalSubTab}-${Date.now()}`,
+                              title: `${currentDoc.sections.length + 1}. New Clause`,
+                              content: 'Enter clause details...',
+                            },
+                          ],
+                        })
+                      }
+                    >
+                      <Plus size={14} /> Add Clause
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      const newId = `terms-${Date.now()}`;
-                      setLegalTerms((prev) => ({
-                        ...prev,
-                        sections: [...prev.sections, { id: newId, title: `${prev.sections.length + 1}. New Clause Title`, content: 'Enter clause text details here...' }],
-                      }));
-                    }}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Plus size={14} /> Add Clause Section
-                  </button>
-                </div>
-
-                <div className="row" style={{ marginBottom: '14px' }}>
-                  <div className="field">
-                    <label>Page Title</label>
-                    <input
-                      type="text"
-                      value={legalTerms.title}
-                      onChange={(e) => setLegalTerms({ ...legalTerms, title: e.target.value })}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Last Updated Notice</label>
-                    <input
-                      type="text"
-                      value={legalTerms.lastUpdated}
-                      onChange={(e) => setLegalTerms({ ...legalTerms, lastUpdated: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                <div className="field" style={{ marginBottom: '20px' }}>
-                  <label>Subtitle Brief</label>
-                  <textarea
-                    rows={2}
-                    value={legalTerms.subtitle}
-                    onChange={(e) => setLegalTerms({ ...legalTerms, subtitle: e.target.value })}
-                  />
-                </div>
-
-                <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '10px' }}>Sections & Policy Clauses ({legalTerms.sections.length})</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {legalTerms.sections.map((sec, idx) => (
-                    <div key={sec.id || idx} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <input
-                          type="text"
-                          value={sec.title}
-                          onChange={(e) => {
-                            const updated = [...legalTerms.sections];
-                            updated[idx].title = e.target.value;
-                            setLegalTerms({ ...legalTerms, sections: updated });
-                          }}
-                          style={{ fontWeight: 600, fontSize: '14px', width: '80%' }}
-                        />
-                        <button
-                          type="button"
-                          className="btn danger small"
-                          onClick={() => {
-                            const updated = legalTerms.sections.filter((_, i) => i !== idx);
-                            setLegalTerms({ ...legalTerms, sections: updated });
-                          }}
-                          style={{ padding: '4px 8px' }}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                      <textarea
-                        rows={3}
-                        value={sec.content}
-                        onChange={(e) => {
-                          const updated = [...legalTerms.sections];
-                          updated[idx].content = e.target.value;
-                          setLegalTerms({ ...legalTerms, sections: updated });
-                        }}
-                        style={{ width: '100%', fontSize: '13px', lineHeight: 1.6 }}
+                  <div className="row" style={{ marginBottom: '12px' }}>
+                    <div className="field">
+                      <label>Page Title</label>
+                      <input
+                        type="text"
+                        value={currentDoc.title}
+                        onChange={(e) => setDocState({ ...currentDoc, title: e.target.value })}
                       />
                     </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Privacy Policy Editor */}
-          {legalSubTab === 'privacy' && (
-            <div className="panel">
-              <div className="panel-body">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '16px' }}>Edit Privacy Policy Content</h3>
-                    <span className="hint" style={{ fontSize: '12.5px' }}>Live at /privacy — explains KYC document encryption, data handling, and resident privacy rights.</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      const newId = `priv-${Date.now()}`;
-                      setLegalPrivacy((prev) => ({
-                        ...prev,
-                        sections: [...prev.sections, { id: newId, title: `${prev.sections.length + 1}. New Policy Clause`, content: 'Enter policy details here...' }],
-                      }));
-                    }}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Plus size={14} /> Add Privacy Clause
-                  </button>
-                </div>
-
-                <div className="row" style={{ marginBottom: '14px' }}>
-                  <div className="field">
-                    <label>Page Title</label>
-                    <input
-                      type="text"
-                      value={legalPrivacy.title}
-                      onChange={(e) => setLegalPrivacy({ ...legalPrivacy, title: e.target.value })}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Last Updated Notice</label>
-                    <input
-                      type="text"
-                      value={legalPrivacy.lastUpdated}
-                      onChange={(e) => setLegalPrivacy({ ...legalPrivacy, lastUpdated: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                <div className="field" style={{ marginBottom: '20px' }}>
-                  <label>Subtitle Brief</label>
-                  <textarea
-                    rows={2}
-                    value={legalPrivacy.subtitle}
-                    onChange={(e) => setLegalPrivacy({ ...legalPrivacy, subtitle: e.target.value })}
-                  />
-                </div>
-
-                <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '10px' }}>Sections & Privacy Clauses ({legalPrivacy.sections.length})</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {legalPrivacy.sections.map((sec, idx) => (
-                    <div key={sec.id || idx} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <input
-                          type="text"
-                          value={sec.title}
-                          onChange={(e) => {
-                            const updated = [...legalPrivacy.sections];
-                            updated[idx].title = e.target.value;
-                            setLegalPrivacy({ ...legalPrivacy, sections: updated });
-                          }}
-                          style={{ fontWeight: 600, fontSize: '14px', width: '80%' }}
-                        />
-                        <button
-                          type="button"
-                          className="btn danger small"
-                          onClick={() => {
-                            const updated = legalPrivacy.sections.filter((_, i) => i !== idx);
-                            setLegalPrivacy({ ...legalPrivacy, sections: updated });
-                          }}
-                          style={{ padding: '4px 8px' }}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                      <textarea
-                        rows={3}
-                        value={sec.content}
-                        onChange={(e) => {
-                          const updated = [...legalPrivacy.sections];
-                          updated[idx].content = e.target.value;
-                          setLegalPrivacy({ ...legalPrivacy, sections: updated });
-                        }}
-                        style={{ width: '100%', fontSize: '13px', lineHeight: 1.6 }}
+                    <div className="field">
+                      <label>Last Updated</label>
+                      <input
+                        type="text"
+                        value={currentDoc.lastUpdated}
+                        onChange={(e) => setDocState({ ...currentDoc, lastUpdated: e.target.value })}
                       />
                     </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Refund Policy Editor */}
-          {legalSubTab === 'refund' && (
-            <div className="panel">
-              <div className="panel-body">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '16px' }}>Edit Refund Policy Content</h3>
-                    <span className="hint" style={{ fontSize: '12.5px' }}>Live at /refund — specifies SaaS cancellation terms and tenant deposit refund rules.</span>
                   </div>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      const newId = `ref-${Date.now()}`;
-                      setLegalRefund((prev) => ({
-                        ...prev,
-                        sections: [...prev.sections, { id: newId, title: `${prev.sections.length + 1}. New Refund Clause`, content: 'Enter clause details here...' }],
-                      }));
-                    }}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Plus size={14} /> Add Refund Clause
-                  </button>
-                </div>
-
-                <div className="row" style={{ marginBottom: '14px' }}>
-                  <div className="field">
-                    <label>Page Title</label>
-                    <input
-                      type="text"
-                      value={legalRefund.title}
-                      onChange={(e) => setLegalRefund({ ...legalRefund, title: e.target.value })}
+                  <div className="field" style={{ marginBottom: '16px' }}>
+                    <label>Subtitle</label>
+                    <textarea
+                      rows={2}
+                      value={currentDoc.subtitle}
+                      onChange={(e) => setDocState({ ...currentDoc, subtitle: e.target.value })}
                     />
                   </div>
-                  <div className="field">
-                    <label>Last Updated Notice</label>
-                    <input
-                      type="text"
-                      value={legalRefund.lastUpdated}
-                      onChange={(e) => setLegalRefund({ ...legalRefund, lastUpdated: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                <div className="field" style={{ marginBottom: '20px' }}>
-                  <label>Subtitle Brief</label>
-                  <textarea
-                    rows={2}
-                    value={legalRefund.subtitle}
-                    onChange={(e) => setLegalRefund({ ...legalRefund, subtitle: e.target.value })}
-                  />
-                </div>
-
-                <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '10px' }}>Sections & Refund Clauses ({legalRefund.sections.length})</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {legalRefund.sections.map((sec, idx) => (
-                    <div key={sec.id || idx} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <input
-                          type="text"
-                          value={sec.title}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {currentDoc.sections.map((sec, idx) => (
+                      <div key={sec.id || idx} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <input
+                            type="text"
+                            value={sec.title}
+                            onChange={(e) => {
+                              const updated = [...currentDoc.sections];
+                              updated[idx] = { ...updated[idx], title: e.target.value };
+                              setDocState({ ...currentDoc, sections: updated });
+                            }}
+                            style={{ fontWeight: 600, width: '85%' }}
+                          />
+                          <button
+                            type="button"
+                            className="btn danger small"
+                            onClick={() =>
+                              setDocState({
+                                ...currentDoc,
+                                sections: currentDoc.sections.filter((_, i) => i !== idx),
+                              })
+                            }
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                        <textarea
+                          rows={3}
+                          value={sec.content}
                           onChange={(e) => {
-                            const updated = [...legalRefund.sections];
-                            updated[idx].title = e.target.value;
-                            setLegalRefund({ ...legalRefund, sections: updated });
+                            const updated = [...currentDoc.sections];
+                            updated[idx] = { ...updated[idx], content: e.target.value };
+                            setDocState({ ...currentDoc, sections: updated });
                           }}
-                          style={{ fontWeight: 600, fontSize: '14px', width: '80%' }}
+                          style={{ width: '100%' }}
                         />
-                        <button
-                          type="button"
-                          className="btn danger small"
-                          onClick={() => {
-                            const updated = legalRefund.sections.filter((_, i) => i !== idx);
-                            setLegalRefund({ ...legalRefund, sections: updated });
-                          }}
-                          style={{ padding: '4px 8px' }}
-                        >
-                          <Trash2 size={13} />
-                        </button>
                       </div>
-                      <textarea
-                        rows={3}
-                        value={sec.content}
-                        onChange={(e) => {
-                          const updated = [...legalRefund.sections];
-                          updated[idx].content = e.target.value;
-                          setLegalRefund({ ...legalRefund, sections: updated });
-                        }}
-                        style={{ width: '100%', fontSize: '13px', lineHeight: 1.6 }}
-                      />
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
-          {/* Contact Support Editor */}
           {legalSubTab === 'contact' && (
             <div className="panel">
               <div className="panel-body">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '16px' }}>Edit Contact Support Information</h3>
-                    <span className="hint" style={{ fontSize: '12.5px' }}>Live at /contact — manages contact info cards, address, response SLA, and help FAQs.</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      setLegalContact((prev) => ({
-                        ...prev,
-                        faqs: [...(prev.faqs || []), { question: 'New Question?', answer: 'Answer details...' }],
-                      }));
-                    }}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Plus size={14} /> Add Support FAQ
-                  </button>
-                </div>
-
-                <div className="row" style={{ marginBottom: '14px' }}>
+                <div className="row" style={{ marginBottom: '12px' }}>
                   <div className="field">
                     <label>Page Title</label>
                     <input
@@ -2992,7 +2176,7 @@ export const LandingCmsPage: React.FC = () => {
                     />
                   </div>
                   <div className="field">
-                    <label>Support Email Address</label>
+                    <label>Support Email</label>
                     <input
                       type="email"
                       value={legalContact.email}
@@ -3000,10 +2184,9 @@ export const LandingCmsPage: React.FC = () => {
                     />
                   </div>
                 </div>
-
-                <div className="row" style={{ marginBottom: '14px' }}>
+                <div className="row" style={{ marginBottom: '12px' }}>
                   <div className="field">
-                    <label>Helpline Telephone</label>
+                    <label>Helpline Phone</label>
                     <input
                       type="text"
                       value={legalContact.phone}
@@ -3011,7 +2194,7 @@ export const LandingCmsPage: React.FC = () => {
                     />
                   </div>
                   <div className="field">
-                    <label>Business / Operating Hours</label>
+                    <label>Business Hours</label>
                     <input
                       type="text"
                       value={legalContact.businessHours}
@@ -3019,75 +2202,21 @@ export const LandingCmsPage: React.FC = () => {
                     />
                   </div>
                 </div>
-
-                <div className="field" style={{ marginBottom: '14px' }}>
-                  <label>Corporate Headquarters Address</label>
+                <div className="field" style={{ marginBottom: '12px' }}>
+                  <label>Headquarters Address</label>
                   <input
                     type="text"
                     value={legalContact.address}
                     onChange={(e) => setLegalContact({ ...legalContact, address: e.target.value })}
                   />
                 </div>
-
-                <div className="field" style={{ marginBottom: '14px' }}>
+                <div className="field">
                   <label>Response Time SLA Notice</label>
                   <input
                     type="text"
                     value={legalContact.responseTimeNotice}
                     onChange={(e) => setLegalContact({ ...legalContact, responseTimeNotice: e.target.value })}
                   />
-                </div>
-
-                <div className="field" style={{ marginBottom: '20px' }}>
-                  <label>Subtitle / Intro</label>
-                  <textarea
-                    rows={2}
-                    value={legalContact.subtitle}
-                    onChange={(e) => setLegalContact({ ...legalContact, subtitle: e.target.value })}
-                  />
-                </div>
-
-                <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '10px' }}>Support FAQs ({legalContact.faqs?.length || 0})</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {(legalContact.faqs || []).map((faq, idx) => (
-                    <div key={idx} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '14px', background: 'var(--surface-subtle)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                        <input
-                          type="text"
-                          value={faq.question}
-                          placeholder="Question..."
-                          onChange={(e) => {
-                            const updated = [...(legalContact.faqs || [])];
-                            updated[idx].question = e.target.value;
-                            setLegalContact({ ...legalContact, faqs: updated });
-                          }}
-                          style={{ fontWeight: 600, fontSize: '13.5px', width: '85%' }}
-                        />
-                        <button
-                          type="button"
-                          className="btn danger small"
-                          onClick={() => {
-                            const updated = (legalContact.faqs || []).filter((_, i) => i !== idx);
-                            setLegalContact({ ...legalContact, faqs: updated });
-                          }}
-                          style={{ padding: '4px 8px' }}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={faq.answer}
-                        placeholder="Answer..."
-                        onChange={(e) => {
-                          const updated = [...(legalContact.faqs || [])];
-                          updated[idx].answer = e.target.value;
-                          setLegalContact({ ...legalContact, faqs: updated });
-                        }}
-                        style={{ width: '100%', fontSize: '13px' }}
-                      />
-                    </div>
-                  ))}
                 </div>
               </div>
             </div>
@@ -3111,7 +2240,7 @@ export const LandingCmsPage: React.FC = () => {
         }}
       >
         <span style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
-          All modifications publish directly to live Firestore configuration and update instantly for all public visitors.
+          All modifications publish directly to live Firestore configuration and update instantly for all visitors.
         </span>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button type="button" className="btn secondary" onClick={handleResetDefaults}>

@@ -1,47 +1,174 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
-import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
-import { sanitizeCountry, resolveDisplayLocation, getCleanAddressText } from '../../lib/addressUtils';
-import { PropithubIcon } from '../../components/common/PropithubLogo';
-import { ListingCard } from '../../components/public/ListingCard';
-import { ListingDetailsModal } from '../../components/public/ListingDetailsModal';
-import { Unit } from '../../types';
+import { PropithubLogo } from '../../components/common/PropithubLogo';
+import { HeroArt } from '../../components/common/HeroArt';
+import { AppStoreBadges } from '../../components/common/AppStoreBadges';
+import {
+  getAllListings,
+  formatMoney,
+  toUSD,
+  calculateBenchmark,
+  COUNTRY_FLAGS,
+} from '../../lib/listingsData';
+import { isValidCityName, isNumericCoordinate } from '../../lib/addressUtils';
+import { Heart, Sun, Moon, Compass, Menu, X, ChevronDown } from 'lucide-react';
+
+const DEFAULT_ROLE_PORTALS = [
+  {
+    id: 'role-owner',
+    title: 'Property Owners',
+    color: '#0f766e',
+    bullets: [
+      'Live rent tracking & collections',
+      'Digital leases & ledger',
+      '1-tap vacant listing',
+    ],
+  },
+  {
+    id: 'role-manager',
+    title: 'Property Managers',
+    color: '#b45309',
+    bullets: [
+      'Multi-owner portfolio control',
+      'Repair dispatch & messaging',
+      'Viewings & applicant screening',
+    ],
+  },
+  {
+    id: 'role-tenant',
+    title: 'Tenants',
+    color: '#2563eb',
+    bullets: [
+      'Online rent & auto-reminders',
+      'Payment proofs & receipts',
+      'Maintenance requests with photos',
+    ],
+  },
+  {
+    id: 'role-staff',
+    title: 'Maintenance Technicians',
+    color: '#c2410c',
+    bullets: [
+      'Mobile work order queue',
+      'Task status & photo proofs',
+      'Payout tracking & logs',
+    ],
+  },
+  {
+    id: 'role-admin',
+    title: 'Platform Admins',
+    color: '#6d28d9',
+    bullets: [
+      'Plans, pricing & policies',
+      'Public listing moderation',
+      'Security & gateway audits',
+    ],
+  },
+];
+
+const DEFAULT_FEATURES = [
+  {
+    id: 'f-1',
+    icon: '📝',
+    title: 'Digital Leases & E-Signing',
+    description: 'Generate compliant leases, customize addendums, and collect e-signatures from all co-signers in minutes.',
+  },
+  {
+    id: 'f-2',
+    icon: '💳',
+    title: 'Automated Invoicing & Gateways',
+    description: 'Integrate Stripe, Razorpay, PayPal, Easebuzz, or direct UPI/Bank wire with automatic receipt generation.',
+  },
+  {
+    id: 'f-3',
+    icon: '💱',
+    title: 'Multi-Currency Ledger',
+    description: 'Track rental revenue and security deposits in USD, GBP, EUR, AED, INR, and CAD with live currency conversion.',
+  },
+  {
+    id: 'f-4',
+    icon: '🛠️',
+    title: 'Maintenance Dispatch',
+    description: 'Tenants submit photo repair requests; assign them to maintenance technicians with instant progress tracking.',
+  },
+  {
+    id: 'f-5',
+    icon: '👥',
+    title: 'Tenant Self-Service Portal',
+    description: 'Tenants view real-time balance sheets, pay rent with one tap, download tax receipts, and report issues.',
+  },
+  {
+    id: 'f-6',
+    icon: '📊',
+    title: 'Real-Time Financial Reports',
+    description: 'Export income statements, occupancy charts, security deposit reserves, and tax summaries to PDF or Excel.',
+  },
+];
+
+const DEFAULT_STEPS = [
+  {
+    id: 's-1',
+    stepNumber: '1',
+    title: 'List or find in minutes',
+    description:
+      'Owners import properties and publish vacant units with photos and pricing. Renters filter by bedrooms, budget, and neighborhood.',
+  },
+  {
+    id: 's-2',
+    stepNumber: '2',
+    title: 'Enquire, view & sign digitally',
+    description:
+      'Renters schedule viewings directly with the host, review contract terms, and complete legal digital lease execution online.',
+  },
+  {
+    id: 's-3',
+    stepNumber: '3',
+    title: 'Pay rent & manage everything',
+    description:
+      'Security deposits and recurring rent flow through connected gateways (Stripe, Razorpay, UPI, Wire). Instant receipts and ledger updates.',
+  },
+];
+
+const DEFAULT_FAQS = [
+  {
+    id: 'faq-1',
+    question: 'How do I get my property listed on the Browse Homes page?',
+    answer:
+      'Once you add your property and vacant units in the Owner or Manager portal, simply click "Publish" on any vacant unit. It will immediately appear on the global Browse Homes marketplace for prospective renters to view and submit enquiries.',
+  },
+  {
+    id: 'faq-2',
+    question: 'How do renters pay rent, and which payment gateways are supported?',
+    answer:
+      'Propithub supports direct online payment gateways including Stripe, Razorpay, PayPal, Easebuzz, direct UPI (QR code / VPA), and manual Bank Wire (NEFT/RTGS/IMPS). Tenants pay directly from their portal or mobile app.',
+  },
+  {
+    id: 'faq-3',
+    question: 'Are digital leases legally binding?',
+    answer:
+      'Yes. Propithub leases include electronic signature logs, timestamp verification, IP tracking, and tamper-evident PDF archiving compliant with ESIGN and international electronic transaction frameworks.',
+  },
+  {
+    id: 'faq-4',
+    question: 'Can I manage properties across multiple countries and currencies?',
+    answer:
+      'Absolutely. Propithub natively handles multi-currency properties (USD, EUR, GBP, AED, INR, CAD, AUD, SGD) and automatically displays currency conversions for international renters and multi-country portfolios.',
+  },
+];
 
 export const LandingPage: React.FC = () => {
-  const { state } = useAppData();
-  const { user } = useAuth();
+  const { state, showToast } = useAppData();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
 
   const cfg = state.landingConfig;
+  const sections = cfg?.sections || {};
 
-  // ── Mobile Menu Drawer State ───────────────────────────────────────────────
-  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  // Mobile menu drawer state
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // ── Smooth Scroll (offset for sticky navbar, closes mobile drawer) ─────────
-  const smoothScrollTo = (id: string) => {
-    setMobileMenuOpen(false);
-    const el = document.getElementById(id);
-    if (!el) return;
-    const navbarHeight = 64;
-    const top = el.getBoundingClientRect().top + window.scrollY - navbarHeight;
-    window.scrollTo({ top, behavior: 'smooth' });
-  };
-
-  // Close mobile drawer if resized to desktop width (> 960px)
-  useEffect(() => {
-    const handleResize = () => {
-      if (window.innerWidth > 960) {
-        setMobileMenuOpen(false);
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  // Prevent background body scroll when mobile navigation is open
   useEffect(() => {
     if (mobileMenuOpen) {
       document.body.style.overflow = 'hidden';
@@ -53,26 +180,22 @@ export const LandingPage: React.FC = () => {
     };
   }, [mobileMenuOpen]);
 
-  // ── Scroll-triggered entrance animations via IntersectionObserver ────────
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add('anim-visible');
-            observer.unobserve(entry.target);
-          }
-        });
-      },
-      { threshold: 0.12 }
-    );
-    document.querySelectorAll('.anim-fade-up').forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
-  }, []);
+  // Search form fields
+  const [searchWhere, setSearchWhere] = useState('');
+  const [searchBeds, setSearchBeds] = useState('');
+  const [searchMaxRent, setSearchMaxRent] = useState('');
 
-  // Listings Filter & Modal State
-  const [selectedListingUnit, setSelectedListingUnit] = useState<Unit | null>(null);
-  const [savedUnitIds, setSavedUnitIds] = useState<Set<string>>(() => {
+  // Active photo index for featured cards
+  const [cardPhotoIndex, setCardPhotoIndex] = useState<Record<string, number>>({});
+
+  // Interactive FAQ accordion state (first question open by default)
+  const [openFaqIndices, setOpenFaqIndices] = useState<Record<number, boolean>>({ 0: true });
+  const toggleFaq = (idx: number) => {
+    setOpenFaqIndices((prev) => ({ ...prev, [idx]: !prev[idx] }));
+  };
+
+  // Saved listings
+  const [savedIds, setSavedIds] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem('propithub_saved_homes');
       return raw ? new Set(JSON.parse(raw)) : new Set();
@@ -81,3113 +204,1172 @@ export const LandingPage: React.FC = () => {
     }
   });
 
-  const toggleSaveUnit = (unitId: string) => {
-    setSavedUnitIds((prev) => {
+  const toggleSave = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSavedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(unitId)) next.delete(unitId);
-      else next.add(unitId);
+      if (next.has(id)) {
+        next.delete(id);
+        showToast('Removed from saved homes');
+      } else {
+        next.add(id);
+        showToast('Saved to your favorites');
+      }
       try {
         localStorage.setItem('propithub_saved_homes', JSON.stringify([...next]));
-      } catch {}
+      } catch { }
       return next;
     });
   };
 
-  const [selectedCountry, setSelectedCountry] = useState<string>('All countries');
-  const listedUnits = state.units.filter((u) => u.isListedPublicly && u.status === 'vacant');
-  const countries = [
-    'All countries',
-    ...Array.from(new Set(listedUnits.map((u) => sanitizeCountry(u.country, u.address)))),
-  ];
-  const filteredUnits = listedUnits.filter((u) => {
-    if (selectedCountry === 'All countries') return true;
-    return sanitizeCountry(u.country, u.address) === selectedCountry;
-  });
+  const handleNextPhoto = (id: string, total: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCardPhotoIndex((prev) => ({
+      ...prev,
+      [id]: ((prev[id] || 0) + 1) % total,
+    }));
+  };
 
-  // FAQ Accordion State
-  const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const handlePrevPhoto = (id: string, total: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCardPhotoIndex((prev) => ({
+      ...prev,
+      [id]: ((prev[id] || 0) - 1 + total) % total,
+    }));
+  };
 
-  // Dynamic fallback data if arrays are not populated
-  const defaultFeatures = [
-    {
-      id: 'f-1',
-      icon: '💳',
-      title: 'Rent collection',
-      description:
-        "Recurring invoices go out on the lease's own schedule. Tenants pay by Stripe, PayPal, Razorpay, or bank transfer, and every payment reconciles against the ledger automatically.",
-    },
-    {
-      id: 'f-2',
-      icon: '📝',
-      title: 'Digital leases',
-      description:
-        "Draft, sign, and store lease agreements without printing a page. Renewal dates surface on the owner's dashboard weeks before they're due.",
-    },
-    {
-      id: 'f-3',
-      icon: '🛠️',
-      title: 'Maintenance desk',
-      description:
-        'Tenants log a request with a photo. Owners assign it to a maintainer in one tap. The maintainer updates status from their phone, and everyone sees the same ticket.',
-    },
-    {
-      id: 'f-4',
-      icon: '📊',
-      title: 'Portfolio overview',
-      description:
-        "Every property and unit, tracked for occupancy and cash flow from one dashboard — whether it's a duplex or two hundred doors.",
-    },
-    {
-      id: 'f-5',
-      icon: '👥',
-      title: 'Team & permissions',
-      description:
-        'Bring on a property manager or an accountant and give them access to exactly the modules their job needs, nothing more.',
-    },
-    {
-      id: 'f-6',
-      icon: '💬',
-      title: 'Messaging',
-      description:
-        'Send a rent reminder or a building-wide notice by bulk SMS or email, straight from the same screen where you manage tenants.',
-    },
-  ];
+  // Listings data (with active popular listings prioritized first)
+  const allListings = useMemo(() => {
+    const list = getAllListings(state.units || [], state.properties || [], state.reviews);
+    return list.sort((a, b) => {
+      const aPop = Boolean(a.isPopular && a.popularUntil && new Date(a.popularUntil).getTime() > Date.now());
+      const bPop = Boolean(b.isPopular && b.popularUntil && new Date(b.popularUntil).getTime() > Date.now());
+      if (aPop && !bPop) return -1;
+      if (!aPop && bPop) return 1;
+      return 0;
+    });
+  }, [state.units, state.properties, state.reviews]);
 
-  const defaultSteps = [
-    {
-      id: 's-1',
-      stepNumber: '01',
-      title: 'List your properties',
-      description:
-        "Add buildings, units, and rent amounts — or import them from the spreadsheet you're already keeping.",
-    },
-    {
-      id: 's-2',
-      stepNumber: '02',
-      title: 'Invite everyone in',
-      description:
-        'Tenants get a portal to pay rent and file repairs. Maintainers get a queue of the work assigned to them.',
-    },
-    {
-      id: 's-3',
-      stepNumber: '03',
-      title: 'Let the ledger run itself',
-      description:
-        "Invoices go out on schedule, payments reconcile on their own, and lease renewals show up before they're due.",
-    },
-  ];
+  // Featured listings (top 4 curated)
+  const featuredListings = useMemo(() => {
+    return allListings.slice(0, 4);
+  }, [allListings]);
 
-  const defaultPlans = [
-    {
-      id: 'p-1',
-      name: 'Starter',
-      price: '$29',
-      period: '/month',
-      description: 'Essential management for independent landlords.',
-      popular: false,
-      features: [
-        '5 Properties',
-        '20 Rental Units',
-        '20 Tenants',
-        '2 Maintainers',
-        'Automated recurring invoices',
-        'Digital lease agreements',
-        'Online payment gateways',
-      ],
-      ctaText: 'Choose Starter',
-      ctaLink: '/register',
-    },
-    {
-      id: 'p-2',
-      name: 'Professional',
-      price: '$79',
-      period: '/month',
-      description: 'Scale multi-family portfolios with full automation.',
-      popular: true,
-      features: [
-        '50 Properties',
-        '200 Rental Units',
-        '200 Tenants',
-        '10 Maintainers',
-        'Automated recurring invoices',
-        'Digital lease agreements',
-        'Online payment gateways',
-        'Bulk SMS & Email Messaging',
-        'Role & Permission Management',
-      ],
-      ctaText: 'Choose Professional',
-      ctaLink: '/register',
-    },
-    {
-      id: 'p-3',
-      name: 'Enterprise',
-      price: '$149',
-      period: '/month',
-      description: 'Full enterprise suite for large property management firms.',
-      popular: false,
-      features: [
-        '500 Properties',
-        '2,000 Rental Units',
-        '2,000 Tenants',
-        '500 Maintainers',
-        'All Addons & Modules Included',
-        'Custom Domain Support',
-        'Priority Dedicated SLA Support',
-      ],
-      ctaText: 'Choose Enterprise',
-      ctaLink: '/register',
-    },
-  ];
+  // Country aggregations
+  const countryCounts = useMemo(() => {
+    const map = new Map<string, { count: number; cities: Set<string> }>();
+    allListings.forEach((l) => {
+      if (!l.country || isNumericCoordinate(l.country)) return;
+      if (!map.has(l.country)) {
+        map.set(l.country, { count: 0, cities: new Set() });
+      }
+      const entry = map.get(l.country)!;
+      entry.count += 1;
+      if (l.city && isValidCityName(l.city)) {
+        entry.cities.add(l.city);
+      }
+    });
+    return Array.from(map.entries())
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 8);
+  }, [allListings]);
 
-  const defaultReviews = [
-    {
-      id: 't-1',
-      quote:
-        "“I used to chase four tenants across three group chats. Now I open one screen and know exactly who's paid.”",
-      name: 'Dara Whitfield',
-      role: 'owner, 4 rental houses',
-      stars: 5,
-      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
-      avatarBg: '#059669',
-      avatarColor: '#FFFFFF',
-      avatarIcon: 'D',
-    },
-    {
-      id: 't-2',
-      quote:
-        '“Work orders used to live in my head. Now a maintainer sees the ticket the second a tenant files it.”',
-      name: 'Marcus Odell',
-      role: 'portfolio manager, 60 units',
-      stars: 5,
-      avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
-      avatarBg: '#2563EB',
-      avatarColor: '#FFFFFF',
-      avatarIcon: 'M',
-    },
-    {
-      id: 't-3',
-      quote:
-        '“Paying rent takes me ninety seconds, and I finally have a place to put in a repair request with photos.”',
-      name: 'Priya Nandakumar',
-      role: 'tenant',
-      stars: 5,
-      avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=150&q=80',
-      avatarBg: '#7C3AED',
-      avatarColor: '#FFFFFF',
-      avatarIcon: 'P',
-    },
-  ];
+  const popularCities = useMemo(() => {
+    const counts = new Map<string, number>();
+    allListings.forEach((l) => {
+      if (l.city && isValidCityName(l.city)) {
+        counts.set(l.city, (counts.get(l.city) || 0) + 1);
+      }
+    });
+    const sorted = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([c]) => c);
+    return sorted.length > 0
+      ? sorted.slice(0, 8)
+      : ['Dubai', 'London', 'Singapore', 'New York', 'Mumbai', 'Toronto', 'Berlin', 'Sydney'];
+  }, [allListings]);
 
-  const defaultFaqs = [
-    {
-      question: 'How does the 14-day free trial work?',
-      answer:
-        'You receive instant unrestricted access to all features — digital leases, automated rent billing, maintenance ticketing, and the tenant portal. No credit card is required to begin, and your dynamic trial runs under full platform support.',
-    },
-    {
-      question: 'Can I connect my own payment gateways for rent collection?',
-      answer:
-        'Yes! Property owners can connect their own Stripe, Razorpay, or PayPal accounts, or configure direct UPI QR codes and bank transfer routing. Rent paid by tenants settles directly into your account.',
-    },
-    {
-      question: 'Can tenants sign digital lease agreements on mobile?',
-      answer:
-        'Yes. Propithub includes an integrated digital lease builder and signature pad. Tenants can review full lease clauses and draw or upload legal digital signatures directly from any smartphone or tablet.',
-    },
-    {
-      question: 'Can I add property managers with restricted permissions?',
-      answer:
-        'Absolutely. You can invite property managers or accountants and assign granular permissions — giving them access strictly to maintenance or unit inspections without exposing your private banking credentials.',
-    },
-    {
-      question: 'Can I cancel or upgrade my plan anytime?',
-      answer:
-        'Yes, you can upgrade, downgrade, or cancel your subscription at any time directly from the Owner Dashboard settings with immediate prorated adjustment.',
-    },
-  ];
+  const trialDays = state.defaultTrialDays ?? 14;
 
-  const activeFeatures = cfg.featuresList && cfg.featuresList.length > 0 ? cfg.featuresList : defaultFeatures;
-  const activeSteps = cfg.howItWorksSteps && cfg.howItWorksSteps.length > 0 ? cfg.howItWorksSteps : defaultSteps;
-  const activePlans = cfg.pricingPlans && cfg.pricingPlans.length > 0 ? cfg.pricingPlans : defaultPlans;
-  const activeReviews = cfg.testimonialsList && cfg.testimonialsList.length > 0 ? cfg.testimonialsList : defaultReviews;
-  const activeFaqs = cfg.faqList && cfg.faqList.length > 0 ? cfg.faqList : defaultFaqs;
-  const trustPills =
-    cfg.trustPills && cfg.trustPills.length > 0
-      ? cfg.trustPills
-      : ['✓ No credit card required', '✓ Instant cloud setup', '✓ All 4 portals included'];
+  interface NormalizedLandingPlan {
+    id: string;
+    name: string;
+    price: number | string;
+    description: string;
+    properties?: number;
+    units?: number;
+    tenants?: number;
+    managers?: number;
+    staff?: number;
+    popularBoostDays?: number;
+    isPopular?: boolean;
+    features?: string[];
+  }
+
+  const dynamicPlans = useMemo<NormalizedLandingPlan[]>(() => {
+    const rawPlans = (state.plans || [])
+      .filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial')
+      .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
+
+    if (rawPlans.length > 0) {
+      return rawPlans.map((p) => ({
+        id: p.id,
+        name: p.name,
+        price: p.price,
+        properties: p.properties,
+        units: p.units,
+        tenants: p.tenants,
+        managers: p.managers,
+        staff: p.staff,
+        popularBoostDays: p.popularBoostDays,
+        isPopular: !!p.isPopular,
+        description:
+          p.name.toLowerCase() === 'starter'
+            ? 'Essential management for independent landlords.'
+            : p.name.toLowerCase() === 'growth'
+              ? 'Scale multi-family portfolios with full automation.'
+              : 'Full enterprise suite for large property management firms.',
+      }));
+    }
+
+    return [
+      {
+        id: 'starter',
+        name: 'Starter',
+        price: 29,
+        properties: 1,
+        units: 5,
+        tenants: 5,
+        managers: 0,
+        staff: 1,
+        popularBoostDays: 0,
+        isPopular: false,
+        description: 'Ideal for individual owners with up to 5 units.',
+      },
+      {
+        id: 'growth',
+        name: 'Growth',
+        price: 79,
+        properties: 5,
+        units: 50,
+        tenants: 50,
+        managers: 2,
+        staff: 5,
+        popularBoostDays: 7,
+        isPopular: true,
+        description: 'For growing landlords and portfolio managers.',
+      },
+      {
+        id: 'enterprise',
+        name: 'Enterprise',
+        price: 249,
+        properties: 999,
+        units: 9999,
+        tenants: 9999,
+        managers: 10,
+        staff: 50,
+        popularBoostDays: 30,
+        isPopular: false,
+        description: 'For established property management firms.',
+      },
+    ];
+  }, [state.plans]);
+
+  const scrollToSection = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    const el = document.getElementById(id);
+    if (el) {
+      const navbarHeight = 72;
+      const elementPosition = el.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo({
+        top: elementPosition - navbarHeight,
+        behavior: 'smooth',
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (window.location.hash) {
+      const id = window.location.hash.replace('#', '');
+      const el = document.getElementById(id);
+      if (el) {
+        setTimeout(() => {
+          const navbarHeight = 72;
+          const elementPosition = el.getBoundingClientRect().top + window.scrollY;
+          window.scrollTo({
+            top: elementPosition - navbarHeight,
+            behavior: 'smooth',
+          });
+        }, 100);
+      }
+    }
+  }, []);
+
+  const handleHeroSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const params = new URLSearchParams();
+    if (searchWhere.trim()) params.set('q', searchWhere.trim());
+    if (searchBeds) params.set('beds', searchBeds);
+    if (searchMaxRent) params.set('max', searchMaxRent);
+    navigate(`/homes?${params.toString()}`);
+  };
+
+  // Resolved dynamic content from cfg with clean defaults matching the redesigned Landing Page
+  const heroHeadline =
+    cfg?.headline && !cfg.headline.includes('Modern Era')
+      ? cfg.headline
+      : 'Run every rental. Find a home anywhere.';
+  const heroSubheadline =
+    cfg?.subheadline && !cfg.subheadline.includes('NEBZA')
+      ? cfg.subheadline
+      : 'The unified rental workspace for landlords, property managers, and renters across 38 countries. One platform for leases, rent collection, and vacant unit listings.';
+
+  const seekerCard = cfg?.duoCards?.seeker || {
+    title: 'Looking for a home?',
+    description:
+      'Browse verified rentals worldwide. Save favorites, book viewings, sign leases online, and pay rent in any currency without hidden broker fees.',
+    ctaText: 'Browse all homes →',
+    ctaLink: '/homes',
+  };
+
+  const ownerCard = cfg?.duoCards?.owner || {
+    title: 'Own or manage property?',
+    description:
+      'Collect rent automatically, sign legal digital leases, and handle repairs with dispatched contractors. Publish vacant units in one click to fill them faster.',
+    ctaText: `Start ${trialDays}-day free trial →`,
+    ctaLink: '/register',
+  };
+
+  const stepsToRender =
+    cfg?.howItWorksSteps && cfg.howItWorksSteps.length > 0 ? cfg.howItWorksSteps : DEFAULT_STEPS;
+
+  const landlordsData = cfg?.landlordsSection || {
+    kicker: 'For landlords and managers',
+    title: 'Run the whole rental operation from one screen',
+    subtitle:
+      'See what needs your attention today, approve actions in one click, and let automated payment schedules handle the rest.',
+    bullets: [
+      'Automatic rent collection, overdue late fee enforcement, and automated invoice delivery',
+      'Digital lease agreements with built-in electronic signatures and legal PDF archiving',
+      'Publish vacant units straight to the global marketplace and reply to tenant enquiries in one inbox',
+      'Delegated manager & maintenance contractor accounts with strict owner permission safeguards',
+    ],
+    primaryCtaText: `Start ${trialDays}-day free trial`,
+    primaryCtaLink: '/register',
+    secondaryCtaText: 'Sign in to owner portal',
+    secondaryCtaLink: '/login',
+    mockupGreeting: 'Good evening, Landlord',
+    mockupSubtext: '3 items require attention',
+    mockupItems: [
+      { text: 'Signed lease ready to review (Unit 4B)', action: 'Approve lease' },
+      { text: 'Bank transfer payment proof received', action: 'Confirm £2,250' },
+      { text: 'New viewing enquiry for 2-bed flat', action: 'Reply to Sarah' },
+    ],
+    mockupKpis: [
+      { value: '99.2%', label: 'Rent collected' },
+      { value: '3', label: 'Vacant units' },
+      { value: '4.9 ★', label: 'Tenant rating' },
+    ],
+  };
+
+  const featuresToRender =
+    cfg?.featuresList && cfg.featuresList.length > 0 ? cfg.featuresList : DEFAULT_FEATURES;
+
+  const rolesToRender = useMemo(() => {
+    const rawRoles = cfg?.rolePortals && cfg.rolePortals.length > 0 ? cfg.rolePortals : DEFAULT_ROLE_PORTALS;
+    const bulletMap: Record<string, string> = {
+      'Monitor real-time rent collections across units': 'Live rent tracking & collections',
+      'Execute leases and review financial ledgers': 'Digital leases & ledger',
+      'Publish vacant units to the global hub in 1 tap': '1-tap vacant listing',
+      'Manage properties for multiple assigned owners': 'Multi-owner portfolio control',
+      'Dispatch repairs and communicate with renters': 'Repair dispatch & messaging',
+      'Schedule property viewings and vet applications': 'Viewings & applicant screening',
+      'Pay rent securely online with automated reminders': 'Online rent & auto-reminders',
+      'Download proof of payments and official receipts': 'Payment proofs & receipts',
+      'Submit maintenance tickets with photos & notes': 'Maintenance requests with photos',
+      'View assigned work orders on mobile': 'Mobile work order queue',
+      'Update task progress and upload completion proofs': 'Task status & photo proofs',
+      'Track contractor payouts and job hours': 'Payout tracking & logs',
+      'Configure system plans, features, and policies': 'Plans, pricing & policies',
+      'Moderate public marketplace listings': 'Public listing moderation',
+      'Audit system security and gateway connections': 'Security & gateway audits',
+    };
+    return rawRoles.map((r) => ({
+      ...r,
+      bullets: (r.bullets || []).map((b) => bulletMap[b] || b),
+    }));
+  }, [cfg?.rolePortals]);
+
+  const faqsToRender = cfg?.faqList && cfg.faqList.length > 0 ? cfg.faqList : DEFAULT_FAQS;
 
   return (
-    <div
-      className="landing-page-root"
-      style={{
-        backgroundColor: 'var(--bg-canvas)',
-        color: 'var(--body-font-color)',
-        minHeight: '100vh',
-        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-        overflowX: 'hidden',
-        width: '100%',
-        maxWidth: '100vw',
-        boxSizing: 'border-box',
-      }}
-    >
-      <style>{`
-        :root {
-          --bg-canvas: #F8FAFC;
-          --bg-surface: #FFFFFF;
-          --bg-subtle: #F1F5F9;
-          --border-color: #E2E8F0;
-          --border-strong: #CBD5E1;
-          --heading-color: #0F172A;
-          --body-font-color: #475569;
-          --slate: #64748B;
-          --primary-color: #10B981;
-          --primary-hover-color: #059669;
-          --primary-soft: rgba(16, 185, 129, 0.1);
-          --primary-border: rgba(16, 185, 129, 0.25);
-          --brass: #10B981;
-          --card-bg: #FFFFFF;
-          --navbar-bg: rgba(255, 255, 255, 0.95);
-        }
-
-        [data-theme="dark"] {
-          --bg-canvas: #090D16;
-          --bg-surface: #0F172A;
-          --bg-subtle: #162032;
-          --border-color: rgba(255, 255, 255, 0.08);
-          --border-strong: rgba(255, 255, 255, 0.16);
-          --heading-color: #F8FAFC;
-          --body-font-color: #94A3B8;
-          --slate: #94A3B8;
-          --primary-color: #10B981;
-          --primary-hover-color: #34D399;
-          --primary-soft: rgba(16, 185, 129, 0.14);
-          --primary-border: rgba(16, 185, 129, 0.3);
-          --brass: #10B981;
-          --card-bg: #0F172A;
-          --navbar-bg: rgba(9, 13, 22, 0.95);
-        }
-
-        .landing-page-root *,
-        .landing-page-root *::before,
-        .landing-page-root *::after {
-          box-sizing: border-box;
-        }
-
-        .announcement-banner {
-          background: var(--bg-surface);
-          border-bottom: 1px solid var(--border-color);
-          padding: 8px 24px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 12px;
-          font-size: 13px;
-          color: var(--heading-color);
-          flex-wrap: wrap;
-          text-align: center;
-        }
-
-        @media (max-width: 640px) {
-          .announcement-banner {
-            padding: 6px 14px;
-            font-size: 11.5px;
-            gap: 6px;
-          }
-        }
-
-        .announcement-pill {
-          background: var(--primary-soft);
-          color: var(--primary-color);
-          border: 1px solid var(--primary-border);
-          font-weight: 700;
-          font-size: 11px;
-          padding: 2px 8px;
-          border-radius: 9999px;
-          text-transform: uppercase;
-        }
-
-        .announcement-link {
-          color: var(--primary-color);
-          font-weight: 600;
-          text-decoration: none;
-          margin-left: 6px;
-        }
-
-        /* ── Sticky Navbar ── */
-        .landing-navbar {
-          position: sticky;
-          top: 0;
-          height: 64px;
-          background: var(--navbar-bg);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border-bottom: 1px solid var(--border-color);
-          z-index: 1000;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 36px;
-          width: 100%;
-          box-sizing: border-box;
-          transition: padding 0.2s ease, height 0.2s ease;
-        }
-
-        @media (max-width: 1024px) {
-          .landing-navbar {
-            padding: 0 20px;
-          }
-        }
-
-        @media (max-width: 640px) {
-          .landing-navbar {
-            padding: 0 16px;
-            height: 60px;
-          }
-        }
-
-        .landing-nav-center {
-          position: absolute;
-          left: 50%;
-          transform: translateX(-50%);
-          display: flex;
-          align-items: center;
-          gap: 28px;
-        }
-
-        @media (max-width: 960px) {
-          .landing-nav-center {
-            display: none !important;
-          }
-        }
-
-        .landing-nav-link {
-          color: var(--body-font-color);
-          font-size: 13.5px;
-          font-weight: 500;
-          text-decoration: none;
-          transition: color 0.15s ease;
-          cursor: pointer;
-          background: none;
-          border: none;
-          padding: 0;
-          margin: 0;
-          font-family: inherit;
-          line-height: inherit;
-          outline: none;
-        }
-
-        .landing-nav-link:hover {
-          color: var(--primary-color);
-        }
-
-        .btn-landing-primary {
-          background: var(--primary-color);
-          color: #FFFFFF !important;
-          font-weight: 600;
-          font-size: 13px;
-          padding: 8px 18px;
-          border-radius: 8px;
-          text-decoration: none;
-          display: inline-flex;
-          align-items: center;
-          gap: 7px;
-          border: none;
-          cursor: pointer;
-          box-shadow: 0 2px 10px rgba(5, 150, 105, 0.25);
-          transition: all 0.2s ease;
-          white-space: nowrap;
-        }
-
-        .btn-landing-primary:hover {
-          background: var(--primary-hover-color);
-          transform: translateY(-1px);
-          box-shadow: 0 4px 14px rgba(5, 150, 105, 0.35);
-        }
-
-        .btn-landing-outline {
-          background: var(--card-bg);
-          color: var(--heading-color) !important;
-          border: 1px solid var(--border-color);
-          font-weight: 600;
-          font-size: 13px;
-          padding: 8px 16px;
-          border-radius: 8px;
-          text-decoration: none;
-          display: inline-flex;
-          align-items: center;
-          gap: 7px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          white-space: nowrap;
-        }
-
-        .btn-landing-outline:hover {
-          background: var(--bg-subtle);
-          border-color: var(--primary-color);
-        }
-
-        .landing-hamburger-btn {
-          display: none;
-          background: transparent;
-          border: 1px solid var(--border-color);
-          border-radius: 8px;
-          width: 36px;
-          height: 36px;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          color: var(--heading-color);
-          transition: all 0.15s ease;
-        }
-
-        .landing-hamburger-btn:hover {
-          background: var(--bg-subtle);
-          border-color: var(--primary-color);
-        }
-
-        @media (max-width: 960px) {
-          .landing-hamburger-btn {
-            display: inline-flex;
-          }
-        }
-
-        @media (max-width: 640px) {
-          .landing-nav-desktop-only {
-            display: none !important;
-          }
-        }
-
-        /* ── Mobile Navigation Drawer ── */
-        .landing-mobile-drawer {
-          position: fixed;
-          top: 64px;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background: var(--card-bg);
-          z-index: 1001;
-          overflow-y: auto;
-          -webkit-overflow-scrolling: touch;
-          padding: 20px 20px 40px;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-          animation: slideDownMenu 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-          border-top: 1px solid var(--border-color);
-        }
-
-        @keyframes slideDownMenu {
-          from {
-            opacity: 0;
-            transform: translateY(-8px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        @media (max-width: 640px) {
-          .landing-mobile-drawer {
-            top: 60px;
-          }
-        }
-
-        @media (min-width: 961px) {
-          .landing-mobile-drawer {
-            display: none !important;
-          }
-        }
-
-        .mobile-nav-link {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          width: 100%;
-          padding: 12px 14px;
-          border-radius: 8px;
-          background: transparent;
-          border: none;
-          color: var(--heading-color);
-          font-size: 15px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: background 0.15s ease, color 0.15s ease;
-          text-align: left;
-        }
-
-        .mobile-nav-link:hover,
-        .mobile-nav-link:active {
-          background: var(--bg-subtle);
-          color: var(--primary-color);
-        }
-
-        .mobile-nav-chevron {
-          color: var(--slate);
-          font-size: 16px;
-        }
-
-        .mobile-portal-btn {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 10px 12px;
-          border-radius: 8px;
-          background: var(--bg-subtle);
-          border: 1px solid var(--border-color);
-          color: var(--heading-color);
-          font-size: 12.5px;
-          font-weight: 600;
-          cursor: pointer;
-          text-align: left;
-          transition: border-color 0.15s ease;
-        }
-
-        .mobile-portal-btn:hover {
-          border-color: var(--primary-color);
-        }
-
-        /* ── Hero Section ── */
-        .hero-section {
-          padding: 64px 32px 48px;
-          max-width: 1240px;
-          margin: 0 auto;
-          box-sizing: border-box;
-          width: 100%;
-          min-width: 0;
-        }
-
-        .hero-grid {
-          display: grid;
-          grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-          gap: 48px;
-          align-items: center;
-          width: 100%;
-          min-width: 0;
-        }
-
-        .hero-text-col,
-        .hero-mockup-col {
-          min-width: 0;
-          max-width: 100%;
-          width: 100%;
-          box-sizing: border-box;
-        }
-
-        @media (max-width: 960px) {
-          .hero-section {
-            padding: 40px 18px 32px;
-          }
-          .hero-grid {
-            grid-template-columns: minmax(0, 1fr);
-            gap: 32px;
-          }
-          .hero-mockup-col {
-            max-width: 100%;
-            margin: 0 auto;
-            width: 100%;
-            min-width: 0;
-          }
-          .hero-text-col,
-          .hero-mockup-col {
-            animation: fadeIn 0.6s ease both !important;
-            transform: none !important;
-          }
-        }
-
-        @media (max-width: 480px) {
-          .hero-section {
-            padding: 24px 12px 20px;
-          }
-          .hero-grid {
-            gap: 22px;
-          }
-          .hero-title {
-            font-size: clamp(24px, 7vw, 32px) !important;
-            word-break: break-word;
-            overflow-wrap: break-word;
-          }
-          .hero-lead {
-            font-size: 14px !important;
-            word-break: break-word;
-            overflow-wrap: break-word;
-            margin-bottom: 20px !important;
-          }
-          .hero-kicker-pill {
-            font-size: 11px !important;
-            padding: 5px 10px !important;
-            white-space: normal !important;
-            line-height: 1.35;
-            margin-bottom: 14px !important;
-          }
-          .hero-cta-group {
-            flex-direction: column;
-            gap: 10px !important;
-          }
-          .hero-cta-btn {
-            width: 100%;
-            justify-content: center;
-            padding: 12px 18px !important;
-          }
-          .hero-trust-pills {
-            gap: 8px 12px !important;
-            font-size: 11.5px !important;
-          }
-          .hero-rating-strip {
-            font-size: 12px !important;
-            gap: 8px !important;
-            margin-top: 14px !important;
-            padding-top: 14px !important;
-          }
-        }
-
-        .hero-kicker-pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 6px 14px;
-          border-radius: 9999px;
-          background: var(--primary-soft);
-          border: 1px solid var(--primary-border);
-          color: var(--primary-color);
-          font-size: 12.5px;
-          font-weight: 600;
-          letter-spacing: 0.02em;
-          margin-bottom: 20px;
-          max-width: 100%;
-          box-sizing: border-box;
-        }
-
-        .hero-title {
-          font-size: clamp(26px, 4.5vw, 48px);
-          font-weight: 800;
-          line-height: 1.15;
-          letter-spacing: -0.035em;
-          color: var(--heading-color);
-          margin-bottom: 18px;
-          word-break: break-word;
-          overflow-wrap: break-word;
-        }
-
-        .hero-lead {
-          font-size: clamp(14.5px, 2vw, 16px);
-          line-height: 1.65;
-          color: var(--slate);
-          max-width: 520px;
-          margin-bottom: 28px;
-          word-break: break-word;
-          overflow-wrap: break-word;
-        }
-
-        .hero-trust-pills {
-          display: flex;
-          gap: 12px 18px;
-          flex-wrap: wrap;
-          font-size: 12.5px;
-          color: var(--slate);
-        }
-
-        .hero-trust-pill {
-          display: inline-flex;
-          align-items: center;
-          white-space: nowrap;
-        }
-
-        .hero-browser-window {
-          background: var(--card-bg);
-          border: 1px solid var(--border-color);
-          border-radius: 16px;
-          box-shadow: 0 24px 54px -12px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.04);
-          overflow: hidden;
-          width: 100%;
-          max-width: 100%;
-          min-width: 0;
-          box-sizing: border-box;
-        }
-
-        .window-titlebar {
-          background: var(--bg-subtle);
-          border-bottom: 1px solid var(--border-color);
-          padding: 10px 16px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          box-sizing: border-box;
-          min-width: 0;
-        }
-
-        .mockup-header-row {
-          padding: 16px 20px;
-          border-bottom: 1px solid var(--border-color);
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 10px;
-          box-sizing: border-box;
-          min-width: 0;
-        }
-
-        .mockup-header-badge {
-          background: rgba(16, 185, 129, 0.12);
-          color: #10B981;
-          font-weight: 700;
-          font-size: 12px;
-          padding: 5px 12px;
-          border-radius: 9999px;
-          flex-shrink: 0;
-          white-space: nowrap;
-        }
-
-        .mockup-kpi-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          border-bottom: 1px solid var(--border-color);
-          box-sizing: border-box;
-          min-width: 0;
-        }
-
-        .mockup-kpi-cell {
-          padding: 14px 18px;
-          box-sizing: border-box;
-          min-width: 0;
-          overflow: hidden;
-        }
-
-        .mockup-kpi-label {
-          font-size: 10.5px;
-          text-transform: uppercase;
-          font-weight: 600;
-          color: var(--slate);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .mockup-kpi-val {
-          font-size: clamp(16px, 3.5vw, 20px);
-          font-weight: 800;
-          color: var(--heading-color);
-        }
-
-        .mockup-kpi-tag {
-          font-size: 10.5px;
-          font-weight: 700;
-          padding: 2px 6px;
-          border-radius: 4px;
-          white-space: nowrap;
-        }
-
-        .mockup-activity-section {
-          padding: 16px 20px;
-          box-sizing: border-box;
-          min-width: 0;
-        }
-
-        .mockup-activity-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 12px;
-        }
-
-        .mockup-activity-title {
-          font-size: 11px;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          color: var(--slate);
-        }
-
-        .mockup-activity-status {
-          font-size: 11px;
-          color: #10B981;
-          font-weight: 600;
-          white-space: nowrap;
-        }
-
-        .mockup-activity-row {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 8px;
-          padding: 9px 12px;
-          background: var(--bg-subtle);
-          border-radius: 8px;
-          border: 1px solid var(--border-color);
-          fontSize: 12px;
-          box-sizing: border-box;
-          min-width: 0;
-        }
-
-        .mockup-activity-badge {
-          font-size: 10.5px;
-          font-weight: 700;
-          padding: 3px 8px;
-          border-radius: 9999px;
-          flex-shrink: 0;
-          white-space: nowrap;
-        }
-
-        @media (max-width: 640px) {
-          .mockup-header-row {
-            padding: 12px 14px !important;
-            gap: 8px !important;
-          }
-          .mockup-header-badge {
-            font-size: 11px !important;
-            padding: 4px 8px !important;
-          }
-          .mockup-kpi-cell {
-            padding: 10px 10px !important;
-          }
-          .mockup-kpi-label {
-            font-size: 9.5px !important;
-          }
-          .mockup-kpi-val {
-            font-size: 15px !important;
-          }
-          .mockup-kpi-tag {
-            font-size: 9.5px !important;
-            padding: 2px 5px !important;
-          }
-          .mockup-activity-section {
-            padding: 12px 14px !important;
-          }
-          .mockup-activity-header {
-            flex-wrap: wrap !important;
-            gap: 4px !important;
-            margin-bottom: 10px !important;
-          }
-          .mockup-activity-row {
-            padding: 8px 10px !important;
-            gap: 6px !important;
-          }
-        }
-
-        @media (max-width: 480px) {
-          .hero-browser-window {
-            border-radius: 12px;
-          }
-          .window-titlebar {
-            padding: 8px 10px;
-          }
-          .window-url-text {
-            max-width: 95px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-          }
-        }
-
-        @media (max-width: 380px) {
-          .window-url-bar {
-            display: none !important;
-          }
-          .mockup-header-row {
-            padding: 10px 8px !important;
-            flex-wrap: wrap !important;
-            gap: 6px !important;
-          }
-          .mockup-header-badge {
-            font-size: 10px !important;
-            padding: 3px 6px !important;
-          }
-          .mockup-kpi-cell {
-            padding: 8px 6px !important;
-          }
-          .mockup-kpi-label {
-            font-size: 8.5px !important;
-          }
-          .mockup-kpi-val {
-            font-size: 13.5px !important;
-          }
-          .mockup-kpi-tag {
-            font-size: 8.5px !important;
-            padding: 1px 3px !important;
-          }
-          .mockup-activity-section {
-            padding: 10px 8px !important;
-          }
-          .mockup-activity-title {
-            font-size: 9.5px !important;
-          }
-          .mockup-activity-status {
-            font-size: 9.5px !important;
-          }
-          .mockup-activity-row {
-            padding: 6px 8px !important;
-          }
-          .mockup-activity-badge {
-            font-size: 9px !important;
-            padding: 2px 5px !important;
-          }
-        }
-
-        /* ── Stat Strip ── */
-        .stat-strip {
-          background: var(--card-bg);
-          border-top: 1px solid var(--border-color);
-          border-bottom: 1px solid var(--border-color);
-          padding: 40px 24px;
-          margin-top: 36px;
-        }
-
-        .stat-strip-container {
-          max-width: 1200px;
-          margin: 0 auto;
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 24px;
-          text-align: center;
-        }
-
-        @media (max-width: 768px) {
-          .stat-strip {
-            padding: 28px 16px;
-            margin-top: 24px;
-          }
-          .stat-strip-container {
-            grid-template-columns: repeat(2, 1fr);
-            gap: 20px 16px;
-          }
-        }
-
-        @media (max-width: 420px) {
-          .stat-strip {
-            padding: 22px 12px;
-            margin-top: 18px;
-          }
-          .stat-strip-container {
-            gap: 16px 10px;
-          }
-        }
-
-        .stat-number {
-          font-size: clamp(22px, 5vw, 40px);
-          font-weight: 800;
-          color: var(--heading-color);
-          letter-spacing: -0.03em;
-        }
-
-        .stat-label {
-          font-size: 12px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          color: var(--slate);
-          margin-top: 6px;
-          line-height: 1.35;
-        }
-
-        /* ── Landing Sections ── */
-        .landing-section {
-          padding: 72px 24px;
-          max-width: 1200px;
-          margin: 0 auto;
-          box-sizing: border-box;
-        }
-
-        @media (max-width: 768px) {
-          .landing-section {
-            padding: 48px 18px;
-          }
-        }
-
-        @media (max-width: 480px) {
-          .landing-section {
-            padding: 36px 14px;
-          }
-        }
-
-        .section-header {
-          margin-bottom: 44px;
-        }
-
-        @media (max-width: 640px) {
-          .section-header {
-            margin-bottom: 28px;
-          }
-        }
-
-        .section-kicker {
-          font-size: 12.5px;
-          font-weight: 700;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--primary-color);
-          margin-bottom: 8px;
-        }
-
-        .section-title {
-          font-size: clamp(22px, 3.8vw, 36px);
-          font-weight: 800;
-          letter-spacing: -0.025em;
-          color: var(--heading-color);
-          margin-bottom: 12px;
-          line-height: 1.2;
-        }
-
-        .section-subtitle {
-          font-size: clamp(14px, 2vw, 16px);
-          line-height: 1.6;
-          color: var(--slate);
-          max-width: 680px;
-          margin: 0;
-        }
-
-        /* ── Responsive Grids ── */
-        .landing-features-grid {
-          grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
-        }
-
-        .landing-steps-grid {
-          grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
-        }
-
-        .landing-pricing-grid {
-          grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
-        }
-
-        @media (max-width: 860px) {
-          .landing-pricing-grid {
-            grid-template-columns: 1fr;
-            max-width: 480px;
-            margin: 0 auto;
-          }
-        }
-
-        .landing-listings-grid {
-          grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-        }
-
-        .landing-testimonials-grid {
-          grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
-        }
-
-        .feature-card {
-          background: var(--card-bg);
-          border: 1px solid var(--border-color);
-          border-radius: 12px;
-          padding: 28px;
-          transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-          box-sizing: border-box;
-        }
-
-        @media (max-width: 640px) {
-          .feature-card {
-            padding: 20px 18px;
-          }
-        }
-
-        .feature-card:hover {
-          transform: translateY(-3px);
-          box-shadow: 0 12px 30px -8px rgba(0, 0, 0, 0.08);
-          border-color: var(--primary-color);
-        }
-
-        .pricing-card {
-          background: var(--card-bg);
-          border: 1px solid var(--border-color);
-          border-radius: 14px;
-          padding: 32px 28px;
-          position: relative;
-          display: flex;
-          flex-direction: column;
-          transition: transform 0.2s ease, box-shadow 0.2s ease;
-          opacity: 1 !important;
-          visibility: visible !important;
-          transform: none !important;
-          box-sizing: border-box;
-        }
-
-        @media (max-width: 640px) {
-          .pricing-card {
-            padding: 24px 20px;
-          }
-        }
-
-        .pricing-card.popular {
-          border-color: var(--primary-color);
-          box-shadow: 0 16px 36px -10px rgba(5, 150, 105, 0.2);
-        }
-
-        .testi-card {
-          background: var(--card-bg);
-          border: 1px solid var(--border-color);
-          border-radius: 12px;
-          padding: 28px;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
-          box-sizing: border-box;
-        }
-
-        @media (max-width: 640px) {
-          .testi-card {
-            padding: 20px 18px;
-          }
-        }
-
-        /* ── FAQ ── */
-        .faq-item {
-          border-bottom: 1px solid var(--border-color);
-          padding: 20px 0;
-        }
-
-        .faq-question {
-          font-size: clamp(14.5px, 2.5vw, 16px);
-          font-weight: 700;
-          color: var(--heading-color);
-          cursor: pointer;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          width: 100%;
-          text-align: left;
-          background: none;
-          border: none;
-          padding: 0;
-        }
-
-        .faq-answer {
-          margin-top: 12px;
-          font-size: clamp(13.5px, 2vw, 14.5px);
-          line-height: 1.65;
-          color: var(--slate);
-        }
-
-        /* ── CTA Banner ── */
-        .cta-banner {
-          background: linear-gradient(135deg, #059669 0%, #047857 100%);
-          border-radius: 16px;
-          padding: 56px 36px;
-          text-align: center;
-          color: #FFFFFF;
-          box-shadow: 0 20px 48px -12px rgba(5, 150, 105, 0.35);
-          box-sizing: border-box;
-        }
-
-        .cta-btn-primary {
-          background: #FFFFFF !important;
-          color: #047857 !important;
-          font-weight: 700 !important;
-          border: 1px solid #FFFFFF !important;
-          border-radius: 8px;
-          padding: 12px 28px;
-          font-size: 14px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          text-decoration: none;
-        }
-        .cta-btn-primary:hover {
-          background: #F0FDF4 !important;
-          color: #065F46 !important;
-          transform: translateY(-2px);
-          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
-        }
-
-        .cta-btn-secondary {
-          background: rgba(255, 255, 255, 0.12) !important;
-          color: #FFFFFF !important;
-          font-weight: 600 !important;
-          border: 1px solid rgba(255, 255, 255, 0.45) !important;
-          border-radius: 8px;
-          padding: 12px 28px;
-          font-size: 14px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          text-decoration: none;
-        }
-        .cta-btn-secondary:hover {
-          background: rgba(255, 255, 255, 0.24) !important;
-          border-color: rgba(255, 255, 255, 0.75) !important;
-          color: #FFFFFF !important;
-          transform: translateY(-2px);
-        }
-
-        @media (max-width: 640px) {
-          .cta-banner {
-            padding: 36px 20px;
-            border-radius: 12px;
-          }
-          .cta-banner-buttons {
-            flex-direction: column;
-            width: 100%;
-          }
-          .cta-action-btn {
-            width: 100%;
-            justify-content: center;
-          }
-        }
-
-        /* ── Footer ── */
-        .footer-landing {
-          background-color: #0B1120;
-          color: #94A3B8;
-          padding: 64px 24px 32px;
-          border-top: 1px solid rgba(255, 255, 255, 0.08);
-          box-sizing: border-box;
-        }
-
-        [data-theme="dark"] .footer-landing {
-          background-color: #090D16;
-        }
-
-        .landing-footer-grid {
-          grid-template-columns: 2fr 1fr 1fr 1.4fr;
-        }
-
-        @media (max-width: 960px) {
-          .landing-footer-grid {
-            grid-template-columns: repeat(2, 1fr) !important;
-            gap: 32px 24px !important;
-          }
-        }
-
-        @media (max-width: 540px) {
-          .landing-footer-grid {
-            grid-template-columns: 1fr !important;
-            gap: 28px !important;
-            margin-bottom: 36px !important;
-          }
-          .footer-landing {
-            padding: 44px 16px 28px;
-          }
-        }
-
-        @media (max-width: 640px) {
-          .landing-footer-bottom {
-            flex-direction: column;
-            align-items: flex-start !important;
-            gap: 16px !important;
-          }
-        }
-
-        /* Listings header wrap */
-        @media (max-width: 640px) {
-          .listings-section-header {
-            flex-direction: column;
-            align-items: stretch !important;
-            gap: 16px;
-            margin-bottom: 24px !important;
-          }
-          .listings-filter-wrap {
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-          }
-          .listings-filter-wrap select {
-            width: 100%;
-          }
-        }
-
-        /* ── Smooth scroll offset (handled in JS, but also native fallback) ── */
-        html {
-          scroll-behavior: smooth;
-        }
-
-        /* ── Entrance animation keyframes ── */
-        @keyframes fadeUp {
-          from {
-            opacity: 0;
-            transform: translateY(32px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        @keyframes fadeIn {
-          from { opacity: 0; }
-          to   { opacity: 1; }
-        }
-
-        @keyframes slideInLeft {
-          from {
-            opacity: 0;
-            transform: translateX(-40px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
-        }
-
-        @keyframes slideInRight {
-          from {
-            opacity: 0;
-            transform: translateX(40px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
-        }
-
-        @keyframes pulse-glow {
-          0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
-          50%       { box-shadow: 0 0 22px 6px rgba(16,185,129,0.22); }
-        }
-
-        /* ── Hero animations (run on load) ── */
-        .hero-text-col {
-          animation: slideInLeft 0.75s cubic-bezier(0.22,1,0.36,1) both;
-        }
-        .hero-mockup-col {
-          animation: slideInRight 0.75s cubic-bezier(0.22,1,0.36,1) 0.15s both;
-        }
-
-        /* ── Scroll-triggered: elements start invisible, JS adds .anim-visible ── */
-        .anim-fade-up {
-          opacity: 0;
-          transform: translateY(30px);
-          transition: opacity 0.65s cubic-bezier(0.22,1,0.36,1),
-                      transform 0.65s cubic-bezier(0.22,1,0.36,1);
-        }
-        .anim-fade-up.anim-visible {
-          opacity: 1;
-          transform: translateY(0);
-        }
-
-        /* Stagger children inside a stagger-container */
-        .stagger-container .anim-fade-up:nth-child(1)  { transition-delay: 0s; }
-        .stagger-container .anim-fade-up:nth-child(2)  { transition-delay: 0.08s; }
-        .stagger-container .anim-fade-up:nth-child(3)  { transition-delay: 0.16s; }
-        .stagger-container .anim-fade-up:nth-child(4)  { transition-delay: 0.24s; }
-        .stagger-container .anim-fade-up:nth-child(5)  { transition-delay: 0.32s; }
-        .stagger-container .anim-fade-up:nth-child(6)  { transition-delay: 0.40s; }
-
-        /* Hero browser window pulse */
-        .hero-browser-window {
-          animation: pulse-glow 4s ease-in-out 1.5s infinite;
-        }
-
-        /* Floating stat strip numbers count-up feel */
-        .stat-number {
-          animation: fadeIn 0.8s ease 0.3s both;
-        }
-      `}</style>
-
-      {/* 0. Top Announcement Banner (controlled via CMS) */}
-      {cfg.announcement?.enabled && cfg.sections?.showAnnouncement !== false && (
-        <div className="announcement-banner">
-          <span className="announcement-pill">{cfg.announcement.badge || 'New'}</span>
+    <div className="site">
+      {/* Optional Top Announcement Bar */}
+      {sections.showAnnouncement && cfg?.announcement?.enabled && (
+        <div
+          style={{
+            background: 'var(--teal-dark)',
+            color: '#fff',
+            padding: '8px 20px',
+            fontSize: '13px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '10px',
+            flexWrap: 'wrap',
+          }}
+        >
+          {cfg.announcement.badge && (
+            <span
+              style={{
+                background: 'rgba(255,255,255,0.2)',
+                padding: '2px 8px',
+                borderRadius: '999px',
+                fontWeight: 700,
+                fontSize: '11px',
+              }}
+            >
+              {cfg.announcement.badge}
+            </span>
+          )}
           <span>{cfg.announcement.text}</span>
           {cfg.announcement.linkText && (
-            <a href={cfg.announcement.linkUrl || '#features'} className="announcement-link">
+            <Link
+              to={cfg.announcement.linkUrl || '/register'}
+              style={{ color: '#fff', fontWeight: 700, textDecoration: 'underline' }}
+            >
               {cfg.announcement.linkText}
-            </a>
+            </Link>
           )}
         </div>
       )}
 
-      {/* 1. Header / Navbar */}
-      <nav className="landing-navbar" id="mainNav">
-        {/* Left: Brand Logo */}
-        <div
-          onClick={() => {
-            setMobileMenuOpen(false);
-            navigate('/');
-          }}
-          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '9px', zIndex: 1002 }}
-        >
-          {cfg.faviconUrl ? (
-            <img
-              src={cfg.faviconUrl}
-              alt="Logo"
-              style={{ width: '25px', height: '25px', objectFit: 'contain' }}
-              onError={(e) => {
-                (e.target as HTMLElement).style.display = 'none';
-              }}
-            />
-          ) : (
-            <PropithubIcon size={25} color="var(--primary-color, #10B981)" />
-          )}
-          <span
-            style={{
-              fontFamily: "'Plus Jakarta Sans', sans-serif",
-              fontSize: '21px',
-              fontWeight: 800,
-              letterSpacing: '-0.5px',
-              color: 'var(--heading-color)',
-            }}
-          >
-            {cfg.brandName || 'propit'}
-            <span style={{ color: 'var(--brass, #10B981)' }}>{cfg.brandAccent || 'hub'}</span>
-          </span>
-        </div>
-
-        {/* Center: Navigation Links (desktop) */}
-        <div className="landing-nav-center">
-          {cfg.sections?.showFeatures !== false && (
-            <button type="button" className="landing-nav-link" onClick={() => smoothScrollTo('features')}>
-              Features
+      {/* 1. Header Navigation */}
+      <header className="snav">
+        <Link to="/" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>
+          <PropithubLogo size={30} showText={true} />
+        </Link>
+        <nav className="slinks" aria-label="Main Navigation">
+          <Link to="/homes">Browse homes</Link>
+          {(sections.showHowItWorks ?? true) && (
+            <button type="button" onClick={(e) => scrollToSection(e, 'sec-how')}>
+              How it works
             </button>
           )}
-          {cfg.sections?.showHowItWorks !== false && (
-            <button type="button" className="landing-nav-link" onClick={() => smoothScrollTo('how-it-works')}>
-              How It Works
+          {(sections.showLandlords ?? true) && (
+            <button type="button" onClick={(e) => scrollToSection(e, 'sec-landlords')}>
+              For landlords
             </button>
           )}
-          {cfg.sections?.showPricing !== false && (
-            <button type="button" className="landing-nav-link" onClick={() => smoothScrollTo('pricing')}>
+          {(sections.showPricing ?? true) && (
+            <button type="button" onClick={(e) => scrollToSection(e, 'sec-pricing')}>
               Pricing
             </button>
           )}
-          {cfg.sections?.showListings !== false && (
-            <button type="button" className="landing-nav-link" onClick={() => smoothScrollTo('listings')}>
-              Available Listings
-            </button>
-          )}
-          {cfg.sections?.showTestimonials !== false && (
-            <button type="button" className="landing-nav-link" onClick={() => smoothScrollTo('testimonials')}>
-              Reviews
-            </button>
-          )}
-          {cfg.sections?.showFaq !== false && (
-            <button type="button" className="landing-nav-link" onClick={() => smoothScrollTo('faq')}>
+          {(sections.showFaq ?? true) && (
+            <button type="button" onClick={(e) => scrollToSection(e, 'sec-faq')}>
               FAQ
             </button>
           )}
-        </div>
-
-        {/* Right: Actions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', zIndex: 1002 }}>
-          {/* Theme Toggle Button */}
+        </nav>
+        <span className="sp" />
+        <div className="snav-actions">
+          {/* Dark/Light Mode Toggle */}
           <button
             type="button"
+            className="theme-btn"
             onClick={toggleTheme}
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            style={{
-              background: 'transparent',
-              border: '1px solid var(--border-color)',
-              borderRadius: '8px',
-              width: '36px',
-              height: '36px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              color: 'var(--body-font-color)',
-              transition: 'all 0.15s ease',
-              flexShrink: 0,
-            }}
+            aria-label="Toggle theme"
           >
-            {theme === 'dark' ? (
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <circle cx="12" cy="12" r="5"></circle>
-                <line x1="12" y1="1" x2="12" y2="3"></line>
-                <line x1="12" y1="21" x2="12" y2="23"></line>
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-                <line x1="1" y1="12" x2="3" y2="12"></line>
-                <line x1="21" y1="12" x2="23" y2="12"></line>
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-              </svg>
-            ) : (
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-              </svg>
-            )}
+            {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
           </button>
-
-          {user ? (
-            <button
-              type="button"
-              className="btn-landing-primary"
-              onClick={() => {
-                if (user.role === 'superadmin') navigate('/superadmin/overview');
-                else if (user.role === 'owner') navigate('/owner/dashboard');
-                else if (user.role === 'tenant') navigate('/tenant/dashboard');
-                else if (user.role === 'manager') navigate('/manager/dashboard');
-                else if (user.role === 'staff') navigate('/staff/dashboard');
-                else navigate('/login');
-              }}
-            >
-              Dashboard →
-            </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="btn-landing-outline landing-nav-desktop-only"
-                onClick={() => navigate('/login')}
-              >
-                Sign In
-              </button>
-              <button
-                type="button"
-                className="btn-landing-primary landing-nav-desktop-only"
-                onClick={() => navigate('/register')}
-              >
-                Start Free Trial →
-              </button>
-            </>
-          )}
-
-          {/* Hamburger toggle button for screen widths <= 960px */}
+          <Link to={cfg?.secondaryCtaLink || '/login'} className="btn sm snav-login-btn">
+            Log in
+          </Link>
+          <Link to={cfg?.ctaLink || '/register'} className="btn pri sm snav-trial-btn">
+            Start free trial
+          </Link>
           <button
             type="button"
-            className="landing-hamburger-btn"
+            className="mobile-menu-btn"
             onClick={() => setMobileMenuOpen((prev) => !prev)}
             aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={mobileMenuOpen}
           >
-            {mobileMenuOpen ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="3" y1="6" x2="21" y2="6"></line>
-                <line x1="3" y1="12" x2="21" y2="12"></line>
-                <line x1="3" y1="18" x2="21" y2="18"></line>
-              </svg>
-            )}
+            {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
-      </nav>
+      </header>
 
-      {/* Mobile Navigation Drawer */}
+      {/* Mobile Navigation Drawer / Dropdown */}
       {mobileMenuOpen && (
-        <div className="landing-mobile-drawer">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--slate)', paddingLeft: '8px' }}>
-              Explore Propithub
-            </span>
-            {cfg.sections?.showFeatures !== false && (
-              <button
-                type="button"
-                className="mobile-nav-link"
-                onClick={() => smoothScrollTo('features')}
+        <div className="mobile-nav-drawer" role="dialog" aria-modal="true" aria-label="Mobile Navigation">
+          <div className="mobile-nav-backdrop" onClick={() => setMobileMenuOpen(false)} />
+          <div className="mobile-nav-content">
+            <nav className="mobile-nav-links">
+              <Link to="/homes" onClick={() => setMobileMenuOpen(false)}>
+                <span>Browse homes</span>
+                <span className="mobile-nav-arrow">→</span>
+              </Link>
+              {(sections.showHowItWorks ?? true) && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    scrollToSection(e, 'sec-how');
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  <span>How it works</span>
+                  <span className="mobile-nav-arrow">→</span>
+                </button>
+              )}
+              {(sections.showLandlords ?? true) && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    scrollToSection(e, 'sec-landlords');
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  <span>For landlords</span>
+                  <span className="mobile-nav-arrow">→</span>
+                </button>
+              )}
+              {(sections.showPricing ?? true) && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    scrollToSection(e, 'sec-pricing');
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  <span>Pricing</span>
+                  <span className="mobile-nav-arrow">→</span>
+                </button>
+              )}
+              {(sections.showFaq ?? true) && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    scrollToSection(e, 'sec-faq');
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  <span>FAQ</span>
+                  <span className="mobile-nav-arrow">→</span>
+                </button>
+              )}
+            </nav>
+            <div className="mobile-nav-footer">
+              <Link
+                to={cfg?.secondaryCtaLink || '/login'}
+                className="btn sm"
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={() => setMobileMenuOpen(false)}
               >
-                <span>Features</span>
-                <span className="mobile-nav-chevron">→</span>
-              </button>
-            )}
-            {cfg.sections?.showHowItWorks !== false && (
-              <button
-                type="button"
-                className="mobile-nav-link"
-                onClick={() => smoothScrollTo('how-it-works')}
+                Log in
+              </Link>
+              <Link
+                to={cfg?.ctaLink || '/register'}
+                className="btn pri sm"
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={() => setMobileMenuOpen(false)}
               >
-                <span>How It Works</span>
-                <span className="mobile-nav-chevron">→</span>
-              </button>
-            )}
-            {cfg.sections?.showPricing !== false && (
-              <button
-                type="button"
-                className="mobile-nav-link"
-                onClick={() => smoothScrollTo('pricing')}
-              >
-                <span>Pricing Plans</span>
-                <span className="mobile-nav-chevron">→</span>
-              </button>
-            )}
-            {cfg.sections?.showListings !== false && (
-              <button
-                type="button"
-                className="mobile-nav-link"
-                onClick={() => smoothScrollTo('listings')}
-              >
-                <span>Available Listings</span>
-                <span className="mobile-nav-chevron">→</span>
-              </button>
-            )}
-            {cfg.sections?.showTestimonials !== false && (
-              <button
-                type="button"
-                className="mobile-nav-link"
-                onClick={() => smoothScrollTo('testimonials')}
-              >
-                <span>Reviews & Stories</span>
-                <span className="mobile-nav-chevron">→</span>
-              </button>
-            )}
-            {cfg.sections?.showFaq !== false && (
-              <button
-                type="button"
-                className="mobile-nav-link"
-                onClick={() => smoothScrollTo('faq')}
-              >
-                <span>Frequently Asked Questions</span>
-                <span className="mobile-nav-chevron">→</span>
-              </button>
-            )}
+                Start free trial
+              </Link>
+            </div>
           </div>
+        </div>
+      )}
 
-          <div style={{ height: '1px', background: 'var(--border-color)', margin: '4px 0' }} />
-
-          {/* Quick Portals */}
+      {/* 2. Hero Section */}
+      {(sections.showHero ?? true) && (
+        <section className="shero hub">
           <div>
-            <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--slate)', paddingLeft: '8px', display: 'block', marginBottom: '8px' }}>
-              Portals & Desks
-            </span>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
-              <button
-                type="button"
-                className="mobile-portal-btn"
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  navigate('/login');
-                }}
-              >
-                <span>🔑</span>
-                <span>Owner Portal</span>
-              </button>
-              <button
-                type="button"
-                className="mobile-portal-btn"
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  navigate('/login');
-                }}
-              >
-                <span>🏡</span>
-                <span>Tenant Portal</span>
-              </button>
-              <button
-                type="button"
-                className="mobile-portal-btn"
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  navigate('/login');
-                }}
-              >
-                <span>🛠️</span>
-                <span>Maintainer Desk</span>
-              </button>
-              <button
-                type="button"
-                className="mobile-portal-btn"
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  navigate('/contact');
-                }}
-              >
-                <span>💬</span>
-                <span>Contact Desk</span>
-              </button>
-            </div>
-          </div>
+            <h1>{heroHeadline}</h1>
+            <p>{heroSubheadline}</p>
 
-          <div style={{ height: '1px', background: 'var(--border-color)', margin: '4px 0' }} />
-
-          {/* Mobile Auth Actions */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: 'auto' }}>
-            {user ? (
-              <button
-                type="button"
-                className="btn-landing-primary"
-                style={{ width: '100%', justifyContent: 'center', padding: '13px' }}
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  if (user.role === 'superadmin') navigate('/superadmin/overview');
-                  else if (user.role === 'owner') navigate('/owner/dashboard');
-                  else if (user.role === 'tenant') navigate('/tenant/dashboard');
-                  else if (user.role === 'manager') navigate('/manager/dashboard');
-                  else if (user.role === 'staff') navigate('/staff/dashboard');
-                  else navigate('/login');
-                }}
-              >
-                Go to Dashboard →
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="btn-landing-primary"
-                  style={{ width: '100%', justifyContent: 'center', padding: '14px', fontSize: '14px' }}
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    navigate('/register');
-                  }}
-                >
-                  Start 14-Day Free Trial →
-                </button>
-                <button
-                  type="button"
-                  className="btn-landing-outline"
-                  style={{ width: '100%', justifyContent: 'center', padding: '13px', fontSize: '14px' }}
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    navigate('/login');
-                  }}
-                >
-                  Sign In to Account
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 2. Hero Section connected to state.landingConfig */}
-      {cfg.sections?.showHero !== false && (
-        <section className="hero-section">
-          <div className="hero-grid">
-            <div className="hero-text-col">
-              <div className="hero-kicker-pill">
-                <span
-                  style={{
-                    width: '8px',
-                    height: '8px',
-                    background: '#10B981',
-                    borderRadius: '50%',
-                    boxShadow: '0 0 8px #10B981',
-                  }}
+            {/* 4-Column Search Box */}
+            <form className="hsearch" onSubmit={handleHeroSearch} aria-label="Search rental homes">
+              <label>
+                <span className="hsearch-title">Where</span>
+                <input
+                  type="text"
+                  placeholder="City, area, or address..."
+                  value={searchWhere}
+                  onChange={(e) => setSearchWhere(e.target.value)}
+                  autoComplete="off"
                 />
-                {cfg.heroKicker || 'PropTech 4.6 • Enterprise Cloud Property OS'}
-              </div>
-              <h1 className="hero-title">
-                {cfg.headline || 'Smart Property Management for the Modern Era'}
-              </h1>
-              <p className="hero-lead">
-                {cfg.subheadline ||
-                  'Streamline leasing, automate rent collection, assign maintenance, and manage tenants from one unified cloud platform. Owned & Developed by NEBZA Technologies Private Limited.'}
-              </p>
-              <div className="hero-cta-group" style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', marginBottom: '24px' }}>
+              </label>
+              <label>
+                <span className="hsearch-title">Bedrooms</span>
+                <select value={searchBeds} onChange={(e) => setSearchBeds(e.target.value)}>
+                  <option value="">Any</option>
+                  <option value="0">Studio</option>
+                  <option value="1">1 bed</option>
+                  <option value="2">2 beds</option>
+                  <option value="3">3+ beds</option>
+                </select>
+              </label>
+              <label>
+                <span className="hsearch-title">Max rent (USD)</span>
+                <select value={searchMaxRent} onChange={(e) => setSearchMaxRent(e.target.value)}>
+                  <option value="">Any</option>
+                  <option value="1000">Up to $1,000</option>
+                  <option value="2000">Up to $2,000</option>
+                  <option value="3000">Up to $3,000</option>
+                  <option value="5000">Up to $5,000</option>
+                </select>
+              </label>
+              <button type="submit" className="btn pri lg">
+                Search homes
+              </button>
+            </form>
+
+            {/* Popular Cities */}
+            <div className="chips-row">
+              <span className="mute" style={{ fontSize: '12.5px', fontWeight: 600 }}>
+                Popular:
+              </span>
+              {popularCities.map((city) => (
                 <button
+                  key={city}
                   type="button"
-                  className="btn-landing-primary hero-cta-btn"
-                  style={{ padding: '12px 24px', fontSize: '14px' }}
-                  onClick={() => navigate(cfg.ctaLink || '/register')}
+                  className="chipb"
+                  onClick={() => navigate(`/homes?q=${encodeURIComponent(city)}`)}
                 >
-                  {cfg.ctaText || 'Start 14-Day Free Trial →'}
+                  {city}
                 </button>
-                <button
-                  type="button"
-                  className="btn-landing-outline hero-cta-btn"
-                  style={{ padding: '12px 22px', fontSize: '14px' }}
-                  onClick={() => navigate(cfg.secondaryCtaLink || '/login')}
-                >
-                  {cfg.secondaryCtaText || 'Sign In to Portal'}
-                </button>
-              </div>
-              <div
-                className="hero-trust-pills"
-                style={{
-                  display: 'flex',
-                  gap: '12px 18px',
-                  flexWrap: 'wrap',
-                  fontSize: '12.5px',
-                  color: 'var(--slate)',
-                }}
-              >
-                {trustPills.map((pill, i) => (
-                  <span key={i} className="hero-trust-pill">{pill}</span>
-                ))}
-              </div>
-              <div
-                className="hero-rating-strip"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                  marginTop: '18px',
-                  paddingTop: '16px',
-                  borderTop: '1px solid var(--border-color)',
-                  fontSize: '13px',
-                  color: 'var(--slate)',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <span style={{ color: '#F59E0B', letterSpacing: '2px', flexShrink: 0 }}>★★★★★</span>
-                <span style={{ minWidth: 0, wordBreak: 'break-word' }}>
-                  <b>4.9/5</b> {cfg.ratingText || 'rated across 24 countries by property teams'}
-                </span>
-              </div>
-            </div>
-
-            {/* Hero Browser Window Mockup */}
-            <div className="hero-mockup-col">
-              <div className="hero-browser-window">
-                <div className="window-titlebar">
-                  <div style={{ display: 'flex', gap: '7px', flexShrink: 0 }}>
-                    <span
-                      style={{
-                        width: '11px',
-                        height: '11px',
-                        borderRadius: '50%',
-                        background: '#FF5F56',
-                        display: 'inline-block',
-                      }}
-                    />
-                    <span
-                      style={{
-                        width: '11px',
-                        height: '11px',
-                        borderRadius: '50%',
-                        background: '#FFBD2E',
-                        display: 'inline-block',
-                      }}
-                    />
-                    <span
-                      style={{
-                        width: '11px',
-                        height: '11px',
-                        borderRadius: '50%',
-                        background: '#27C93F',
-                        display: 'inline-block',
-                      }}
-                    />
-                  </div>
-                  <div
-                    className="window-url-bar"
-                    style={{
-                      background: 'var(--card-bg)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '9999px',
-                      padding: '3px 14px',
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
-                      color: 'var(--slate)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      minWidth: 0,
-                    }}
-                  >
-                    <span style={{ color: '#10B981', flexShrink: 0 }}>🔒</span>
-                    <span className="window-url-text">propithub.app/owner/dashboard</span>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      fontSize: '11px',
-                      color: '#10B981',
-                      fontWeight: 600,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: '7px',
-                        height: '7px',
-                        borderRadius: '50%',
-                        background: '#10B981',
-                        boxShadow: '0 0 8px #10B981',
-                      }}
-                    />
-                    Live OS
-                  </div>
-                </div>
-
-                {/* Window Content */}
-                <div
-                  className="mockup-header-row"
-                  style={{
-                    borderBottom: '1px solid var(--border-color)',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: '10px',
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, fontSize: '15px', color: 'var(--heading-color)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                      {cfg.heroMockup?.propertyName || 'Sunset Heights Luxury Residences'}
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--slate)', marginTop: '2px', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                      {cfg.heroMockup?.locationText || 'Springfield, IL • 24 Units • Automated Ledger'}
-                    </div>
-                  </div>
-                  <span
-                    className="mockup-header-badge"
-                  >
-                    {cfg.heroMockup?.badgeText || '✓ 96.4% Occupied'}
-                  </span>
-                </div>
-
-                {/* 4 KPIs */}
-                <div
-                  className="mockup-kpi-grid"
-                >
-                  <div
-                    className="mockup-kpi-cell"
-                    style={{
-                      borderRight: '1px solid var(--border-color)',
-                      borderBottom: '1px solid var(--border-color)',
-                    }}
-                  >
-                    <div
-                      className="mockup-kpi-label"
-                    >
-                      Properties / Units
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginTop: '4px', flexWrap: 'wrap' }}>
-                      <span className="mockup-kpi-val">
-                        12 / 48
-                      </span>
-                      <span
-                        className="mockup-kpi-tag"
-                        style={{
-                          color: '#10B981',
-                          background: 'rgba(16, 185, 129, 0.12)',
-                        }}
-                      >
-                        +2 new
-                      </span>
-                    </div>
-                  </div>
-                  <div
-                    className="mockup-kpi-cell"
-                    style={{
-                      borderBottom: '1px solid var(--border-color)',
-                    }}
-                  >
-                    <div
-                      className="mockup-kpi-label"
-                    >
-                      Month Collections
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginTop: '4px', flexWrap: 'wrap' }}>
-                      <span className="mockup-kpi-val">
-                        $38,450
-                      </span>
-                      <span
-                        className="mockup-kpi-tag"
-                        style={{
-                          color: '#10B981',
-                          background: 'rgba(16, 185, 129, 0.12)',
-                        }}
-                      >
-                        +12.4%
-                      </span>
-                    </div>
-                  </div>
-                  <div className="mockup-kpi-cell" style={{ borderRight: '1px solid var(--border-color)' }}>
-                    <div
-                      className="mockup-kpi-label"
-                    >
-                      Active Leases
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginTop: '4px', flexWrap: 'wrap' }}>
-                      <span className="mockup-kpi-val">
-                        46 Active
-                      </span>
-                      <span
-                        className="mockup-kpi-tag"
-                        style={{
-                          color: '#D97706',
-                          background: 'rgba(245, 158, 11, 0.12)',
-                        }}
-                      >
-                        2 renewal
-                      </span>
-                    </div>
-                  </div>
-                  <div className="mockup-kpi-cell">
-                    <div
-                      className="mockup-kpi-label"
-                    >
-                      Maintenance SLA
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginTop: '4px', flexWrap: 'wrap' }}>
-                      <span className="mockup-kpi-val">
-                        0 Open
-                      </span>
-                      <span
-                        className="mockup-kpi-tag"
-                        style={{
-                          color: '#10B981',
-                          background: 'rgba(16, 185, 129, 0.12)',
-                        }}
-                      >
-                        100% Repaired
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Reconciled Activities */}
-                <div className="mockup-activity-section">
-                  <div
-                    className="mockup-activity-header"
-                  >
-                    <span
-                      className="mockup-activity-title"
-                    >
-                      Recent Reconciled Activity
-                    </span>
-                    <span className="mockup-activity-status">
-                      ⚡ Auto-reconciled
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
-                    <div
-                      className="mockup-activity-row"
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, overflow: 'hidden' }}>
-                        <span
-                          style={{
-                            width: '28px',
-                            height: '28px',
-                            borderRadius: '50%',
-                            background: 'rgba(16, 185, 129, 0.15)',
-                            color: '#10B981',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          💵
-                        </span>
-                        <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                          <div style={{ fontWeight: 600, color: 'var(--heading-color)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                            Unit 4B • Alice Tenant
-                          </div>
-                          <div style={{ fontSize: '11px', color: 'var(--slate)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                            $1,450.00 via Stripe Gateway
-                          </div>
-                        </div>
-                      </div>
-                      <span
-                        className="mockup-activity-badge"
-                        style={{
-                          background: 'rgba(16, 185, 129, 0.15)',
-                          color: '#10B981',
-                        }}
-                      >
-                        Paid
-                      </span>
-                    </div>
-                    <div
-                      className="mockup-activity-row"
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, overflow: 'hidden' }}>
-                        <span
-                          style={{
-                            width: '28px',
-                            height: '28px',
-                            borderRadius: '50%',
-                            background: 'rgba(59, 130, 246, 0.15)',
-                            color: '#3B82F6',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          🔧
-                        </span>
-                        <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                          <div style={{ fontWeight: 600, color: 'var(--heading-color)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                            Unit 12 • HVAC Service
-                          </div>
-                          <div style={{ fontSize: '11px', color: 'var(--slate)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                            Staff Maintainer assigned
-                          </div>
-                        </div>
-                      </div>
-                      <span
-                        className="mockup-activity-badge"
-                        style={{
-                          background: 'rgba(59, 130, 246, 0.15)',
-                          color: '#3B82F6',
-                        }}
-                      >
-                        Resolved
-                      </span>
-                    </div>
-                    <div
-                      className="mockup-activity-row"
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, overflow: 'hidden' }}>
-                        <span
-                          style={{
-                            width: '28px',
-                            height: '28px',
-                            borderRadius: '50%',
-                            background: 'rgba(168, 85, 247, 0.15)',
-                            color: '#A855F7',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          📄
-                        </span>
-                        <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                          <div style={{ fontWeight: 600, color: 'var(--heading-color)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                            Unit 8 • Digital Lease Agreement
-                          </div>
-                          <div style={{ fontSize: '11px', color: 'var(--slate)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                            12-Month Renewal Approved & Active
-                          </div>
-                        </div>
-                      </div>
-                      <span
-                        className="mockup-activity-badge"
-                        style={{
-                          background: 'rgba(168, 85, 247, 0.15)',
-                          color: '#A855F7',
-                        }}
-                      >
-                        Active
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* 3. Impact Stats Strip connected to state.landingConfig.stats */}
-      {cfg.sections?.showStats !== false && (
-        <div className="stat-strip">
-          <div className="stat-strip-container">
-            <div>
-              <div className="stat-number">{cfg.stats?.stat1Number || '15,000+'}</div>
-              <div className="stat-label">{cfg.stats?.stat1Label || 'Properties on the ledger'}</div>
-            </div>
-            <div>
-              <div className="stat-number">{cfg.stats?.stat2Number || '45,000+'}</div>
-              <div className="stat-label">{cfg.stats?.stat2Label || 'Tenants connected'}</div>
-            </div>
-            <div>
-              <div className="stat-number">{cfg.stats?.stat3Number || '$120M+'}</div>
-              <div className="stat-label">{cfg.stats?.stat3Label || 'Collected annually'}</div>
-            </div>
-            <div>
-              <div className="stat-number">{cfg.stats?.stat4Number || '99.98%'}</div>
-              <div className="stat-label">{cfg.stats?.stat4Label || 'Platform uptime'}</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 4. Features Section connected to state.landingConfig */}
-      {cfg.sections?.showFeatures !== false && (
-        <section className="landing-section" id="features">
-          <div className="section-header anim-fade-up">
-            <div className="section-kicker">{cfg.featuresKicker || "What's inside"}</div>
-            <h2 className="section-title">{cfg.featuresTitle || 'Six jobs, one ledger'}</h2>
-            <p className="section-subtitle">
-              {cfg.featuresSubtitle ||
-                'Everything an owner, a tenant, and a maintainer each need to do — reading from the same set of records, so no one is working off an outdated spreadsheet.'}
-            </p>
-          </div>
-
-          <div
-            className="stagger-container landing-features-grid"
-            style={{
-              display: 'grid',
-              gap: '24px',
-            }}
-          >
-            {activeFeatures.map((f) => (
-              <div className="feature-card anim-fade-up" key={f.id}>
-                <div
-                  style={{
-                    width: '44px',
-                    height: '44px',
-                    borderRadius: '10px',
-                    background: 'var(--primary-soft)',
-                    color: 'var(--primary-color)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '20px',
-                    marginBottom: '16px',
-                  }}
-                >
-                  {f.icon || '⚡'}
-                </div>
-                <h3
-                  style={{
-                    fontSize: '18px',
-                    fontWeight: 700,
-                    color: 'var(--heading-color)',
-                    marginBottom: '8px',
-                  }}
-                >
-                  {f.title}
-                </h3>
-                <p style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--slate)', margin: 0 }}>
-                  {f.description}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* 5. How It Works Section connected to state.landingConfig */}
-      {cfg.sections?.showHowItWorks !== false && (
-        <section
-          style={{
-            background: 'var(--bg-subtle)',
-            borderTop: '1px solid var(--border-color)',
-            borderBottom: '1px solid var(--border-color)',
-            padding: '72px 24px',
-          }}
-          id="how-it-works"
-        >
-          <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-            <div className="section-header anim-fade-up">
-              <div className="section-kicker">{cfg.howItWorksKicker || 'Getting started'}</div>
-              <h2 className="section-title">
-                {cfg.howItWorksTitle || 'Three afternoons, not three months'}
-              </h2>
-              <p className="section-subtitle">
-                {cfg.howItWorksSubtitle ||
-                  'Most owners are collecting their first online rent payment inside a week.'}
-              </p>
-            </div>
-
-            <div
-              className="stagger-container landing-steps-grid"
-              style={{
-                display: 'grid',
-                gap: '24px',
-              }}
-            >
-              {activeSteps.map((step) => (
-                <div
-                  key={step.id}
-                  className="anim-fade-up"
-                  style={{
-                    background: 'var(--card-bg)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '12px',
-                    padding: '28px',
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      marginBottom: '14px',
-                    }}
-                  >
-                    <span
-                      style={{
-                        background: 'var(--primary-soft)',
-                        color: 'var(--primary-color)',
-                        fontWeight: 700,
-                        fontSize: '12px',
-                        padding: '4px 10px',
-                        borderRadius: '9999px',
-                      }}
-                    >
-                      Step {step.stepNumber}
-                    </span>
-                    <span style={{ fontSize: '13px', color: 'var(--slate)', fontWeight: 700 }}>
-                      {step.stepNumber}
-                    </span>
-                  </div>
-                  <h3
-                    style={{
-                      fontSize: '18px',
-                      fontWeight: 700,
-                      color: 'var(--heading-color)',
-                      marginBottom: '8px',
-                    }}
-                  >
-                    {step.title}
-                  </h3>
-                  <p style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--slate)', margin: 0 }}>
-                    {step.description}
-                  </p>
-                </div>
               ))}
             </div>
-          </div>
-        </section>
-      )}
 
-      {/* 6. Pricing Packages Section directly powered by state.plans */}
-      {cfg.sections?.showPricing !== false && (
-        <section className="landing-section" id="pricing">
-          <div className="section-header anim-fade-up">
-            <div className="section-kicker">{cfg.pricingKicker || 'Plans'}</div>
-            <h2 className="section-title">
-              {cfg.pricingTitle || 'Priced by the size of your portfolio'}
-            </h2>
-            <p className="section-subtitle">
-              {cfg.pricingSubtitle ||
-                'Every plan includes the full ledger — invoicing, leases, payments, and messaging. Upgrade as your unit count grows.'}
-            </p>
-          </div>
-
-          <div
-            className="stagger-container landing-pricing-grid"
-            style={{
-              display: 'grid',
-              gap: '24px',
-            }}
-          >
-            {state.plans
-              .filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial')
-              .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0))
-              .map((plan, idx, arr) => {
-                const hasExplicitPopular = arr.some((p) => p.isPopular);
-                const isPopular = hasExplicitPopular
-                  ? !!plan.isPopular
-                  : (plan.name.toLowerCase() === 'growth' || (arr.length > 2 && idx === 1));
-                return (
-                  <div
-                    key={plan.id}
-                    className={`pricing-card ${isPopular ? 'popular' : ''}`}
-                  >
-                    {isPopular && (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          top: '-13px',
-                          left: '50%',
-                          transform: 'translateX(-50%)',
-                        }}
-                      >
-                        <span
-                          style={{
-                            background: 'var(--primary-color)',
-                            color: '#FFFFFF',
-                            padding: '4px 14px',
-                            borderRadius: '9999px',
-                            fontSize: '11px',
-                            fontWeight: 800,
-                            letterSpacing: '0.05em',
-                            textTransform: 'uppercase',
-                          }}
-                        >
-                          Most Popular
-                        </span>
-                      </div>
-                    )}
-                    <div style={{ marginBottom: '16px' }}>
-                      <span
-                        style={{
-                          background: isPopular ? 'var(--primary-soft)' : 'var(--bg-subtle)',
-                          color: isPopular ? 'var(--primary-color)' : 'var(--heading-color)',
-                          border: isPopular ? 'none' : '1px solid var(--border-color)',
-                          padding: '4px 12px',
-                          borderRadius: '9999px',
-                          fontSize: '12px',
-                          fontWeight: 700,
-                        }}
-                      >
-                        {plan.name}
-                      </span>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', marginTop: '16px' }}>
-                        <span style={{ fontSize: '36px', fontWeight: 800, color: 'var(--heading-color)' }}>
-                          ${plan.price}
-                        </span>
-                        <span style={{ fontSize: '14px', color: 'var(--slate)' }}>/month</span>
-                      </div>
-                      <p style={{ fontSize: '13px', color: 'var(--slate)', marginTop: '4px' }}>
-                        {plan.name.toLowerCase() === 'starter'
-                          ? 'Essential management for independent landlords.'
-                          : plan.name.toLowerCase() === 'growth'
-                          ? 'Scale multi-family portfolios with full automation.'
-                          : 'Full enterprise suite for large property management firms.'}
-                      </p>
-                    </div>
-                    <hr
-                      style={{
-                        border: 'none',
-                        borderTop: '1px solid var(--border-color)',
-                        margin: '14px 0',
-                      }}
-                    />
-                    <ul
-                      style={{
-                        listStyle: 'none',
-                        padding: 0,
-                        margin: 0,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '10px',
-                        fontSize: '13.5px',
-                        color: 'var(--body-font-color)',
-                        flexGrow: 1,
-                      }}
-                    >
-                      <li>
-                        ✓ <strong>{plan.properties >= 999 ? 'Unlimited' : plan.properties}</strong>{' '}
-                        {plan.properties === 1 ? 'Property' : 'Properties'}
-                      </li>
-                      <li>
-                        ✓ <strong>{plan.units >= 9999 ? 'Unlimited' : plan.units}</strong> Rental Units
-                      </li>
-                      <li>
-                        ✓ <strong>{plan.tenants >= 9999 ? 'Unlimited' : plan.tenants}</strong> Tenants Connected
-                      </li>
-                      <li>
-                        ✓ <strong>{plan.managers ?? 0}</strong> Property Managers
-                      </li>
-                      <li>
-                        ✓ <strong>{plan.staff ?? 0}</strong> Maintenance Staff Members
-                      </li>
-                      <li>✓ Automated recurring invoices & rent ledger</li>
-                      <li>✓ Digital lease agreements & e-signatures</li>
-                      <li>✓ Online payment gateways & tenant portal</li>
-                    </ul>
-                    <button
-                      type="button"
-                      className={isPopular ? 'btn-landing-primary' : 'btn-landing-outline'}
-                      style={{ marginTop: '24px', width: '100%', justifyContent: 'center' }}
-                      onClick={() => navigate('/register')}
-                    >
-                      Choose {plan.name}
-                    </button>
-                  </div>
-                );
-              })}
-          </div>
-        </section>
-      )}
-
-      {/* 7. Available Vacant Listings Section */}
-      {cfg.sections?.showListings !== false && (
-        <section className="landing-section" id="listings" style={{ borderTop: '1px solid var(--border-color)' }}>
-          <div
-            className="listings-section-header"
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'flex-end',
-              marginBottom: '36px',
-              flexWrap: 'wrap',
-              gap: '16px',
-            }}
-          >
-            <div>
-              <div className="section-kicker">{cfg.listingsKicker || 'Vacant Units'}</div>
-              <h2 className="section-title" style={{ margin: 0 }}>
-                {cfg.listingsTitle || 'Available Listings'}
-              </h2>
-              <p className="section-subtitle" style={{ marginTop: '4px' }}>
-                {cfg.listingsSubtitle || 'Direct verified rentals from property owners across Propithub'}
-              </p>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-              <div className="listings-filter-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--slate)', fontWeight: 500 }}>
-                  Country:
-                </span>
-                <select
-                  value={selectedCountry}
-                  onChange={(e) => setSelectedCountry(e.target.value)}
-                  style={{
-                    padding: '8px 12px',
-                    background: 'var(--card-bg)',
-                    color: 'var(--heading-color)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                  }}
-                >
-                  {countries.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <button
-                type="button"
-                onClick={() => navigate('/listings')}
-                className="btn brass small"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontWeight: 700,
-                  padding: '9px 16px',
-                  borderRadius: '8px',
-                }}
-              >
-                View All ({listedUnits.length}) →
-              </button>
+            <div className="hero-cta">
+              <Link to={cfg?.ctaLink || '/register'} className="btn pri lg">
+                {cfg?.ctaText || 'List and manage your property'}
+              </Link>
+              <Link to="/homes" className="btn secondary lg">
+                Browse {allListings.length} homes →
+              </Link>
             </div>
           </div>
 
-          {filteredUnits.length === 0 ? (
-            <div
-              style={{
-                textAlign: 'center',
-                padding: '48px 20px',
-                background: 'var(--surface-sunken, rgba(0,0,0,0.02))',
-                borderRadius: '16px',
-                border: '1px dashed var(--border-color)',
-                color: 'var(--slate)',
-              }}
-            >
-              <div style={{ fontSize: '28px', marginBottom: '8px' }}>🏡</div>
-              <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--heading-color)' }}>
-                No active vacant listings found in {selectedCountry === 'All countries' ? 'the portfolio' : selectedCountry}.
-              </div>
-              <div style={{ fontSize: '12.5px', marginTop: '4px' }}>
-                Check back soon or browse all locations.
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Single Horizontal Row (Max 4 Cards) */}
-              <div
-                className="landing-listings-row"
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
-                  gap: '20px',
-                }}
-              >
-                {filteredUnits.slice(0, 4).map((u) => {
-                  const prop = state.properties.find(
-                    (p) =>
-                      (u.propertyId && p.id === u.propertyId) ||
-                      (p.name && u.propertyName && p.name.trim().toLowerCase() === u.propertyName.trim().toLowerCase()) ||
-                      (u.id && p.id && u.id.includes(p.id))
-                  );
-                  return (
-                    <ListingCard
-                      key={u.id}
-                      unit={u}
-                      property={prop}
-                      onSelect={(selected) => setSelectedListingUnit(selected)}
-                    />
-                  );
-                })}
-              </div>
-            </>
+          {/* Hero Illustration & Animated Cards */}
+          {(sections.showStats ?? true) && (
+            <HeroArt countryCount={countryCounts.length || 9} />
           )}
         </section>
       )}
 
-      {/* 8. Testimonials Section connected to state.landingConfig */}
-      {cfg.sections?.showTestimonials !== false && (
-        <section
-          style={{
-            background: 'var(--bg-subtle)',
-            borderTop: '1px solid var(--border-color)',
-            borderBottom: '1px solid var(--border-color)',
-            padding: '72px 24px',
-          }}
-          id="testimonials"
-        >
-          <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-            <div className="section-header anim-fade-up">
-              <div className="section-kicker">
-                {cfg.testimonialsKicker || 'From the ledger’s users'}
-              </div>
-              <h2 className="section-title">
-                {cfg.testimonialsTitle || 'Owners, managers, and tenants on propithub'}
-              </h2>
-              <p className="section-subtitle">
-                {cfg.testimonialsSubtitle ||
-                  'Everything an owner, a tenant, and a maintainer each need to do — reading from the same set of records.'}
-              </p>
-            </div>
-
-            <div
-              className="stagger-container landing-testimonials-grid"
-              style={{
-                display: 'grid',
-                gap: '24px',
-              }}
-            >
-              {activeReviews.map((testi) => (
-                <div className="testi-card anim-fade-up" key={testi.id}>
-                  <div>
-                    <div
-                      style={{
-                        color: '#F59E0B',
-                        letterSpacing: '2px',
-                        marginBottom: '14px',
-                        fontSize: '14px',
-                      }}
-                    >
-                      {'★'.repeat(testi.stars || 5)}
-                    </div>
-                    <p
-                      style={{
-                        fontSize: '15px',
-                        lineHeight: 1.65,
-                        color: 'var(--heading-color)',
-                        fontStyle: 'italic',
-                        marginBottom: '20px',
-                      }}
-                    >
-                      {testi.quote}
-                    </p>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '12px',
-                      paddingTop: '14px',
-                      borderTop: '1px solid var(--border-color)',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: '42px',
-                        height: '42px',
-                        borderRadius: '50%',
-                        background: testi.avatarBg || 'var(--primary-color)',
-                        color: testi.avatarColor || '#fff',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontWeight: 700,
-                        fontSize: '15px',
-                        overflow: 'hidden',
-                        flexShrink: 0,
-                        boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
-                      }}
-                    >
-                      {testi.avatarUrl ? (
-                        <img
-                          src={testi.avatarUrl}
-                          alt={testi.name}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          onError={(e) => {
-                            (e.target as HTMLElement).style.display = 'none';
-                          }}
-                        />
-                      ) : (
-                        <span>{testi.avatarIcon || (testi.name ? testi.name.charAt(0).toUpperCase() : 'U')}</span>
-                      )}
-                    </div>
-                    <div>
-                      <div
-                        style={{
-                          fontWeight: 700,
-                          fontSize: '14px',
-                          color: 'var(--heading-color)',
-                        }}
-                      >
-                        {testi.name}
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--slate)' }}>
-                        {testi.role}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+      {/* 3. Two-Up Persona Duo Cards */}
+      {(sections.showDuoCards ?? true) && (
+        <section className="ssec twoup">
+          <div className="duo">
+            <h3>{seekerCard.title}</h3>
+            <p>{seekerCard.description}</p>
+            <button className="btn pri" onClick={() => navigate(seekerCard.ctaLink || '/homes')}>
+              {seekerCard.ctaText}
+            </button>
+          </div>
+          <div className="duo alt">
+            <h3>{ownerCard.title}</h3>
+            <p>{ownerCard.description}</p>
+            <button className="btn secondary" onClick={() => navigate(ownerCard.ctaLink || '/register')}>
+              {ownerCard.ctaText}
+            </button>
           </div>
         </section>
       )}
 
-      {/* 9. FAQ Section connected to state.landingConfig */}
-      {cfg.sections?.showFaq !== false && (
-        <section className="landing-section" id="faq">
-          <div className="section-header anim-fade-up" style={{ textAlign: 'center', margin: '0 auto 44px' }}>
-            <div className="section-kicker">{cfg.faqKicker || 'Questions'}</div>
-            <h2 className="section-title">{cfg.faqTitle || 'Frequently Asked Questions'}</h2>
-            <p className="section-subtitle">
-              {cfg.faqSubtitle ||
-                'Everything you need to know about Propithub features, billing, and security.'}
+      {/* 4. Featured Homes Section */}
+      {(sections.showListings ?? true) && (
+        <section id="sec-homes" className="ssec">
+          <div className="sechead">
+            <h2>{cfg?.listingsTitle || 'Featured homes around the world'}</h2>
+            <button className="btn secondary sm" onClick={() => navigate('/homes')}>
+              See all {allListings.length} homes →
+            </button>
+          </div>
+
+          {featuredListings.length > 0 ? (
+            <div className="lrow">
+              {featuredListings.map((item) => {
+                const totalImages = item.images.length;
+                const activeIdx =
+                  totalImages > 0 ? (cardPhotoIndex[item.id] || 0) % totalImages : 0;
+                const isSaved = savedIds.has(item.id);
+                const benchmark = calculateBenchmark(item, allListings);
+
+                return (
+                  <article
+                    key={item.id}
+                    className={`lc ${item.isPopular ? 'lc-popular' : ''}`}
+                    onClick={() => navigate(`/homes/${item.id}`)}
+                    style={{
+                      cursor: 'pointer',
+                      border: item.isPopular ? '1.5px solid rgba(245, 158, 11, 0.55)' : undefined,
+                      boxShadow: item.isPopular ? '0 6px 18px rgba(245, 158, 11, 0.12)' : undefined,
+                    }}
+                  >
+                    {/* Photo Carousel or Real Architectural Placeholder */}
+                    <div className="lc-img">
+                      {totalImages > 0 ? (
+                        <img src={item.images[activeIdx]} alt={item.title} loading="lazy" />
+                      ) : (
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            background: 'linear-gradient(135deg, var(--surface-sunken) 0%, var(--line) 100%)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'var(--ink-soft)',
+                            gap: '4px',
+                            padding: '12px',
+                            textAlign: 'center',
+                          }}
+                        >
+                          <span style={{ fontSize: '28px', opacity: 0.85 }}>🏢</span>
+                          <b style={{ fontSize: '13px', color: 'var(--ink)', fontWeight: 700 }}>
+                            Unit {item.unitNumber}
+                          </b>
+                          <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
+                            {item.propertyName}
+                          </span>
+                        </div>
+                      )}
+
+                      {item.isPopular ? (
+                        <span
+                          className="lc-badge"
+                          style={{
+                            background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                            color: '#ffffff',
+                            fontWeight: 800,
+                            boxShadow: '0 2px 6px rgba(245, 158, 11, 0.45)',
+                          }}
+                        >
+                          🔥 Popular
+                        </span>
+                      ) : item.ageDays <= 2 ? (
+                        <span className="lc-badge">New</span>
+                      ) : benchmark && benchmark.percentage <= -8 ? (
+                        <span className="lc-badge good">Great value</span>
+                      ) : (
+                        <span className="lc-badge">Available Now</span>
+                      )}
+
+                      <button
+                        className="lc-save"
+                        onClick={(e) => toggleSave(item.id, e)}
+                        aria-label="Save home"
+                      >
+                        <Heart
+                          size={18}
+                          fill={isSaved ? '#ef4444' : 'none'}
+                          color={isSaved ? '#ef4444' : '#fff'}
+                        />
+                      </button>
+
+                      {totalImages > 1 && (
+                        <>
+                          <button
+                            className="lc-nav prev"
+                            onClick={(e) => handlePrevPhoto(item.id, totalImages, e)}
+                            aria-label="Previous photo"
+                          >
+                            ‹
+                          </button>
+                          <button
+                            className="lc-nav next"
+                            onClick={(e) => handleNextPhoto(item.id, totalImages, e)}
+                            aria-label="Next photo"
+                          >
+                            ›
+                          </button>
+                          <span className="lc-dots">
+                            {Array.from({ length: totalImages }).map((_, i) => (
+                              <i key={i} className={i === activeIdx ? 'on' : ''} />
+                            ))}
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Card Content */}
+                    <div className="lc-body">
+                      <div className="lc-top">
+                        <b>{item.propertyName}</b>
+                        <span className="lc-rate">
+                          {item.rating !== null ? `★ ${item.rating}` : 'Verified'}
+                        </span>
+                      </div>
+
+                      <span
+                        className="mute"
+                        style={{
+                          fontSize: '13.5px',
+                          marginTop: '2px',
+                          fontWeight: 600,
+                          color: 'var(--ink)',
+                        }}
+                      >
+                        Unit {item.unitNumber}
+                        {item.displayLocation && !isNumericCoordinate(item.displayLocation)
+                          ? ` · ${item.displayLocation}`
+                          : ''}
+                      </span>
+
+                      <span className="mute" style={{ fontSize: '12.5px' }}>
+                        {item.bedsLabel}{item.baths > 0 ? ` · ${item.baths} bath` : ''}
+                        {item.areaSqFt > 0
+                          ? ` · ${item.areaSqFt.toLocaleString('en-US')} sq ft`
+                          : ''}
+                        {' · '}
+                        {item.furnishing}
+                      </span>
+
+                      <div className="lc-price">
+                        <b>{formatMoney(item.rent, item.currency)}</b> / mo
+                        {item.currency !== 'USD' && (
+                          <small style={{ marginLeft: '6px' }}>
+                            ≈ USD{' '}
+                            {Math.round(toUSD(item.rent, item.currency)).toLocaleString('en-US')}
+                          </small>
+                        )}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div
+              style={{
+                padding: '48px 20px',
+                textAlign: 'center',
+                background: 'var(--surface)',
+                borderRadius: '16px',
+                border: '1px dashed var(--line-strong)',
+                margin: '18px 0',
+              }}
+            >
+              <Compass
+                size={32}
+                style={{ color: 'var(--teal)', margin: '0 auto 12px', display: 'block' }}
+              />
+              <h3 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 6px' }}>
+                No vacant units published yet
+              </h3>
+              <p
+                className="mute"
+                style={{ maxWidth: '440px', margin: '0 auto 16px', fontSize: '14px' }}
+              >
+                Vacant rental units published by landlords and managers will appear here
+                automatically in real time.
+              </p>
+              <Link to="/register" className="btn pri sm">
+                List your property
+              </Link>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* 5. Around the World Section */}
+      {(sections.showWorld ?? true) && countryCounts.length > 0 && (
+        <section id="sec-world" className="ssec alt">
+          <div className="shead">
+            <span className="eyebrow">{cfg?.worldKicker || 'Around the world'}</span>
+            <h2>
+              {cfg?.worldTitle || `Explore homes across ${countryCounts.length} countries`}
+            </h2>
+            <p>
+              {cfg?.worldSubtitle ||
+                'Connect with verified rental residences across top global financial hubs and lifestyle destinations.'}
             </p>
           </div>
 
-          <div style={{ maxWidth: '780px', margin: '0 auto' }}>
-            {activeFaqs.map((f, idx) => (
-              <div key={idx} className="faq-item">
+          <div className="cgrid">
+            {countryCounts.map(([country, data]) => {
+              const flag = COUNTRY_FLAGS[country] || '🌍';
+              const cityList = Array.from(data.cities)
+                .filter((c) => isValidCityName(c))
+                .slice(0, 2)
+                .join(', ');
+              return (
                 <button
+                  key={country}
                   type="button"
-                  className="faq-question"
-                  onClick={() => setOpenFaq(openFaq === idx ? null : idx)}
+                  className="ccard"
+                  onClick={() => navigate(`/homes?country=${encodeURIComponent(country)}`)}
                 >
-                  <span>{f.question}</span>
-                  <span style={{ fontSize: '18px', color: 'var(--primary-color)' }}>
-                    {openFaq === idx ? '−' : '+'}
+                  <span className="flag">{flag}</span>
+                  <span className="ct">
+                    <b>{country}</b>
+                    <span className="mute">{cityList || 'Major cities'}</span>
+                  </span>
+                  <span className="cn">
+                    {data.count}
+                    <small>homes</small>
                   </span>
                 </button>
-                {openFaq === idx && <div className="faq-answer">{f.answer}</div>}
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* 6. How It Works Section */}
+      {(sections.showHowItWorks ?? true) && (
+        <section id="sec-how" className="ssec">
+          <div className="shead">
+            <span className="eyebrow">{cfg?.howItWorksKicker || 'How it works'}</span>
+            <h2>
+              {cfg?.howItWorksTitle && !cfg.howItWorksTitle.includes('Three afternoons')
+                ? cfg.howItWorksTitle
+                : 'From first enquiry to first rent, in three steps'}
+            </h2>
+            <p>
+              {cfg?.howItWorksSubtitle && !cfg.howItWorksSubtitle.includes('inside a week')
+                ? cfg.howItWorksSubtitle
+                : 'Landlords and renters meet on the same unified ledger, so nothing is lost in disjointed emails or manual paperwork.'}
+            </p>
+          </div>
+
+          <div className="sgrid3">
+            {stepsToRender.map((step, idx) => (
+              <div key={step.id || idx} className="sstep">
+                <i>{step.stepNumber || idx + 1}</i>
+                <h3>{step.title}</h3>
+                <p>{step.description}</p>
               </div>
             ))}
           </div>
         </section>
       )}
 
-      {/* 10. Call To Action Banner */}
-      {cfg.sections?.showCtaBanner !== false && (
-        <section style={{ padding: '0 24px 72px', maxWidth: '1200px', margin: '0 auto', boxSizing: 'border-box' }}>
-          <div className="cta-banner">
-            <h2
-              style={{
-                fontSize: 'clamp(22px, 3.8vw, 36px)',
-                fontWeight: 800,
-                color: '#FFFFFF',
-                letterSpacing: '-0.025em',
-                lineHeight: 1.2,
-                margin: 0,
-              }}
-            >
-              {cfg.ctaBannerTitle || 'Ready to close the books on manual rent collection?'}
-            </h2>
-            <p
-              style={{
-                color: '#A7F3D0',
-                maxWidth: '600px',
-                margin: '14px auto 28px',
-                lineHeight: 1.6,
-                fontSize: '15px',
-              }}
-            >
-              {cfg.ctaBannerSubtitle ||
-                'Join the owners, managers, and firms already running their portfolio on propithub.'}
-            </p>
-            <div className="cta-banner-buttons" style={{ display: 'flex', justifyContent: 'center', gap: '14px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="cta-btn-primary cta-action-btn"
-                onClick={() => navigate(cfg.ctaBannerPrimaryLink || '/register')}
-              >
-                {cfg.ctaBannerPrimaryText || 'Register as a property owner'}
-              </button>
-              <button
-                type="button"
-                className="cta-btn-secondary cta-action-btn"
-                onClick={() => navigate(cfg.ctaBannerSecondaryLink || '/login')}
-              >
-                {cfg.ctaBannerSecondaryText || 'Sign in to your portal'}
-              </button>
+      {/* 7. For Landlords & Managers */}
+      {(sections.showLandlords ?? true) && (
+        <section id="sec-landlords" className="ssec alt">
+          <div className="split">
+            <div className="split-t">
+              <span className="eyebrow">{landlordsData.kicker}</span>
+              <h2>{landlordsData.title}</h2>
+              <p className="lead">{landlordsData.subtitle}</p>
+              <ul className="ticks">
+                {landlordsData.bullets.map((b, idx) => (
+                  <li key={idx}>{b}</li>
+                ))}
+              </ul>
+              <div className="hero-cta">
+                <Link to={landlordsData.primaryCtaLink || '/register'} className="btn pri lg">
+                  {landlordsData.primaryCtaText}
+                </Link>
+                <Link to={landlordsData.secondaryCtaLink || '/login'} className="btn secondary lg">
+                  {landlordsData.secondaryCtaText}
+                </Link>
+              </div>
+            </div>
+
+            {/* Interactive Mockup Card */}
+            <div className="mock" aria-hidden="true">
+              <div className="mock-h">
+                <b>{landlordsData.mockupGreeting}</b>
+                <span>{landlordsData.mockupSubtext}</span>
+              </div>
+              {landlordsData.mockupItems.map((mItem, idx) => (
+                <div key={idx} className="mock-r">
+                  <i />
+                  <span>{mItem.text}</span>
+                  <u>{mItem.action}</u>
+                </div>
+              ))}
+              <div className="mock-k">
+                {landlordsData.mockupKpis.map((kpi, idx) => (
+                  <div key={idx}>
+                    <b>{kpi.value}</b>
+                    <span>{kpi.label}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </section>
       )}
 
-      {/* 11. Grounded Midnight SaaS Footer */}
-      {cfg.sections?.showFooter !== false && (
-        <footer className="footer-landing">
-          <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-            <div
-              className="landing-footer-grid"
-              style={{
-                display: 'grid',
-                gap: '36px',
-                marginBottom: '48px',
-              }}
-            >
-              {/* Brand & Corporate */}
-              <div style={{ gridColumn: 'span 1' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '14px' }}>
-                  {cfg.faviconUrl ? (
-                    <img
-                      src={cfg.faviconUrl}
-                      alt="Logo"
-                      style={{ width: '24px', height: '24px', objectFit: 'contain' }}
-                      onError={(e) => {
-                        (e.target as HTMLElement).style.display = 'none';
-                      }}
-                    />
+      {/* 8. Core Features */}
+      {(sections.showFeatures ?? true) && (
+        <section id="sec-features" className="ssec">
+          <div className="shead">
+            <span className="eyebrow">
+              {cfg?.featuresKicker && cfg.featuresKicker !== "What's inside"
+                ? cfg.featuresKicker
+                : 'Features'}
+            </span>
+            <h2>
+              {cfg?.featuresTitle && cfg.featuresTitle !== 'Six jobs, one ledger'
+                ? cfg.featuresTitle
+                : 'Everything a modern rental portfolio needs'}
+            </h2>
+            <p>
+              {cfg?.featuresSubtitle && !cfg.featuresSubtitle.includes('outdated spreadsheet')
+                ? cfg.featuresSubtitle
+                : 'One unified cloud workspace replacing fragmented spreadsheets, PDF templates, and manual messaging.'}
+            </p>
+          </div>
+
+          <div className="sgrid3">
+            {featuresToRender.map((feat, idx) => (
+              <div key={feat.id || idx} className="sfeat">
+                <div className="fico" style={{ fontSize: '18px' }}>
+                  {feat.icon ? (
+                    <span>{feat.icon}</span>
                   ) : (
-                    <PropithubIcon size={24} color="#10B981" />
+                    <svg viewBox="0 0 24 24">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <path d="M14 2v6h6M8 13h8M8 17h8" />
+                    </svg>
                   )}
-                  <span
-                    style={{
-                      fontSize: '22px',
-                      fontWeight: 800,
-                      color: '#FFFFFF',
-                      letterSpacing: '-0.5px',
-                    }}
+                </div>
+                <h3>{feat.title}</h3>
+                <p>{feat.description}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 9. Roles Section */}
+      {(sections.showRoles ?? true) && (
+        <section id="sec-roles" className="ssec alt">
+          <div className="shead">
+            <span className="eyebrow">{cfg?.rolesKicker || 'What you can do'}</span>
+            <h2>{cfg?.rolesTitle || 'Tailored portals for every stakeholder'}</h2>
+            <p>
+              {!cfg?.rolesSubtitle || cfg.rolesSubtitle === 'Each person accesses only what they need with zero clutter.'
+                ? 'Dedicated workspaces for every role.'
+                : cfg.rolesSubtitle}
+            </p>
+          </div>
+
+          <div className="rgrid">
+            {rolesToRender.map((roleItem) => (
+              <article
+                key={roleItem.id}
+                className="rcard"
+                style={{ '--rc': roleItem.color || '#0f766e' } as any}
+              >
+                <span className="rbar" />
+                <h3>{roleItem.title}</h3>
+                <ul>
+                  {roleItem.bullets.map((b, bIdx) => (
+                    <li key={bIdx}>{b}</li>
+                  ))}
+                </ul>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 10. Pricing Section */}
+      {(sections.showPricing ?? true) && (
+        <section id="sec-pricing" className="ssec alt">
+          <div className="shead" style={{ textAlign: 'center' }}>
+            <span className="eyebrow">{cfg?.pricingKicker || 'Pricing'}</span>
+            <h2>{cfg?.pricingTitle || 'Simple pricing'}</h2>
+            <p style={{ margin: '0 auto' }}>
+              {cfg?.pricingSubtitle ||
+                `Pick a plan by the size of your portfolio. Every plan starts with a ${trialDays}-day free trial, and you can change or cancel any time.`}
+            </p>
+          </div>
+
+          <div className="sgrid3 plans" style={{ marginTop: '28px' }}>
+            {dynamicPlans.map((plan, idx, arr) => {
+              const hasExplicitPopular = arr.some((p) => p.isPopular);
+              const isPopular = hasExplicitPopular
+                ? !!plan.isPopular
+                : plan.name.toLowerCase() === 'growth' || (arr.length > 2 && idx === 1);
+
+              return (
+                <div key={plan.id} className={`splan ${isPopular ? 'pop' : ''}`}>
+                  {isPopular && (
+                    <span className="spill">
+                      Most popular
+                    </span>
+                  )}
+                  <h3>{plan.name}</h3>
+                  <div className="sprice">
+                    ${plan.price} <small>per month</small>
+                  </div>
+                  <p className="mute">
+                    {plan.description ||
+                      (plan.name.toLowerCase() === 'starter'
+                        ? 'Essential management for independent landlords.'
+                        : plan.name.toLowerCase() === 'growth'
+                          ? 'Scale multi-family portfolios with full automation.'
+                          : 'Full enterprise suite for large property management firms.')}
+                  </p>
+                  <ul>
+                    {plan.features && Array.isArray(plan.features) && plan.features.length > 0 ? (
+                      plan.features.map((f: string, fIdx: number) => <li key={fIdx}>{f}</li>)
+                    ) : (
+                      <>
+                        <li>
+                          <b>
+                            {(plan.properties == null || plan.properties >= 999)
+                              ? 'Unlimited'
+                              : plan.properties}
+                          </b>{' '}
+                          {plan.properties === 1 ? 'property' : 'properties'}
+                        </li>
+                        <li>
+                          <b>
+                            {(plan.units == null || plan.units >= 9999)
+                              ? 'Unlimited'
+                              : plan.units}
+                          </b>{' '}
+                          {plan.units === 1 ? 'unit' : 'units'}
+                        </li>
+                        <li>
+                          <b>
+                            {(plan.tenants == null || plan.tenants >= 9999)
+                              ? 'Unlimited'
+                              : plan.tenants}
+                          </b>{' '}
+                          {plan.tenants === 1 ? 'tenant' : 'tenants'}
+                        </li>
+                        <li>
+                          <b>
+                            {(plan.managers == null || plan.managers >= 999)
+                              ? 'Unlimited'
+                              : (plan.managers ?? 0)}
+                          </b>{' '}
+                          {plan.managers === 1 ? 'manager' : 'managers'}
+                        </li>
+                        <li>
+                          <b>
+                            {(plan.staff == null || plan.staff >= 999)
+                              ? 'Unlimited'
+                              : (plan.staff ?? 0)}
+                          </b>{' '}
+                          maintenance staff
+                        </li>
+                      </>
+                    )}
+                  </ul>
+                  <Link
+                    to="/register"
+                    className={`btn ${isPopular ? 'pri' : 'secondary'}`}
+                    style={{ marginTop: 'auto' }}
                   >
-                    {cfg.brandName || 'propit'}
-                    <span style={{ color: '#10B981' }}>{cfg.brandAccent || 'hub'}</span>
-                  </span>
+                    Start {trialDays}-day free trial
+                  </Link>
                 </div>
-                <p style={{ fontSize: '13px', lineHeight: 1.6, color: '#94A3B8', marginBottom: '16px' }}>
-                  {cfg.footerBrandDescription ||
-                    'Enterprise cloud property management platform engineered to streamline leasing, automate billing, and connect owners, tenants, and maintenance crews.'}
-                </p>
-                <div
-                  style={{
-                    fontSize: '12.5px',
-                    color: '#94A3B8',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '6px',
-                  }}
-                >
-                  <div>
-                    <strong>Owner:</strong>{' '}
-                    {cfg.footerCompanyName || 'NEBZA Technologies Private Limited'}
-                  </div>
-                  <div>
-                    <strong>Email:</strong> {cfg.footerEmail || 'admin@propithub.com'}
-                  </div>
-                  <div>
-                    <strong>Phone:</strong> {cfg.footerPhone || '+1 (555) 010-0001'}
+              );
+            })}
+          </div>
+
+          <div className="incl">
+            <b>Every plan includes</b>
+            <ul>
+              <li>Online rent and deposit collection</li>
+              <li>Digital leases and renewals</li>
+              <li>Maintenance tickets and technicians</li>
+              <li>A tenant app on web and phone</li>
+              <li>Reminders and receipts</li>
+              <li>Listing vacant units on the hub</li>
+            </ul>
+          </div>
+
+        </section>
+      )}
+
+      {/* 11. FAQ Section */}
+      {(sections.showFaq ?? true) && (
+        <section id="sec-faq" className="ssec alt">
+          <div className="shead" style={{ textAlign: 'center' }}>
+            <span className="eyebrow">{cfg?.faqKicker || 'FAQ'}</span>
+            <h2>{cfg?.faqTitle || 'Frequently asked questions'}</h2>
+            {cfg?.faqSubtitle && <p style={{ margin: '0 auto' }}>{cfg.faqSubtitle}</p>}
+          </div>
+
+          <div className="sfaq">
+            {faqsToRender.map((faq, idx) => {
+              const isOpen = Boolean(openFaqIndices[idx]);
+              return (
+                <div key={faq.id || idx} className={`sfaq-item ${isOpen ? 'is-open' : ''}`}>
+                  <button
+                    type="button"
+                    className="sfaq-trigger"
+                    onClick={() => toggleFaq(idx)}
+                    aria-expanded={isOpen}
+                  >
+                    <span>{faq.question}</span>
+                    <ChevronDown size={19} className="sfaq-chevron" />
+                  </button>
+                  <div className="sfaq-content-wrap">
+                    <div className="sfaq-content-inner">
+                      <p className="sfaq-answer">{faq.answer}</p>
+                    </div>
                   </div>
                 </div>
-              </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
-              {/* Navigation */}
-              <div>
-                <h5
-                  style={{
-                    color: '#F8FAFC',
-                    fontSize: '12.5px',
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginBottom: '16px',
-                  }}
-                >
-                  Navigation
-                </h5>
-                <ul
-                  style={{
-                    listStyle: 'none',
-                    padding: 0,
-                    margin: 0,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                    fontSize: '13px',
-                  }}
-                >
-                  {cfg.sections?.showFeatures !== false && (
-                    <li>
-                      <a href="#features" style={{ color: '#94A3B8', textDecoration: 'none' }}>
-                        Features
-                      </a>
-                    </li>
-                  )}
-                  {cfg.sections?.showHowItWorks !== false && (
-                    <li>
-                      <a href="#how-it-works" style={{ color: '#94A3B8', textDecoration: 'none' }}>
-                        How It Works
-                      </a>
-                    </li>
-                  )}
-                  {cfg.sections?.showPricing !== false && (
-                    <li>
-                      <a href="#pricing" style={{ color: '#94A3B8', textDecoration: 'none' }}>
-                        Pricing Plans
-                      </a>
-                    </li>
-                  )}
-                  {cfg.sections?.showListings !== false && (
-                    <li>
-                      <a href="#listings" style={{ color: '#94A3B8', textDecoration: 'none' }}>
-                        Available Listings
-                      </a>
-                    </li>
-                  )}
-                  {cfg.sections?.showTestimonials !== false && (
-                    <li>
-                      <a href="#testimonials" style={{ color: '#94A3B8', textDecoration: 'none' }}>
-                        Reviews
-                      </a>
-                    </li>
-                  )}
-                  {cfg.sections?.showFaq !== false && (
-                    <li>
-                      <a href="#faq" style={{ color: '#94A3B8', textDecoration: 'none' }}>
-                        FAQs
-                      </a>
-                    </li>
-                  )}
-                </ul>
-              </div>
+      {/* 12. Final CTA Banner */}
+      {(sections.showCtaBanner ?? true) && (
+        <section className="scta">
+          <h2>{cfg?.ctaBannerTitle || 'Find a home, or fill one faster.'}</h2>
+          <p className="mute" style={{ maxWidth: '48ch', margin: '0' }}>
+            {cfg?.ctaBannerSubtitle ||
+              'Join thousands of property owners, managers, and tenants running their rental operations on Propithub.'}
+          </p>
+          <div className="hero-cta" style={{ justifyContent: 'center' }}>
+            <Link to={cfg?.ctaBannerSecondaryLink || '/login'} className="btn secondary lg">
+              {cfg?.ctaBannerSecondaryText === 'Sign in to your portal' ? 'Sign in' : (cfg?.ctaBannerSecondaryText || 'Sign in')}
+            </Link>
+            <Link to={cfg?.ctaBannerPrimaryLink || '/register'} className="btn pri lg">
+              {cfg?.ctaBannerPrimaryText || `Start ${trialDays}-day free trial`}
+            </Link>
+          </div>
+        </section>
+      )}
 
-              {/* Portals */}
-              <div>
-                <h5
-                  style={{
-                    color: '#F8FAFC',
-                    fontSize: '12.5px',
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginBottom: '16px',
-                  }}
-                >
-                  Portals
-                </h5>
-                <ul
-                  style={{
-                    listStyle: 'none',
-                    padding: 0,
-                    margin: 0,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                    fontSize: '13px',
-                  }}
-                >
-                  <li>
-                    <a
-                      href="/login"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        navigate('/login');
-                      }}
-                      style={{ color: '#94A3B8', textDecoration: 'none' }}
-                    >
-                      Owner Portal
-                    </a>
-                  </li>
-                  <li>
-                    <a
-                      href="/login"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        navigate('/login');
-                      }}
-                      style={{ color: '#94A3B8', textDecoration: 'none' }}
-                    >
-                      Tenant Portal
-                    </a>
-                  </li>
-                  <li>
-                    <a
-                      href="/login"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        navigate('/login');
-                      }}
-                      style={{ color: '#94A3B8', textDecoration: 'none' }}
-                    >
-                      Maintainer Desk
-                    </a>
-                  </li>
-                  <li>
-                    <a
-                      href="/register"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        navigate('/register');
-                      }}
-                      style={{ color: '#94A3B8', textDecoration: 'none' }}
-                    >
-                      Owner Sign Up
-                    </a>
-                  </li>
-                </ul>
-              </div>
-
-              {/* Security & Cloud Badge */}
-              <div>
-                <h5
-                  style={{
-                    color: '#F8FAFC',
-                    fontSize: '12.5px',
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginBottom: '16px',
-                  }}
-                >
-                  Security & Cloud
-                </h5>
-                <p style={{ fontSize: '13px', lineHeight: 1.6, color: '#94A3B8', marginBottom: 0 }}>
-                  Enterprise-grade security with role-based access control, automated ledger accounting, and encrypted communication.
-                </p>
-              </div>
+      {/* 13. Footer */}
+      {(sections.showFooter ?? true) && (
+        <footer className="sfoot">
+          <div>
+            <PropithubLogo size={24} showText={true} />
+            <div style={{ marginTop: '8px', fontSize: '12px' }}>
+              {cfg?.footerCopyright || `© ${new Date().getFullYear()} Propithub Inc. All rights reserved.`}
             </div>
+          </div>
 
-            {/* Bottom Copyright Strip */}
-            <div
-              className="landing-footer-bottom"
-              style={{
-                borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-                paddingTop: '20px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '12px',
-                fontSize: '12.5px',
-                color: '#64748B',
-              }}
-            >
-              <div>
-                {cfg.footerCopyright || (
-                  <>
-                    © 2026 <strong>Propithub</strong>. Owned and Developed by{' '}
-                    <strong>NEBZA Technologies Private Limited</strong>. All Rights Reserved.
-                  </>
-                )}
-              </div>
-              <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
-                <span
-                  style={{ color: '#94A3B8', cursor: 'pointer' }}
-                  onClick={() => navigate('/terms')}
-                >
-                  Terms of Use
-                </span>
-                <span>•</span>
-                <span
-                  style={{ color: '#94A3B8', cursor: 'pointer' }}
-                  onClick={() => navigate('/privacy')}
-                >
-                  Privacy Policy
-                </span>
-                <span>•</span>
-                <span
-                  style={{ color: '#94A3B8', cursor: 'pointer' }}
-                  onClick={() => navigate('/refund')}
-                >
-                  Refund Policy
-                </span>
-                <span>•</span>
-                <span
-                  style={{ color: '#94A3B8', cursor: 'pointer' }}
-                  onClick={() => navigate('/contact')}
-                >
-                  Contact Support
-                </span>
-              </div>
-            </div>
+          {/* Option 1: Mobile App Store Badges */}
+          {(cfg?.showAppStoreLinks ?? true) && (
+            <AppStoreBadges
+              playStoreUrl={cfg?.playStoreUrl}
+              appStoreUrl={cfg?.appStoreUrl}
+              label={cfg?.appStoreLabel || 'Get the mobile app'}
+            />
+          )}
+
+          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+            <Link to="/terms">Terms of service</Link>
+            <Link to="/privacy">Privacy policy</Link>
+            <Link to="/refund">Refund policy</Link>
+            <Link to="/contact">Contact support</Link>
           </div>
         </footer>
       )}
-
-      {/* Public Listing Details & Enquiry Modal */}
-      <ListingDetailsModal
-        isOpen={!!selectedListingUnit}
-        unit={selectedListingUnit}
-        property={state.properties.find((p) => p.id === selectedListingUnit?.propertyId || p.name === selectedListingUnit?.propertyName)}
-        onClose={() => setSelectedListingUnit(null)}
-      />
     </div>
   );
 };
+export default LandingPage;

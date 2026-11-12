@@ -44,6 +44,18 @@ export interface Plan {
   isArchived?: boolean;
   isTrialOnly?: boolean;
   isPopular?: boolean;
+  popularBoostDays?: number; // Days per month an owner can feature public listings as Popular on /homes
+}
+
+export interface ListingBoostPlan {
+  id: string;
+  name: string;
+  days: number; // Duration in days (admin-controlled)
+  price: number; // Price amount (admin-controlled: default 5, 55, 550)
+  currency: string;
+  description?: string;
+  isPopular?: boolean;
+  isActive: boolean;
 }
 
 export interface PaymentMethodsConfig {
@@ -98,8 +110,8 @@ export interface OwnerSettings {
   planId: string;
   planName: string;
   planStatus: 'trialing' | 'active' | 'past_due' | 'expired';
-  trialEndsAt: string | null;
-  subscriptionEndsAt: string | null;
+  trialEndsAt?: string | null;
+  subscriptionEndsAt?: string | null;
   billingCycle?: 'monthly' | 'annual';
   autoRenew?: boolean;
   cancelsAtPeriodEnd?: boolean;
@@ -107,9 +119,9 @@ export interface OwnerSettings {
   previousActivePlanId?: string;
   isInitialTrial?: boolean;
   purgeScheduledAt?: string | null;
-  paymentMethods: PaymentMethodsConfig;
-  lateFeeConfig: LateFeeSettings;
-  taxConfig: {
+  paymentMethods?: PaymentMethodsConfig;
+  lateFeeConfig?: LateFeeSettings;
+  taxConfig?: {
     label: string;
     percent: number;
   };
@@ -118,6 +130,12 @@ export interface OwnerSettings {
     daysPrior: number;
   };
   rentReminderDaysPrior?: number;
+  popularBoostUntil?: string | null;
+  popularBoostPlanId?: string | null;
+  popularBoostPlanName?: string | null;
+  popularBoostPlanPrice?: number | null;
+  popularBoostDays?: number | null;
+  popularBoostActivatedAt?: string | null;
   invoiceTemplate?: InvoiceTemplateConfig;
   depositTemplate?: InvoiceTemplateConfig;
 }
@@ -131,6 +149,7 @@ export interface InvoiceTemplateConfig {
   taxLabel: string;
   taxPercent: number;
   termsAndConditions: string;
+  includeTerms?: boolean;
   signatoryName: string;
   signatureUrl?: string;
   notes: string;
@@ -154,6 +173,7 @@ export interface PlatformInvoiceTemplateConfig {
   taxLabel?: string;
   taxPercent?: number;
   termsAndConditions: string;
+  includeTerms?: boolean;
   signatoryName: string;
   signatoryRole?: string;
   notes: string;
@@ -201,6 +221,12 @@ export interface Property {
     minLeaseMonths: number;
     noticePeriodDays: number;
   };
+  isPopular?: boolean;
+  popularUntil?: string | null;
+  popularActivatedAt?: string | null;
+  popularDaysApplied?: number;
+  popularPlanId?: string | null;
+  popularPlanPrice?: number | null;
 }
 
 export interface Unit {
@@ -216,6 +242,12 @@ export interface Unit {
   currency: string;
   status: 'occupied' | 'vacant' | 'reserved' | 'maintenance';
   isListedPublicly: boolean;
+  isPopular?: boolean;
+  popularUntil?: string | null;
+  popularActivatedAt?: string | null;
+  popularDaysApplied?: number;
+  popularPlanId?: string | null;
+  popularPlanPrice?: number | null;
   tenant: string | null;
   currentTenantId?: string | null;
   unitType?: string;
@@ -301,7 +333,7 @@ export interface TenancyRequest {
   offlineDepositCollected?: boolean;
   offlineDepositRef?: string;
   depositStatus?: 'paid' | 'unpaid';
-  status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+  status: 'pending' | 'accepted' | 'declined' | 'cancelled' | 'fulfilled' | 'archived';
   isBulkLease?: boolean;
   bulkUnitIds?: string[];
   bulkUnitNumbers?: string[];
@@ -552,6 +584,7 @@ export interface Invoice {
   billingPeriodStart?: string;
   billingPeriodEnd?: string;
   termsAndConditions?: string; // T&C
+  includeTerms?: boolean;
   bankDetails?: {
     bankName?: string;
     accountName?: string;
@@ -592,10 +625,13 @@ export interface PlatformInvoice {
   transactionRef?: string;
   notes?: string;
   // Legal & Tax Fields
+  issuerName?: string;
   issuerTaxNo?: string;
   ownerTaxNo?: string;
   termsAndConditions?: string;
+  includeTerms?: boolean;
   signatoryName?: string;
+  signatoryRole?: string;
 }
 
 export interface StaffMember {
@@ -923,15 +959,48 @@ export interface LandingFaqItem {
 export interface LandingSectionsVisibility {
   showAnnouncement?: boolean;
   showHero?: boolean;
+  showDuoCards?: boolean;
   showStats?: boolean;
-  showFeatures?: boolean;
-  showHowItWorks?: boolean;
-  showPricing?: boolean;
   showListings?: boolean;
+  showWorld?: boolean;
+  showHowItWorks?: boolean;
+  showLandlords?: boolean;
+  showFeatures?: boolean;
+  showRoles?: boolean;
+  showPricing?: boolean;
   showTestimonials?: boolean;
   showFaq?: boolean;
   showCtaBanner?: boolean;
   showFooter?: boolean;
+}
+
+export interface LandingDuoCardItem {
+  title: string;
+  description: string;
+  ctaText: string;
+  ctaLink: string;
+}
+
+export interface LandingRolePortalItem {
+  id: string;
+  title: string;
+  color: string;
+  bullets: string[];
+}
+
+export interface LandingLandlordSectionConfig {
+  kicker: string;
+  title: string;
+  subtitle: string;
+  bullets: string[];
+  primaryCtaText: string;
+  primaryCtaLink: string;
+  secondaryCtaText: string;
+  secondaryCtaLink: string;
+  mockupGreeting: string;
+  mockupSubtext: string;
+  mockupItems: Array<{ text: string; action: string }>;
+  mockupKpis: Array<{ value: string; label: string }>;
 }
 
 export interface LandingConfig {
@@ -998,10 +1067,28 @@ export interface LandingConfig {
   pricingSubtitle?: string;
   pricingPlans?: LandingPricingTier[];
 
-  // Listings
+  // Listings & World
   listingsKicker?: string;
   listingsTitle?: string;
   listingsSubtitle?: string;
+  worldKicker?: string;
+  worldTitle?: string;
+  worldSubtitle?: string;
+
+  // Two-Up Duo Cards
+  duoCards?: {
+    seeker: LandingDuoCardItem;
+    owner: LandingDuoCardItem;
+  };
+
+  // For Landlords & Managers Section
+  landlordsSection?: LandingLandlordSectionConfig;
+
+  // Stakeholder Role Portals
+  rolesKicker?: string;
+  rolesTitle?: string;
+  rolesSubtitle?: string;
+  rolePortals?: LandingRolePortalItem[];
 
   // Testimonials
   testimonialsKicker?: string;
@@ -1029,6 +1116,12 @@ export interface LandingConfig {
   footerEmail?: string;
   footerPhone?: string;
   footerCopyright?: string;
+
+  // Mobile App Store Links (Footer)
+  showAppStoreLinks?: boolean;
+  playStoreUrl?: string;
+  appStoreUrl?: string;
+  appStoreLabel?: string;
 
   // Dynamic Policy & Support Pages (Terms, Privacy, Refund, Contact)
   legalPages?: LandingLegalPagesConfig;
@@ -1304,7 +1397,7 @@ export interface PropertyEnquiry {
   prospectEmail?: string;
   moveInDate: string;
   notes?: string;
-  status: 'new' | 'reviewed' | 'onboarded';
+  status: 'new' | 'reviewed' | 'onboarded' | 'contacted' | 'archived';
   tenantId?: string;
   createdAt: string;
   updatedAt?: string;

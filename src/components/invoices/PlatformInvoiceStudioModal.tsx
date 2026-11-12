@@ -267,9 +267,12 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
             gap: '12px',
           }}
         >
+          {/* Title & Status */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <span style={{ fontSize: '18px', fontWeight: 700, color: 'var(--ink)' }}>
-              {initialInvoice ? `Platform Invoice ${invoiceId}` : 'Issue Platform Invoice'}
+              {activeTab === 'preview'
+                ? (initialInvoice ? `Platform Invoice ${invoiceId}` : 'Platform Invoice Preview')
+                : (initialInvoice ? `Edit Platform Invoice ${invoiceId}` : 'Issue Platform Invoice')}
             </span>
             <span
               className={`invoice-stamp ${
@@ -280,51 +283,69 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
             </span>
           </div>
 
-          {/* Dedicated Primary Tabs */}
-          <div style={{ display: 'flex', background: 'var(--surface-sunken)', padding: '4px', borderRadius: '6px', gap: '4px' }}>
-            <button
-              type="button"
-              className={`btn small ${activeTab === 'edit' ? 'primary' : 'secondary'}`}
-              style={{ border: 'none', padding: '7px 16px', fontWeight: activeTab === 'edit' ? 600 : 500 }}
-              onClick={() => setActiveTab('edit')}
-            >
-              <Edit3 size={15} style={{ marginRight: '6px' }} /> 1. Edit & Configure Details
-            </button>
-            <button
-              type="button"
-              className={`btn small ${activeTab === 'preview' ? 'primary' : 'secondary'}`}
-              style={{ border: 'none', padding: '7px 16px', fontWeight: activeTab === 'preview' ? 600 : 500 }}
-              onClick={() => setActiveTab('preview')}
-            >
-              <Eye size={15} style={{ marginRight: '6px' }} /> 2. Official Document Preview & Voucher
-            </button>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button
-              type="button"
-              className="btn secondary small"
-              onClick={() => downloadSinglePlatformInvoicePDF(builtInvoice)}
-              title="Download official PDF invoice directly"
-            >
-              <Download size={15} style={{ marginRight: '4px' }} /> Download PDF
-            </button>
-            <button
-              type="button"
-              className="btn secondary small"
-              onClick={() => window.print()}
-              title="Print official invoice voucher"
-            >
-              <Printer size={15} style={{ marginRight: '4px' }} /> Print / PDF
-            </button>
-            <button
-              type="button"
-              className="btn brass small"
-              onClick={() => handleSaveInvoice()}
-            >
-              <CheckCircle size={15} style={{ marginRight: '4px' }} />
-              {initialInvoice ? 'Save Changes' : 'Issue Invoice'}
-            </button>
+          {/* Header Actions */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            {activeTab === 'preview' ? (
+              <>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => downloadSinglePlatformInvoicePDF(builtInvoice)}
+                  title="Download official PDF invoice directly"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Download size={14} /> Download PDF
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => window.print()}
+                  title="Print official invoice voucher"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Printer size={14} /> Print
+                </button>
+                {initialInvoice && status !== 'paid' && (
+                  <button
+                    type="button"
+                    className={`btn brass small ${isMarkingPaid ? 'btn-processing' : ''}`}
+                    disabled={isMarkingPaid || isSubmitting}
+                    onClick={async () => {
+                      setIsMarkingPaid(true);
+                      await new Promise((r) => setTimeout(r, 450));
+                      await markPlatformInvoicePaid(initialInvoice.id, 'Bank Wire / Admin Reconciled');
+                      setStatus('paid');
+                      setIsMarkingPaid(false);
+                      showToast(`Invoice ${initialInvoice.id} marked as PAID.`);
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <CheckCircle size={14} /> Mark as Paid
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => setActiveTab('edit')}
+                  title="Edit invoice parameters"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Edit3 size={14} /> Edit
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => setActiveTab('preview')}
+                  title="View document"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Eye size={14} /> View Document
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="modal-close"
@@ -615,54 +636,6 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
               alignItems: 'center',
             }}
           >
-            {/* Document Controls Bar */}
-            <div
-              style={{
-                width: '100%',
-                maxWidth: '780px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '16px',
-              }}
-            >
-              <button
-                type="button"
-                className="btn secondary small"
-                onClick={() => setActiveTab('edit')}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <ArrowLeft size={14} /> Back to Edit Details
-              </button>
-
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  className="btn secondary small"
-                  onClick={() => downloadSinglePlatformInvoicePDF(builtInvoice)}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <Download size={14} /> Download PDF
-                </button>
-                <button
-                  type="button"
-                  className="btn secondary small"
-                  onClick={() => window.print()}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <Printer size={14} /> Print / Save PDF
-                </button>
-                <button
-                  type="button"
-                  className="btn brass small"
-                  onClick={() => handleSaveInvoice()}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <CheckCircle size={14} /> Save & Issue
-                </button>
-              </div>
-            </div>
-
             {/* Official Printable A4 Platform Invoice Sheet */}
             <div
               className="invoice-sheet"
@@ -695,18 +668,18 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                 }}
               >
                 <div>
-                  <div style={{ fontSize: '26px', fontWeight: 800, letterSpacing: '-0.5px' }}>
+                  <div style={{ fontSize: '24px', fontWeight: 800, letterSpacing: '-0.5px' }}>
                     PROPIT<span style={{ color: 'var(--brass)' }}>HUB</span>
                   </div>
                   <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)', marginTop: '4px' }}>
-                    Propithub SaaS Technologies Inc.
-                  </div>
-                  <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--brass)', marginTop: '2px' }}>
-                    {issuerTaxNo}
+                    {state.platformInvoiceTemplate?.issuerName || 'Propithub SaaS Technologies Inc.'}
                   </div>
                   <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px', lineHeight: '1.4' }}>
-                    {issuerAddress}<br />
-                    Phone: {issuerPhone} • Email: {issuerEmail}
+                    {issuerAddress && <>{issuerAddress}<br /></>}
+                    {issuerEmail && <>{issuerEmail}<br /></>}
+                    {issuerPhone && <>{issuerPhone}<br /></>}
+                    {issuerTaxNo && <div style={{ color: 'var(--ledger)', fontWeight: 600, marginTop: '2px' }}>{issuerTaxNo}</div>}
+                    {!issuerAddress && !issuerEmail && !issuerPhone && !issuerTaxNo && 'Platform billing office address, email & phone'}
                   </div>
                 </div>
 
@@ -826,8 +799,33 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                 </div>
               </div>
 
+              {/* Settlement Remittance Details */}
+              {(state.platformInvoiceTemplate?.bankName || state.platformInvoiceTemplate?.accountNumber) && (
+                <div
+                  style={{
+                    background: '#F9FAFB',
+                    border: '1px solid var(--line)',
+                    borderRadius: '6px',
+                    padding: '12px 16px',
+                    marginBottom: '20px',
+                    fontSize: '11.5px',
+                    lineHeight: '1.5',
+                  }}
+                >
+                  <div style={{ fontWeight: 700, color: '#059669', fontSize: '10.5px', textTransform: 'uppercase', marginBottom: '3px' }}>
+                    OFFICIAL SETTLEMENT BANK & REMITTANCE DETAILS:
+                  </div>
+                  <div>
+                    Bank: <b>{state.platformInvoiceTemplate?.bankName || '—'}</b> · Beneficiary: <b>{state.platformInvoiceTemplate?.accountName || '—'}</b>
+                  </div>
+                  <div>
+                    A/C No: <b>{state.platformInvoiceTemplate?.accountNumber || '—'}</b> · SWIFT / Routing: <b>{state.platformInvoiceTemplate?.swiftCode || '—'}</b>
+                  </div>
+                </div>
+              )}
+
               {/* Terms & Conditions (T&C) */}
-              {termsAndConditions && (
+              {builtInvoice.includeTerms !== false && termsAndConditions && (
                 <div
                   style={{
                     background: 'var(--surface)',
@@ -835,15 +833,17 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                     borderRadius: '4px',
                     padding: '14px 18px',
                     marginBottom: '24px',
-                    fontSize: '11.5px',
+                    fontSize: '11px',
                     lineHeight: '1.5',
                     color: 'var(--ink-soft)',
                   }}
                 >
                   <div style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: '10.5px', color: 'var(--ink)', marginBottom: '4px' }}>
-                    MASTER SAAS TERMS & CONDITIONS (T&C):
+                    SUBSCRIPTION TERMS & CONDITIONS:
                   </div>
-                  <div style={{ whiteSpace: 'pre-line' }}>{termsAndConditions}</div>
+                  {termsAndConditions.split('\n').filter(Boolean).map((t, idx) => (
+                    <div key={idx} style={{ marginBottom: '2px' }}>{t}</div>
+                  ))}
                 </div>
               )}
 
@@ -875,43 +875,19 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
           </div>
         )}
 
-        {/* Bottom Bar */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '12px 24px',
-            background: 'var(--surface)',
-            borderTop: '1px solid var(--line)',
-          }}
-        >
-          <div>
-            {initialInvoice && status !== 'paid' && (
-              <button
-                type="button"
-                className={`btn secondary small ${isMarkingPaid ? 'btn-processing' : ''}`}
-                disabled={isMarkingPaid || isSubmitting}
-                onClick={async () => {
-                  setIsMarkingPaid(true);
-                  await new Promise((r) => setTimeout(r, 450));
-                  await markPlatformInvoicePaid(initialInvoice.id, 'Bank Wire / Admin Reconciled');
-                  setStatus('paid');
-                  setIsMarkingPaid(false);
-                  showToast(`Invoice ${initialInvoice.id} marked as PAID.`);
-                }}
-              >
-                <ButtonProcessing
-                  loading={isMarkingPaid}
-                  loadingText="Marking Paid..."
-                  defaultText="Mark as Paid"
-                  icon={<CheckCircle size={14} style={{ marginRight: '4px', color: 'var(--ledger)' }} />}
-                />
-              </button>
-            )}
-          </div>
-
-          <div style={{ display: 'flex', gap: '10px' }}>
+        {/* Bottom Bar: Shown only during Edit mode */}
+        {activeTab === 'edit' && (
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              alignItems: 'center',
+              padding: '12px 24px',
+              background: 'var(--surface)',
+              borderTop: '1px solid var(--line)',
+              gap: '10px',
+            }}
+          >
             <button
               type="button"
               className="btn secondary"
@@ -934,7 +910,7 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
               />
             </button>
           </div>
-        </div>
+        )}
 
       </div>
     </div>

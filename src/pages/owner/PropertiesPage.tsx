@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { GooglePlacesAddressPicker } from '../../components/GooglePlacesAddressPicker';
-import { Property, Unit, PropertyAddress, PaymentTransaction } from '../../types';
+import { Property, Unit, PropertyAddress, PaymentTransaction, ListingBoostPlan, OwnerSettings } from '../../types';
+import { db, isFirebaseConfigured } from '../../lib/firebase';
+import { doc, setDoc } from 'firebase/firestore';
 import { uploadOrCompressImage } from '../../lib/imageUploader';
 import { sanitizeCountry } from '../../lib/addressUtils';
 import { AddressDisplay } from '../../components/common/AddressDisplay';
@@ -11,6 +13,7 @@ import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { FloatingActionButton } from '../../components/common/FloatingActionButton';
 import { ButtonProcessing } from '../../components/common/Spinner';
+import { DEFAULT_BOOST_PLANS } from '../../lib/store';
 import {
   MapPin,
   Plus,
@@ -44,6 +47,7 @@ import {
 } from 'lucide-react';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, GLOBAL_CURRENCIES, normalizeCurrencyCode } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { resolveUnitOccupancy, calculatePortfolioMetrics, matchesUnitRelational } from '../../lib/portfolioSelectors';
 import { OnboardResidentModal } from '../../components/owner/OnboardResidentModal';
 import {
@@ -96,6 +100,7 @@ export const PropertiesPage: React.FC = () => {
     currentPlan,
     currentPlanName,
     usage,
+    popularBoost,
     checkAndRun,
     limitModalResource,
     openLimitModal,
@@ -106,6 +111,149 @@ export const PropertiesPage: React.FC = () => {
   const maxUnits = usage.units.max;
   const isPropertyLimitReached = usage.properties.isFull;
   const isUnitLimitReached = usage.units.isFull;
+
+  const [unitToBoost, setUnitToBoost] = useState<Unit | null>(null);
+  const [selectedBoostPlanId, setSelectedBoostPlanId] = useState<string>('boost_standard');
+  const [isApplyingBoost, setIsApplyingBoost] = useState<boolean>(false);
+
+  const ownerSettings = state.ownerSettings?.[ownerId];
+  const isPassActive = Boolean(
+    ownerSettings?.popularBoostUntil &&
+    new Date(ownerSettings.popularBoostUntil).getTime() > Date.now()
+  );
+  const passDaysLeft = isPassActive && ownerSettings?.popularBoostUntil
+    ? Math.max(1, Math.ceil((new Date(ownerSettings.popularBoostUntil).getTime() - Date.now()) / 86400000))
+    : 0;
+
+  const handleToggleUnitPopular = async (unit: Unit) => {
+    const nextPopular = !unit.isPopular;
+    const expiry = nextPopular
+      ? (ownerSettings?.popularBoostUntil || unit.popularUntil || new Date(Date.now() + 86400000 * 3).toISOString())
+      : null;
+    const updated: Unit = {
+      ...unit,
+      isPopular: nextPopular,
+      popularUntil: expiry,
+    };
+    await saveUnit(updated);
+    if (viewingUnit && viewingUnit.id === unit.id) {
+      setViewingUnit(updated);
+    }
+    showToast(
+      nextPopular
+        ? `🔥 Unit ${unit.unitNumber} is now featured as Popular on /homes!`
+        : `Unit ${unit.unitNumber} removed from Popular spotlight.`
+    );
+  };
+
+  const availableBoostPlans: ListingBoostPlan[] = React.useMemo(() => {
+    const plans = state.boostPlans && state.boostPlans.length > 0 ? state.boostPlans : DEFAULT_BOOST_PLANS;
+    return plans.filter((p) => p.isActive !== false);
+  }, [state.boostPlans]);
+
+  const handleApplyPopularBoostPlan = async (unit: Unit, plan: ListingBoostPlan) => {
+    // Guard: Prevent repurchase if pass is currently active
+    if (isPassActive) {
+      showToast(`⚠️ You already have an active Spotlight Pass running (${passDaysLeft}d remaining). You cannot purchase another pass until it expires.`);
+      return;
+    }
+
+    setIsApplyingBoost(true);
+    try {
+      const now = Date.now();
+      const expiryIso = new Date(now + plan.days * 86400000).toISOString();
+      const nowIso = new Date(now).toISOString();
+
+      const updatedBoostSettings = {
+        popularBoostUntil: expiryIso,
+        popularBoostPlanId: plan.id,
+        popularBoostPlanName: plan.name,
+        popularBoostPlanPrice: plan.price,
+        popularBoostDays: plan.days,
+        popularBoostActivatedAt: nowIso,
+      };
+
+      updateState((prev) => {
+        const nextOwnerSettings = { ...prev.ownerSettings };
+        if (ownerId) {
+          nextOwnerSettings[ownerId] = {
+            ...(nextOwnerSettings[ownerId] || {}),
+            ...updatedBoostSettings,
+          } as OwnerSettings;
+        }
+
+        const nextUnits = prev.units.map((u) => {
+          if ((u.ownerId === ownerId || !u.ownerId) && (u.status === 'vacant' || u.isListedPublicly)) {
+            return {
+              ...u,
+              isPopular: true,
+              isListedPublicly: true,
+              popularUntil: expiryIso,
+              popularActivatedAt: nowIso,
+              popularPlanId: plan.id,
+              popularPlanPrice: plan.price,
+            };
+          }
+          return u;
+        });
+
+        return {
+          ...prev,
+          ownerSettings: nextOwnerSettings,
+          units: nextUnits,
+        };
+      });
+
+      if (isFirebaseConfigured && ownerId) {
+        setDoc(doc(db, 'owners', ownerId), { ...updatedBoostSettings }, { merge: true }).catch(console.warn);
+        const myVacantUnits = state.units.filter((u) => (u.ownerId === ownerId || !u.ownerId) && (u.status === 'vacant' || u.isListedPublicly));
+        for (const vu of myVacantUnits) {
+          setDoc(doc(db, 'units', vu.id), {
+            ...vu,
+            isPopular: true,
+            isListedPublicly: true,
+            popularUntil: expiryIso,
+            popularActivatedAt: nowIso,
+            popularPlanId: plan.id,
+            popularPlanPrice: plan.price,
+          }, { merge: true }).catch(console.warn);
+        }
+      }
+
+      showToast(`🔥 "${plan.name}" activated! All your available listings are now Popular on /homes for ${plan.days} days! ($${plan.price})`);
+      setUnitToBoost(null);
+    } catch (err: any) {
+      console.error('Failed to apply popular boost:', err);
+      showToast('Failed to apply popular boost: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setIsApplyingBoost(false);
+    }
+  };
+
+  const handleCancelPopularBoost = async (unit: Unit) => {
+    setIsApplyingBoost(true);
+    try {
+      const updatedUnit: Unit = {
+        ...unit,
+        isPopular: false,
+        popularUntil: null,
+        popularActivatedAt: null,
+        popularDaysApplied: 0,
+      };
+
+      await saveUnit(updatedUnit);
+      showToast(`Unit ${unit.unitNumber} popular boost cancelled.`);
+      setUnitToBoost(null);
+      if (viewingUnit && viewingUnit.id === unit.id) {
+        setViewingUnit(updatedUnit);
+      }
+    } catch (err: any) {
+      console.error('Failed to cancel popular boost:', err);
+      showToast('Failed to cancel popular boost: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setIsApplyingBoost(false);
+    }
+  };
 
   const myPropertyManagers = (state.propertyManagers || []).filter(
     (m: any) => Boolean(ownerId) && m.ownerId === ownerId
@@ -132,6 +280,7 @@ export const PropertiesPage: React.FC = () => {
 
   // Photo viewer modal state
   const [previewPhotoModal, setPreviewPhotoModal] = useState<{ title: string; url: string } | null>(null);
+  const [expandedAmenities, setExpandedAmenities] = useState<Record<string, boolean>>({});
 
   // Add Unit to Existing Property Modal State
   const [addUnitProperty, setAddUnitProperty] = useState<Property | null>(null);
@@ -597,6 +746,8 @@ export const PropertiesPage: React.FC = () => {
     unitIds?: string[];
   }>({ isOpen: false });
 
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
   const COUNTRY_OPTIONS = [
     { name: 'India', currency: '₹' },
     { name: 'United States', currency: '$' },
@@ -606,6 +757,36 @@ export const PropertiesPage: React.FC = () => {
     { name: 'Australia', currency: '$' },
     { name: 'Singapore', currency: '$' },
     { name: 'Germany', currency: '€' },
+    { name: 'France', currency: '€' },
+    { name: 'Spain', currency: '€' },
+    { name: 'Italy', currency: '€' },
+    { name: 'Netherlands', currency: '€' },
+    { name: 'Ireland', currency: '€' },
+    { name: 'Switzerland', currency: 'CHF' },
+    { name: 'Portugal', currency: '€' },
+    { name: 'Japan', currency: '¥' },
+    { name: 'Saudi Arabia', currency: 'SAR' },
+    { name: 'Qatar', currency: 'QAR' },
+    { name: 'South Africa', currency: 'ZAR' },
+    { name: 'New Zealand', currency: '$' },
+    { name: 'Malaysia', currency: 'MYR' },
+    { name: 'Thailand', currency: '฿' },
+    { name: 'Brazil', currency: 'R$' },
+    { name: 'Mexico', currency: '$' },
+    { name: 'Sweden', currency: 'SEK' },
+    { name: 'Norway', currency: 'NOK' },
+    { name: 'Denmark', currency: 'DKK' },
+    { name: 'Poland', currency: 'PLN' },
+    { name: 'Turkey', currency: 'TRY' },
+    { name: 'South Korea', currency: '₩' },
+    { name: 'Hong Kong', currency: 'HK$' },
+    { name: 'Indonesia', currency: 'IDR' },
+    { name: 'Philippines', currency: '₱' },
+    { name: 'Vietnam', currency: '₫' },
+    { name: 'Egypt', currency: 'EGP' },
+    { name: 'Nigeria', currency: 'NGN' },
+    { name: 'Kenya', currency: 'KES' },
+    { name: 'Kuwait', currency: 'KWD' },
   ];
 
   const handleCountrySelect = (selectedCountry: string) => {
@@ -646,7 +827,7 @@ export const PropertiesPage: React.FC = () => {
   const [bulkBaseDeposit, setBulkBaseDeposit] = useState<number>(0);
   const [bulkUnitType, setBulkUnitType] = useState<string>('2 BHK');
   const [bulkFurnishing, setBulkFurnishing] = useState<'Unfurnished' | 'Semi-Furnished' | 'Fully Furnished'>('Semi-Furnished');
-  const [bulkAreaSqFt, setBulkAreaSqFt] = useState<number>(1150);
+  const [bulkAreaSqFt, setBulkAreaSqFt] = useState<number>(0);
   const [bulkDefaultPhoto, setBulkDefaultPhoto] = useState<string | null>(null);
 
   const [initialUnits, setInitialUnits] = useState<UnitDraft[]>([]);
@@ -724,6 +905,26 @@ export const PropertiesPage: React.FC = () => {
     }
   };
 
+  const handleSavedUnitPhotoUpload = async (u: Unit, file: File) => {
+    try {
+      showToast(`Optimizing photo for Unit ${u.unitNumber}...`);
+      const optimized = await uploadOrCompressImage(
+        file,
+        `units/${u.id}_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`
+      );
+      const cleanExisting = (u.images || []).filter((img) => !img.includes('unsplash.com'));
+      const updatedUnit: Unit = {
+        ...u,
+        images: [optimized, ...cleanExisting],
+        image: optimized,
+      };
+      await saveUnit(updatedUnit);
+      showToast(`📸 Photo saved for Unit ${u.unitNumber}!`);
+    } catch (err: any) {
+      showToast(`Upload failed: ${err?.message || 'Error processing image'}`);
+    }
+  };
+
   const handleGenerateBulkUnits = () => {
     const generated: UnitDraft[] = [];
     const startF = Math.max(1, bulkFloorsStart);
@@ -765,14 +966,17 @@ export const PropertiesPage: React.FC = () => {
   };
 
   const handleCreateProperty = () => {
+    const errs: Record<string, string> = {};
     if (!propName.trim()) {
-      setModalStep(1);
-      showToast('Please provide a Property Name in Step 1.');
-      return;
+      errs.propName = 'Property name is required.';
     }
     if (!propAddress) {
+      errs.propAddress = 'Please select a confirmed Google Maps location.';
+    }
+    if (Object.keys(errs).length > 0) {
+      setFieldErrors(errs);
       setModalStep(1);
-      showToast('Please select a valid Google Maps address in Step 1.');
+      showToast('Please provide required property information in Step 1.');
       return;
     }
     if (propStructure === 'multi_unit' && initialUnits.length === 0) {
@@ -801,7 +1005,15 @@ export const PropertiesPage: React.FC = () => {
         sortedImages.unshift(cover);
       }
 
-      const resolvedCountry = sanitizeCountry(propCountry || propAddress?.country, propAddress?.formattedAddress);
+      const confirmedAddress: PropertyAddress = propAddress || {
+        formattedAddress: propName.trim(),
+        country: propCountry,
+        city: '',
+        placeId: '',
+        lat: 0,
+        lng: 0,
+      };
+      const resolvedCountry = sanitizeCountry(propCountry || confirmedAddress.country, confirmedAddress.formattedAddress);
 
       const newProp: Property = {
         id: propId,
@@ -815,8 +1027,9 @@ export const PropertiesPage: React.FC = () => {
         yearBuilt: propYearBuilt ? Number(propYearBuilt) : undefined,
         assignedManagerId: propAssignedManager || undefined,
         address: {
-          ...propAddress,
+          ...confirmedAddress,
           country: resolvedCountry,
+          formattedAddress: confirmedAddress.formattedAddress,
         },
         amenities: propAmenities,
         amenityPhotos: Object.entries(propAmenityPhotos)
@@ -839,7 +1052,7 @@ export const PropertiesPage: React.FC = () => {
             propertyId: propId,
             propertyName: propName.trim(),
             country: resolvedCountry,
-            address: propAddress.formattedAddress,
+            address: confirmedAddress.formattedAddress,
             ownerId,
             unitNumber: singleUnitLabel.trim() || 'Entire House',
             unitType: singleUnitType,
@@ -866,7 +1079,7 @@ export const PropertiesPage: React.FC = () => {
           propertyId: propId,
           propertyName: propName.trim(),
           country: resolvedCountry,
-          address: propAddress.formattedAddress,
+          address: confirmedAddress.formattedAddress,
           ownerId,
           unitNumber: u.unitNumber,
           unitType: u.unitType,
@@ -935,218 +1148,255 @@ export const PropertiesPage: React.FC = () => {
             disabled={!isPlanActive}
             title={isPropertyLimitReached ? `Property limit reached (${maxProperties} max on ${currentPlanName} tier) - Click to upgrade` : undefined}
             onClick={() => {
-                checkAndRun('properties', () => setIsAddPropOpen(true));
-              }}
-            >
-              <Plus size={16} /> Add Property
+              checkAndRun('properties', () => setIsAddPropOpen(true));
+            }}
+          >
+            <Plus size={16} /> Add Property
+          </button>
+        </div>
+
+        {isPropertyLimitReached && (
+          <div style={{ background: 'var(--amber-soft)', border: '1px solid var(--amber)', padding: '12px 18px', borderRadius: '8px', fontSize: '13px', color: 'var(--amber)', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+            <div>
+              ⚠️ <b>Property limit reached:</b> You have used all {maxProperties} properties included in your <b>{currentPlanName}</b> subscription tier.
+            </div>
+            <button type="button" className="btn brass small" onClick={() => openLimitModal('properties')}>
+              Upgrade Plan
             </button>
           </div>
+        )}
 
-          {isPropertyLimitReached && (
-            <div style={{ background: 'var(--amber-soft)', border: '1px solid var(--amber)', padding: '12px 18px', borderRadius: '8px', fontSize: '13px', color: 'var(--amber)', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-              <div>
-                ⚠️ <b>Property limit reached:</b> You have used all {maxProperties} properties included in your <b>{currentPlanName}</b> subscription tier.
-              </div>
-              <button type="button" className="btn brass small" onClick={() => openLimitModal('properties')}>
-                Upgrade Plan
-              </button>
+        {isUnitLimitReached && (
+          <div style={{ background: 'var(--amber-soft)', border: '1px solid var(--amber)', padding: '12px 18px', borderRadius: '8px', fontSize: '13px', color: 'var(--amber)', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+            <div>
+              ⚠️ <b>Unit limit reached:</b> You have used all {maxUnits} units included in your <b>{currentPlanName}</b> subscription tier.
             </div>
-          )}
+            <button type="button" className="btn brass small" onClick={() => openLimitModal('units')}>
+              Upgrade Plan
+            </button>
+          </div>
+        )}
 
-          {isUnitLimitReached && (
-            <div style={{ background: 'var(--amber-soft)', border: '1px solid var(--amber)', padding: '12px 18px', borderRadius: '8px', fontSize: '13px', color: 'var(--amber)', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-              <div>
-                ⚠️ <b>Unit limit reached:</b> You have used all {maxUnits} units included in your <b>{currentPlanName}</b> subscription tier.
-              </div>
-              <button type="button" className="btn brass small" onClick={() => openLimitModal('units')}>
-                Upgrade Plan
-              </button>
+        {isPassActive && (
+          <div
+            style={{
+              background: 'rgba(245, 158, 11, 0.1)',
+              border: '1.5px solid rgba(245, 158, 11, 0.45)',
+              padding: '12px 18px',
+              borderRadius: '8px',
+              fontSize: '13px',
+              color: 'var(--ink)',
+              marginBottom: '16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <span style={{ fontWeight: 800, color: '#b45309' }}>🔥 Spotlight Pass Active ({ownerSettings?.popularBoostPlanName || 'Active Pass'}):</span>{' '}
+              All your available listings are featured at the top of <b>/homes</b> until{' '}
+              <b>{new Date(ownerSettings!.popularBoostUntil!).toLocaleDateString()}</b> ({passDaysLeft} {passDaysLeft === 1 ? 'day' : 'days'} remaining). You can toggle individual listings ON or OFF below.
             </div>
-          )}
+            <button
+              type="button"
+              className="btn secondary small"
+              onClick={() => navigate('/owner/subscription')}
+              style={{ fontWeight: 600, fontSize: '12px' }}
+            >
+              Subscription &amp; Pass Details
+            </button>
+          </div>
+        )}
 
-          {myProperties.length === 0 ? (
-            <div className="panel">
-              <div className="panel-body" style={{ textAlign: 'center', padding: '48px 20px' }}>
-                <Building2 size={40} style={{ color: 'var(--ink-soft)', marginBottom: '12px' }} />
-                <h3 style={{ marginBottom: '8px' }}>No properties added yet</h3>
-                <p className="hint" style={{ maxWidth: '440px', margin: '0 auto' }}>
-                  Start by adding your first building or rental property using the top &quot;+ Add Property&quot; button. You can attach a verified Google Maps address, configure amenities, and set up your initial units.
-                </p>
-              </div>
+        {myProperties.length === 0 ? (
+          <div className="panel">
+            <div className="panel-body" style={{ textAlign: 'center', padding: '48px 20px' }}>
+              <Building2 size={40} style={{ color: 'var(--ink-soft)', marginBottom: '12px' }} />
+              <h3 style={{ marginBottom: 0 }}>No properties added yet</h3>
             </div>
-          ) : (
-            myProperties.map((p) => {
-              const unitsInProp = myUnits.filter((u) => u.propertyId === p.id || (!u.propertyId && myProperties.length === 1));
-              const isSingle = isSingleUnitProperty(p) || (p.unitCount === 1 && unitsInProp.length === 1 && unitsInProp[0].isWholeProperty);
-              const singleUnit = isSingle ? (unitsInProp[0] || null) : null;
-              const isSingleOccupied = singleUnit
-                ? singleUnit.status === 'occupied' || Boolean(singleUnit.tenant && singleUnit.tenant !== 'Unassigned' && singleUnit.tenant !== 'Vacant')
-                : false;
-              const totalUnits = unitsInProp.length > 0 ? unitsInProp.length : (p.unitCount || 1);
-              const propMetrics = calculatePortfolioMetrics(unitsInProp, state.agreements, state.tenancyRequests, undefined, undefined, state.moveouts);
-              const occupiedCount = propMetrics.totalUnits > 0 ? propMetrics.occupiedCount : (p.occupied || 0);
-              const isFull = totalUnits > 0 && occupiedCount >= totalUnits;
+          </div>
+        ) : (
+          myProperties.map((p) => {
+            const unitsInProp = myUnits.filter((u) => u.propertyId === p.id || (!u.propertyId && myProperties.length === 1));
+            const isSingle = isSingleUnitProperty(p) || (p.unitCount === 1 && unitsInProp.length === 1 && unitsInProp[0].isWholeProperty);
+            const singleUnit = isSingle ? (unitsInProp[0] || null) : null;
+            const isSingleOccupied = singleUnit
+              ? resolveUnitOccupancy(singleUnit, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus === 'occupied'
+              : false;
+            const totalUnits = unitsInProp.length > 0 ? unitsInProp.length : (p.unitCount || 1);
+            const propMetrics = calculatePortfolioMetrics(unitsInProp, state.agreements, state.tenancyRequests, undefined, undefined, state.moveouts);
+            const occupiedCount = propMetrics.totalUnits > 0 ? propMetrics.occupiedCount : (p.occupied || 0);
+            const isFull = totalUnits > 0 && occupiedCount >= totalUnits;
 
-              return (
-                <div key={p.id} className="panel">
-                  <div className="panel-head">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      {(() => {
-                        const realImages = (p.images || []).filter((img) => !img.includes('unsplash.com'));
-                        const hasRealImage = realImages.length > 0;
-                        return (
-                          <div style={{ position: 'relative' }}>
-                            <label
+            return (
+              <div key={p.id} className="panel">
+                <div className="panel-head">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    {(() => {
+                      const realImages = (p.images || []).filter((img) => !img.includes('unsplash.com'));
+                      const hasRealImage = realImages.length > 0;
+                      return (
+                        <div style={{ position: 'relative' }}>
+                          <label
+                            style={{
+                              width: '48px',
+                              height: '48px',
+                              borderRadius: '8px',
+                              overflow: 'hidden',
+                              border: hasRealImage ? '1px solid var(--line)' : '1px dashed var(--line)',
+                              background: hasRealImage ? 'var(--bg)' : 'var(--surface-sunken)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              flexShrink: 0,
+                              cursor: 'pointer',
+                              position: 'relative',
+                            }}
+                            title={hasRealImage ? 'Click to change or update real photo' : 'Click to upload real property photo'}
+                          >
+                            <input
+                              type="file"
+                              accept="image/*"
+                              style={{ display: 'none' }}
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handlePropertyPhotoUpload(p, f);
+                              }}
+                            />
+                            {hasRealImage ? (
+                              <img
+                                src={realImages[0]}
+                                alt={p.name}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                              />
+                            ) : (
+                              <Building2 size={22} color="var(--primary)" />
+                            )}
+                            <div
                               style={{
-                                width: '48px',
-                                height: '48px',
-                                borderRadius: '8px',
-                                overflow: 'hidden',
-                                border: hasRealImage ? '1px solid var(--line)' : '1px dashed var(--line)',
-                                background: hasRealImage ? 'var(--bg)' : 'var(--surface-sunken)',
+                                position: 'absolute',
+                                bottom: 0,
+                                right: 0,
+                                background: 'rgba(0,0,0,0.6)',
+                                borderRadius: '4px 0 0 0',
+                                padding: '2px 4px',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
-                                flexShrink: 0,
-                                cursor: 'pointer',
-                                position: 'relative',
                               }}
-                              title={hasRealImage ? 'Click to change or update real photo' : 'Click to upload real property photo'}
+                              title="Upload or Change Photo"
                             >
-                              <input
-                                type="file"
-                                accept="image/*"
-                                style={{ display: 'none' }}
-                                onChange={(e) => {
-                                  const f = e.target.files?.[0];
-                                  if (f) handlePropertyPhotoUpload(p, f);
-                                }}
-                              />
-                              {hasRealImage ? (
-                                <img
-                                  src={realImages[0]}
-                                  alt={p.name}
-                                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                />
-                              ) : (
-                                <Building2 size={22} color="var(--primary)" />
-                              )}
-                              <div
-                                style={{
-                                  position: 'absolute',
-                                  bottom: 0,
-                                  right: 0,
-                                  background: 'rgba(0,0,0,0.6)',
-                                  borderRadius: '4px 0 0 0',
-                                  padding: '2px 4px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                }}
-                                title="Upload or Change Photo"
-                              >
-                                <Camera size={10} color="#fff" />
-                              </div>
-                            </label>
-                          </div>
-                        );
-                      })()}
-                      <div>
-                        <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          {p.name}
-                          {p.amenityPhotos && p.amenityPhotos.length > 0 && (
-                            <span
-                              className="badge green"
-                              style={{ fontSize: '11px', padding: '2px 6px', fontWeight: 500 }}
-                              title={`${p.amenityPhotos.length} amenities have photos`}
-                            >
-                              📷 {p.amenityPhotos.length} Amenity Photos
-                            </span>
-                          )}
-                        </h3>
-                        <div className="hint" style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
-                          <MapPin size={13} style={{ flexShrink: 0 }} />
-                          <AddressDisplay address={p.address} fallback="Address on file" />
+                              <Camera size={10} color="#fff" />
+                            </div>
+                          </label>
                         </div>
+                      );
+                    })()}
+                    <div>
+                      <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {p.name}
+                        {p.amenityPhotos && p.amenityPhotos.length > 0 && (
+                          <span
+                            className="badge green"
+                            style={{ fontSize: '11px', padding: '2px 6px', fontWeight: 500 }}
+                            title={`${p.amenityPhotos.length} amenities have photos`}
+                          >
+                            📷 {p.amenityPhotos.length} Amenity Photos
+                          </span>
+                        )}
+                      </h3>
+                      <div className="hint" style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                        <MapPin size={13} style={{ flexShrink: 0 }} />
+                        <AddressDisplay address={p.address} fallback="Address on file" />
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                      {p.assignedManagerId && (
-                        <span className="badge blue" style={{ fontSize: '11px', padding: '2px 8px' }} title="Assigned Delegated Manager">
-                          Manager: {myPropertyManagers.find((m: any) => m.id === p.assignedManagerId)?.name || 'Assigned'}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {p.assignedManagerId && (
+                      <span className="badge blue" style={{ fontSize: '11px', padding: '2px 8px' }} title="Assigned Delegated Manager">
+                        Manager: {myPropertyManagers.find((m: any) => m.id === p.assignedManagerId)?.name || 'Assigned'}
+                      </span>
+                    )}
+                    {isSingle ? (
+                      <>
+                        <span className="badge" style={{ background: '#FAF0E6', color: '#8A5340', fontWeight: 600 }}>
+                          🏡 Single Property Asset
                         </span>
-                      )}
-                      {isSingle ? (
-                        <>
-                          <span className="badge" style={{ background: '#FAF0E6', color: '#8A5340', fontWeight: 600 }}>
-                            🏡 Single Property Asset
-                          </span>
-                          <span className={`badge ${isSingleOccupied ? 'green' : 'amber'}`} style={{ fontWeight: 600 }}>
-                            {isSingleOccupied ? 'Occupied' : 'Vacant'}
-                          </span>
-                          {!isSingleOccupied ? (
-                            <button
-                              type="button"
-                              className="btn brass small btn-mobile-full"
-                              disabled={!isPlanActive}
-                              onClick={() => {
-                                setActiveOnboardConfig({
-                                  isOpen: true,
-                                  propertyId: p.id,
-                                  unitId: singleUnit?.id,
-                                });
-                              }}
-                              style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
-                            >
-                              🔑 Lease Property
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="btn secondary small btn-mobile-full"
-                              onClick={() => {
-                                if (singleUnit) openUnitDetails(singleUnit);
-                              }}
-                              style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
-                            >
-                              <Eye size={13} /> View Lease
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          <span className={`badge ${isFull ? 'green' : occupiedCount > 0 ? 'blue' : 'grey'}`} style={{ fontWeight: 600 }}>
-                            {occupiedCount}/{totalUnits} occupied {isFull ? '• 100% Full' : ''}
-                          </span>
+                        <span className={`badge ${isSingleOccupied ? 'green' : 'amber'}`} style={{ fontWeight: 600 }}>
+                          {isSingleOccupied ? 'Occupied' : 'Vacant'}
+                        </span>
+                        {!isSingleOccupied ? (
                           <button
                             type="button"
                             className="btn brass small btn-mobile-full"
                             disabled={!isPlanActive}
-                            title={isUnitLimitReached ? `Unit limit reached (${maxUnits} max on ${currentPlanName} tier) - Click to upgrade` : undefined}
                             onClick={() => {
-                              checkAndRun('units', () => {
-                                setAddUnitProperty(p);
-                                setNewUnitNumber('');
-                                const validTypes = getUnitTypesForProperty(p.propertyType);
-                                setNewUnitType(validTypes[0] || '2 BHK');
-                                setNewUnitRent(0);
-                                setNewUnitDeposit(0);
+                              setActiveOnboardConfig({
+                                isOpen: true,
+                                propertyId: p.id,
+                                unitId: singleUnit?.id,
                               });
                             }}
                             style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
                           >
-                            <Plus size={13} /> Add Unit
+                            🔑 Lease Property
                           </button>
-                        </>
-                      )}
-                    </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn secondary small btn-mobile-full"
+                            onClick={() => {
+                              if (singleUnit) openUnitDetails(singleUnit);
+                            }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                          >
+                            <Eye size={13} /> View Lease
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span className={`badge ${isFull ? 'green' : occupiedCount > 0 ? 'blue' : 'grey'}`} style={{ fontWeight: 600 }}>
+                          {occupiedCount}/{totalUnits} occupied {isFull ? '• 100% Full' : ''}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn brass small btn-mobile-full"
+                          disabled={!isPlanActive}
+                          title={isUnitLimitReached ? `Unit limit reached (${maxUnits} max on ${currentPlanName} tier) - Click to upgrade` : undefined}
+                          onClick={() => {
+                            checkAndRun('units', () => {
+                              setAddUnitProperty(p);
+                              setNewUnitNumber('');
+                              const validTypes = getUnitTypesForProperty(p.propertyType);
+                              setNewUnitType(validTypes[0] || '2 BHK');
+                              setNewUnitRent(0);
+                              setNewUnitDeposit(0);
+                            });
+                          }}
+                          style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          <Plus size={13} /> Add Unit
+                        </button>
+                      </>
+                    )}
                   </div>
+                </div>
 
-                  <div className="panel-body">
-                    {p.amenities && p.amenities.length > 0 && (
+                <div className="panel-body">
+                  {p.amenities && p.amenities.length > 0 && (() => {
+                    const isExpanded = Boolean(expandedAmenities[p.id]);
+                    const limit = 4;
+                    const hasMore = p.amenities.length > limit;
+                    const visibleAmenities = isExpanded || !hasMore ? p.amenities : p.amenities.slice(0, limit);
+                    const remainingCount = p.amenities.length - limit;
+
+                    return (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '14px', alignItems: 'center' }}>
                         <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 600 }}>Amenities:</span>
-                        {p.amenities.map((am) => {
+                        {visibleAmenities.map((am) => {
                           const hasPhoto = p.amenityPhotos?.find((ap) => ap.name === am);
                           return (
                             <span
@@ -1175,223 +1425,243 @@ export const PropertiesPage: React.FC = () => {
                             </span>
                           );
                         })}
+                        {hasMore && (
+                          <button
+                            type="button"
+                            className="badge"
+                            style={{
+                              fontSize: '11.5px',
+                              padding: '3px 8px',
+                              cursor: 'pointer',
+                              background: 'var(--surface-sunken)',
+                              border: '1px solid var(--line)',
+                              color: 'var(--ink)',
+                              fontWeight: 600,
+                            }}
+                            onClick={() => setExpandedAmenities((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+                          >
+                            {isExpanded ? 'Show less ▴' : `+${remainingCount} more ▾`}
+                          </button>
+                        )}
                       </div>
-                    )}
+                    );
+                  })()}
 
-                    {isSingle ? (
-                      <div
-                        style={{
-                          background: 'var(--surface-sunken)',
-                          border: '1px solid var(--line)',
-                          borderRadius: 'var(--radius)',
-                          padding: '20px',
-                        }}
-                      >
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '16px', marginBottom: '16px' }}>
-                          <div>
-                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Asset Classification</div>
-                            <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--ink)' }}>
-                              {singleUnit?.unitType || p.propertyType || 'Single Family House'}
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Monthly Rent</div>
-                            <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--brass)' }}>
-                              {getCurrencySymbol(singleUnit?.currency || p.currency || DEFAULT_CURRENCY_SYMBOL)}{(singleUnit?.rent || 0).toLocaleString()} / mo
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Security Deposit</div>
-                            <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px' }}>
-                              {getCurrencySymbol(singleUnit?.currency || p.currency || DEFAULT_CURRENCY_SYMBOL)}{(singleUnit?.deposit || 0).toLocaleString()}
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Carpet Area & Furnishing</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500, marginTop: '2px' }}>
-                              {singleUnit?.areaSqFt ? `${singleUnit.areaSqFt} sq.ft • ` : ''}{singleUnit?.furnishing || 'Semi-Furnished'}
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Lease Status</div>
-                            <div style={{ marginTop: '2px' }}>
-                              <span className={`badge ${isSingleOccupied ? 'green' : 'amber'}`}>
-                                {isSingleOccupied ? `Occupied by ${singleUnit?.tenant}` : 'Vacant (Available for Lease)'}
-                              </span>
-                            </div>
+                  {isSingle ? (
+                    <div
+                      style={{
+                        background: 'var(--surface-sunken)',
+                        border: '1px solid var(--line)',
+                        borderRadius: 'var(--radius)',
+                        padding: '20px',
+                      }}
+                    >
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+                        <div>
+                          <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Asset Classification</div>
+                          <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--ink)' }}>
+                            {singleUnit?.unitType || p.propertyType || 'Single Family House'}
                           </div>
                         </div>
-
-                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: '14px', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                            {singleUnit?.unitNumber && singleUnit.unitNumber !== 'Entire House' ? `Unit Identifier: ${singleUnit.unitNumber} • ` : ''}
-                            Managed and leased directly as an independent single-property asset.
+                        <div>
+                          <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Monthly Rent</div>
+                          <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px', color: 'var(--brass)' }}>
+                            {getCurrencySymbol(singleUnit?.currency || p.currency || DEFAULT_CURRENCY_SYMBOL)}{(singleUnit?.rent || 0).toLocaleString()} / mo
                           </div>
-                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                            {singleUnit && (
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                onClick={() => openUnitEdit(singleUnit)}
-                              >
-                                <Edit3 size={13} /> Edit Lease Specs
-                              </button>
-                            )}
-                            {!isSingleOccupied ? (
-                              <button
-                                type="button"
-                                className="btn brass small"
-                                onClick={() => setActiveOnboardConfig({ isOpen: true, propertyId: p.id, unitId: singleUnit?.id })}
-                              >
-                                🔑 Lease Property
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                onClick={() => singleUnit && openUnitDetails(singleUnit)}
-                              >
-                                <Eye size={13} /> View Lease & Resident
-                              </button>
-                            )}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Security Deposit</div>
+                          <div style={{ fontSize: '15px', fontWeight: 700, marginTop: '2px' }}>
+                            {getCurrencySymbol(singleUnit?.currency || p.currency || DEFAULT_CURRENCY_SYMBOL)}{(singleUnit?.deposit || 0).toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Carpet Area & Furnishing</div>
+                          <div style={{ fontSize: '13px', fontWeight: 500, marginTop: '2px' }}>
+                            {singleUnit?.areaSqFt ? `${singleUnit.areaSqFt} sq.ft • ` : ''}{singleUnit?.furnishing || 'Semi-Furnished'}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', fontWeight: 600 }}>Lease Status</div>
+                          <div style={{ marginTop: '2px' }}>
+                            <span className={`badge ${isSingleOccupied ? 'green' : 'amber'}`}>
+                              {isSingleOccupied ? `Occupied by ${singleUnit?.tenant}` : 'Vacant (Available for Lease)'}
+                            </span>
                           </div>
                         </div>
                       </div>
-                    ) : (
-                      <>
-                        {/* Multi-Unit Bulk Leasing Action Bar if units are selected */}
-                        {(() => {
-                          const currentSelected = selectedBulkUnits[p.id] || [];
-                          const vacantUnitsInProp = unitsInProp.filter((u) => u.status === 'vacant');
-                          const allVacantSelected = vacantUnitsInProp.length > 0 && vacantUnitsInProp.every((u) => currentSelected.includes(u.id));
-                          const selectedUnitsList = unitsInProp.filter((u) => currentSelected.includes(u.id));
-                          const combinedRent = selectedUnitsList.reduce((acc, u) => acc + (u.rent || 0), 0);
-                          const combinedDeposit = selectedUnitsList.reduce((acc, u) => acc + (u.deposit || 0), 0);
 
-                          return (
-                            <>
-                              {currentSelected.length > 0 && (
-                                <div
-                                  style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    background: '#FAF8F5',
-                                    border: '1px solid var(--brass)',
-                                    borderRadius: '6px',
-                                    padding: '10px 16px',
-                                    marginBottom: '12px',
-                                    flexWrap: 'wrap',
-                                    gap: '10px',
-                                  }}
-                                >
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                                    <span className="badge brass" style={{ fontWeight: 700 }}>
-                                      ⚡ {currentSelected.length} Vacant Units Selected
-                                    </span>
-                                    <span style={{ fontSize: '13px', color: 'var(--ink)' }}>
-                                      Combined Monthly Rent: <b>{getCurrencySymbol(p.currency)}{combinedRent.toLocaleString()}</b> • Deposit: <b>{getCurrencySymbol(p.currency)}{combinedDeposit.toLocaleString()}</b>
-                                    </span>
-                                  </div>
-                                  <div style={{ display: 'flex', gap: '8px' }}>
-                                    <button
-                                      type="button"
-                                      className="btn secondary small"
-                                      onClick={() => setSelectedBulkUnits((prev) => ({ ...prev, [p.id]: [] }))}
-                                    >
-                                      Clear Selection
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn brass small"
-                                      onClick={() =>
-                                        setActiveOnboardConfig({
-                                          isOpen: true,
-                                          propertyId: p.id,
-                                          unitIds: currentSelected,
-                                        })
-                                      }
-                                    >
-                                      ⚡ Bulk Lease Selected Units
-                                    </button>
-                                  </div>
+                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: '14px', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                          {singleUnit?.unitNumber && singleUnit.unitNumber !== 'Entire House' ? `Unit Identifier: ${singleUnit.unitNumber} • ` : ''}
+                          Managed and leased directly as an independent single-property asset.
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          {singleUnit && (
+                            <button
+                              type="button"
+                              className="btn secondary small"
+                              onClick={() => openUnitEdit(singleUnit)}
+                            >
+                              <Edit3 size={13} /> Edit Lease Specs
+                            </button>
+                          )}
+                          {!isSingleOccupied ? (
+                            <button
+                              type="button"
+                              className="btn brass small"
+                              onClick={() => setActiveOnboardConfig({ isOpen: true, propertyId: p.id, unitId: singleUnit?.id })}
+                            >
+                              🔑 Lease Property
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn secondary small"
+                              onClick={() => singleUnit && openUnitDetails(singleUnit)}
+                            >
+                              <Eye size={13} /> View Lease & Resident
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Multi-Unit Bulk Leasing Action Bar if units are selected */}
+                      {(() => {
+                        const currentSelected = selectedBulkUnits[p.id] || [];
+                        const vacantUnitsInProp = unitsInProp.filter((u) => u.status === 'vacant');
+                        const allVacantSelected = vacantUnitsInProp.length > 0 && vacantUnitsInProp.every((u) => currentSelected.includes(u.id));
+                        const selectedUnitsList = unitsInProp.filter((u) => currentSelected.includes(u.id));
+                        const combinedRent = selectedUnitsList.reduce((acc, u) => acc + (u.rent || 0), 0);
+                        const combinedDeposit = selectedUnitsList.reduce((acc, u) => acc + (u.deposit || 0), 0);
+
+                        return (
+                          <>
+                            {currentSelected.length > 0 && (
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  background: '#FAF8F5',
+                                  border: '1px solid var(--brass)',
+                                  borderRadius: '6px',
+                                  padding: '10px 16px',
+                                  marginBottom: '12px',
+                                  flexWrap: 'wrap',
+                                  gap: '10px',
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                                  <span className="badge brass" style={{ fontWeight: 700 }}>
+                                    {currentSelected.length} Vacant Units Selected
+                                  </span>
+                                  <span style={{ fontSize: '13px', color: 'var(--ink)' }}>
+                                    Combined Monthly Rent: <b>{getCurrencySymbol(p.currency)}{combinedRent.toLocaleString()}</b> • Deposit: <b>{getCurrencySymbol(p.currency)}{combinedDeposit.toLocaleString()}</b>
+                                  </span>
                                 </div>
-                              )}
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                  <button
+                                    type="button"
+                                    className="btn secondary small"
+                                    onClick={() => setSelectedBulkUnits((prev) => ({ ...prev, [p.id]: [] }))}
+                                  >
+                                    Clear Selection
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn brass small"
+                                    onClick={() =>
+                                      setActiveOnboardConfig({
+                                        isOpen: true,
+                                        propertyId: p.id,
+                                        unitIds: currentSelected,
+                                      })
+                                    }
+                                  >
+                                    Bulk Lease Selected Units
+                                  </button>
+                                </div>
+                              </div>
+                            )}
 
-                              <div className="desktop-table-view">
-                                <div className="table-wrap">
-                                  <table>
-                                    <thead>
-                                      <tr>
-                                        <th style={{ width: '38px', textAlign: 'center' }}>
-                                          {vacantUnitsInProp.length > 0 && (
-                                            <input
-                                              type="checkbox"
-                                              checked={allVacantSelected}
-                                              onChange={(e) => {
-                                                if (e.target.checked) {
-                                                  setSelectedBulkUnits((prev) => ({
-                                                    ...prev,
-                                                    [p.id]: vacantUnitsInProp.map((u) => u.id),
-                                                  }));
-                                                } else {
-                                                  setSelectedBulkUnits((prev) => ({ ...prev, [p.id]: [] }));
-                                                }
-                                              }}
-                                              title="Select all vacant units for bulk lease"
-                                              style={{ cursor: 'pointer' }}
-                                            />
-                                          )}
-                                        </th>
-                                        <th style={{ width: '50px' }}>Photo</th>
-                                        <th>Unit</th>
-                                        <th>Tenant</th>
-                                        <th>Rent</th>
-                                        <th>Deposit</th>
-                                        <th>Status</th>
-                                        <th>Listed</th>
-                                        <th>Action</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {unitsInProp.map((u) => {
-                                        const isUnitVacant = u.status === 'vacant';
-                                        const isChecked = (selectedBulkUnits[p.id] || []).includes(u.id);
-                                        const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus;
-                                        const unitCover = (u.images && u.images[0]) || u.image;
-                                        return (
-                                          <tr key={u.id}>
-                                            <td style={{ width: '38px', textAlign: 'center', padding: '6px 8px' }}>
-                                              {isUnitVacant ? (
-                                                <input
-                                                  type="checkbox"
-                                                  checked={isChecked}
-                                                  onChange={() => {
-                                                    setSelectedBulkUnits((prev) => {
-                                                      const current = prev[p.id] || [];
-                                                      const next = current.includes(u.id)
-                                                        ? current.filter((x) => x !== u.id)
-                                                        : [...current, u.id];
-                                                      return { ...prev, [p.id]: next };
-                                                    });
-                                                  }}
-                                                  title="Select unit for bulk lease"
-                                                  style={{ cursor: 'pointer' }}
-                                                />
-                                              ) : (
-                                                <span style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>—</span>
-                                              )}
-                                            </td>
-                                            <td style={{ padding: '6px 8px' }}>
+                            <div className="desktop-table-view">
+                              <div className="table-wrap">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th style={{ width: '38px', textAlign: 'center' }}>
+                                        {vacantUnitsInProp.length > 0 && (
+                                          <input
+                                            type="checkbox"
+                                            checked={allVacantSelected}
+                                            onChange={(e) => {
+                                              if (e.target.checked) {
+                                                setSelectedBulkUnits((prev) => ({
+                                                  ...prev,
+                                                  [p.id]: vacantUnitsInProp.map((u) => u.id),
+                                                }));
+                                              } else {
+                                                setSelectedBulkUnits((prev) => ({ ...prev, [p.id]: [] }));
+                                              }
+                                            }}
+                                            title="Select all vacant units for bulk lease"
+                                            style={{ cursor: 'pointer' }}
+                                          />
+                                        )}
+                                      </th>
+                                      <th>Unit</th>
+                                      <th>Tenant</th>
+                                      <th>{getTableCurrencyHeader('Rent', viewCurrency)}</th>
+                                      <th>{getTableCurrencyHeader('Deposit', viewCurrency)}</th>
+                                      <th>Status</th>
+                                      <th>Listed</th>
+                                      <th>Action</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {unitsInProp.map((u) => {
+                                      const isUnitVacant = u.status === 'vacant';
+                                      const isChecked = (selectedBulkUnits[p.id] || []).includes(u.id);
+                                      const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus;
+                                      const unitCover = (u.images && u.images[0]) || u.image;
+                                      return (
+                                        <tr key={u.id}>
+                                          <td style={{ width: '38px', textAlign: 'center', padding: '6px 8px' }}>
+                                            {isUnitVacant ? (
+                                              <input
+                                                type="checkbox"
+                                                checked={isChecked}
+                                                onChange={() => {
+                                                  setSelectedBulkUnits((prev) => {
+                                                    const current = prev[p.id] || [];
+                                                    const next = current.includes(u.id)
+                                                      ? current.filter((x) => x !== u.id)
+                                                      : [...current, u.id];
+                                                    return { ...prev, [p.id]: next };
+                                                  });
+                                                }}
+                                                title="Select unit for bulk lease"
+                                                style={{ cursor: 'pointer' }}
+                                              />
+                                            ) : (
+                                              <span style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>—</span>
+                                            )}
+                                          </td>
+                                          <td>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                               {unitCover ? (
                                                 <div
                                                   style={{
                                                     width: '34px',
                                                     height: '34px',
-                                                    borderRadius: '4px',
+                                                    borderRadius: '6px',
                                                     overflow: 'hidden',
                                                     border: '1px solid var(--line)',
                                                     cursor: 'pointer',
+                                                    flexShrink: 0,
                                                   }}
                                                   onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber || u.id}`, url: unitCover })}
                                                   title="Click to view photo"
@@ -1399,301 +1669,335 @@ export const PropertiesPage: React.FC = () => {
                                                   <img src={unitCover} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                                 </div>
                                               ) : (
-                                                <div
+                                                <label
                                                   style={{
                                                     width: '34px',
                                                     height: '34px',
-                                                    borderRadius: '4px',
+                                                    borderRadius: '6px',
                                                     background: '#F0F2F5',
                                                     border: '1px dashed #CBD2D9',
                                                     display: 'flex',
                                                     alignItems: 'center',
                                                     justifyContent: 'center',
                                                     color: 'var(--ink-soft)',
-                                                  }}
-                                                  title="No unit photo"
-                                                >
-                                                  <Camera size={14} />
-                                                </div>
-                                              )}
-                                            </td>
-                                            <td>
-                                              <b>{u.unitNumber || u.id}</b>
-                                              {u.unitType && (
-                                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
-                                                  {u.unitType}
-                                                </span>
-                                              )}
-                                            </td>
-                                            <td>
-                                              {u.tenant && unitEffectiveStatus === 'occupied' ? (
-                                                <span
-                                                  style={{
-                                                    color: 'var(--ledger)',
-                                                    fontWeight: 500,
                                                     cursor: 'pointer',
-                                                    textDecoration: 'underline',
+                                                    flexShrink: 0,
                                                   }}
-                                                  onClick={() => {
-                                                    navigate('/owner/tenants');
-                                                  }}
+                                                  title="Click to upload unit photo"
                                                 >
-                                                  {u.tenant}
-                                                </span>
-                                              ) : (
-                                                <span style={{ color: 'var(--ink-soft)' }}>Vacant</span>
+                                                  <input
+                                                    type="file"
+                                                    accept="image/*"
+                                                    style={{ display: 'none' }}
+                                                    onChange={(e) => {
+                                                      const f = e.target.files?.[0];
+                                                      if (f) handleSavedUnitPhotoUpload(u, f);
+                                                    }}
+                                                  />
+                                                  <Camera size={14} />
+                                                </label>
                                               )}
-                                            </td>
-                                            <td>
-                                              {getCurrencySymbol(u.currency)}
-                                              {u.rent?.toLocaleString()}
-                                              {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
-                                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
-                                                  ~{format(convert(u.rent || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)}
-                                                </span>
-                                              )}
-                                            </td>
-                                            <td>
-                                              {getCurrencySymbol(u.currency)}
-                                              {u.deposit?.toLocaleString()}
-                                              {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
-                                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
-                                                  ~{format(convert(u.deposit || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)}
-                                                </span>
-                                              )}
-                                            </td>
-                                            <td>
+                                              <div>
+                                                <b style={{ fontSize: '13.5px', color: 'var(--ink)' }}>{u.unitNumber || u.id}</b>
+                                                {u.unitType && (
+                                                  <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
+                                                    {u.unitType}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </td>
+                                          <td>
+                                            {u.tenant && unitEffectiveStatus === 'occupied' ? (
                                               <span
-                                                className={`badge ${unitEffectiveStatus === 'occupied'
-                                                    ? 'green'
-                                                    : unitEffectiveStatus === 'reserved'
-                                                      ? 'amber'
-                                                      : unitEffectiveStatus === 'maintenance'
-                                                        ? 'grey'
-                                                        : 'grey'
-                                                  }`}
+                                                style={{
+                                                  color: 'var(--ink)',
+                                                  fontWeight: 600,
+                                                  cursor: 'pointer',
+                                                }}
+                                                onClick={() => {
+                                                  navigate('/owner/tenants');
+                                                }}
                                               >
-                                                {unitEffectiveStatus === 'occupied'
-                                                  ? 'Occupied'
-                                                  : unitEffectiveStatus === 'reserved'
-                                                    ? 'Reserved'
-                                                    : unitEffectiveStatus === 'maintenance'
-                                                      ? 'Maintenance'
-                                                      : 'Vacant'}
+                                                {u.tenant}
                                               </span>
-                                            </td>
-                                            <td>
-                                              {unitEffectiveStatus === 'vacant' ? (
-                                                <label
-                                                  className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
+                                            ) : (
+                                              <span style={{ color: 'var(--ink-soft)' }}>Vacant</span>
+                                            )}
+                                          </td>
+                                          <td>
+                                            <div style={{ fontWeight: 600, color: 'var(--ink)' }}>
+                                              <CurrencyAmount amount={u.rent} currency={u.currency || p.currency} />
+                                            </div>
+                                          </td>
+                                          <td>
+                                            <div style={{ fontWeight: 600, color: 'var(--ink)' }}>
+                                              <CurrencyAmount amount={u.deposit} currency={u.currency || p.currency} />
+                                            </div>
+                                          </td>
+                                          <td>
+                                            <span
+                                              className={`badge ${unitEffectiveStatus === 'occupied'
+                                                ? 'green'
+                                                : unitEffectiveStatus === 'reserved'
+                                                  ? 'amber'
+                                                  : unitEffectiveStatus === 'maintenance'
+                                                    ? 'grey'
+                                                    : 'grey'
+                                                }`}
+                                            >
+                                              {unitEffectiveStatus === 'occupied'
+                                                ? 'Occupied'
+                                                : unitEffectiveStatus === 'reserved'
+                                                  ? 'Reserved'
+                                                  : unitEffectiveStatus === 'maintenance'
+                                                    ? 'Maintenance'
+                                                    : 'Vacant'}
+                                            </span>
+                                          </td>
+                                          <td>
+                                            {unitEffectiveStatus === 'vacant' ? (
+                                              <label
+                                                className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
+                                                onClick={() => {
+                                                  if (!u.isListedPublicly) {
+                                                    setUnitToConfirmListing(u);
+                                                  } else {
+                                                    handleToggleListing(u.id);
+                                                  }
+                                                }}
+                                              >
+                                                <span className="track" />
+                                              </label>
+                                            ) : null}
+                                          </td>
+                                          <td>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                              {u.isListedPublicly && unitEffectiveStatus === 'vacant' && (
+                                                <button
+                                                  type="button"
+                                                  className={`btn small ${u.isPopular ? 'brass' : 'secondary'}`}
                                                   onClick={() => {
-                                                    if (!u.isListedPublicly) {
-                                                      setUnitToConfirmListing(u);
+                                                    if (isPassActive) {
+                                                      handleToggleUnitPopular(u);
                                                     } else {
-                                                      handleToggleListing(u.id);
+                                                      setUnitToBoost(u);
+                                                      const preferred = availableBoostPlans.find((bp) => bp.isPopular) || availableBoostPlans[0];
+                                                      if (preferred) setSelectedBoostPlanId(preferred.id);
                                                     }
                                                   }}
-                                                >
-                                                  <span className="track" />
-                                                </label>
-                                              ) : (
-                                                <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>—</span>
-                                              )}
-                                            </td>
-                                            <td>
-                                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <button
-                                                  type="button"
-                                                  className="btn secondary small"
-                                                  onClick={() => openUnitDetails(u)}
-                                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                                  title="View Unit Details"
-                                                >
-                                                  <Eye size={12} /> Details
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  className="btn secondary small"
-                                                  onClick={() => openUnitEdit(u)}
-                                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                                  title="Edit Unit"
-                                                >
-                                                  <Edit3 size={12} /> Edit
-                                                </button>
-                                              </div>
-                                            </td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              </div>
-
-                              <div className="mobile-card-view">
-                                {unitsInProp.map((u) => {
-                                  const isUnitVacant = u.status === 'vacant';
-                                  const isChecked = (selectedBulkUnits[p.id] || []).includes(u.id);
-                                  const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus;
-                                  const unitCover = (u.images && u.images[0]) || u.image;
-                                  return (
-                                    <div key={u.id} className="staff-card">
-                                      <div className="staff-card-header">
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                          {isUnitVacant && (
-                                            <input
-                                              type="checkbox"
-                                              checked={isChecked}
-                                              onChange={() => {
-                                                setSelectedBulkUnits((prev) => {
-                                                  const current = prev[p.id] || [];
-                                                  const next = current.includes(u.id)
-                                                    ? current.filter((x) => x !== u.id)
-                                                    : [...current, u.id];
-                                                  return { ...prev, [p.id]: next };
-                                                });
-                                              }}
-                                              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                                            />
-                                          )}
-                                          {unitCover ? (
-                                            <div
-                                              style={{
-                                                width: '38px',
-                                                height: '38px',
-                                                borderRadius: '6px',
-                                                overflow: 'hidden',
-                                                border: '1px solid var(--line)',
-                                                flexShrink: 0,
-                                                cursor: 'pointer',
-                                              }}
-                                              onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber || u.id}`, url: unitCover })}
-                                            >
-                                              <img src={unitCover} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                            </div>
-                                          ) : (
-                                            <div
-                                              style={{
-                                                width: '38px',
-                                                height: '38px',
-                                                borderRadius: '6px',
-                                                background: '#F0F2F5',
-                                                border: '1px dashed #CBD2D9',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                color: 'var(--ink-soft)',
-                                                flexShrink: 0,
-                                              }}
-                                            >
-                                              <Camera size={16} />
-                                            </div>
-                                          )}
-                                          <div>
-                                            <div className="staff-card-title">Unit {u.unitNumber || u.id}</div>
-                                            <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                                              Tenant:{' '}
-                                              {u.tenant && unitEffectiveStatus === 'occupied' ? (
-                                                <span
-                                                  style={{ color: 'var(--ledger)', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer' }}
-                                                  onClick={() => {
-                                                    navigate('/owner/tenants');
+                                                  style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    gap: '4px',
+                                                    padding: '4px 8px',
+                                                    fontSize: '11px',
+                                                    fontWeight: 700,
+                                                    background: u.isPopular ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)' : undefined,
+                                                    color: u.isPopular ? '#ffffff' : '#d97706',
+                                                    borderColor: '#d97706',
                                                   }}
+                                                  title={
+                                                    isPassActive
+                                                      ? (u.isPopular ? 'Click to turn OFF Popular spotlight' : 'Click to feature as Popular (Included in your active pass)')
+                                                      : 'Get a Spotlight Pass to feature this listing'
+                                                  }
                                                 >
-                                                  {u.tenant}
-                                                </span>
-                                              ) : (
-                                                'Vacant'
+                                                  🔥 {u.isPopular ? 'Popular (ON)' : (isPassActive ? 'Make Popular' : 'Boost')}
+                                                </button>
                                               )}
+                                              <button
+                                                type="button"
+                                                className="btn secondary small"
+                                                onClick={() => openUnitDetails(u)}
+                                                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '4px 8px' }}
+                                                title="View Unit Details"
+                                              >
+                                                <Eye size={12} /> Details
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="btn secondary small"
+                                                onClick={() => openUnitEdit(u)}
+                                                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '4px 8px' }}
+                                                title="Edit Unit"
+                                              >
+                                                <Edit3 size={12} /> Edit
+                                              </button>
                                             </div>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+
+                            <div className="mobile-card-view">
+                              {unitsInProp.map((u) => {
+                                const isUnitVacant = u.status === 'vacant';
+                                const isChecked = (selectedBulkUnits[p.id] || []).includes(u.id);
+                                const unitEffectiveStatus = resolveUnitOccupancy(u, state.agreements, state.tenancyRequests, state.moveouts).effectiveStatus;
+                                const unitCover = (u.images && u.images[0]) || u.image;
+                                return (
+                                  <div key={u.id} className="staff-card">
+                                    <div className="staff-card-header">
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                        {isUnitVacant && (
+                                          <input
+                                            type="checkbox"
+                                            checked={isChecked}
+                                            onChange={() => {
+                                              setSelectedBulkUnits((prev) => {
+                                                const current = prev[p.id] || [];
+                                                const next = current.includes(u.id)
+                                                  ? current.filter((x) => x !== u.id)
+                                                  : [...current, u.id];
+                                                return { ...prev, [p.id]: next };
+                                              });
+                                            }}
+                                            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                                          />
+                                        )}
+                                        {unitCover ? (
+                                          <div
+                                            style={{
+                                              width: '38px',
+                                              height: '38px',
+                                              borderRadius: '6px',
+                                              overflow: 'hidden',
+                                              border: '1px solid var(--line)',
+                                              flexShrink: 0,
+                                              cursor: 'pointer',
+                                            }}
+                                            onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber || u.id}`, url: unitCover })}
+                                          >
+                                            <img src={unitCover} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                           </div>
-                                        </div>
-                                        <span
-                                          className={`badge ${unitEffectiveStatus === 'occupied'
-                                              ? 'green'
-                                              : unitEffectiveStatus === 'reserved'
-                                                ? 'amber'
-                                                : unitEffectiveStatus === 'maintenance'
-                                                  ? 'grey'
-                                                  : 'grey'
-                                            }`}
-                                        >
-                                          {unitEffectiveStatus === 'occupied'
-                                            ? 'Occupied'
-                                            : unitEffectiveStatus === 'reserved'
-                                              ? 'Reserved'
-                                              : unitEffectiveStatus === 'maintenance'
-                                                ? 'Maintenance'
-                                                : 'Vacant'}
-                                        </span>
-                                      </div>
-                                      <div className="staff-card-meta">
-                                        <div className="staff-card-meta-item">
-                                          <b>Rent:</b> {getCurrencySymbol(u.currency)}{u.rent?.toLocaleString()}
-                                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
-                                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginLeft: '4px' }}>
-                                              (~{format(convert(u.rent || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="staff-card-meta-item">
-                                          <b>Deposit:</b> {getCurrencySymbol(u.currency)}{u.deposit?.toLocaleString()}
-                                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
-                                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginLeft: '4px' }}>
-                                              (~{format(convert(u.deposit || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
-                                            </span>
-                                          )}
-                                        </div>
-                                        {u.status === 'vacant' && (
-                                          <div className="staff-card-meta-item" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                                            <span>Publicly Listed:</span>
-                                            <label
-                                              className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
-                                              onClick={() => {
-                                                if (!u.isListedPublicly) {
-                                                  setUnitToConfirmListing(u);
-                                                } else {
-                                                  handleToggleListing(u.id);
-                                                }
-                                              }}
-                                            >
-                                              <span className="track" />
-                                            </label>
+                                        ) : (
+                                          <div
+                                            style={{
+                                              width: '38px',
+                                              height: '38px',
+                                              borderRadius: '6px',
+                                              background: '#F0F2F5',
+                                              border: '1px dashed #CBD2D9',
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              justifyContent: 'center',
+                                              color: 'var(--ink-soft)',
+                                              flexShrink: 0,
+                                            }}
+                                          >
+                                            <Camera size={16} />
                                           </div>
                                         )}
+                                        <div>
+                                          <div className="staff-card-title">Unit {u.unitNumber || u.id}</div>
+                                          <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                                            Tenant:{' '}
+                                            {u.tenant && unitEffectiveStatus === 'occupied' ? (
+                                              <span
+                                                style={{ color: 'var(--ledger)', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer' }}
+                                                onClick={() => {
+                                                  navigate('/owner/tenants');
+                                                }}
+                                              >
+                                                {u.tenant}
+                                              </span>
+                                            ) : (
+                                              'Vacant'
+                                            )}
+                                          </div>
+                                        </div>
                                       </div>
-                                      <div className="staff-card-footer" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                                        <button
-                                          type="button"
-                                          className="btn secondary small"
-                                          onClick={() => openUnitDetails(u)}
-                                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
-                                        >
-                                          <Eye size={13} /> Details
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="btn secondary small"
-                                          onClick={() => openUnitEdit(u)}
-                                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
-                                        >
-                                          <Edit3 size={13} /> Edit
-                                        </button>
-                                      </div>
+                                      <span
+                                        className={`badge ${unitEffectiveStatus === 'occupied'
+                                          ? 'green'
+                                          : unitEffectiveStatus === 'reserved'
+                                            ? 'amber'
+                                            : unitEffectiveStatus === 'maintenance'
+                                              ? 'grey'
+                                              : 'grey'
+                                          }`}
+                                      >
+                                        {unitEffectiveStatus === 'occupied'
+                                          ? 'Occupied'
+                                          : unitEffectiveStatus === 'reserved'
+                                            ? 'Reserved'
+                                            : unitEffectiveStatus === 'maintenance'
+                                              ? 'Maintenance'
+                                              : 'Vacant'}
+                                      </span>
                                     </div>
-                                  );
-                                })}
-                              </div>
-                            </>
-                          );
-                        })()}
-                      </>
-                    )}
-                  </div>
+                                    <div className="staff-card-meta">
+                                      <div className="staff-card-meta-item">
+                                        <b>Rent:</b> {getCurrencySymbol(u.currency)}{u.rent?.toLocaleString()}
+                                        {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
+                                          <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginLeft: '4px' }}>
+                                            (~{format(convert(u.rent || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="staff-card-meta-item">
+                                        <b>Deposit:</b> {getCurrencySymbol(u.currency)}{u.deposit?.toLocaleString()}
+                                        {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(u.currency || DEFAULT_CURRENCY) && (
+                                          <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginLeft: '4px' }}>
+                                            (~{format(convert(u.deposit || 0, u.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
+                                          </span>
+                                        )}
+                                      </div>
+                                      {u.status === 'vacant' && (
+                                        <div className="staff-card-meta-item" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                          <span>Publicly Listed:</span>
+                                          <label
+                                            className={`toggle ${u.isListedPublicly ? 'on' : ''}`}
+                                            onClick={() => {
+                                              if (!u.isListedPublicly) {
+                                                setUnitToConfirmListing(u);
+                                              } else {
+                                                handleToggleListing(u.id);
+                                              }
+                                            }}
+                                          >
+                                            <span className="track" />
+                                          </label>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="staff-card-footer" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                      <button
+                                        type="button"
+                                        className="btn secondary small"
+                                        onClick={() => openUnitDetails(u)}
+                                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
+                                      >
+                                        <Eye size={13} /> Details
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn secondary small"
+                                        onClick={() => openUnitEdit(u)}
+                                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
+                                      >
+                                        <Edit3 size={13} /> Edit
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </>
+                  )}
                 </div>
-              );
-            }))}
-        </div>
+              </div>
+            );
+          }))}
+      </div>
 
       {/* Unit Details Modal (Read-Only 360° View) */}
       {viewingUnit && (() => {
@@ -1750,12 +2054,12 @@ export const PropertiesPage: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span
                       className={`badge ${viewingUnit.status === 'occupied'
-                          ? 'green'
-                          : viewingUnit.status === 'reserved'
-                            ? 'amber'
-                            : viewingUnit.status === 'maintenance'
-                              ? 'grey'
-                              : 'amber'
+                        ? 'green'
+                        : viewingUnit.status === 'reserved'
+                          ? 'amber'
+                          : viewingUnit.status === 'maintenance'
+                            ? 'grey'
+                            : 'amber'
                         }`}
                       style={{ textTransform: 'capitalize', fontWeight: 600 }}
                     >
@@ -1769,6 +2073,37 @@ export const PropertiesPage: React.FC = () => {
                       <span className="badge grey" style={{ fontSize: '11px' }}>
                         🔒 Private / Unlisted
                       </span>
+                    )}
+                    {viewingUnit.isListedPublicly && viewingUnit.status === 'vacant' && (
+                      <button
+                        type="button"
+                        className={`btn small ${viewingUnit.isPopular ? 'brass' : 'secondary'}`}
+                        style={{
+                          fontSize: '11px',
+                          padding: '3px 10px',
+                          borderColor: '#d97706',
+                          color: viewingUnit.isPopular ? '#ffffff' : '#d97706',
+                          background: viewingUnit.isPopular ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)' : undefined,
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                        onClick={() => {
+                          if (isPassActive) {
+                            handleToggleUnitPopular(viewingUnit);
+                          } else {
+                            setUnitToBoost(viewingUnit);
+                            const preferred = availableBoostPlans.find((bp) => bp.isPopular) || availableBoostPlans[0];
+                            if (preferred) setSelectedBoostPlanId(preferred.id);
+                          }
+                        }}
+                        title={
+                          isPassActive
+                            ? (viewingUnit.isPopular ? 'Click to turn OFF Popular spotlight' : 'Click to feature as Popular (Included in your active pass)')
+                            : 'Get a Spotlight Pass to feature this listing'
+                        }
+                      >
+                        🔥 {viewingUnit.isPopular ? 'Popular (Click to Turn Off)' : (isPassActive ? 'Make Popular (Pass Active)' : 'Boost to Popular')}
+                      </button>
                     )}
                   </div>
                   <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
@@ -2378,6 +2713,209 @@ export const PropertiesPage: React.FC = () => {
         </div>
       )}
 
+      {/* Boost to Popular Modal - Standalone On-Demand Boost Plans ($5, $55, $550) */}
+      {unitToBoost && (() => {
+        const selectedPlan = availableBoostPlans.find((p) => p.id === selectedBoostPlanId) || availableBoostPlans[0];
+        const isCurrentlyBoosted = Boolean(
+          unitToBoost.isPopular &&
+          unitToBoost.popularUntil &&
+          new Date(unitToBoost.popularUntil).getTime() > Date.now()
+        );
+        const daysRemaining = isCurrentlyBoosted
+          ? Math.max(1, Math.ceil((new Date(unitToBoost.popularUntil!).getTime() - Date.now()) / 86400000))
+          : 0;
+
+        return (
+          <div className="modal-backdrop" onClick={() => !isApplyingBoost && setUnitToBoost(null)}>
+            <div className="modal-card" style={{ maxWidth: '560px', width: '95vw' }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-head">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '22px' }}>🔥</span>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '17px' }}>Boost Listing to Popular</h3>
+                    <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                      Unit {unitToBoost.unitNumber} · Guaranteed top placement on /homes & Landing Page
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  disabled={isApplyingBoost}
+                  onClick={() => setUnitToBoost(null)}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="modal-body" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <p style={{ margin: 0, fontSize: '13px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
+                  Get an <b>Owner Spotlight Pass</b> to feature all your available listings directly at the top of <b>/homes</b> and the public landing page with a verified <b>🔥 Popular</b> badge for the full duration. You can also toggle individual listings ON or OFF anytime.
+                </p>
+
+                {/* If unit is already boosted */}
+                {isCurrentlyBoosted && (
+                  <div
+                    style={{
+                      padding: '12px 14px',
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      borderRadius: '8px',
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, color: '#b91c1c', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>🚫</span> Active Popular Spotlight (Repurchase Locked)
+                    </div>
+                    <div style={{ fontSize: '12.5px', color: 'var(--ink)', marginTop: '4px' }}>
+                      Currently featured until{' '}
+                      <b>{new Date(unitToBoost.popularUntil!).toLocaleDateString()} ({daysRemaining} day{daysRemaining === 1 ? '' : 's'} remaining)</b>.
+                    </div>
+                    <div style={{ marginTop: '6px', fontSize: '11.5px', color: 'var(--ink-soft)' }}>
+                      You cannot repurchase a boost plan for this unit until the current plan expires.
+                    </div>
+                    <div style={{ marginTop: '10px' }}>
+                      <button
+                        type="button"
+                        className="btn danger small"
+                        disabled={isApplyingBoost}
+                        onClick={() => handleCancelPopularBoost(unitToBoost)}
+                      >
+                        <ButtonProcessing loading={isApplyingBoost} loadingText="Cancelling..." defaultText="Cancel Boost Early" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3 Standalone Boost Plans */}
+                <div>
+                  <label style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--ink)', display: 'block', marginBottom: '10px' }}>
+                    Choose a Boost Plan (Admin-Controlled Pricing & Days):
+                  </label>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {availableBoostPlans.map((plan) => {
+                      const isSelected = selectedPlan?.id === plan.id;
+                      return (
+                        <div
+                          key={plan.id}
+                          onClick={() => setSelectedBoostPlanId(plan.id)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '12px',
+                            padding: '14px 16px',
+                            borderRadius: '10px',
+                            border: isSelected
+                              ? '2px solid #d97706'
+                              : '1px solid var(--line)',
+                            background: isSelected
+                              ? 'rgba(245, 158, 11, 0.08)'
+                              : 'var(--surface)',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+                            <input
+                              type="radio"
+                              name="boostPlanOption"
+                              checked={isSelected}
+                              onChange={() => setSelectedBoostPlanId(plan.id)}
+                              style={{ cursor: 'pointer', accentColor: '#d97706' }}
+                            />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{plan.name}</b>
+                                {plan.isPopular && (
+                                  <span
+                                    style={{
+                                      fontSize: '10px',
+                                      fontWeight: 800,
+                                      textTransform: 'uppercase',
+                                      letterSpacing: '0.04em',
+                                      padding: '1px 6px',
+                                      borderRadius: '999px',
+                                      background: '#d97706',
+                                      color: '#fff',
+                                    }}
+                                  >
+                                    ★ Most Popular
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
+                                {plan.days} Days Duration
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                            <div style={{ fontSize: '18px', fontWeight: 800, color: isSelected ? '#b45309' : 'var(--ink)' }}>
+                              ${plan.price}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>
+                              {plan.days} Days
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div
+                className="modal-foot"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '14px 20px',
+                  borderTop: '1px solid var(--line)',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
+                  {selectedPlan ? (
+                    <span>Total: <b style={{ color: 'var(--ink)', fontSize: '15px' }}>${selectedPlan.price}</b> for <b>{selectedPlan.days} days</b></span>
+                  ) : null}
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    disabled={isApplyingBoost}
+                    onClick={() => setUnitToBoost(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn brass"
+                    disabled={Boolean(isApplyingBoost || !selectedPlan || isCurrentlyBoosted)}
+                    onClick={() => selectedPlan && !isCurrentlyBoosted && handleApplyPopularBoostPlan(unitToBoost, selectedPlan)}
+                  >
+                    <ButtonProcessing
+                      loading={isApplyingBoost}
+                      loadingText="Activating..."
+                      defaultText={
+                        isCurrentlyBoosted
+                          ? `Pass Active (${daysRemaining}d left · Locked)`
+                          : selectedPlan
+                          ? `Pay $${selectedPlan.price} & Activate Pass (${selectedPlan.days}d) 🔥`
+                          : 'Select Plan'
+                      }
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Add Property Modal - 4-Step Enterprise Real Estate Wizard */}
       {isAddPropOpen && (
         <div className="modal-backdrop" onClick={() => setIsAddPropOpen(false)}>
@@ -2390,9 +2928,6 @@ export const PropertiesPage: React.FC = () => {
             <div className="modal-head" style={{ borderBottom: '1px solid var(--line)', padding: '18px 24px' }}>
               <div>
                 <h3 style={{ fontSize: '18px', fontWeight: 600 }}>Add New Property & Configure Units</h3>
-                <div className="hint" style={{ marginTop: '2px', fontSize: '12px' }}>
-                  Complete property onboarding with structural hierarchy, operational policies, and unit inventory.
-                </div>
               </div>
               <button type="button" className="btn secondary small" onClick={() => setIsAddPropOpen(false)}>
                 ✕
@@ -2425,9 +2960,15 @@ export const PropertiesPage: React.FC = () => {
                     key={s.step}
                     type="button"
                     onClick={() => {
-                      if (s.step > 1 && (!propName.trim() || !propAddress)) {
-                        showToast('Please provide property name and address in Step 1 first.');
-                        return;
+                      if (s.step > 1) {
+                        const errs: Record<string, string> = {};
+                        if (!propName.trim()) errs.propName = 'Property name is required';
+                        if (!propAddress) errs.propAddress = 'Location is required. Search and select from Google Maps Places.';
+                        if (Object.keys(errs).length > 0) {
+                          setFieldErrors(errs);
+                          showToast('⚠️ Please fill required fields highlighted in red below.');
+                          return;
+                        }
                       }
                       setModalStep(s.step as any);
                     }}
@@ -2459,14 +3000,33 @@ export const PropertiesPage: React.FC = () => {
               {modalStep === 1 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <div className="field">
-                    <label style={{ fontWeight: 600, fontSize: '13px' }}>Property Name *</label>
+                    <label style={{ fontWeight: 600, fontSize: '13px', color: fieldErrors.propName ? '#EF4444' : undefined }}>Property Name *</label>
                     <input
                       type="text"
                       placeholder="e.g. Maple Heights Residency, Tower A"
                       value={propName}
-                      onChange={(e) => setPropName(e.target.value)}
-                      style={{ fontSize: '14px', padding: '10px 12px' }}
+                      onChange={(e) => {
+                        setPropName(e.target.value);
+                        if (fieldErrors.propName) {
+                          setFieldErrors((prev) => {
+                            const next = { ...prev };
+                            delete next.propName;
+                            return next;
+                          });
+                        }
+                      }}
+                      style={{
+                        fontSize: '14px',
+                        padding: '10px 12px',
+                        borderColor: fieldErrors.propName ? '#EF4444' : undefined,
+                        boxShadow: fieldErrors.propName ? '0 0 0 1px #EF4444' : undefined,
+                      }}
                     />
+                    {fieldErrors.propName && (
+                      <span style={{ color: '#EF4444', fontSize: '11.5px', marginTop: '4px', display: 'block' }}>
+                        ⚠️ {fieldErrors.propName}
+                      </span>
+                    )}
                   </div>
 
                   <div className="row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
@@ -2613,18 +3173,30 @@ export const PropertiesPage: React.FC = () => {
                   </div>
 
                   <div className="field">
-                    <label style={{ fontWeight: 600, fontSize: '13px' }}>Google Maps Places Address *</label>
+                    <label style={{ fontWeight: 600, fontSize: '13px', color: fieldErrors.propAddress ? '#EF4444' : undefined }}>Google Maps Places Address *</label>
                     <div className="hint" style={{ marginBottom: '6px', fontSize: '12px' }}>
                       Search and select location to auto-populate city, state, country, and latitude/longitude coordinates.
                     </div>
                     <GooglePlacesAddressPicker
                       onAddressSelect={(addr) => {
                         setPropAddress(addr);
+                        if (fieldErrors.propAddress) {
+                          setFieldErrors((prev) => {
+                            const next = { ...prev };
+                            delete next.propAddress;
+                            return next;
+                          });
+                        }
                         if (addr.country) {
                           handleCountrySelect(addr.country);
                         }
                       }}
                     />
+                    {fieldErrors.propAddress && (
+                      <span style={{ color: '#EF4444', fontSize: '11.5px', marginTop: '4px', display: 'block' }}>
+                        ⚠️ {fieldErrors.propAddress}
+                      </span>
+                    )}
                     {propAddress && (
                       <div
                         style={{
@@ -3281,517 +3853,517 @@ export const PropertiesPage: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-                  {/* Stats Bar & Mode Toggles */}
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      background: '#FAFAF7',
-                      border: '1px solid var(--line)',
-                      borderRadius: 'var(--radius)',
-                      padding: '12px 18px',
-                      flexWrap: 'wrap',
-                      gap: '10px',
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '14px' }}>
-                        Configured Units: <span style={{ color: 'var(--brass)' }}>{initialUnits.length} Units</span>
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                        Projected Total Monthly Rent:{' '}
-                        <b>
-                          {propCurrency}
-                          {initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0).toLocaleString()}
-                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(propCurrency) && (
-                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
-                              (~{format(convert(initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0), propCurrency, viewCurrency), viewCurrency)})
-                            </span>
-                          )}
-                        </b>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        className={`btn ${unitsBuilderMode === 'table' ? 'brass' : 'secondary'} small`}
-                        onClick={() => setUnitsBuilderMode('table')}
-                      >
-                        📋 Units Inventory Table
-                      </button>
-                      <button
-                        type="button"
-                        className={`btn ${unitsBuilderMode === 'bulk' ? 'brass' : 'secondary'} small`}
-                        onClick={() => setUnitsBuilderMode('bulk')}
-                      >
-                        ⚡ Bulk Unit Generator
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Mode: Bulk Generator Box */}
-                  {unitsBuilderMode === 'bulk' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                    {/* Stats Bar & Mode Toggles */}
                     <div
                       style={{
-                        background: 'var(--surface-sunken)',
-                        border: '1px solid var(--line-strong)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        background: '#FAFAF7',
+                        border: '1px solid var(--line)',
                         borderRadius: 'var(--radius)',
-                        padding: '18px',
+                        padding: '12px 18px',
+                        flexWrap: 'wrap',
+                        gap: '10px',
                       }}
                     >
-                      <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--ledger)', marginBottom: '4px' }}>
-                        ⚡ Multi-Unit Automated Batch Generator
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '14px' }}>
-                        Instantly generate all units across your floors. Existing units in the table will be replaced by this generated batch.
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '14px' }}>
+                          Configured Units: <span style={{ color: 'var(--brass)' }}>{initialUnits.length} Units</span>
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
+                          Projected Total Monthly Rent:{' '}
+                          <b>
+                            {propCurrency}
+                            {initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0).toLocaleString()}
+                            {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(propCurrency) && (
+                              <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
+                                (~{format(convert(initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0), propCurrency, viewCurrency), viewCurrency)})
+                              </span>
+                            )}
+                          </b>
+                        </div>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px', marginBottom: '14px' }}>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>From Floor</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="50"
-                            value={bulkFloorsStart}
-                            onChange={(e) => setBulkFloorsStart(Number(e.target.value))}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          />
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className={`btn ${unitsBuilderMode === 'table' ? 'brass' : 'secondary'} small`}
+                          onClick={() => setUnitsBuilderMode('table')}
+                        >
+                          📋 Units Inventory Table
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn ${unitsBuilderMode === 'bulk' ? 'brass' : 'secondary'} small`}
+                          onClick={() => setUnitsBuilderMode('bulk')}
+                        >
+                          ⚡ Bulk Unit Generator
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Mode: Bulk Generator Box */}
+                    {unitsBuilderMode === 'bulk' && (
+                      <div
+                        style={{
+                          background: 'var(--surface-sunken)',
+                          border: '1px solid var(--line-strong)',
+                          borderRadius: 'var(--radius)',
+                          padding: '18px',
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--ledger)', marginBottom: '4px' }}>
+                          ⚡ Multi-Unit Automated Batch Generator
                         </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>To Floor</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="50"
-                            value={bulkFloorsEnd}
-                            onChange={(e) => setBulkFloorsEnd(Number(e.target.value))}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          />
+                        <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '14px' }}>
+                          Instantly generate all units across your floors. Existing units in the table will be replaced by this generated batch.
                         </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Units Per Floor</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="20"
-                            value={bulkUnitsPerFloor}
-                            onChange={(e) => setBulkUnitsPerFloor(Number(e.target.value))}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Layout / Type</label>
-                          <select
-                            value={bulkUnitType}
-                            onChange={(e) => setBulkUnitType(e.target.value)}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          >
-                            {getUnitTypesForProperty(propType, bulkUnitType).map((t) => (
-                              <option key={t} value={t}>{t}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Furnishing</label>
-                          <select
-                            value={bulkFurnishing}
-                            onChange={(e) => setBulkFurnishing(e.target.value as any)}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          >
-                            <option value="Unfurnished">Unfurnished</option>
-                            <option value="Semi-Furnished">Semi-Furnished</option>
-                            <option value="Fully Furnished">Fully Furnished</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Carpet Area (Sq Ft)</label>
-                          <input
-                            type="number"
-                            value={bulkAreaSqFt}
-                            onChange={(e) => setBulkAreaSqFt(Number(e.target.value))}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Base Rent ({propCurrency})</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={bulkBaseRent === 0 ? '' : bulkBaseRent}
-                            placeholder="0"
-                            onWheel={(e) => (e.target as HTMLElement).blur()}
-                            onChange={(e) => {
-                              const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                              setBulkBaseRent(cleaned === '' ? 0 : Number(cleaned));
-                            }}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Deposit ({propCurrency})</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={bulkBaseDeposit === 0 ? '' : bulkBaseDeposit}
-                            placeholder="0"
-                            onWheel={(e) => (e.target as HTMLElement).blur()}
-                            onChange={(e) => {
-                              const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                              setBulkBaseDeposit(cleaned === '' ? 0 : Number(cleaned));
-                            }}
-                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
-                          />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
-                            Batch Unit Photo (Opt)
-                          </label>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minHeight: '34px' }}>
-                            {bulkDefaultPhoto ? (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <img
-                                  src={bulkDefaultPhoto}
-                                  alt="Default layout"
-                                  style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--line)' }}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => setBulkDefaultPhoto(null)}
-                                  style={{ background: 'none', border: 'none', color: 'var(--danger)', fontSize: '11px', cursor: 'pointer', padding: 0 }}
-                                >
-                                  ✕ Remove
-                                </button>
-                              </div>
-                            ) : (
-                              <label
-                                style={{
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px',
-                                  padding: '6px 8px',
-                                  background: '#fff',
-                                  border: '1px dashed #CBD2D9',
-                                  borderRadius: '4px',
-                                  cursor: 'pointer',
-                                  fontSize: '11.5px',
-                                  color: 'var(--ink-soft)',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                <Camera size={13} />
-                                <span>+ Attach Photo</span>
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  style={{ display: 'none' }}
-                                  onChange={async (e) => {
-                                    const file = e.target.files?.[0];
-                                    if (file) {
-                                      try {
-                                        const optimized = await uploadOrCompressImage(file, `units/bulk/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`);
-                                        setBulkDefaultPhoto(optimized);
-                                      } catch (err) {
-                                        console.warn('Bulk photo error:', err);
-                                      }
-                                    }
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px', marginBottom: '14px' }}>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>From Floor</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="50"
+                              value={bulkFloorsStart}
+                              onChange={(e) => setBulkFloorsStart(Number(e.target.value))}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>To Floor</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="50"
+                              value={bulkFloorsEnd}
+                              onChange={(e) => setBulkFloorsEnd(Number(e.target.value))}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Units Per Floor</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="20"
+                              value={bulkUnitsPerFloor}
+                              onChange={(e) => setBulkUnitsPerFloor(Number(e.target.value))}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Layout / Type</label>
+                            <select
+                              value={bulkUnitType}
+                              onChange={(e) => setBulkUnitType(e.target.value)}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            >
+                              {getUnitTypesForProperty(propType, bulkUnitType).map((t) => (
+                                <option key={t} value={t}>{t}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Furnishing</label>
+                            <select
+                              value={bulkFurnishing}
+                              onChange={(e) => setBulkFurnishing(e.target.value as any)}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            >
+                              <option value="Unfurnished">Unfurnished</option>
+                              <option value="Semi-Furnished">Semi-Furnished</option>
+                              <option value="Fully Furnished">Fully Furnished</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Carpet Area (Sq Ft)</label>
+                            <input
+                              type="number"
+                              value={bulkAreaSqFt}
+                              onChange={(e) => setBulkAreaSqFt(Number(e.target.value))}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Base Rent ({propCurrency})</label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={bulkBaseRent === 0 ? '' : bulkBaseRent}
+                              placeholder="0"
+                              onWheel={(e) => (e.target as HTMLElement).blur()}
+                              onChange={(e) => {
+                                const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                                setBulkBaseRent(cleaned === '' ? 0 : Number(cleaned));
+                              }}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Deposit ({propCurrency})</label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={bulkBaseDeposit === 0 ? '' : bulkBaseDeposit}
+                              placeholder="0"
+                              onWheel={(e) => (e.target as HTMLElement).blur()}
+                              onChange={(e) => {
+                                const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                                setBulkBaseDeposit(cleaned === '' ? 0 : Number(cleaned));
+                              }}
+                              style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                              Batch Unit Photo (Opt)
+                            </label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minHeight: '34px' }}>
+                              {bulkDefaultPhoto ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <img
+                                    src={bulkDefaultPhoto}
+                                    alt="Default layout"
+                                    style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--line)' }}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => setBulkDefaultPhoto(null)}
+                                    style={{ background: 'none', border: 'none', color: 'var(--danger)', fontSize: '11px', cursor: 'pointer', padding: 0 }}
+                                  >
+                                    ✕ Remove
+                                  </button>
+                                </div>
+                              ) : (
+                                <label
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '6px 8px',
+                                    background: '#fff',
+                                    border: '1px dashed #CBD2D9',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '11.5px',
+                                    color: 'var(--ink-soft)',
+                                    whiteSpace: 'nowrap',
                                   }}
-                                />
-                              </label>
-                            )}
+                                >
+                                  <Camera size={13} />
+                                  <span>+ Attach Photo</span>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    style={{ display: 'none' }}
+                                    onChange={async (e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        try {
+                                          const optimized = await uploadOrCompressImage(file, `units/bulk/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`);
+                                          setBulkDefaultPhoto(optimized);
+                                        } catch (err) {
+                                          console.warn('Bulk photo error:', err);
+                                        }
+                                      }
+                                    }}
+                                  />
+                                </label>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            onClick={() => setUnitsBuilderMode('table')}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="btn brass small"
+                            onClick={handleGenerateBulkUnits}
+                          >
+                            ⚡ Generate {(Math.max(1, bulkFloorsEnd) - Math.max(1, bulkFloorsStart) + 1) * bulkUnitsPerFloor} Units Now
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Detailed Units Inventory Table with Horizontal Scrolling */}
+                    <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          overflowX: 'auto',
+                          overflowY: 'auto',
+                          maxHeight: '360px',
+                          WebkitOverflowScrolling: 'touch',
+                        }}
+                      >
+                        <table style={{ width: '100%', minWidth: '1060px', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+                          <thead>
+                            <tr style={{ background: '#FAFAF7', borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
+                              <th style={{ padding: '10px 12px', width: '85px', fontWeight: 600 }}>UNIT #</th>
+                              <th style={{ padding: '10px 12px', width: '90px', fontWeight: 600 }}>PHOTO</th>
+                              <th style={{ padding: '10px 12px', width: '125px', fontWeight: 600 }}>LAYOUT / TYPE</th>
+                              <th style={{ padding: '10px 12px', width: '120px', fontWeight: 600 }}>FLOOR</th>
+                              <th style={{ padding: '10px 12px', width: '90px', fontWeight: 600 }}>SQ. FT</th>
+                              <th style={{ padding: '10px 12px', width: '155px', fontWeight: 600 }}>FURNISHING</th>
+                              <th style={{ padding: '10px 12px', width: '115px', fontWeight: 600 }}>RENT ({propCurrency})</th>
+                              <th style={{ padding: '10px 12px', width: '115px', fontWeight: 600 }}>DEPOSIT ({propCurrency})</th>
+                              <th style={{ padding: '10px 12px', width: '125px', fontWeight: 600 }}>METER # (OPT)</th>
+                              <th style={{ padding: '10px 12px', width: '45px', textAlign: 'center', fontWeight: 600 }}>✕</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {initialUnits.length === 0 ? (
+                              <tr>
+                                <td colSpan={10} style={{ textAlign: 'center', padding: '36px', color: 'var(--ink-soft)' }}>
+                                  No units configured yet. Click "+ Add Individual Unit" or use the "⚡ Bulk Unit Generator" above.
+                                </td>
+                              </tr>
+                            ) : (
+                              initialUnits.map((u, i) => (
+                                <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <input
+                                      type="text"
+                                      value={u.unitNumber}
+                                      placeholder="101"
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, unitNumber: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    {u.images && u.images.length > 0 ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        <div
+                                          style={{
+                                            position: 'relative',
+                                            width: '32px',
+                                            height: '32px',
+                                            borderRadius: '4px',
+                                            overflow: 'hidden',
+                                            border: '1px solid var(--line)',
+                                            flexShrink: 0,
+                                            cursor: 'pointer',
+                                          }}
+                                          onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber} Photo`, url: u.images![0] })}
+                                          title="Click to view full photo"
+                                        >
+                                          <img src={u.images[0]} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveUnitPhoto(i, 0)}
+                                          style={{ background: 'none', border: 'none', color: 'var(--danger)', fontSize: '12px', cursor: 'pointer', padding: 0 }}
+                                          title="Remove photo"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <label
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          padding: '5px 7px',
+                                          background: '#fff',
+                                          border: '1px dashed #CBD2D9',
+                                          borderRadius: '4px',
+                                          cursor: 'pointer',
+                                          fontSize: '11px',
+                                          color: 'var(--ink-soft)',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                        title="Upload unit photo"
+                                      >
+                                        <Camera size={12} />
+                                        <span>+ Photo</span>
+                                        <input
+                                          type="file"
+                                          accept="image/*"
+                                          style={{ display: 'none' }}
+                                          onChange={(e) => {
+                                            const file = e.target.files?.[0];
+                                            if (file) handleUnitPhotoUpload(i, file);
+                                          }}
+                                        />
+                                      </label>
+                                    )}
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <select
+                                      value={u.unitType}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, unitType: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    >
+                                      {getUnitTypesForProperty(propType, u.unitType).map((t) => (
+                                        <option key={t} value={t}>{t}</option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <input
+                                      type="text"
+                                      value={u.floor}
+                                      placeholder="1st Floor"
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, floor: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <input
+                                      type="number"
+                                      value={u.areaSqFt}
+                                      placeholder="1100"
+                                      onChange={(e) => {
+                                        const val = Number(e.target.value);
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, areaSqFt: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <select
+                                      value={u.furnishing}
+                                      onChange={(e) => {
+                                        const val = e.target.value as any;
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, furnishing: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    >
+                                      <option value="Unfurnished">Unfurnished</option>
+                                      <option value="Semi-Furnished">Semi-Furnished</option>
+                                      <option value="Fully Furnished">Fully Furnished</option>
+                                    </select>
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      value={u.rent === 0 ? '' : u.rent}
+                                      placeholder="Rent"
+                                      onWheel={(e) => (e.target as HTMLElement).blur()}
+                                      onChange={(e) => {
+                                        const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                                        const val = cleaned === '' ? 0 : Number(cleaned);
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, rent: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      value={u.deposit === 0 ? '' : u.deposit}
+                                      placeholder="Deposit"
+                                      onWheel={(e) => (e.target as HTMLElement).blur()}
+                                      onChange={(e) => {
+                                        const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                                        const val = cleaned === '' ? 0 : Number(cleaned);
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, deposit: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: '6px 8px' }}>
+                                    <input
+                                      type="text"
+                                      value={u.electricityMeter || ''}
+                                      placeholder="MTR-990"
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setInitialUnits((prev) =>
+                                          prev.map((item, idx) => (idx === i ? { ...item, electricityMeter: val } : item))
+                                        );
+                                      }}
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: '6px 8px', textAlign: 'center' }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => setInitialUnits((prev) => prev.filter((_, idx) => idx !== i))}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        color: 'var(--danger)',
+                                        cursor: 'pointer',
+                                        fontSize: '14px',
+                                        padding: '4px',
+                                      }}
+                                      title="Delete unit row"
+                                    >
+                                      ✕
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div style={{ padding: '10px 14px', background: '#FAFAF7', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                         <button
                           type="button"
                           className="btn secondary small"
-                          onClick={() => setUnitsBuilderMode('table')}
+                          onClick={() =>
+                            setInitialUnits([
+                              ...initialUnits,
+                              {
+                                unitNumber: `${100 + initialUnits.length + 1}`,
+                                unitType: '2 BHK',
+                                floor: '1st Floor',
+                                areaSqFt: 0,
+                                furnishing: 'Semi-Furnished',
+                                rent: bulkBaseRent || 0,
+                                deposit: bulkBaseDeposit || 0,
+                                currency: propCurrency,
+                              },
+                            ])
+                          }
                         >
-                          Cancel
+                          + Add Individual Unit
                         </button>
-                        <button
-                          type="button"
-                          className="btn brass small"
-                          onClick={handleGenerateBulkUnits}
-                        >
-                          ⚡ Generate {(Math.max(1, bulkFloorsEnd) - Math.max(1, bulkFloorsStart) + 1) * bulkUnitsPerFloor} Units Now
-                        </button>
+                        <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                          You can adjust rent, deposit, and listing status anytime per unit.
+                        </span>
                       </div>
                     </div>
-                  )}
-
-                  {/* Detailed Units Inventory Table with Horizontal Scrolling */}
-                  <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
-                    <div
-                      style={{
-                        overflowX: 'auto',
-                        overflowY: 'auto',
-                        maxHeight: '360px',
-                        WebkitOverflowScrolling: 'touch',
-                      }}
-                    >
-                      <table style={{ width: '100%', minWidth: '1060px', borderCollapse: 'collapse', fontSize: '12.5px' }}>
-                        <thead>
-                          <tr style={{ background: '#FAFAF7', borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
-                            <th style={{ padding: '10px 12px', width: '85px', fontWeight: 600 }}>UNIT #</th>
-                            <th style={{ padding: '10px 12px', width: '90px', fontWeight: 600 }}>PHOTO</th>
-                            <th style={{ padding: '10px 12px', width: '125px', fontWeight: 600 }}>LAYOUT / TYPE</th>
-                            <th style={{ padding: '10px 12px', width: '120px', fontWeight: 600 }}>FLOOR</th>
-                            <th style={{ padding: '10px 12px', width: '90px', fontWeight: 600 }}>SQ. FT</th>
-                            <th style={{ padding: '10px 12px', width: '155px', fontWeight: 600 }}>FURNISHING</th>
-                            <th style={{ padding: '10px 12px', width: '115px', fontWeight: 600 }}>RENT ({propCurrency})</th>
-                            <th style={{ padding: '10px 12px', width: '115px', fontWeight: 600 }}>DEPOSIT ({propCurrency})</th>
-                            <th style={{ padding: '10px 12px', width: '125px', fontWeight: 600 }}>METER # (OPT)</th>
-                            <th style={{ padding: '10px 12px', width: '45px', textAlign: 'center', fontWeight: 600 }}>✕</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {initialUnits.length === 0 ? (
-                            <tr>
-                              <td colSpan={10} style={{ textAlign: 'center', padding: '36px', color: 'var(--ink-soft)' }}>
-                                No units configured yet. Click "+ Add Individual Unit" or use the "⚡ Bulk Unit Generator" above.
-                              </td>
-                            </tr>
-                          ) : (
-                            initialUnits.map((u, i) => (
-                              <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <input
-                                    type="text"
-                                    value={u.unitNumber}
-                                    placeholder="101"
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, unitNumber: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  />
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  {u.images && u.images.length > 0 ? (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                      <div
-                                        style={{
-                                          position: 'relative',
-                                          width: '32px',
-                                          height: '32px',
-                                          borderRadius: '4px',
-                                          overflow: 'hidden',
-                                          border: '1px solid var(--line)',
-                                          flexShrink: 0,
-                                          cursor: 'pointer',
-                                        }}
-                                        onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber} Photo`, url: u.images![0] })}
-                                        title="Click to view full photo"
-                                      >
-                                        <img src={u.images[0]} alt={`Unit ${u.unitNumber}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                      </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleRemoveUnitPhoto(i, 0)}
-                                        style={{ background: 'none', border: 'none', color: 'var(--danger)', fontSize: '12px', cursor: 'pointer', padding: 0 }}
-                                        title="Remove photo"
-                                      >
-                                        ✕
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <label
-                                      style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '3px',
-                                        padding: '5px 7px',
-                                        background: '#fff',
-                                        border: '1px dashed #CBD2D9',
-                                        borderRadius: '4px',
-                                        cursor: 'pointer',
-                                        fontSize: '11px',
-                                        color: 'var(--ink-soft)',
-                                        whiteSpace: 'nowrap',
-                                      }}
-                                      title="Upload unit photo"
-                                    >
-                                      <Camera size={12} />
-                                      <span>+ Photo</span>
-                                      <input
-                                        type="file"
-                                        accept="image/*"
-                                        style={{ display: 'none' }}
-                                        onChange={(e) => {
-                                          const file = e.target.files?.[0];
-                                          if (file) handleUnitPhotoUpload(i, file);
-                                        }}
-                                      />
-                                    </label>
-                                  )}
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <select
-                                    value={u.unitType}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, unitType: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  >
-                                    {getUnitTypesForProperty(propType, u.unitType).map((t) => (
-                                      <option key={t} value={t}>{t}</option>
-                                    ))}
-                                  </select>
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <input
-                                    type="text"
-                                    value={u.floor}
-                                    placeholder="1st Floor"
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, floor: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  />
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <input
-                                    type="number"
-                                    value={u.areaSqFt}
-                                    placeholder="1100"
-                                    onChange={(e) => {
-                                      const val = Number(e.target.value);
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, areaSqFt: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  />
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <select
-                                    value={u.furnishing}
-                                    onChange={(e) => {
-                                      const val = e.target.value as any;
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, furnishing: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  >
-                                    <option value="Unfurnished">Unfurnished</option>
-                                    <option value="Semi-Furnished">Semi-Furnished</option>
-                                    <option value="Fully Furnished">Fully Furnished</option>
-                                  </select>
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    value={u.rent === 0 ? '' : u.rent}
-                                    placeholder="Rent"
-                                    onWheel={(e) => (e.target as HTMLElement).blur()}
-                                    onChange={(e) => {
-                                      const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                                      const val = cleaned === '' ? 0 : Number(cleaned);
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, rent: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  />
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    value={u.deposit === 0 ? '' : u.deposit}
-                                    placeholder="Deposit"
-                                    onWheel={(e) => (e.target as HTMLElement).blur()}
-                                    onChange={(e) => {
-                                      const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                                      const val = cleaned === '' ? 0 : Number(cleaned);
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, deposit: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  />
-                                </td>
-                                <td style={{ padding: '6px 8px' }}>
-                                  <input
-                                    type="text"
-                                    value={u.electricityMeter || ''}
-                                    placeholder="MTR-990"
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setInitialUnits((prev) =>
-                                        prev.map((item, idx) => (idx === i ? { ...item, electricityMeter: val } : item))
-                                      );
-                                    }}
-                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px', borderRadius: '4px' }}
-                                  />
-                                </td>
-                                <td style={{ padding: '6px 8px', textAlign: 'center' }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => setInitialUnits((prev) => prev.filter((_, idx) => idx !== i))}
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      color: 'var(--danger)',
-                                      cursor: 'pointer',
-                                      fontSize: '14px',
-                                      padding: '4px',
-                                    }}
-                                    title="Delete unit row"
-                                  >
-                                    ✕
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div style={{ padding: '10px 14px', background: '#FAFAF7', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        onClick={() =>
-                          setInitialUnits([
-                            ...initialUnits,
-                            {
-                              unitNumber: `${100 + initialUnits.length + 1}`,
-                              unitType: '2 BHK',
-                              floor: '1st Floor',
-                              areaSqFt: 1100,
-                              furnishing: 'Semi-Furnished',
-                              rent: bulkBaseRent || 0,
-                              deposit: bulkBaseDeposit || 0,
-                              currency: propCurrency,
-                            },
-                          ])
-                        }
-                      >
-                        + Add Individual Unit
-                      </button>
-                      <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                        You can adjust rent, deposit, and listing status anytime per unit.
-                      </span>
-                    </div>
                   </div>
-                </div>
                 )
               )}
 
@@ -4032,61 +4604,61 @@ export const PropertiesPage: React.FC = () => {
                       </div>
                     </div>
                   ) : (
-                  <div
-                    style={{
-                      background: '#FAFAF7',
-                      border: '1px solid var(--line)',
-                      borderRadius: 'var(--radius)',
-                      padding: '16px',
-                    }}
-                  >
-                    <div style={{ fontWeight: 600, fontSize: '13.5px', marginBottom: '10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <Building2 size={15} color="var(--ledger)" />
-                        <span>Configured Units ({initialUnits.length} units total)</span>
+                    <div
+                      style={{
+                        background: '#FAFAF7',
+                        border: '1px solid var(--line)',
+                        borderRadius: 'var(--radius)',
+                        padding: '16px',
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: '13.5px', marginBottom: '10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Building2 size={15} color="var(--ledger)" />
+                          <span>Configured Units ({initialUnits.length} units total)</span>
+                        </div>
+                        <span className="badge green" style={{ fontSize: '11px' }}>
+                          {initialUnits.filter((u) => u.images && u.images.length > 0).length} with photos
+                        </span>
                       </div>
-                      <span className="badge green" style={{ fontSize: '11px' }}>
-                        {initialUnits.filter((u) => u.images && u.images.length > 0).length} with photos
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', maxHeight: '180px', overflowY: 'auto' }}>
-                      {initialUnits.map((u, uIdx) => (
-                        <div
-                          key={uIdx}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            background: '#fff',
-                            border: '1px solid var(--line)',
-                            borderRadius: '6px',
-                            padding: '6px 10px',
-                            fontSize: '12px',
-                          }}
-                        >
-                          {u.images && u.images.length > 0 ? (
-                            <img
-                              src={u.images[0]}
-                              alt={`Unit ${u.unitNumber}`}
-                              style={{ width: '32px', height: '32px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer' }}
-                              onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber}`, url: u.images![0] })}
-                              title="Click to view full photo"
-                            />
-                          ) : (
-                            <div style={{ width: '32px', height: '32px', background: '#F0F2F5', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--ink-soft)' }}>
-                              <Camera size={14} />
-                            </div>
-                          )}
-                          <div>
-                            <div style={{ fontWeight: 600 }}>Unit {u.unitNumber} ({u.unitType})</div>
-                            <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>
-                              {propCurrency}{Number(u.rent).toLocaleString()}/mo • {u.floor}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', maxHeight: '180px', overflowY: 'auto' }}>
+                        {initialUnits.map((u, uIdx) => (
+                          <div
+                            key={uIdx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              background: '#fff',
+                              border: '1px solid var(--line)',
+                              borderRadius: '6px',
+                              padding: '6px 10px',
+                              fontSize: '12px',
+                            }}
+                          >
+                            {u.images && u.images.length > 0 ? (
+                              <img
+                                src={u.images[0]}
+                                alt={`Unit ${u.unitNumber}`}
+                                style={{ width: '32px', height: '32px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer' }}
+                                onClick={() => setPreviewPhotoModal({ title: `Unit ${u.unitNumber}`, url: u.images![0] })}
+                                title="Click to view full photo"
+                              />
+                            ) : (
+                              <div style={{ width: '32px', height: '32px', background: '#F0F2F5', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--ink-soft)' }}>
+                                <Camera size={14} />
+                              </div>
+                            )}
+                            <div>
+                              <div style={{ fontWeight: 600 }}>Unit {u.unitNumber} ({u.unitType})</div>
+                              <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>
+                                {propCurrency}{Number(u.rent).toLocaleString()}/mo • {u.floor}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
                   )}
 
                   {/* Comprehensive Review Card */}
@@ -4132,13 +4704,7 @@ export const PropertiesPage: React.FC = () => {
                       <div>
                         <span style={{ color: 'var(--ink-soft)' }}>Projected Monthly Rent:</span>{' '}
                         <b>
-                          {propCurrency}
-                          {initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0).toLocaleString()}
-                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(propCurrency) && (
-                            <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 500, marginLeft: '6px' }}>
-                              (~{format(convert(initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0), propCurrency, viewCurrency), viewCurrency)})
-                            </span>
-                          )}
+                          <CurrencyAmount amount={initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0)} currency={propCurrency} />
                         </b>
                       </div>
                       <div>
@@ -4193,12 +4759,16 @@ export const PropertiesPage: React.FC = () => {
                     className="btn brass btn-mobile-full"
                     onClick={() => {
                       if (modalStep === 1) {
+                        const errs: Record<string, string> = {};
                         if (!propName.trim()) {
-                          showToast('Please enter a Property Name.');
-                          return;
+                          errs.propName = 'Property name is required';
                         }
                         if (!propAddress) {
-                          showToast('Please search and select a location from Google Maps Places.');
+                          errs.propAddress = 'Location is required. Search and select from Google Maps Places.';
+                        }
+                        if (Object.keys(errs).length > 0) {
+                          setFieldErrors(errs);
+                          showToast('⚠️ Please fill required fields highlighted in red below.');
                           return;
                         }
                       }
@@ -4239,7 +4809,6 @@ export const PropertiesPage: React.FC = () => {
             <div className="modal-head">
               <div>
                 <h3>Add Unit to {addUnitProperty.name}</h3>
-                <div className="hint">Add a new unit to this property's leasing inventory.</div>
               </div>
               <button type="button" className="btn secondary small" onClick={() => setAddUnitProperty(null)}>✕</button>
             </div>

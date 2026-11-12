@@ -54,7 +54,15 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
     if (c.settlementId && (c.settlementId === settlement.id || settlement.id.includes(c.settlementId) || c.settlementId.includes(settlement.id))) return true;
     if ((settlement as any).cashClaimId && c.id === (settlement as any).cashClaimId) return true;
     if (c.moveOutId && settlement.id.includes(c.moveOutId)) return true;
-    if (c.unit && settlement.unit && cleanUnit(c.unit) === cleanUnit(settlement.unit) && (c.type === 'deposit_refund' || c.claimedByRole === 'owner')) return true;
+    if (
+      c.unit &&
+      settlement.unit &&
+      cleanUnit(c.unit) === cleanUnit(settlement.unit) &&
+      (!c.tenantId || c.tenantId === settlement.tenantId) &&
+      (!c.moveOutId || settlement.id.includes(c.moveOutId)) &&
+      (c.type === 'deposit_refund' || c.claimedByRole === 'owner')
+    )
+      return true;
     return false;
   });
 

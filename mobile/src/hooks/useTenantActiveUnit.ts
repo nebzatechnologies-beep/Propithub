@@ -57,13 +57,32 @@ export function useTenantActiveUnit() {
   const userName = (user?.displayName || '').toLowerCase().trim();
   const userId = user?.id || '';
 
+  // Merge settled deposit settlements into move-outs so settled custody vouchers always conclude tenancies
+  const allMoveOuts = useMemo(() => {
+    const settledDepositMoveouts = (state.depositSettlements || [])
+      .filter((s) => s.status === 'refunded' || Boolean(s.tenantConfirmedReceipt))
+      .map((s) => ({
+        id: s.id || `settle-${s.agreementId || s.unit}`,
+        unit: s.unit,
+        propertyId: s.propertyId,
+        agreementId: s.agreementId,
+        tenant: s.tenantName,
+        tenantId: s.tenantId,
+        tenantEmail: s.tenantEmail,
+        status: 'refund_completed',
+        settledAt: s.disbursedAt || (s as any).updatedAt || s.createdAt,
+        tenantConfirmedReceipt: true,
+      }));
+    return [...(state.moveOuts || []), ...settledDepositMoveouts];
+  }, [state.moveOuts, state.depositSettlements]);
+
   // 1. Identify agreements belonging to this tenant
   const myAgreements = useMemo(() => {
     const rawList = state.agreements.filter((a) => {
       if (a.status === 'terminated' || a.status === 'cancelled') return false;
 
       // Exclude agreements for units where move-out has concluded or refund was completed for this specific agreement
-      const hasCompletedMoveOut = (state.moveOuts || []).some((m) => {
+      const hasCompletedMoveOut = (allMoveOuts || []).some((m) => {
         const cleanMUnit = (m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
         const cleanAUnit = (a.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
         const matchesUnit =
@@ -93,7 +112,7 @@ export function useTenantActiveUnit() {
           return false;
         }
 
-        const moTime = new Date((m as any).settledAt || (m as any).tenantConfirmedAt || (m as any).updatedAt || m.moveOutDate || (m as any).createdAt || 0).getTime();
+        const moTime = new Date((m as any).settledAt || (m as any).tenantConfirmedAt || (m as any).updatedAt || (m as any).moveOutDate || (m as any).createdAt || 0).getTime();
         const agTime = new Date((a as any).createdAt || (a as any).ownerSignedUploadedAt || (a as any).initialUploadedAt || a.start || 0).getTime();
 
         // If agreement was explicitly created AFTER the move out concluded, it is a new re-onboarded lease
@@ -151,7 +170,7 @@ export function useTenantActiveUnit() {
       }
     });
     return Array.from(byUnit.values());
-  }, [state.agreements, state.moveOuts, state.tenancyRequests, userId, userEmail]);
+  }, [state.agreements, allMoveOuts, state.tenancyRequests, userId, userEmail]);
 
   // Set of agreement unit identifiers
   const myAgreementUnitSet = useMemo(() => {
@@ -256,7 +275,7 @@ export function useTenantActiveUnit() {
         }
 
         // Exclude settled or refund-completed move-out unless tenant currently has a newer active agreement for this unit
-        const hasCompletedMoveOut = (state.moveOuts || []).some((m) => {
+        const completedMo = (allMoveOuts || []).find((m) => {
           const cleanMUnit = (m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
           const cleanUUnit = (u.unitNumber || u.id || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
           const matchesUnit = cleanMUnit === cleanUUnit || m.unit === u.unitNumber || m.unit === u.id;
@@ -268,30 +287,58 @@ export function useTenantActiveUnit() {
           return matchesUnit && matchesProp && isCompleted;
         });
 
-        if (!hasCompletedMoveOut || hasActiveAgForUnit) {
-          const key = makeKey(u.propertyId, u.unitNumber);
-          if (!seenKeys.has(key)) {
-            const prop = state.properties.find((p) => p.id === u.propertyId);
-            const guaranteedId =
-              u.id && u.propertyId && !u.id.startsWith(`${u.propertyId}_`) && !u.id.startsWith(`unit-${u.propertyId}`)
-                ? `${u.propertyId}_${u.id}`
-                : (u.id || `${u.propertyId || 'prop'}_${u.unitNumber}`);
-            list.push({
-              ...u,
-              id: guaranteedId,
-              status: hasPendingReqForUnit ? 'reserved' : u.status,
-              propertyName: u.propertyName || prop?.name || 'Property',
-            });
-            seenKeys.add(key);
-            seenKeys.add(guaranteedId.toLowerCase());
-            seenKeys.add(u.id.toLowerCase());
+        const moTime = completedMo
+          ? new Date((completedMo as any).settledAt || (completedMo as any).tenantConfirmedAt || (completedMo as any).updatedAt || (completedMo as any).moveOutDate || (completedMo as any).createdAt || 0).getTime()
+          : 0;
+
+        const hasNewerActiveAg = myAgreements.some((a) => {
+          if (a.status === 'terminated' || a.status === 'cancelled') return false;
+          if (!(!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)) return false;
+          const cleanAgU = (a.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+          if (cleanAgU !== cleanUNum && a.unit !== u.unitNumber && a.unit !== u.id && (a as any).unitId !== u.id) return false;
+          if (moTime > 0) {
+            const agTime = new Date((a as any).createdAt || a.start || 0).getTime();
+            return agTime > moTime;
           }
+          return a.status === 'active' || (a.status as string) === 'signed' || a.status === 'pending_deposit';
+        });
+
+        if (completedMo && !hasNewerActiveAg) {
+          return;
+        }
+
+        const key = makeKey(u.propertyId, u.unitNumber);
+        if (!seenKeys.has(key)) {
+          const prop = state.properties.find((p) => p.id === u.propertyId);
+          const guaranteedId =
+            u.id && u.propertyId && !u.id.startsWith(`${u.propertyId}_`) && !u.id.startsWith(`unit-${u.propertyId}`)
+              ? `${u.propertyId}_${u.id}`
+              : (u.id || `${u.propertyId || 'prop'}_${u.unitNumber}`);
+          list.push({
+            ...u,
+            id: guaranteedId,
+            status: hasPendingReqForUnit ? 'reserved' : u.status,
+            propertyName: u.propertyName || prop?.name || 'Property',
+          });
+          seenKeys.add(key);
+          seenKeys.add(guaranteedId.toLowerCase());
+          seenKeys.add(u.id.toLowerCase());
         }
       }
     });
 
     // Pass 2: Agreements for units not yet in state.units
     myAgreements.forEach((ag) => {
+      if (ag.status === 'terminated' || ag.status === 'cancelled') return;
+      const cleanAgU = (ag.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+      const hasSettledMo = (allMoveOuts || []).some(
+        (m) =>
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
+          ((m.unit && (m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanAgU) || m.unit === ag.unit || m.agreementId === ag.id) &&
+          (!m.propertyId || !ag.propertyId || m.propertyId === ag.propertyId)
+      );
+      if (hasSettledMo) return;
+
       const key = makeKey(ag.propertyId || '', ag.unit);
       if (!seenKeys.has(key)) {
         const cleanAgU = (ag.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
@@ -332,13 +379,7 @@ export function useTenantActiveUnit() {
         ...(t.unitsRented || []),
       ];
       unitsToCheck.forEach((uNum) => {
-        const hasActiveAgForUNum = myAgreements.some(
-          (a) =>
-            a.status !== 'terminated' &&
-            a.status !== 'cancelled' &&
-            (!a.propertyId || !t.propertyId || a.propertyId === t.propertyId) &&
-            (a.unit?.toLowerCase().trim() === uNum.toLowerCase().trim() || a.unit === uNum)
-        );
+        const cleanUNum = (uNum || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
         const hasPendingReqForUNum = (state.tenancyRequests || []).some(
           (r) =>
             (r.tenantId === userId || (userEmail && r.tenantEmail?.toLowerCase().trim() === userEmail)) &&
@@ -347,15 +388,31 @@ export function useTenantActiveUnit() {
             (r.status === 'pending' || r.status === 'accepted')
         );
 
-        // Exclude units where move-out is concluded unless currently covered by an active/pending lease or request
-        const hasCompletedMoveOut = (state.moveOuts || []).some(
+        // Exclude units where move-out is concluded unless currently covered by an active/pending lease created after moveout
+        const completedMoForT = (allMoveOuts || []).find(
           (m) =>
-            (m.tenantId === userId || (userEmail && m.tenantName?.toLowerCase().trim() === userEmail)) &&
+            (m.tenantId === userId || (userEmail && (m.tenant?.toLowerCase().trim() === userEmail || (m as any).tenantEmail?.toLowerCase().trim() === userEmail))) &&
             (!m.propertyId || !t.propertyId || m.propertyId === t.propertyId) &&
-            m.unit?.toLowerCase().trim() === uNum.toLowerCase().trim() &&
+            (m.unit?.toLowerCase().trim() === uNum.toLowerCase().trim() || (m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanUNum) &&
             (m.status === 'settled' || m.status === 'refund_completed' || Boolean(m.tenantConfirmedReceipt))
         );
-        if (hasCompletedMoveOut && !hasActiveAgForUNum && !hasPendingReqForUNum) return;
+        const tMoTime = completedMoForT
+          ? new Date((completedMoForT as any).settledAt || (completedMoForT as any).tenantConfirmedAt || (completedMoForT as any).updatedAt || (completedMoForT as any).moveOutDate || 0).getTime()
+          : 0;
+
+        const hasNewerAgForUNum = myAgreements.some((a) => {
+          if (a.status === 'terminated' || a.status === 'cancelled') return false;
+          if (!(!a.propertyId || !t.propertyId || a.propertyId === t.propertyId)) return false;
+          const aClean = (a.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+          if (aClean !== cleanUNum && a.unit !== uNum) return false;
+          if (tMoTime > 0) {
+            const agTime = new Date((a as any).createdAt || a.start || 0).getTime();
+            return agTime > tMoTime;
+          }
+          return a.status === 'active' || (a.status as string) === 'signed' || a.status === 'pending_deposit';
+        });
+
+        if (completedMoForT && !hasNewerAgForUNum && !hasPendingReqForUNum) return;
 
         const key = makeKey(t.propertyId || '', uNum);
         if (!seenKeys.has(key)) {
@@ -404,7 +461,7 @@ export function useTenantActiveUnit() {
     return list;
   }, [
     state.units,
-    state.moveOuts,
+    allMoveOuts,
     state.properties,
     myAgreements,
     myTenantRecords,
@@ -512,7 +569,7 @@ export function useTenantActiveUnit() {
       );
       const isUnitVacated =
         !hasActiveLeaseForUnit &&
-        (state.moveOuts || []).some(
+        (allMoveOuts || []).some(
           (m) =>
             m.unit?.toLowerCase().trim() === inv.unit?.toLowerCase().trim() &&
             (!inv.propertyId || !m.propertyId || inv.propertyId === m.propertyId) &&
@@ -521,7 +578,7 @@ export function useTenantActiveUnit() {
       if (isUnitVacated) return false;
 
       // Exclude past invoices belonging to a vacated tenancy
-      const isPastVacatedInvoice = (state.moveOuts || []).some((m) => {
+      const isPastVacatedInvoice = (allMoveOuts || []).some((m) => {
         const matchesUnit =
           (m.unit && inv.unit && m.unit.toLowerCase().trim() === inv.unit.toLowerCase().trim()) ||
           (activeUnit && m.unit && m.unit.toLowerCase().trim() === activeUnit.unitNumber.toLowerCase().trim());
@@ -534,7 +591,7 @@ export function useTenantActiveUnit() {
           return true;
         }
 
-        const moTime = new Date((m as any).settledAt || (m as any).updatedAt || m.moveOutDate || (m as any).createdAt || 0).getTime();
+        const moTime = new Date((m as any).settledAt || (m as any).updatedAt || (m as any).moveOutDate || (m as any).createdAt || 0).getTime();
         const invDueTime = new Date(inv.due || inv.createdAt || 0).getTime();
         const agStartTime = activeAgreement ? new Date(activeAgreement.start || 0).getTime() : 0;
 
@@ -560,7 +617,7 @@ export function useTenantActiveUnit() {
 
       return isTenant && isUnit;
     });
-  }, [state.invoices, state.moveOuts, myAgreements, activeUnit, activeAgreement, userId, userEmail, userName]);
+  }, [state.invoices, allMoveOuts, myAgreements, activeUnit, activeAgreement, userId, userEmail, userName]);
 
   // All pending invoices for this tenant across their portfolio
   const allTenantPendingInvoices = useMemo(() => {
@@ -577,7 +634,7 @@ export function useTenantActiveUnit() {
       );
       const isUnitVacated =
         !hasActiveLeaseForUnit &&
-        (state.moveOuts || []).some(
+        (allMoveOuts || []).some(
           (m) =>
             m.unit?.toLowerCase().trim() === inv.unit?.toLowerCase().trim() &&
             (!inv.propertyId || !m.propertyId || inv.propertyId === m.propertyId) &&
@@ -586,14 +643,14 @@ export function useTenantActiveUnit() {
       if (isUnitVacated) return false;
 
       // Exclude past invoices belonging to a vacated tenancy
-      const isPastVacatedInvoice = (state.moveOuts || []).some((m) => {
+      const isPastVacatedInvoice = (allMoveOuts || []).some((m) => {
         const matchesUnit = m.unit && inv.unit && m.unit.toLowerCase().trim() === inv.unit.toLowerCase().trim();
         const matchesProp = !m.propertyId || !inv.propertyId || m.propertyId === inv.propertyId;
         const isCompleted =
           m.status === 'settled' || m.status === 'refund_completed' || Boolean(m.tenantConfirmedReceipt);
         if (!matchesUnit || !matchesProp || !isCompleted) return false;
 
-        const moTime = new Date((m as any).settledAt || (m as any).updatedAt || m.moveOutDate || (m as any).createdAt || 0).getTime();
+        const moTime = new Date((m as any).settledAt || (m as any).updatedAt || (m as any).moveOutDate || (m as any).createdAt || 0).getTime();
         const invDueTime = new Date(inv.due || inv.createdAt || 0).getTime();
         if (moTime > 0 && invDueTime <= moTime) return true;
 
@@ -607,7 +664,7 @@ export function useTenantActiveUnit() {
         (userName && inv.tenant.toLowerCase().trim() === userName);
       return isTenant && (inv.status === 'sent' || inv.status === 'overdue');
     });
-  }, [state.invoices, state.moveOuts, myAgreements, userId, userEmail, userName]);
+  }, [state.invoices, allMoveOuts, myAgreements, userId, userEmail, userName]);
 
   // Pending invoices for active unit only
   const activeUnitPendingInvoices = useMemo(() => {

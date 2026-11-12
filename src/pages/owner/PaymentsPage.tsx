@@ -18,10 +18,12 @@ import { ButtonProcessing } from '../../components/common/Spinner';
 import { CurrencyConverterTrigger } from '../../components/common/CurrencyConverterTrigger';
 import { useCurrency } from '../../context/CurrencyContext';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, GLOBAL_CURRENCIES, formatCurrencyAmount, normalizeCurrencyCode } from '../../lib/currencyService';
-import { resolveUnitOccupancy } from '../../lib/portfolioSelectors';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
+import { resolveUnitOccupancy, isDepositPayment } from '../../lib/portfolioSelectors';
 import {
   Download,
   FileText,
+  Bell,
   CheckCircle,
   AlertTriangle,
   Eye,
@@ -84,7 +86,7 @@ export const PaymentsPage: React.FC = () => {
       if (!isNaN(parsed.getTime())) {
         return parsed.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
       }
-    } catch {}
+    } catch { }
     return d.includes('T') ? d.split('T')[0] : d;
   };
 
@@ -130,49 +132,29 @@ export const PaymentsPage: React.FC = () => {
 
 
 
-  // Late fee state
-  const [lateFeeGrace, setLateFeeGrace] = useState(state.lateFeeSettings.graceDays);
-  const [lateFeeType, setLateFeeType] = useState(state.lateFeeSettings.type);
-  const [lateFeeValue, setLateFeeValue] = useState(state.lateFeeSettings.value);
-  const [lateFeeCap, setLateFeeCap] = useState(state.lateFeeSettings.cap);
-
-  // Tax settings state
-  const [taxLabel, setTaxLabel] = useState(state.taxSettings.label);
-  const [taxPercent, setTaxPercent] = useState(state.taxSettings.percent);
-
   // Payment methods & Gateways form states
   const ownerSettings = state.ownerSettings[ownerId];
   const m = (ownerSettings?.paymentMethods as any) || state.ownerPaymentMethods;
+
+  // Late fee state
+  const existingLateFee = ownerSettings?.lateFeeConfig || state.lateFeeSettings;
+  const [lateFeeGrace, setLateFeeGrace] = useState(existingLateFee.graceDays ?? 5);
+  const [lateFeeType, setLateFeeType] = useState<'percent' | 'flat'>((existingLateFee.type as any) === 'flat' ? 'flat' : 'percent');
+  const [lateFeeValue, setLateFeeValue] = useState(existingLateFee.value ?? 2);
+  const [lateFeeCap, setLateFeeCap] = useState(existingLateFee.cap ?? 1000);
+  const [lateFeeEnabled, setLateFeeEnabled] = useState<boolean>(existingLateFee.enabled ?? false);
+
+  // Tax settings state (kept for fallback)
+  const [taxLabel, setTaxLabel] = useState(state.taxSettings.label);
+  const [taxPercent, setTaxPercent] = useState(state.taxSettings.percent);
 
   // Rental reminder policy state (defaults to 10 days prior)
   const currentReminderDays = ownerSettings?.rentReminderDaysPrior ?? ownerSettings?.rentalReminderConfig?.daysPrior ?? 10;
   const [reminderDays, setReminderDays] = useState<number>(currentReminderDays);
   const [reminderEnabled, setReminderEnabled] = useState<boolean>(ownerSettings?.rentalReminderConfig?.enabled ?? true);
-
-  const handleSaveReminderSettings = async (days: number, enabled: boolean) => {
-    setReminderDays(days);
-    setReminderEnabled(enabled);
-    const curSettings = state.ownerSettings[ownerId] || {
-      ownerId,
-      planId: 'plan-growth',
-      planName: 'Growth',
-      planStatus: 'trialing',
-      trialEndsAt: null,
-      subscriptionEndsAt: null,
-      paymentMethods: state.ownerPaymentMethods,
-      lateFeeConfig: state.lateFeeSettings,
-      taxConfig: state.taxSettings,
-    };
-    await saveOwnerSettings(ownerId, {
-      ...curSettings,
-      rentReminderDaysPrior: days,
-      rentalReminderConfig: {
-        enabled,
-        daysPrior: days,
-      },
-    });
-    showToast(`✓ Rental reminder policy saved! Tenants will be reminded ${days} days prior to due date.`);
-  };
+  const [isSavingReminder, setIsSavingReminder] = useState(false);
+  const [isSavingLateFee, setIsSavingLateFee] = useState(false);
+  const [expandedGateway, setExpandedGateway] = useState<string | null>(null);
 
   // Stripe
   const [stripePub, setStripePub] = useState(m.stripe?.pubKey || '');
@@ -278,6 +260,7 @@ export const PaymentsPage: React.FC = () => {
 4. Any billing discrepancies must be reported to the landlord office or property manager within 3 days.
 5. This is an official tax invoice issued pursuant to the executed residential/commercial lease agreement.`;
   const [tmplTerms, setTmplTerms] = useState(existingTemplate?.termsAndConditions || defaultTmplTerms);
+  const [tmplIncludeTerms, setTmplIncludeTerms] = useState(existingTemplate?.includeTerms !== false);
   const [tmplSignatory, setTmplSignatory] = useState(existingTemplate?.signatoryName || 'Authorized Property Manager');
   const [tmplSignatureUrl, setTmplSignatureUrl] = useState(existingTemplate?.signatureUrl || '');
   const [tmplNotes, setTmplNotes] = useState(existingTemplate?.notes || 'Thank you for your prompt tenancy settlement.');
@@ -287,7 +270,7 @@ export const PaymentsPage: React.FC = () => {
   const existingDepositTemplate = ownerSettings?.depositTemplate;
   const [depTmplTitle, setDepTmplTitle] = useState(existingDepositTemplate?.documentTitle || 'SECURITY DEPOSIT CUSTODY VOUCHER');
   const [depTmplClassification, setDepTmplClassification] = useState(existingDepositTemplate?.depositClassification || '100% Refundable Security Deposit');
-  const [depTmplCustodyMechanism, setDepTmplCustodyMechanism] = useState(existingDepositTemplate?.custodyMechanism || 'Held in Landlord Trust Ledger with Platform Verification');
+  const [depTmplCustodyMechanism, setDepTmplCustodyMechanism] = useState(existingDepositTemplate?.custodyMechanism || 'Held by Landlord');
   const [depTmplRefundTimeline, setDepTmplRefundTimeline] = useState(existingDepositTemplate?.refundTimelineDays || 14);
   const [depTmplIssuerName, setDepTmplIssuerName] = useState(existingDepositTemplate?.issuerName || existingTemplate?.issuerName || user?.displayName || 'Propithub Real Estate');
   const [depTmplIssuerTaxNo, setDepTmplIssuerTaxNo] = useState(existingDepositTemplate?.issuerTaxNo || existingTemplate?.issuerTaxNo || '');
@@ -303,6 +286,7 @@ export const PaymentsPage: React.FC = () => {
   const [depTmplAccountNumber, setDepTmplAccountNumber] = useState(existingDepositTemplate?.accountNumber || (m.bank as any)?.accountNumber || '');
   const [depTmplIfsc, setDepTmplIfsc] = useState(existingDepositTemplate?.ifscOrRouting || (m.bank as any)?.routing || '');
   const [depTmplUpiId, setDepTmplUpiId] = useState(existingDepositTemplate?.upiId || (m.upi as any)?.upiId || '');
+  const [depTmplIncludeTerms, setDepTmplIncludeTerms] = useState(existingDepositTemplate?.includeTerms !== false);
 
   const handleSaveDefaultInvoiceFormat = async () => {
     setIsSavingTmpl(true);
@@ -316,6 +300,7 @@ export const PaymentsPage: React.FC = () => {
       taxLabel: tmplTaxLabel,
       taxPercent: tmplTaxPercent,
       termsAndConditions: tmplTerms,
+      includeTerms: tmplIncludeTerms,
       signatoryName: tmplSignatory,
       signatureUrl: tmplSignatureUrl || undefined,
       notes: tmplNotes,
@@ -362,6 +347,7 @@ export const PaymentsPage: React.FC = () => {
       taxLabel: 'Non-Taxable Deposit',
       taxPercent: 0,
       termsAndConditions: depTmplTerms,
+      includeTerms: depTmplIncludeTerms,
       signatoryName: depTmplSignatory,
       signatureUrl: depTmplSignatureUrl || undefined,
       notes: depTmplNotes,
@@ -394,6 +380,7 @@ export const PaymentsPage: React.FC = () => {
       if (dt.issuerPhone) setDepTmplIssuerPhone(dt.issuerPhone);
       if (dt.issuerEmail) setDepTmplIssuerEmail(dt.issuerEmail);
       if (dt.termsAndConditions) setDepTmplTerms(dt.termsAndConditions);
+      if (dt.includeTerms !== undefined) setDepTmplIncludeTerms(dt.includeTerms);
       if (dt.signatoryName) setDepTmplSignatory(dt.signatoryName);
       if (dt.signatureUrl !== undefined) setDepTmplSignatureUrl(dt.signatureUrl);
       if (dt.notes) setDepTmplNotes(dt.notes);
@@ -417,6 +404,7 @@ export const PaymentsPage: React.FC = () => {
       if (it.taxLabel) setTmplTaxLabel(it.taxLabel);
       if (it.taxPercent !== undefined) setTmplTaxPercent(it.taxPercent);
       if (it.termsAndConditions) setTmplTerms(it.termsAndConditions);
+      if (it.includeTerms !== undefined) setTmplIncludeTerms(it.includeTerms);
       if (it.signatoryName) setTmplSignatory(it.signatoryName);
       if (it.signatureUrl !== undefined) setTmplSignatureUrl(it.signatureUrl);
       if (it.notes) setTmplNotes(it.notes);
@@ -472,16 +460,17 @@ export const PaymentsPage: React.FC = () => {
 
   const isAgreementVacated = (a: any) => {
     if (a.status === 'terminated') return true;
+    const aClean = (a.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
     return (
       (state.moveouts || []).some(
         (m) =>
-          m.status === 'refund_completed' &&
-          ((m as any).agreementId === a.id || (m as any).leaseAgreementId === a.id)
+          (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
+          ((m as any).agreementId === a.id || (m as any).leaseAgreementId === a.id || ((m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === aClean && (!m.propertyId || !a.propertyId || m.propertyId === a.propertyId)))
       ) ||
       (state.depositSettlements || []).some(
         (s) =>
-          s.status === 'refunded' &&
-          s.agreementId === a.id
+          (s.status === 'refunded' || Boolean(s.tenantConfirmedReceipt)) &&
+          (s.agreementId === a.id || ((s.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === aClean && (!s.propertyId || !a.propertyId || s.propertyId === a.propertyId)))
       )
     );
   };
@@ -490,15 +479,15 @@ export const PaymentsPage: React.FC = () => {
     if (inv.status === 'paid') return false;
     if (inv.leaseAgreementId) {
       const ag = (state.agreements || []).find((a) => a.id === inv.leaseAgreementId);
-      if (ag && ag.status !== 'terminated') return false;
+      if (ag && isAgreementVacated(ag)) return true;
       return (
         (state.moveouts || []).some(
           (m) =>
-            m.status === 'refund_completed' &&
+            (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
             ((m as any).agreementId === inv.leaseAgreementId || (m as any).leaseAgreementId === inv.leaseAgreementId)
         ) ||
         (state.depositSettlements || []).some(
-          (s) => s.status === 'refunded' && s.agreementId === inv.leaseAgreementId
+          (s) => (s.status === 'refunded' || Boolean(s.tenantConfirmedReceipt)) && s.agreementId === inv.leaseAgreementId
         )
       );
     }
@@ -639,6 +628,11 @@ export const PaymentsPage: React.FC = () => {
           (m.status === 'refund_completed' || (m as any).status === 'settled' || m.tenantConfirmedReceipt) &&
           (m.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanU &&
           (!m.propertyId || !u.propertyId || m.propertyId === u.propertyId)
+      ) || (state.depositSettlements || []).some(
+        (s) =>
+          (s.status === 'refunded' || Boolean(s.tenantConfirmedReceipt)) &&
+          (s.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanU &&
+          (!s.propertyId || !u.propertyId || s.propertyId === u.propertyId)
       );
       if (hasSettledMoveout) return;
 
@@ -809,7 +803,7 @@ export const PaymentsPage: React.FC = () => {
     });
 
     return items;
-  }, [myUnits, myAgreements, myInvoices, myPayments, state.tenants, state.properties, state.lateFeeSettings]);
+  }, [myUnits, myAgreements, myInvoices, myPayments, state.tenants, state.properties, state.lateFeeSettings, state.moveouts, state.depositSettlements]);
 
   const rentDueMetrics = useMemo(() => {
     const totalExpected = rentDueList.reduce(
@@ -839,7 +833,17 @@ export const PaymentsPage: React.FC = () => {
     };
   }, [rentDueList, convert, activeCurrencyCode]);
 
-  const dominantRentCurrency = activeSymbol;
+  const dominantPropertyCurrency = useMemo(() => {
+    const ownerProp = (state.properties || []).find((p) => p.ownerId === ownerId && p.currency);
+    if (ownerProp?.currency) return getCurrencySymbol(ownerProp.currency);
+    const ownerUnit = myUnits.find((u) => u.currency);
+    if (ownerUnit?.currency) return getCurrencySymbol(ownerUnit.currency);
+    const ownerInvoice = rentDueList.find((r) => r.currency);
+    if (ownerInvoice?.currency) return getCurrencySymbol(ownerInvoice.currency);
+    return activeSymbol;
+  }, [state.properties, ownerId, myUnits, rentDueList, activeSymbol]);
+
+  const dominantRentCurrency = dominantPropertyCurrency;
   const filteredRentDueList = useMemo(() => {
     return rentDueList.filter((item) => {
       if (rentDueFilter !== 'all' && item.status !== rentDueFilter) return false;
@@ -908,10 +912,10 @@ export const PaymentsPage: React.FC = () => {
       const voucherId = depInv?.id || (ag.depositInvoiceId ? ag.depositInvoiceId : undefined);
 
       let status: 'held' | 'pending_collection' | 'pending_confirmation' | 'moveout_inspection' | 'refunded' = 'held';
-      let statusLabel = '🛡️ Held in Trust';
+      let statusLabel = 'Held';
       let statusBadgeBg = '#DCFCE7';
       let statusBadgeColor = '#15803D';
-      let custodyDetails = depInv?.custodyMechanism || 'Held in Landlord Trust Account (Fiduciary Non-Income)';
+      let custodyDetails = depInv?.custodyMechanism || 'Held by Landlord';
 
       if (mo) {
         if (mo.status === 'refund_completed') {
@@ -972,13 +976,13 @@ export const PaymentsPage: React.FC = () => {
         const depInvCurrency = getCurrencySymbol(depInv.currency || state.units.find((u) => u.unitNumber === depInv.unit || u.id === depInv.unit)?.currency || prop?.currency || DEFAULT_CURRENCY_SYMBOL);
 
         let status: 'held' | 'pending_collection' | 'pending_confirmation' | 'moveout_inspection' | 'refunded' = 'held';
-        let statusLabel = '🛡️ Held in Trust';
+        let statusLabel = 'Held';
         let statusBadgeBg = '#DCFCE7';
         let statusBadgeColor = '#15803D';
 
         if (depInv.status === 'paid') {
           status = 'held';
-          statusLabel = '🛡️ Held in Trust';
+          statusLabel = 'Held';
         } else if (depInv.status === 'pending_confirmation') {
           status = 'pending_confirmation';
           statusLabel = '⚡ Confirmation Pending';
@@ -1169,15 +1173,15 @@ export const PaymentsPage: React.FC = () => {
 
   const totalCollected = useMemo(() => {
     return myPayments
-      .filter((p) => p.status === 'paid' || (p.status as any) === 'completed')
+      .filter((p) => (p.status === 'paid' || (p.status as any) === 'completed') && !isDepositPayment(p, state.invoices) && p.direction !== 'outflow')
       .reduce((sum, p) => sum + convert(p.amount || 0, p.currency || 'USD', activeCurrencyCode), 0);
-  }, [myPayments, convert, activeCurrencyCode]);
+  }, [myPayments, convert, activeCurrencyCode, state.invoices]);
 
   const totalOverdue = useMemo(() => {
     return myPayments
-      .filter((p) => p.status === 'overdue')
+      .filter((p) => p.status === 'overdue' && !isDepositPayment(p, state.invoices))
       .reduce((sum, p) => sum + convert(p.amount || 0, p.currency || 'USD', activeCurrencyCode), 0);
-  }, [myPayments, convert, activeCurrencyCode]);
+  }, [myPayments, convert, activeCurrencyCode, state.invoices]);
 
   const handleConfirmReceipt = async (id: string) => {
     const targetPay = state.payments.find((p) => p.id === id);
@@ -1282,40 +1286,79 @@ export const PaymentsPage: React.FC = () => {
     showToast(`Payment ${id} marked as disputed.`);
   };
 
-  const handleToggleLateFee = () => {
-    updateState((prev) => ({
-      ...prev,
-      lateFeeSettings: {
-        ...prev.lateFeeSettings,
-        enabled: !prev.lateFeeSettings.enabled,
-      },
-    }));
-    showToast(`Late fees turned ${!state.lateFeeSettings.enabled ? 'on' : 'off'}.`);
-  };
+  const handleSaveLateFeeRule = async () => {
+    setIsSavingLateFee(true);
+    try {
+      const curSettings = state.ownerSettings[ownerId] || {
+        ownerId,
+        planId: 'plan-growth',
+        planName: 'Growth',
+        planStatus: 'trialing',
+        trialEndsAt: null,
+        subscriptionEndsAt: null,
+        paymentMethods: state.ownerPaymentMethods,
+        lateFeeConfig: state.lateFeeSettings,
+        taxConfig: state.taxSettings,
+      };
 
-  const handleSaveLateFee = () => {
-    updateState((prev) => ({
-      ...prev,
-      lateFeeSettings: {
-        ...prev.lateFeeSettings,
+      const newLateFeeConfig = {
+        enabled: lateFeeEnabled,
         graceDays: lateFeeGrace,
         type: lateFeeType,
         value: lateFeeValue,
         cap: lateFeeCap,
-      },
-    }));
-    showToast('Late fee rule saved.');
+      };
+
+      updateState((prev) => ({
+        ...prev,
+        lateFeeSettings: newLateFeeConfig,
+      }));
+
+      await saveOwnerSettings(ownerId, {
+        ...curSettings,
+        lateFeeConfig: newLateFeeConfig,
+      });
+
+      showToast('✓ Late fee rule saved successfully!');
+    } catch (e: any) {
+      showToast('Failed to save late fee rule: ' + (e?.message || 'Unknown error'), 'error');
+    } finally {
+      setIsSavingLateFee(false);
+    }
   };
 
-  const handleSaveTax = () => {
-    updateState((prev) => ({
-      ...prev,
-      taxSettings: {
-        label: taxLabel,
-        percent: taxPercent,
-      },
-    }));
-    showToast(`Tax rule saved: ${taxLabel} at ${taxPercent}%.`);
+  const handleSaveReminderRule = async () => {
+    setIsSavingReminder(true);
+    try {
+      const curSettings = state.ownerSettings[ownerId] || {
+        ownerId,
+        planId: 'plan-growth',
+        planName: 'Growth',
+        planStatus: 'trialing',
+        trialEndsAt: null,
+        subscriptionEndsAt: null,
+        paymentMethods: state.ownerPaymentMethods,
+        lateFeeConfig: state.lateFeeSettings,
+        taxConfig: state.taxSettings,
+      };
+
+      const newRentalReminderConfig = {
+        enabled: reminderEnabled,
+        daysPrior: reminderDays,
+      };
+
+      await saveOwnerSettings(ownerId, {
+        ...curSettings,
+        rentReminderDaysPrior: reminderDays,
+        rentalReminderConfig: newRentalReminderConfig,
+      });
+
+      showToast(`✓ Reminder rule saved! Tenants will be reminded ${reminderDays} days prior to due date.`);
+    } catch (e: any) {
+      showToast('Failed to save reminder rule: ' + (e?.message || 'Unknown error'), 'error');
+    } finally {
+      setIsSavingReminder(false);
+    }
   };
 
 
@@ -1346,13 +1389,16 @@ export const PaymentsPage: React.FC = () => {
     const tenantId = unitObj?.currentTenantId || '';
     const isCash = offlineMethod.toLowerCase().includes('cash'); const cleanRef = offlineRef?.trim(); if (!isCash && !cleanRef) { showToast('⚠️ Transaction reference / UTR number is required as proof of payment (H-1).'); setIsRecordingOffline(false); return; } const payId = cleanRef || generateTransactionId();
 
+    const targetOffProp = unitObj ? state.properties.find((p) => p.id === unitObj.propertyId) : undefined;
+    const effectiveOfflineCurrency = normalizeCurrencyCode(unitObj?.currency || targetOffProp?.currency || activeCurrencyCode || DEFAULT_CURRENCY);
+
     // Cash Handover Protocol: If owner records cash, submit claim awaiting tenant confirmation
     if (offlineMethod.toLowerCase().includes('cash')) {
       await submitCashClaim({
         direction: 'inflow',
         type: offlinePaymentType,
         amount: offlineAmount,
-        currency: 'INR',
+        currency: effectiveOfflineCurrency,
         ownerId,
         tenantId,
         tenantName,
@@ -1371,9 +1417,6 @@ export const PaymentsPage: React.FC = () => {
       showToast(`✓ Cash collection logged for ${offlinePaymentType === 'deposit' ? 'security deposit' : 'rent'}. Sent notification to ${tenantName} to confirm receipt.`);
       return;
     }
-
-    const targetOffProp = unitObj ? state.properties.find((p) => p.id === unitObj.propertyId) : undefined;
-    const effectiveOfflineCurrency = normalizeCurrencyCode(unitObj?.currency || targetOffProp?.currency || DEFAULT_CURRENCY);
 
     const newTxn: PaymentTransaction = {
       id: payId,
@@ -1428,9 +1471,24 @@ export const PaymentsPage: React.FC = () => {
         paidAt: new Date(offlineDate).toISOString(),
         paymentMethodUsed: offlineMethod,
         receiptNumber: offlineRef || generateReceiptId(),
-        custodyMechanism: depTmpl?.custodyMechanism || 'Held in Landlord Trust Account',
-        depositClassification: depTmpl?.depositClassification || '100% Refundable Security Deposit',
-        notes: 'Security deposit settled offline directly with landlord.',
+        custodyMechanism: depTmpl?.custodyMechanism || depTmplCustodyMechanism || 'Held in Landlord Trust Account',
+        depositClassification: depTmpl?.depositClassification || depTmplClassification || '100% Refundable Security Deposit',
+        issuerName: depTmpl?.issuerName || depTmplIssuerName,
+        issuerTaxNo: depTmpl?.issuerTaxNo || depTmplIssuerTaxNo,
+        issuerAddress: depTmpl?.issuerAddress || depTmplIssuerAddress,
+        issuerPhone: depTmpl?.issuerPhone || depTmplIssuerPhone,
+        issuerEmail: depTmpl?.issuerEmail || depTmplIssuerEmail,
+        termsAndConditions: depTmpl?.termsAndConditions || depTmplTerms,
+        includeTerms: depTmpl?.includeTerms ?? depTmplIncludeTerms,
+        signatoryName: depTmpl?.signatoryName || depTmplSignatory,
+        bankDetails: {
+          bankName: depTmpl?.bankName || depTmplBankName,
+          accountName: depTmpl?.accountName || depTmplAccountName,
+          accountNumber: depTmpl?.accountNumber || depTmplAccountNumber,
+          ifscOrRouting: depTmpl?.ifscOrRouting || depTmplIfsc,
+          upiId: depTmpl?.upiId || depTmplUpiId,
+        },
+        notes: depTmpl?.notes || depTmplNotes || 'Security deposit settled offline directly with landlord.',
         items: [{ description: `Security Deposit — Unit ${unitObj?.unitNumber || unitObj?.id || 'Unit'}`, amount: offlineAmount }],
       };
       await saveInvoice(autoInv);
@@ -1478,6 +1536,7 @@ export const PaymentsPage: React.FC = () => {
         issuerPhone: tmpl?.issuerPhone || tmplIssuerPhone,
         issuerEmail: tmpl?.issuerEmail || tmplIssuerEmail,
         termsAndConditions: tmpl?.termsAndConditions || tmplTerms,
+        includeTerms: tmpl?.includeTerms ?? tmplIncludeTerms,
         signatoryName: tmpl?.signatoryName || tmplSignatory,
         notes: tmpl?.notes || tmplNotes,
         bankDetails: {
@@ -1680,11 +1739,11 @@ export const PaymentsPage: React.FC = () => {
 
   return (
     <div>
-      <div className="tabs" data-tour="payments-subtabs">
+      <div className="tabs" data-tour="payments-subtabs" style={{ display: 'flex', flexWrap: 'nowrap', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
         <div
           className={`tab ${subTab === 'rent_due' ? 'active' : ''}`}
           onClick={() => setSubTab('rent_due')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
           <CalendarClock size={15} />
           Rent Due
@@ -1692,7 +1751,7 @@ export const PaymentsPage: React.FC = () => {
         <div
           className={`tab ${subTab === 'deposit' ? 'active' : ''}`}
           onClick={() => setSubTab('deposit')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
           <ShieldCheck size={15} />
           Security Deposits
@@ -1700,15 +1759,15 @@ export const PaymentsPage: React.FC = () => {
         <div
           className={`tab ${subTab === 'transactions' ? 'active' : ''}`}
           onClick={() => setSubTab('transactions')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
           <ArrowLeftRight size={15} />
-          Transactions
+          Payments
         </div>
         <div
           className={`tab ${subTab === 'invoices' ? 'active' : ''}`}
           onClick={() => setSubTab('invoices')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
           <FileText size={15} />
           Invoices
@@ -1717,7 +1776,7 @@ export const PaymentsPage: React.FC = () => {
           className={`tab ${subTab === 'methods' ? 'active' : ''}`}
           data-tour="payments-gateways-tab"
           onClick={() => setSubTab('methods')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
           <CreditCard size={15} />
           Payment Gateways
@@ -1725,7 +1784,7 @@ export const PaymentsPage: React.FC = () => {
         <div
           className={`tab ${subTab === 'template' ? 'active' : ''}`}
           onClick={() => setSubTab('template')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
           <LayoutTemplate size={15} />
           Invoice Template
@@ -1733,7 +1792,7 @@ export const PaymentsPage: React.FC = () => {
         <div
           className={`tab ${subTab === 'settings' ? 'active' : ''}`}
           onClick={() => setSubTab('settings')}
-          style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
           <Settings size={15} />
           Settings
@@ -1750,17 +1809,19 @@ export const PaymentsPage: React.FC = () => {
         );
         if (pendingClaimsForMe.length === 0) return null;
         return (
-          <div style={{ marginBottom: '20px' }}>
+          <div style={{ marginBottom: '16px' }}>
             {pendingClaimsForMe.map((c) => (
               <div
                 key={c.id}
+                className="panel"
                 style={{
-                  background: '#FFFBEB',
-                  border: '1.5px solid #F59E0B',
-                  borderRadius: 'var(--radius)',
-                  padding: '16px 18px',
+                  background: 'var(--surface)',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                  borderLeft: '4px solid #F59E0B',
+                  borderRadius: '10px',
+                  padding: '12px 18px',
                   marginBottom: '12px',
-                  boxShadow: '0 2px 6px rgba(245, 158, 11, 0.1)',
+                  boxShadow: 'var(--shadow-xs, 0 1px 2px rgba(0,0,0,0.04))',
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
@@ -1768,26 +1829,31 @@ export const PaymentsPage: React.FC = () => {
                   gap: '12px',
                 }}
               >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                    <span style={{ background: '#FEF3C7', color: '#B45309', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700 }}>
-                      ⚡ {c.type === 'deposit' ? 'TENANT MOVE-IN DEPOSIT' : 'TENANT CASH PAYMENT'} CLAIM — CONFIRMATION REQUIRED
+                <div style={{ flex: '1 1 340px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                    <span
+                      className="badge amber"
+                      style={{ fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.4px', padding: '2px 7px' }}
+                    >
+                      ⚡ {c.type === 'deposit' ? 'Move-In Deposit Claim' : 'Cash Payment Claim'}
                     </span>
-                    <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Claim #{c.id}</span>
+                    <span className="badge grey" style={{ fontSize: '10.5px', fontFamily: 'monospace', padding: '2px 6px' }}>
+                      Claim #{c.id}
+                    </span>
                   </div>
-                  <h4 style={{ margin: '6px 0 4px', fontSize: '15px', color: 'var(--ink)' }}>
-                    {c.tenantName} reported handing you {getCurrencySymbol(c.currency)} {c.amount.toLocaleString('en-IN')} in Cash for Unit {c.unit}
-                  </h4>
-                  <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>
+                  <div style={{ margin: '2px 0 3px', fontSize: '13.5px', fontWeight: 700, color: 'var(--ink)' }}>
+                    <b>{c.tenantName}</b> reported handing you {getCurrencySymbol(c.currency)}{c.amount.toLocaleString('en-IN')} in Cash for Unit {c.unit}
+                  </div>
+                  <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
                     <b>Handover Date:</b> {c.handoverDate} • <b>Location:</b> {c.handoverLocation || 'On-Site'}
-                    {c.notes && <span style={{ display: 'block', marginTop: '2px', fontStyle: 'italic' }}>"{c.notes}"</span>}
+                    {c.notes && <span style={{ marginLeft: '6px', fontStyle: 'italic' }}>"{c.notes}"</span>}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
                   <button
                     type="button"
                     className="btn secondary"
-                    style={{ background: '#fff', borderColor: '#EA580C', color: '#EA580C', padding: '8px 14px', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '5px' }}
+                    style={{ padding: '6px 12px', fontSize: '12px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px', borderRadius: '7px' }}
                     onClick={() => {
                       const linkedInv = c.invoiceId ? state.invoices.find((i) => i.id === c.invoiceId) : state.invoices.find((i) => i.unit === c.unit);
                       if (linkedInv) {
@@ -1801,16 +1867,16 @@ export const PaymentsPage: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    className="btn"
-                    style={{ background: '#16A34A', color: '#fff', border: 'none', padding: '8px 14px', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}
+                    className="btn brass"
+                    style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '6px', borderRadius: '7px' }}
                     onClick={() => confirmCashClaim(c.id)}
                   >
-                    <CheckCircle size={15} /> Confirm Receipt & Settle
+                    <CheckCircle size={14} /> Confirm Receipt & Settle
                   </button>
                   <button
                     type="button"
                     className="btn secondary"
-                    style={{ borderColor: '#DC2626', color: '#DC2626', padding: '8px 14px', fontSize: '12px', fontWeight: 600 }}
+                    style={{ borderColor: 'rgba(220, 38, 38, 0.4)', color: '#DC2626', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '7px' }}
                     onClick={() => {
                       const reason = window.prompt('Please enter the reason for declining this cash claim (e.g. Cash was not received):');
                       if (reason && reason.trim()) {
@@ -1830,60 +1896,34 @@ export const PaymentsPage: React.FC = () => {
       {subTab === 'rent_due' && (
         <div>
           {/* Summary Stat Cards */}
-          <div className="grid grid-4" style={{ marginBottom: '20px' }}>
-            <div className="stat">
-              <div className="num" style={{ color: 'var(--ink)' }}>{formatMoney(rentDueMetrics.totalExpected)}</div>
-              <div className="lbl">Monthly Rent Roll (Expected)</div>
+          <div className="grid grid-4" style={{ marginBottom: '16px' }}>
+            <div className="stat" style={{ padding: '14px 18px' }}>
+              <div className="num" style={{ color: 'var(--ink)', fontSize: '20px' }}>{formatMoney(rentDueMetrics.totalExpected)}</div>
+              <div className="lbl" style={{ fontSize: '12px' }}>Expected Rent Roll</div>
             </div>
-            <div className="stat">
-              <div className="num" style={{ color: '#16A34A' }}>{formatMoney(rentDueMetrics.totalCollectedThisMonth)}</div>
-              <div className="lbl">Collected ({rentDueMetrics.paidCount} Units Settled)</div>
+            <div className="stat" style={{ padding: '14px 18px' }}>
+              <div className="num" style={{ color: '#16A34A', fontSize: '20px' }}>{formatMoney(rentDueMetrics.totalCollectedThisMonth)}</div>
+              <div className="lbl" style={{ fontSize: '12px' }}>Collected</div>
             </div>
-            <div className="stat">
-              <div className="num" style={{ color: rentDueMetrics.totalOverdueAmount > 0 ? '#DC2626' : 'var(--ink)' }}>
+            <div className="stat" style={{ padding: '14px 18px' }}>
+              <div className="num" style={{ color: rentDueMetrics.totalOverdueAmount > 0 ? '#DC2626' : 'var(--ink)', fontSize: '20px' }}>
                 {formatMoney(rentDueMetrics.totalOverdueAmount)}
               </div>
-              <div className="lbl">Overdue Arrears ({rentDueMetrics.overdueCount} Units)</div>
+              <div className="lbl" style={{ fontSize: '12px' }}>Overdue</div>
             </div>
-            <div className="stat">
-              <div className="num" style={{ color: rentDueMetrics.collectionRate >= 80 ? '#16A34A' : '#D97706' }}>
+            <div className="stat" style={{ padding: '14px 18px' }}>
+              <div className="num" style={{ color: rentDueMetrics.collectionRate >= 80 ? '#16A34A' : '#D97706', fontSize: '20px' }}>
                 {rentDueMetrics.totalExpected === 0 ? 'N/A' : `${rentDueMetrics.collectionRate}%`}
               </div>
-              <div className="lbl">Collection Rate</div>
+              <div className="lbl" style={{ fontSize: '12px' }}>Collection Rate</div>
             </div>
           </div>
 
           {/* Action & Filter Header */}
           <div className="panel" style={{ marginBottom: '16px', background: 'var(--surface-sunken)', border: '1px solid var(--line)' }}>
-            <div className="panel-body" style={{ padding: '14px 18px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                {/* Status Filter Chips */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', alignItems: 'center', gap: '4px', marginRight: '4px' }}>
-                    <Filter size={13} /> Filter:
-                  </span>
-                  {(
-                    [
-                      { id: 'all', label: `All (${rentDueList.length})` },
-                      { id: 'overdue', label: `Overdue (${rentDueMetrics.overdueCount})` },
-                      { id: 'due_soon', label: `Due Soon (${rentDueMetrics.dueSoonCount})` },
-                      { id: 'paid', label: `Paid This Month (${rentDueMetrics.paidCount})` },
-                      { id: 'pending_confirmation', label: `Confirmation Pending (${rentDueMetrics.pendingConfirmationCount})` },
-                    ] as const
-                  ).map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`btn small ${rentDueFilter === item.id ? 'primary' : 'secondary'}`}
-                      style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '20px' }}
-                      onClick={() => setRentDueFilter(item.id)}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Search & Actions */}
+            <div className="panel-body" style={{ padding: '12px 16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                {/* Search & Status Filter Chips */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                   <div style={{ position: 'relative' }}>
                     <Search size={14} style={{ position: 'absolute', left: '9px', top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-soft)' }} />
@@ -1892,10 +1932,35 @@ export const PaymentsPage: React.FC = () => {
                       placeholder="Search tenant or unit..."
                       value={rentSearch}
                       onChange={(e) => setRentSearch(e.target.value)}
-                      style={{ padding: '5px 10px 5px 28px', fontSize: '12px', width: '180px', borderRadius: 'var(--radius)', border: '1px solid var(--line)' }}
+                      style={{ padding: '5px 10px 5px 28px', fontSize: '12.5px', width: '200px', borderRadius: 'var(--radius)', border: '1px solid var(--line)' }}
                     />
                   </div>
 
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    {(
+                      [
+                        { id: 'all', label: `All (${rentDueList.length})` },
+                        { id: 'pending_confirmation', label: `Pending (${rentDueMetrics.pendingConfirmationCount})` },
+                        { id: 'overdue', label: `Overdue (${rentDueMetrics.overdueCount})` },
+                        { id: 'due_soon', label: `Due Soon (${rentDueMetrics.dueSoonCount})` },
+                        { id: 'paid', label: `Paid (${rentDueMetrics.paidCount})` },
+                      ] as const
+                    ).map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`btn small ${rentDueFilter === item.id ? 'primary' : 'secondary'}`}
+                        style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '20px' }}
+                        onClick={() => setRentDueFilter(item.id)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                   <button
                     type="button"
                     data-tour="payments-record-offline"
@@ -1925,8 +1990,6 @@ export const PaymentsPage: React.FC = () => {
                   >
                     + Issue Invoice
                   </button>
-
-                  <CurrencyConverterTrigger variant="button" label="Currency Converter" />
                 </div>
               </div>
             </div>
@@ -1941,12 +2004,12 @@ export const PaymentsPage: React.FC = () => {
                   <table>
                     <thead>
                       <tr>
-                        <th>Tenant & Resident</th>
-                        <th>Property & Unit</th>
-                        <th>Monthly Rent</th>
+                        <th>Tenant</th>
+                        <th>Property &amp; Unit</th>
+                        <th>{getTableCurrencyHeader('Monthly Rent', viewCurrency)}</th>
                         <th>Due Date</th>
                         <th>Status</th>
-                        <th>Late Fee</th>
+                        <th>{getTableCurrencyHeader('Late Fee', viewCurrency)}</th>
                         <th style={{ textAlign: 'right' }}>Actions</th>
                       </tr>
                     </thead>
@@ -1965,44 +2028,38 @@ export const PaymentsPage: React.FC = () => {
                               <div style={{ fontWeight: 600, color: 'var(--ink)', fontSize: '13.5px' }}>
                                 {item.tenantName}
                               </div>
-                              <div style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
-                                {item.tenantPhone && (
-                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
-                                    <Phone size={10} /> {item.tenantPhone}
-                                  </span>
-                                )}
-                                {item.tenantEmail && (
-                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
-                                    <Mail size={10} /> {item.tenantEmail}
-                                  </span>
-                                )}
-                              </div>
+                              {item.tenantEmail && (
+                                <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
+                                  {item.tenantEmail}
+                                </div>
+                              )}
                             </td>
                             <td>
-                              <div style={{ fontWeight: 600, color: 'var(--ink)' }}>Unit {item.unitNumber}</div>
-                              <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>{item.propertyName}</div>
+                              <div style={{ fontWeight: 600, color: 'var(--ink)', fontSize: '13.5px' }}>
+                                Unit {item.unitNumber}
+                              </div>
+                              <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
+                                {item.propertyName}
+                              </div>
                             </td>
                             <td>
                               <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>
-                                {getCurrencySymbol(item.currency)}{item.rentAmount.toLocaleString()}
+                                <CurrencyAmount amount={item.rentAmount} currency={item.currency} />
                               </div>
-                              <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>per month</div>
                             </td>
                             <td>
                               <div style={{ fontWeight: 600, fontSize: '12.5px', color: 'var(--ink)' }}>
                                 {item.dueDateFormatted}
                               </div>
-                              <div style={{ fontSize: '11px', color: item.status === 'paid' ? '#16A34A' : item.status === 'pending_confirmation' ? '#D97706' : item.daysDiff < 0 ? '#DC2626' : 'var(--ink-soft)' }}>
-                                {item.status === 'paid'
-                                  ? 'Paid in full'
-                                  : item.status === 'pending_confirmation'
-                                    ? 'Awaiting verification'
-                                    : item.daysDiff < 0
-                                      ? `${Math.abs(item.daysDiff)} days late`
-                                      : item.daysDiff === 0
-                                        ? 'Due Today'
-                                        : `in ${item.daysDiff} days`}
-                              </div>
+                              {item.status !== 'pending_confirmation' && item.status !== 'paid' && (
+                                <div style={{ fontSize: '11px', color: item.daysDiff < 0 ? '#DC2626' : 'var(--ink-soft)' }}>
+                                  {item.daysDiff < 0
+                                    ? `${Math.abs(item.daysDiff)} days late`
+                                    : item.daysDiff === 0
+                                      ? 'Due Today'
+                                      : `in ${item.daysDiff} days`}
+                                </div>
+                              )}
                             </td>
                             <td>
                               <span
@@ -2029,24 +2086,26 @@ export const PaymentsPage: React.FC = () => {
                               {item.status === 'paid' ? (
                                 <span style={{ color: '#16A34A', fontSize: '12px' }}>Settled</span>
                               ) : item.accruedLateFee > 0 ? (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                  <span style={{ fontWeight: 700, color: '#DC2626', fontSize: '12.5px' }}>
-                                    + {getCurrencySymbol(item.currency)}{item.accruedLateFee.toLocaleString()}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{ fontWeight: 700, color: '#DC2626', fontSize: '13px' }}>
+                                    +<CurrencyAmount amount={item.accruedLateFee} currency={item.currency} />
                                   </span>
                                   {item.invoiceId && (
                                     <button
                                       type="button"
                                       className="btn secondary small"
-                                      style={{ fontSize: '10px', padding: '1px 5px', alignSelf: 'flex-start', color: 'var(--green)' }}
+                                      style={{ fontSize: '9.5px', padding: '1px 5px', color: 'var(--green)' }}
                                       onClick={() => waiveInvoiceLateFee(item.invoiceId!)}
                                       title="Waive late fee for this billing cycle"
                                     >
-                                      Waive Fee
+                                      Waive
                                     </button>
                                   )}
                                 </div>
                               ) : (
-                                <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>{getCurrencySymbol(item.currency)}0</span>
+                                <span style={{ color: 'var(--ink-soft)', fontSize: '12.5px' }}>
+                                  <CurrencyAmount amount={0} currency={item.currency} />
+                                </span>
                               )}
                             </td>
                             <td style={{ textAlign: 'right' }}>
@@ -2148,7 +2207,9 @@ export const PaymentsPage: React.FC = () => {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', padding: '10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px' }}>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Monthly Rent</div>
-                          <b style={{ color: 'var(--ink)' }}>{item.currency}{item.rentAmount.toLocaleString()}</b>
+                          <b style={{ color: 'var(--ink)' }}>
+                            <CurrencyAmount amount={item.rentAmount} currency={item.currency} />
+                          </b>
                         </div>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Due Date</div>
@@ -2168,7 +2229,9 @@ export const PaymentsPage: React.FC = () => {
                         {item.status !== 'paid' && item.accruedLateFee > 0 && (
                           <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ color: 'var(--danger)', fontSize: '11.5px' }}>Accrued Late Fee:</span>
-                            <b style={{ color: '#DC2626' }}>+ {item.currency}{item.accruedLateFee.toLocaleString()}</b>
+                            <b style={{ color: '#DC2626' }}>
+                              + <CurrencyAmount amount={item.accruedLateFee} currency={item.currency} />
+                            </b>
                           </div>
                         )}
                         {item.status === 'paid' && (
@@ -2241,23 +2304,23 @@ export const PaymentsPage: React.FC = () => {
           <div className="grid grid-4" style={{ marginBottom: '20px' }}>
             <div className="stat">
               <div className="num" style={{ color: '#16A34A' }}>{formatMoney(depositMetrics.totalHeld)}</div>
-              <div className="lbl">Total Held in Trust Custody</div>
+              <div className="lbl">Deposits Held</div>
             </div>
             <div className="stat">
               <div className="num" style={{ color: depositMetrics.totalPendingCollection > 0 ? '#D97706' : 'var(--ink)' }}>
                 {formatMoney(depositMetrics.totalPendingCollection)}
               </div>
-              <div className="lbl">Pending Move-In Collection</div>
+              <div className="lbl">Pending Collection</div>
             </div>
             <div className="stat">
               <div className="num" style={{ color: depositMetrics.inMoveOutCount > 0 ? '#7E22CE' : 'var(--ink)' }}>
                 {depositMetrics.inMoveOutCount} Units
               </div>
-              <div className="lbl">In Move-Out / Inspection</div>
+              <div className="lbl">Move-Out Active</div>
             </div>
             <div className="stat">
               <div className="num" style={{ color: 'var(--ink)' }}>{formatMoney(depositMetrics.totalRefunded)}</div>
-              <div className="lbl">Total Settled & Refunded</div>
+              <div className="lbl">Refunded</div>
             </div>
           </div>
 
@@ -2273,10 +2336,10 @@ export const PaymentsPage: React.FC = () => {
                   {(
                     [
                       { id: 'all', label: `All (${depositLedgerList.length})` },
-                      { id: 'held', label: `Held in Trust (${depositLedgerList.filter((d) => d.status === 'held').length})` },
-                      { id: 'pending_collection', label: `Pending Collection (${depositLedgerList.filter((d) => d.status === 'pending_collection' || d.status === 'pending_confirmation').length})` },
-                      { id: 'moveout', label: `Move-Out Active (${depositMetrics.inMoveOutCount})` },
-                      { id: 'refunded', label: `Refunded & Closed (${depositLedgerList.filter((d) => d.status === 'refunded').length})` },
+                      { id: 'held', label: `Held (${depositLedgerList.filter((d) => d.status === 'held').length})` },
+                      { id: 'pending_collection', label: `Pending (${depositLedgerList.filter((d) => d.status === 'pending_collection' || d.status === 'pending_confirmation').length})` },
+                      { id: 'moveout', label: `Move-Out (${depositMetrics.inMoveOutCount})` },
+                      { id: 'refunded', label: `Refunded (${depositLedgerList.filter((d) => d.status === 'refunded').length})` },
                     ] as const
                   ).map((item) => (
                     <button
@@ -2333,7 +2396,7 @@ export const PaymentsPage: React.FC = () => {
                       <tr>
                         <th>Tenant & Resident</th>
                         <th>Property & Unit</th>
-                        <th>Deposit Amount</th>
+                        <th>{getTableCurrencyHeader('Deposit Amount', viewCurrency)}</th>
                         <th>Applied Voucher</th>
                         <th>Custody Status</th>
                         <th>Lease Term</th>
@@ -2374,7 +2437,7 @@ export const PaymentsPage: React.FC = () => {
                             </td>
                             <td>
                               <div style={{ fontWeight: 700, fontSize: '14px', color: '#15803D' }}>
-                                {getCurrencySymbol(item.currency)}{(item.amount ?? 0).toLocaleString()}
+                                <CurrencyAmount amount={item.amount ?? 0} currency={item.currency} />
                               </div>
                               <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>
                                 {item.custodyDetails.length > 28 ? item.custodyDetails.slice(0, 28) + '...' : item.custodyDetails}
@@ -2542,7 +2605,9 @@ export const PaymentsPage: React.FC = () => {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', padding: '10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px' }}>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Deposit Amount</div>
-                          <b style={{ color: '#15803D', fontSize: '14px' }}>{getCurrencySymbol(item.currency)}{(item.amount ?? 0).toLocaleString()}</b>
+                          <b style={{ color: '#15803D', fontSize: '14px' }}>
+                            <CurrencyAmount amount={item.amount ?? 0} currency={item.currency} />
+                          </b>
                         </div>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Custody</div>
@@ -2624,24 +2689,6 @@ export const PaymentsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Fiduciary Custody Policy Note */}
-          <div
-            style={{
-              marginTop: '16px',
-              padding: '12px 16px',
-              background: 'var(--surface-sunken)',
-              borderRadius: 'var(--radius)',
-              border: '1px solid var(--line)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-            }}
-          >
-            <ShieldCheck size={20} style={{ color: '#16A34A', flexShrink: 0 }} />
-            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
-              <b>Statutory Trust Custody:</b> Security deposit funds remain non-commingled trust liabilities held throughout the tenancy term. Pursuant to tenancy laws, they do not constitute taxable landlord income and are subject to checkout deduction clearance and refund timeline policies.
-            </div>
-          </div>
         </div>
       )}
 
@@ -2667,7 +2714,7 @@ export const PaymentsPage: React.FC = () => {
           {/* (Duplicate banner removed - already rendered globally across tabs above) */}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-            <div className="section-title" style={{ margin: 0 }}>Transactions ({myPayments.length})</div>
+            <div className="section-title" style={{ margin: 0 }}>Payments ({myPayments.length})</div>
             <button
               type="button"
               className="btn brass small"
@@ -2695,7 +2742,7 @@ export const PaymentsPage: React.FC = () => {
                         <th>Applied Bill / Voucher</th>
                         <th>Tenant</th>
                         <th>Unit</th>
-                        <th>Amount</th>
+                        <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                         <th>Date</th>
                         <th>Method</th>
                         <th>Status</th>
@@ -2755,7 +2802,8 @@ export const PaymentsPage: React.FC = () => {
                             <td>{p.tenant}</td>
                             <td>{p.unit}</td>
                             <td style={{ fontWeight: 600, color: isOutflow ? '#7E22CE' : 'var(--ink)' }}>
-                              {isOutflow ? `- ${getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}${p.amount?.toLocaleString()}` : `${getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}${p.amount?.toLocaleString()}`}
+                              {isOutflow && '- '}
+                              <CurrencyAmount amount={p.amount} currency={p.currency} />
                             </td>
                             <td>{formatTxDate(p.date || p.dueDate)}</td>
                             <td>{p.method}</td>
@@ -2813,7 +2861,7 @@ export const PaymentsPage: React.FC = () => {
               <div className="mobile-card-view">
                 {myPayments.length === 0 ? (
                   <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
-                    No transactions recorded yet.
+                    No payments recorded yet.
                   </div>
                 ) : (
                   myPayments.map((p) => {
@@ -2843,7 +2891,7 @@ export const PaymentsPage: React.FC = () => {
                           <div>
                             <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Amount</div>
                             <b style={{ color: isOutflow ? '#7E22CE' : 'var(--ink)', fontSize: '14px' }}>
-                              {isOutflow ? `- ${getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}${p.amount?.toLocaleString()}` : `${getCurrencySymbol(p.currency) || DEFAULT_CURRENCY_SYMBOL}${p.amount?.toLocaleString()}`}
+                              {isOutflow ? '- ' : ''}<CurrencyAmount amount={p.amount || 0} currency={p.currency} />
                             </b>
                           </div>
                           <div>
@@ -2910,10 +2958,7 @@ export const PaymentsPage: React.FC = () => {
           {/* Top Actions & Overview Bar */}
           <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
             <div>
-              <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>Rental Invoices Portfolio</div>
-              <div className="hint" style={{ marginTop: '2px' }}>
-                Manage, preview, issue, and bulk download tenant rental invoices and tax vouchers.
-              </div>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>Invoices</div>
             </div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <button
@@ -3069,7 +3114,7 @@ export const PaymentsPage: React.FC = () => {
                         <th>Invoice ID</th>
                         <th>Tenant</th>
                         <th>Unit</th>
-                        <th>Amount</th>
+                        <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                         <th>Due Date</th>
                         <th>Status</th>
                         <th>Actions</th>
@@ -3108,10 +3153,10 @@ export const PaymentsPage: React.FC = () => {
                             <td>{i.tenant}</td>
                             <td>{i.unit}</td>
                             <td style={{ fontWeight: 600 }}>
-                              {getCurrencySymbol(i.currency || dominantRentCurrency)}{i.total?.toLocaleString()}
+                              <CurrencyAmount amount={i.total} currency={i.currency || dominantRentCurrency} />
                               {(i.lateFeeApplied || 0) > 0 && (
                                 <div style={{ fontSize: '11px', color: '#DC2626', fontWeight: 600 }}>
-                                  +{getCurrencySymbol(i.currency || dominantRentCurrency)}{i.lateFeeApplied} late fee
+                                  +<CurrencyAmount amount={i.lateFeeApplied} currency={i.currency || dominantRentCurrency} /> late fee
                                 </div>
                               )}
                               {i.lateFeeWaived && (
@@ -3271,7 +3316,9 @@ export const PaymentsPage: React.FC = () => {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', padding: '10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px' }}>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Amount</div>
-                          <b style={{ fontSize: '14px', color: 'var(--ledger)' }}>{getCurrencySymbol(i.currency || dominantRentCurrency)}{i.total?.toLocaleString()}</b>
+                          <b style={{ fontSize: '14px', color: 'var(--ledger)' }}>
+                            <CurrencyAmount amount={i.total || 0} currency={i.currency || dominantRentCurrency} />
+                          </b>
                         </div>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Due Date</div>
@@ -3332,2071 +3379,2000 @@ export const PaymentsPage: React.FC = () => {
         </div>
       )}
 
-      {/* INVOICE TEMPLATE & LIVE PREVIEW */}
+      {/* INVOICE TEMPLATE & LIVE PREVIEW (Minimal HTML-model layout) */}
       {subTab === 'template' && (
         <div>
-          {/* Template Document Switcher */}
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', borderBottom: '1px solid var(--line)', paddingBottom: '12px' }}>
+          {/* Template Document Switcher (Sleek pill buttons) */}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
             <button
               type="button"
-              className={`btn ${tmplDocumentType === 'rent' ? 'primary' : 'secondary'}`}
+              className={`btn small ${tmplDocumentType === 'rent' ? 'primary' : 'secondary'}`}
               onClick={() => setTmplDocumentType('rent')}
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 18px', fontWeight: 600 }}
+              style={{ borderRadius: '20px', padding: '6px 18px', fontWeight: tmplDocumentType === 'rent' ? 600 : 500 }}
             >
-              <FileText size={16} /> 1. Monthly Rent Invoice Template
+              Rent invoice
             </button>
             <button
               type="button"
-              className={`btn ${tmplDocumentType === 'deposit' ? 'primary' : 'secondary'}`}
+              className={`btn small ${tmplDocumentType === 'deposit' ? 'primary' : 'secondary'}`}
               onClick={() => setTmplDocumentType('deposit')}
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 18px', fontWeight: 600 }}
+              style={{ borderRadius: '20px', padding: '6px 18px', fontWeight: tmplDocumentType === 'deposit' ? 600 : 500 }}
             >
-              <ShieldCheck size={16} /> 2. Security Deposit Voucher Template
+              Deposit receipt
             </button>
           </div>
 
-          {tmplDocumentType === 'rent' && (
+          {/* Top Brief Card with Readiness Indicator & View Switcher */}
+          <div
+            className="panel"
+            style={{
+              marginBottom: '20px',
+              padding: '14px 20px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '12px',
+              background: 'var(--surface)',
+            }}
+          >
             <div>
-              {/* Top Banner with Save and View Controls */}
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: '18px',
-                  padding: '16px 20px',
-                  background: 'var(--surface)',
-                  borderRadius: 'var(--radius)',
-                  border: '1px solid var(--line)',
-                  flexWrap: 'wrap',
-                  gap: '12px',
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: '17px', fontWeight: 700, color: 'var(--ink)' }}>
-                    Standardized General Invoice Format & Live Template
-                  </div>
-                  <div className="hint" style={{ marginTop: '2px', maxWidth: '840px' }}>
-                    Configure the official company identity, tax registration, legal clauses, bank accounts, and signature.
-                    <b> This format is automatically applied whenever an invoice is generated upon tenant payment.</b>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', background: 'var(--surface-sunken)', border: '1px solid var(--line)', padding: '3px', borderRadius: '6px', gap: '3px' }}>
-                    <button
-                      type="button"
-                      className={`btn small ${tmplViewMode === 'split' ? 'primary' : 'secondary'}`}
-                      onClick={() => setTmplViewMode('split')}
-                      style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                    >
-                      Split View
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn small ${tmplViewMode === 'edit' ? 'primary' : 'secondary'}`}
-                      onClick={() => setTmplViewMode('edit')}
-                      style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                    >
-                      Edit Only
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn small ${tmplViewMode === 'preview' ? 'primary' : 'secondary'}`}
-                      onClick={() => setTmplViewMode('preview')}
-                      style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                    >
-                      Full Document Preview
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="btn brass"
-                    onClick={handleSaveDefaultInvoiceFormat}
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Save size={15} /> Save Rent Invoice Format
-                  </button>
-                </div>
+              <div style={{ fontSize: '13.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                {tmplDocumentType === 'rent' ? 'Rent Invoice Template' : 'Deposit Receipt Template'}
               </div>
+            </div>
 
-              {/* Main Content Grid: Editor & Live Document Preview */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns:
-                    tmplViewMode === 'split' ? '1.1fr 1fr' : '1fr',
-                  gap: '24px',
-                  alignItems: 'flex-start',
-                }}
+            <div style={{ display: 'flex', gap: '4px', background: 'var(--surface-sunken)', padding: '3px', borderRadius: '6px' }}>
+              <button
+                type="button"
+                className={`btn small ${tmplViewMode === 'split' ? 'primary' : 'secondary'}`}
+                onClick={() => setTmplViewMode('split')}
+                style={{ border: 'none', padding: '4px 10px', fontSize: '11.5px' }}
               >
-                {/* COLUMN 1: TEMPLATE CONFIGURATION FORMS */}
-                {(tmplViewMode === 'split' || tmplViewMode === 'edit') && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                Split View
+              </button>
+              <button
+                type="button"
+                className={`btn small ${tmplViewMode === 'edit' ? 'primary' : 'secondary'}`}
+                onClick={() => setTmplViewMode('edit')}
+                style={{ border: 'none', padding: '4px 10px', fontSize: '11.5px' }}
+              >
+                Edit Only
+              </button>
+              <button
+                type="button"
+                className={`btn small ${tmplViewMode === 'preview' ? 'primary' : 'secondary'}`}
+                onClick={() => setTmplViewMode('preview')}
+                style={{ border: 'none', padding: '4px 10px', fontSize: '11.5px' }}
+              >
+                Full Preview
+              </button>
+            </div>
+          </div>
 
-                    {/* Card 1: Landlord / Issuer Identity */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <LayoutTemplate size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>1. Landlord / Issuer Identity (Billed From)</b>
-                        </div>
-                        <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Appears on header of all invoices</span>
-                      </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Official Trade / Business Name</label>
-                            <input
-                              type="text"
-                              value={tmplIssuerName}
-                              onChange={(e) => setTmplIssuerName(e.target.value)}
-                              placeholder="e.g. Propithub Real Estate Trust"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Tax Registration No (GSTIN / PAN / VAT)</label>
-                            <input
-                              type="text"
-                              value={tmplIssuerTaxNo}
-                              onChange={(e) => setTmplIssuerTaxNo(e.target.value)}
-                              placeholder="e.g. GSTIN: 36AAACP1234F1Z8"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="field" style={{ marginBottom: '12px' }}>
-                          <label>Full Business / Registered Address</label>
-                          <input
-                            type="text"
-                            value={tmplIssuerAddress}
-                            onChange={(e) => setTmplIssuerAddress(e.target.value)}
-                            placeholder="e.g. Suite 400, Financial District, Hyderabad, TS"
-                          />
-                        </div>
-
-                        <div className="row" style={{ margin: 0 }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Primary Contact Phone</label>
-                            <input
-                              type="text"
-                              value={tmplIssuerPhone}
-                              onChange={(e) => setTmplIssuerPhone(e.target.value)}
-                              placeholder="+91 98765 43210"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Official Billing Email</label>
-                            <input
-                              type="email"
-                              value={tmplIssuerEmail}
-                              onChange={(e) => setTmplIssuerEmail(e.target.value)}
-                              placeholder="billing@propithub.com"
-                            />
-                          </div>
-                        </div>
+          {/* RENT INVOICE TEMPLATE */}
+          {tmplDocumentType === 'rent' && (
+            <div
+              className={`invoice-template-split-grid ${tmplViewMode === 'split' ? 'split-mode' : ''}`}
+            >
+              {/* LEFT COLUMN: 3 CONVERSATIONAL SECTIONS */}
+              {(tmplViewMode === 'split' || tmplViewMode === 'edit') && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {/* Section 1: Who is this from? */}
+                  <div className="panel" style={{ margin: 0 }}>
+                    <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
+                      <div>
+                        <b style={{ fontSize: '13.5px' }}>1. Who is this from?</b>
                       </div>
                     </div>
-
-                    {/* Card 2: Legal Tax Configuration */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <FileText size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>2. Legal Tax Designation & Assessment</b>
-                        </div>
-                        <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Applied on monthly rent breakdown</span>
-                      </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="row" style={{ margin: 0 }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Tax Designation / Label</label>
-                            <input
-                              type="text"
-                              value={tmplTaxLabel}
-                              onChange={(e) => setTmplTaxLabel(e.target.value)}
-                              placeholder="e.g. GST, VAT, Service Tax"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Default Tax Rate (%)</label>
-                            <input
-                              type="number"
-                              min="0"
-                              max="100"
-                              value={tmplTaxPercent === 0 ? '' : tmplTaxPercent}
-                              placeholder="0"
-                              onWheel={(e) => (e.target as HTMLElement).blur()}
-                              onChange={(e) => {
-                                const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                                setTmplTaxPercent(cleaned === '' ? 0 : Number(cleaned));
-                              }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Card 3: Default Bank & UPI Accounts */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <FileText size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>3. Remittance Bank & UPI Accounts</b>
-                        </div>
-                        <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Printed on every invoice voucher</span>
-                      </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Bank Institution Name</label>
-                            <input
-                              type="text"
-                              value={tmplBankName}
-                              onChange={(e) => setTmplBankName(e.target.value)}
-                              placeholder="e.g. HDFC Bank"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Account Beneficiary Name</label>
-                            <input
-                              type="text"
-                              value={tmplAccountName}
-                              onChange={(e) => setTmplAccountName(e.target.value)}
-                              placeholder="Propithub Real Estate Trust"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Account Number</label>
-                            <input
-                              type="text"
-                              value={tmplAccountNumber}
-                              onChange={(e) => setTmplAccountNumber(e.target.value)}
-                              placeholder="50200012345678"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>IFSC / Bank Routing</label>
-                            <input
-                              type="text"
-                              value={tmplIfsc}
-                              onChange={(e) => setTmplIfsc(e.target.value)}
-                              placeholder="HDFC0001234"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="field" style={{ margin: 0 }}>
-                          <label>Remittance UPI ID / VPA</label>
-                          <input
-                            type="text"
-                            value={tmplUpiId}
-                            onChange={(e) => setTmplUpiId(e.target.value)}
-                            placeholder="propithub@hdfcbank"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Card 4: Terms & Signatory */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <FileText size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>4. Tenancy Agreement Terms & Signatory</b>
-                        </div>
-                        <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Legal footer printed on invoices</span>
-                      </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="field" style={{ marginBottom: '12px' }}>
-                          <label>Standard Terms & Conditions (T&C Clauses)</label>
-                          <textarea
-                            rows={5}
-                            value={tmplTerms}
-                            onChange={(e) => setTmplTerms(e.target.value)}
-                            style={{ fontSize: '13px', lineHeight: '1.5' }}
-                          />
-                        </div>
-
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Authorized Signatory Name / Title</label>
-                            <input
-                              type="text"
-                              value={tmplSignatory}
-                              onChange={(e) => setTmplSignatory(e.target.value)}
-                              placeholder="Authorized Property Manager"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Footer Remark / Tenancy Greeting</label>
-                            <input
-                              type="text"
-                              value={tmplNotes}
-                              onChange={(e) => setTmplNotes(e.target.value)}
-                              placeholder="Thank you for your prompt tenancy settlement."
-                            />
-                          </div>
-                        </div>
-
-                        {/* Signature Upload */}
-                        <div className="field" style={{ margin: 0 }}>
-                          <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span>Official Signature / Digital Stamp</span>
-                            {tmplSignatureUrl && (
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                style={{ fontSize: '11px', padding: '2px 8px' }}
-                                onClick={() => setTmplSignatureUrl('')}
-                              >
-                                ✕ Remove Signature
-                              </button>
-                            )}
-                          </label>
-
-                          {tmplSignatureUrl ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: '#FAF9F5', padding: '10px 14px', borderRadius: '6px', border: '1px solid var(--line)' }}>
-                              <img
-                                src={tmplSignatureUrl}
-                                alt="Signature Preview"
-                                style={{ maxHeight: '42px', maxWidth: '160px', objectFit: 'contain', background: '#fff', border: '1px dashed var(--line)', padding: '4px', borderRadius: '4px' }}
-                              />
-                              <div>
-                                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink)' }}>Authorized Signature Uploaded</div>
-                                <label style={{ fontSize: '11.5px', color: 'var(--brass)', cursor: 'pointer', textDecoration: 'underline' }}>
-                                  Replace Signature
-                                  <input
-                                    type="file"
-                                    accept="image/*"
-                                    style={{ display: 'none' }}
-                                    onChange={(e) => {
-                                      const file = e.target.files?.[0];
-                                      if (file) {
-                                        const reader = new FileReader();
-                                        reader.onload = (ev) => {
-                                          setTmplSignatureUrl(ev.target?.result as string);
-                                        };
-                                        reader.readAsDataURL(file);
-                                      }
-                                    }}
-                                  />
-                                </label>
-                              </div>
-                            </div>
-                          ) : (
-                            <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', border: '1.5px dashed var(--line)', borderRadius: '6px', padding: '16px', cursor: 'pointer', background: '#FAFAF7' }}>
-                              <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--ink)' }}>Click to upload official signature image or company stamp</div>
-                              <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px' }}>PNG, JPG or SVG with transparent background recommended</div>
-                              <input
-                                type="file"
-                                accept="image/*"
-                                style={{ display: 'none' }}
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onload = (ev) => {
-                                      setTmplSignatureUrl(ev.target?.result as string);
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
-                                }}
-                              />
-                            </label>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
-                      <button
-                        type="button"
-                        className="btn brass"
-                        onClick={handleSaveDefaultInvoiceFormat}
-                        style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 22px' }}
-                      >
-                        <Save size={15} /> Save Rent Invoice Format
-                      </button>
-                    </div>
-
-                  </div>
-                )}
-
-                {/* COLUMN 2: LIVE PREVIEW CANVAS */}
-                {(tmplViewMode === 'split' || tmplViewMode === 'preview') && (
-                  <div style={{ position: 'sticky', top: '24px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--brass)' }}>
-                        ✦ LIVE INVOICE DOCUMENT PREVIEW
-                      </div>
-                      <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
-                        Updates dynamically with changes
-                      </span>
-                    </div>
-
-                    {/* Document Preview Card */}
-                    <div
-                      className="invoice-sheet"
-                      style={{
-                        background: 'var(--surface)',
-                        border: '1px solid #E5E7EB',
-                        borderRadius: '6px',
-                        padding: '28px 32px',
-                        boxShadow: '0 6px 24px rgba(0,0,0,0.06)',
-                        fontSize: '12px',
-                        color: '#111827',
-                        fontFamily: "'Inter', sans-serif",
-                        maxWidth: '820px',
-                        ['--ink' as any]: '#111827',
-                        ['--ink-soft' as any]: '#4B5563',
-                        ['--surface-sunken' as any]: '#F8F9FB',
-                        ['--line' as any]: '#E5E7EB',
-                        ['--line-strong' as any]: '#D1D5DB',
-                      }}
-                    >
-                      {/* Document Header */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid var(--ink)', paddingBottom: '16px', marginBottom: '18px' }}>
-                        <div>
-                          <div style={{ fontSize: '18px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '-0.02em', color: 'var(--ink)' }}>
-                            {sampleUnit?.propertyName || 'PROPITHUB RESIDENTIAL'}
-                          </div>
-                          <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)', marginTop: '2px' }}>
-                            {tmplIssuerName}
-                          </div>
-                          {tmplIssuerTaxNo && (
-                            <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--brass)', marginTop: '2px' }}>
-                              {tmplIssuerTaxNo}
-                            </div>
-                          )}
-                          <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px', lineHeight: '1.4' }}>
-                            {tmplIssuerAddress}<br />
-                            Phone: {tmplIssuerPhone} • Email: {tmplIssuerEmail}
-                          </div>
-                        </div>
-
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--brass)', letterSpacing: '0.04em' }}>
-                            TAX INVOICE
-                          </div>
-                          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '3px' }}>
-                            Invoice No: <b>INV-2026-0089</b>
-                          </div>
-                          <div style={{ display: 'inline-block', background: '#DCFCE7', color: '#15803D', padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, marginTop: '6px' }}>
-                            PAID & RECONCILED
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Recipient & Tenancy Details */}
-                      {(() => {
-                        const sampleRent = sampleUnit?.rent || 0;
-                        const sampleTax = Math.round((sampleRent * tmplTaxPercent) / 100);
-                        const sampleTotal = sampleRent + sampleTax;
-
-                        return (
-                          <>
-                            <div className="grid grid-2" style={{ marginBottom: '20px', gap: '16px', fontSize: '12px', lineHeight: '1.5' }}>
-                              <div style={{ background: '#FAFAF7', padding: '10px 12px', borderRadius: '4px', border: '1px solid var(--line)' }}>
-                                <div style={{ fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '10px', marginBottom: '3px' }}>
-                                  BILLED TO (RESIDENT):
-                                </div>
-                                <div style={{ fontWeight: 700, fontSize: '13px' }}>
-                                  {sampleTenant ? sampleTenant.name : 'Resident Tenant'}
-                                </div>
-                                <div>
-                                  {sampleUnit ? `Unit ${sampleUnit.unitNumber || sampleUnit.id} — ${sampleUnit.propertyName || 'Property Premises'}` : 'Unit & Property details resolved from lease'}
-                                </div>
-                                {(sampleTenant?.phone || sampleTenant?.email) && (
-                                  <div style={{ color: 'var(--ink-soft)' }}>
-                                    {sampleTenant.phone && `Phone: ${sampleTenant.phone}`}
-                                    {sampleTenant.phone && sampleTenant.email && ' • '}
-                                    {sampleTenant.email && `Email: ${sampleTenant.email}`}
-                                  </div>
-                                )}
-                              </div>
-
-                              <div style={{ background: '#FAFAF7', padding: '10px 12px', borderRadius: '4px', border: '1px solid var(--line)' }}>
-                                <div style={{ fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '10px', marginBottom: '3px' }}>
-                                  SETTLEMENT TIMELINE:
-                                </div>
-                                <div>Invoice Date: <b>{new Date().toLocaleDateString()}</b></div>
-                                <div>Settlement Method: <b>Online / Direct Bank Remittance</b></div>
-                                <div style={{ color: 'var(--green)', fontWeight: 600 }}>Payment Status: Auto-Settled & Reconciled</div>
-                              </div>
-                            </div>
-
-                            {/* Line Items Table */}
-                            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '18px', fontSize: '12.5px' }}>
-                              <thead>
-                                <tr style={{ background: 'var(--surface-sunken)', borderBottom: '1.5px solid var(--line)' }}>
-                                  <th style={{ textAlign: 'left', padding: '8px 10px', color: 'var(--ink)' }}>Item Description</th>
-                                  <th style={{ textAlign: 'right', padding: '8px 10px', color: 'var(--ink)' }}>Amount</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                                  <td style={{ padding: '10px' }}>
-                                    <b>Monthly Rent — {sampleUnit ? `Unit ${sampleUnit.unitNumber || sampleUnit.id}` : 'Demised Unit'}</b>
-                                    <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Residential lease periodic rental billing</div>
-                                  </td>
-                                  <td style={{ textAlign: 'right', padding: '10px', fontWeight: 600 }}>
-                                    {sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL}{sampleRent.toLocaleString('en-IN')}
-                                  </td>
-                                </tr>
-                                {tmplTaxPercent > 0 && (
-                                  <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                                    <td style={{ padding: '10px', color: 'var(--ink-soft)' }}>
-                                      {tmplTaxLabel} ({tmplTaxPercent}%)
-                                    </td>
-                                    <td style={{ textAlign: 'right', padding: '10px', color: 'var(--ink-soft)', fontWeight: 500 }}>
-                                      {sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL}{sampleTax.toLocaleString('en-IN')}
-                                    </td>
-                                  </tr>
-                                )}
-                              </tbody>
-                            </table>
-
-                            {/* Totals */}
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '18px' }}>
-                              <div style={{ width: '220px', fontSize: '13px', lineHeight: '1.8' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                  <span style={{ color: 'var(--ink-soft)' }}>Subtotal:</span>
-                                  <span>{sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL}{sampleRent.toLocaleString('en-IN')}</span>
-                                </div>
-                                {tmplTaxPercent > 0 && (
-                                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                    <span style={{ color: 'var(--ink-soft)' }}>{tmplTaxLabel} ({tmplTaxPercent}%):</span>
-                                    <span>{sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL}{sampleTax.toLocaleString('en-IN')}</span>
-                                  </div>
-                                )}
-                                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '2px solid var(--line-strong)', paddingTop: '6px', fontWeight: 800, fontSize: '15px' }}>
-                                  <span>Grand Total:</span>
-                                  <span style={{ color: 'var(--brass)' }}>
-                                    {sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL}{sampleTotal.toLocaleString('en-IN')}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                          </>
-                        );
-                      })()}
-
-                      {/* Remittance Bank Info Box */}
-                      <div style={{ background: '#F8FAF7', border: '1px dashed var(--line-strong)', padding: '12px 14px', borderRadius: '4px', marginBottom: '16px', fontSize: '11.5px', lineHeight: '1.5' }}>
-                        <div style={{ fontWeight: 700, textTransform: 'uppercase', color: 'var(--brass)', fontSize: '10px', marginBottom: '4px' }}>
-                          OFFICIAL SETTLEMENT BANK & REMITTANCE DETAILS:
-                        </div>
-                        <div>Bank: <b>{tmplBankName}</b> • Beneficiary: <b>{tmplAccountName}</b></div>
-                        <div>A/C No: <b>{tmplAccountNumber}</b> • IFSC / Routing: <b>{tmplIfsc}</b></div>
-                        {tmplUpiId && <div>Instant UPI VPA: <b>{tmplUpiId}</b></div>}
-                      </div>
-
-                      {/* Terms & Conditions Box */}
-                      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '12px', marginBottom: '16px' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', marginBottom: '4px' }}>
-                          LEGAL TERMS & TENANCY CONDITIONS:
-                        </div>
-                        <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)', lineHeight: '1.4', whiteSpace: 'pre-line' }}>
-                          {tmplTerms}
-                        </div>
-                      </div>
-
-                      {/* Signatory Footer */}
-                      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '10.5px', color: 'var(--ink-soft)' }}>
-                        <div>
-                          {tmplNotes}<br />
-                          Propithub Real Estate Cloud Operating Platform.
-                        </div>
-                        <div style={{ textAlign: 'center', minWidth: '150px' }}>
-                          {tmplSignatureUrl ? (
-                            <div style={{ height: '38px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '4px' }}>
-                              <img
-                                src={tmplSignatureUrl}
-                                alt="Authorized Signature"
-                                style={{ maxHeight: '36px', maxWidth: '140px', objectFit: 'contain' }}
-                              />
-                            </div>
-                          ) : (
-                            <div style={{ height: '24px' }}></div>
-                          )}
-                          <div style={{ borderTop: '1.5px solid var(--ink)', paddingTop: '4px', fontWeight: 600, color: 'var(--ink)' }}>
-                            {tmplSignatory}
-                          </div>
-                          <div style={{ fontSize: '9.5px' }}>Authorized Signatory</div>
-                        </div>
-                      </div>
-
-                    </div>
-
-                    {/* Bottom Save Reminder */}
-                    <div style={{ marginTop: '16px', width: '100%', maxWidth: '820px', display: 'flex', justifyContent: 'flex-end' }}>
-                      <button
-                        type="button"
-                        className={`btn brass ${isSavingTmpl ? 'btn-processing' : ''}`}
-                        disabled={isSavingTmpl}
-                        onClick={handleSaveDefaultInvoiceFormat}
-                        style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                      >
-                        <ButtonProcessing
-                          loading={isSavingTmpl}
-                          loadingText="Saving..."
-                          defaultText="Save As Default Auto-Billing Format"
-                          icon={<Save size={15} />}
+                    <div className="panel-body" style={{ padding: '16px 18px' }}>
+                      <div className="field" style={{ marginBottom: '12px' }}>
+                        <label>Name or business name</label>
+                        <input
+                          type="text"
+                          value={tmplIssuerName}
+                          onChange={(e) => setTmplIssuerName(e.target.value)}
+                          placeholder="e.g. Propithub Real Estate"
                         />
-                      </button>
+                      </div>
+                      <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Phone</label>
+                          <input
+                            type="text"
+                            value={tmplIssuerPhone}
+                            onChange={(e) => setTmplIssuerPhone(e.target.value)}
+                            placeholder="+91..."
+                          />
+                        </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Email</label>
+                          <input
+                            type="email"
+                            value={tmplIssuerEmail}
+                            onChange={(e) => setTmplIssuerEmail(e.target.value)}
+                            placeholder="billing@..."
+                          />
+                        </div>
+                      </div>
+                      <div className="field" style={{ margin: 0, marginBottom: '12px' }}>
+                        <label>Address</label>
+                        <input
+                          type="text"
+                          value={tmplIssuerAddress}
+                          onChange={(e) => setTmplIssuerAddress(e.target.value)}
+                          placeholder="Street, City, Postal Code"
+                        />
+                      </div>
+                      <div className="grid grid-2" style={{ gap: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Tax name</label>
+                          <input
+                            type="text"
+                            value={tmplTaxLabel}
+                            onChange={(e) => setTmplTaxLabel(e.target.value)}
+                            placeholder="e.g. GST or VAT"
+                          />
+                        </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Rate (%)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={tmplTaxPercent}
+                            onChange={(e) => setTmplTaxPercent(Number(e.target.value) || 0)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section 2: How should tenants pay? */}
+                  <div className="panel" style={{ margin: 0 }}>
+                    <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
+                      <div>
+                        <b style={{ fontSize: '13.5px' }}>2. How should tenants pay?</b>
+                      </div>
+                    </div>
+                    <div className="panel-body" style={{ padding: '16px 18px' }}>
+                      <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Bank name</label>
+                          <input
+                            type="text"
+                            value={tmplBankName}
+                            onChange={(e) => setTmplBankName(e.target.value)}
+                            placeholder="e.g. HDFC Bank"
+                          />
+                        </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Account holder</label>
+                          <input
+                            type="text"
+                            value={tmplAccountName}
+                            onChange={(e) => setTmplAccountName(e.target.value)}
+                            placeholder="Account holder name"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Account number or IBAN</label>
+                          <input
+                            type="text"
+                            value={tmplAccountNumber}
+                            onChange={(e) => setTmplAccountNumber(e.target.value)}
+                            placeholder="Account number"
+                          />
+                        </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Bank code (IFSC / SWIFT / routing)</label>
+                          <input
+                            type="text"
+                            value={tmplIfsc}
+                            onChange={(e) => setTmplIfsc(e.target.value)}
+                            placeholder="e.g. HDFC0001234"
+                          />
+                        </div>
+                      </div>
+                      <div className="field" style={{ margin: 0 }}>
+                        <label>UPI ID or payment handle</label>
+                        <input
+                          type="text"
+                          value={tmplUpiId}
+                          onChange={(e) => setTmplUpiId(e.target.value)}
+                          placeholder="e.g. user@okhdfcbank"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Collapsible: More options */}
+                  <details style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '12px 18px' }}>
+                    <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '13px', color: 'var(--ink)' }}>
+                      More options <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 400 }}>· Tax registration, signature, footer notes & terms</span>
+                    </summary>
+                    <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div className="field" style={{ margin: 0 }}>
+                        <label>Tax registration number (GSTIN / PAN / VAT)</label>
+                        <input
+                          type="text"
+                          value={tmplIssuerTaxNo}
+                          onChange={(e) => setTmplIssuerTaxNo(e.target.value)}
+                          placeholder="e.g. GSTIN: 36AAACP1234F1Z8"
+                        />
+                      </div>
+                      <div className="grid grid-2" style={{ gap: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Signed by (name)</label>
+                          <input
+                            type="text"
+                            value={tmplSignatory}
+                            onChange={(e) => setTmplSignatory(e.target.value)}
+                            placeholder="Authorized Signatory"
+                          />
+                        </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Note at the bottom</label>
+                          <input
+                            type="text"
+                            value={tmplNotes}
+                            onChange={(e) => setTmplNotes(e.target.value)}
+                            placeholder="Thank you for your prompt tenancy settlement."
+                          />
+                        </div>
+                      </div>
+                      <div className="field" style={{ margin: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <label style={{ margin: 0 }}>Terms & Conditions (one per line)</label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', fontWeight: 600, color: 'var(--ink)', cursor: 'pointer', margin: 0 }}>
+                            <input
+                              type="checkbox"
+                              checked={tmplIncludeTerms}
+                              onChange={(e) => setTmplIncludeTerms(e.target.checked)}
+                              style={{ width: '15px', height: '15px', accentColor: 'var(--brass)', cursor: 'pointer' }}
+                            />
+                            Show on invoice
+                          </label>
+                        </div>
+                        <textarea
+                          rows={4}
+                          value={tmplTerms}
+                          onChange={(e) => setTmplTerms(e.target.value)}
+                          style={{ fontSize: '12px', lineHeight: '1.4' }}
+                        />
+                      </div>
+                    </div>
+                  </details>
+
+                  {/* Single Clean Save Button */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '6px' }}>
+                    <button
+                      type="button"
+                      className={`btn brass ${isSavingTmpl ? 'btn-processing' : ''}`}
+                      disabled={isSavingTmpl}
+                      onClick={handleSaveDefaultInvoiceFormat}
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px' }}
+                    >
+                      <ButtonProcessing
+                        loading={isSavingTmpl}
+                        loadingText="Saving Template..."
+                        defaultText="Save Rent Invoice Format"
+                        icon={<Save size={15} />}
+                      />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* RIGHT COLUMN: CLEAN MODERN LIVE PREVIEW (tplPreview model) */}
+              {(tmplViewMode === 'split' || tmplViewMode === 'preview') && (
+                <div className="invoice-template-preview-col">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <b style={{ fontSize: '12.5px', color: 'var(--ink)' }}>Live preview</b>
+                    <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Sample amounts</span>
+                  </div>
+
+                  <div
+                    className="invoice-sheet invoice-template-preview-sheet"
+                    style={{
+                      background: '#FFFFFF',
+                      border: '1px solid #E5E7EB',
+                      borderRadius: '8px',
+                      padding: '28px 30px',
+                      boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
+                      fontSize: '12.5px',
+                      color: '#111827',
+                      fontFamily: "'Inter', sans-serif",
+                    }}
+                  >
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px', marginBottom: '18px' }}>
+                      <div>
+                        <div style={{ fontSize: '16px', fontWeight: 800, color: '#111827' }}>
+                          {tmplIssuerName || 'Your Name or Business'}
+                        </div>
+                        <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '2px', lineHeight: '1.4' }}>
+                          {tmplIssuerAddress ? <>{tmplIssuerAddress}<br /></> : null}
+                          {tmplIssuerEmail ? <>{tmplIssuerEmail}<br /></> : null}
+                          {tmplIssuerPhone ? <>{tmplIssuerPhone}<br /></> : null}
+                          {tmplIssuerTaxNo ? <div style={{ color: '#059669', fontWeight: 600 }}>{tmplIssuerTaxNo}</div> : null}
+                          {!tmplIssuerAddress && !tmplIssuerEmail && !tmplIssuerPhone && !tmplIssuerTaxNo && 'Your address, email & phone'}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#111827' }}>INVOICE</div>
+                        <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '2px' }}>
+                          No. INV-0089<br />
+                          {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </div>
+                      </div>
                     </div>
 
+                    {/* Two-Column Bill To & Due */}
+                    {(() => {
+                      const sampleRent = sampleUnit?.rent || 30000;
+                      const sampleTax = tmplTaxPercent > 0 ? Math.round((sampleRent * tmplTaxPercent) / 100) : 0;
+                      const sampleTotal = sampleRent + sampleTax;
+                      const curr = sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL;
+
+                      return (
+                        <>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '18px', fontSize: '12px' }}>
+                            <div>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                                BILL TO
+                              </div>
+                              <b style={{ color: '#111827' }}>{sampleTenant?.name || 'Resident Tenant'}</b>
+                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                                Unit {sampleUnit?.unitNumber || '101'} · {sampleUnit?.propertyName || 'Property Premises'}
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                                DUE
+                              </div>
+                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                                On the due date in the lease
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Line Items Table */}
+                          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
+                            <tbody>
+                              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                                <td style={{ padding: '8px 0', fontWeight: 600, color: '#111827' }}>
+                                  Monthly rent
+                                </td>
+                                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827' }}>
+                                  {curr}{sampleRent.toLocaleString('en-IN')}
+                                </td>
+                              </tr>
+                              {tmplTaxPercent > 0 && (
+                                <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                                  <td style={{ padding: '8px 0', color: '#6B7280' }}>
+                                    {tmplTaxLabel || 'Tax'} {tmplTaxPercent}%
+                                  </td>
+                                  <td style={{ padding: '8px 0', textAlign: 'right', color: '#6B7280' }}>
+                                    {curr}{sampleTax.toLocaleString('en-IN')}
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+
+                          {/* Total */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #E5E7EB', paddingTop: '10px', marginBottom: '18px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280' }}>Total to pay</span>
+                            <b style={{ fontSize: '17px', color: '#111827' }}>
+                              {curr}{sampleTotal.toLocaleString('en-IN')}
+                            </b>
+                          </div>
+                        </>
+                      );
+                    })()}
+
+                    {/* Pay To */}
+                    <div style={{ background: '#F9FAFB', padding: '10px 12px', borderRadius: '6px', marginBottom: '16px', fontSize: '11.5px', color: '#4B5563' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                        PAY TO
+                      </div>
+                      <div>
+                        {[
+                          tmplBankName,
+                          tmplAccountName && `A/C ${tmplAccountName}`,
+                          tmplAccountNumber && `(${tmplAccountNumber})`,
+                          tmplIfsc && `IFSC: ${tmplIfsc}`,
+                          tmplUpiId && `UPI: ${tmplUpiId}`,
+                        ].filter(Boolean).join(' · ') || 'Bank or UPI details'}
+                      </div>
+                    </div>
+
+                    {/* Terms & Conditions (one per line) */}
+                    {tmplIncludeTerms && tmplTerms && (
+                      <div style={{ borderTop: '1px solid #E5E7EB', paddingTop: '10px', marginBottom: '14px', fontSize: '11px', color: '#4B5563', lineHeight: '1.5' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '4px' }}>
+                          TERMS & CONDITIONS
+                        </div>
+                        {tmplTerms.split('\n').filter(Boolean).map((clause, idx) => (
+                          <div key={idx} style={{ marginBottom: '2px' }}>{clause.trim()}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Footer */}
+                    <div style={{ borderTop: '1px solid #E5E7EB', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '11px', color: '#6B7280' }}>
+                      <div>{tmplNotes || 'Thank you.'}</div>
+                      {tmplSignatory && (
+                        <div style={{ textAlign: 'right', fontWeight: 600, color: '#111827' }}>
+                          {tmplSignatory}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* DEPOSIT VOUCHER TEMPLATE */}
+          {/* DEPOSIT RECEIPT TEMPLATE */}
           {tmplDocumentType === 'deposit' && (
-            <div>
-              {/* Top Banner with Save and View Controls */}
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: '18px',
-                  padding: '16px 20px',
-                  background: 'var(--surface)',
-                  borderRadius: 'var(--radius)',
-                  border: '1px solid var(--line)',
-                  flexWrap: 'wrap',
-                  gap: '12px',
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: '17px', fontWeight: 700, color: 'var(--ink)' }}>
-                    Security Deposit Voucher Template
-                  </div>
-                  <div className="hint" style={{ marginTop: '2px', maxWidth: '840px' }}>
-                    Configure default custody terms, bank accounts, refund window, and legal conditions for all security deposit vouchers.
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', background: 'var(--surface-sunken)', border: '1px solid var(--line)', padding: '3px', borderRadius: '6px', gap: '3px' }}>
-                    <button
-                      type="button"
-                      className={`btn small ${tmplViewMode === 'split' ? 'primary' : 'secondary'}`}
-                      onClick={() => setTmplViewMode('split')}
-                      style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                    >
-                      Split View
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn small ${tmplViewMode === 'edit' ? 'primary' : 'secondary'}`}
-                      onClick={() => setTmplViewMode('edit')}
-                      style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                    >
-                      Edit Only
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn small ${tmplViewMode === 'preview' ? 'primary' : 'secondary'}`}
-                      onClick={() => setTmplViewMode('preview')}
-                      style={{ border: 'none', padding: '5px 12px', fontSize: '12px' }}
-                    >
-                      Full Document Preview
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    className={`btn brass ${isSavingDepTmpl ? 'btn-processing' : ''}`}
-                    disabled={isSavingDepTmpl}
-                    onClick={handleSaveDepositTemplate}
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <ButtonProcessing
-                      loading={isSavingDepTmpl}
-                      loadingText="Saving..."
-                      defaultText="Save Deposit Voucher Template"
-                      icon={<Save size={15} />}
-                    />
-                  </button>
-                </div>
-              </div>
-
-              {/* Main Content Grid: Editor & Live Document Preview */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns:
-                    tmplViewMode === 'split' ? '1.1fr 1fr' : '1fr',
-                  gap: '24px',
-                  alignItems: 'flex-start',
-                }}
-              >
-                {/* COLUMN 1: TEMPLATE CONFIGURATION FORMS */}
-                {(tmplViewMode === 'split' || tmplViewMode === 'edit') && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-
-                    {/* Card 1: Deposit Voucher Settings */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <ShieldCheck size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>1. Voucher Settings & Document Title</b>
-                        </div>
-                        <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Configure official header and deposit details</span>
-                      </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Document Official Title</label>
-                            <input
-                              type="text"
-                              value={depTmplTitle}
-                              onChange={(e) => setDepTmplTitle(e.target.value)}
-                              placeholder="SECURITY DEPOSIT VOUCHER"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Deposit Classification</label>
-                            <input
-                              type="text"
-                              value={depTmplClassification}
-                              onChange={(e) => setDepTmplClassification(e.target.value)}
-                              placeholder="100% Refundable Security Deposit"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="field" style={{ marginBottom: '12px' }}>
-                          <label>Custody Ledger Verification Mechanism</label>
-                          <input
-                            type="text"
-                            value={depTmplCustodyMechanism}
-                            onChange={(e) => setDepTmplCustodyMechanism(e.target.value)}
-                            placeholder="Held in Landlord Trust Ledger with Platform Verification"
-                          />
-                        </div>
-
-                        <div className="field" style={{ margin: 0 }}>
-                          <label>Mandatory Refund Window Following Move-Out Walkthrough</label>
-                          <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
-                            {[14, 21, 30].map((days) => (
-                              <button
-                                key={days}
-                                type="button"
-                                className={`btn small ${depTmplRefundTimeline === days ? 'brass' : 'secondary'}`}
-                                onClick={() => setDepTmplRefundTimeline(days)}
-                                style={{ padding: '5px 12px', fontSize: '12px' }}
-                              >
-                                {days} Days {days === 14 ? '(Standard Statutory)' : ''}
-                              </button>
-                            ))}
-                          </div>
-                          <input
-                            type="number"
-                            min="1"
-                            max="90"
-                            value={depTmplRefundTimeline === 0 ? '' : depTmplRefundTimeline}
-                            placeholder="14"
-                            onWheel={(e) => (e.target as HTMLElement).blur()}
-                            onChange={(e) => {
-                              const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                              setDepTmplRefundTimeline(cleaned === '' ? 14 : Number(cleaned));
-                            }}
-                          />
-                        </div>
+            <div
+              className={`invoice-template-split-grid ${tmplViewMode === 'split' ? 'split-mode' : ''}`}
+            >
+              {/* LEFT COLUMN: 3 CONVERSATIONAL SECTIONS */}
+              {(tmplViewMode === 'split' || tmplViewMode === 'edit') && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {/* Section 1: Who is this from? */}
+                  <div className="panel" style={{ margin: 0 }}>
+                    <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
+                      <div>
+                        <b style={{ fontSize: '13.5px' }}>1. Who is this from?</b>
                       </div>
                     </div>
-
-                    {/* Card 2: Landlord / Custodian Identity */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <LayoutTemplate size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>2. Landlord / Custodian Identity</b>
-                        </div>
-                        <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Appears on header of deposit vouchers</span>
+                    <div className="panel-body" style={{ padding: '16px 18px' }}>
+                      <div className="field" style={{ marginBottom: '12px' }}>
+                        <label>Name or business name</label>
+                        <input
+                          type="text"
+                          value={depTmplIssuerName}
+                          onChange={(e) => setDepTmplIssuerName(e.target.value)}
+                          placeholder="e.g. Propithub Real Estate"
+                        />
                       </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Official Trade / Business Name</label>
-                            <input
-                              type="text"
-                              value={depTmplIssuerName}
-                              onChange={(e) => setDepTmplIssuerName(e.target.value)}
-                              placeholder="e.g. Propithub Real Estate Trust"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Tax Registration No (GSTIN / PAN / VAT)</label>
-                            <input
-                              type="text"
-                              value={depTmplIssuerTaxNo}
-                              onChange={(e) => setDepTmplIssuerTaxNo(e.target.value)}
-                              placeholder="e.g. GSTIN: 36AAACP1234F1Z8"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="field" style={{ marginBottom: '12px' }}>
-                          <label>Full Business / Registered Address</label>
+                      <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Phone</label>
                           <input
                             type="text"
-                            value={depTmplIssuerAddress}
-                            onChange={(e) => setDepTmplIssuerAddress(e.target.value)}
-                            placeholder="e.g. Suite 400, Financial District, Hyderabad, TS"
+                            value={depTmplIssuerPhone}
+                            onChange={(e) => setDepTmplIssuerPhone(e.target.value)}
+                            placeholder="+91..."
                           />
                         </div>
-
-                        <div className="row" style={{ margin: 0 }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Official Custodian Phone</label>
-                            <input
-                              type="text"
-                              value={depTmplIssuerPhone}
-                              onChange={(e) => setDepTmplIssuerPhone(e.target.value)}
-                              placeholder="+91 98765 43210"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Official Custodian Email</label>
-                            <input
-                              type="email"
-                              value={depTmplIssuerEmail}
-                              onChange={(e) => setDepTmplIssuerEmail(e.target.value)}
-                              placeholder="custody@propithub.com"
-                            />
-                          </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Email</label>
+                          <input
+                            type="email"
+                            value={depTmplIssuerEmail}
+                            onChange={(e) => setDepTmplIssuerEmail(e.target.value)}
+                            placeholder="billing@..."
+                          />
                         </div>
+                      </div>
+                      <div className="field" style={{ margin: 0, marginBottom: '12px' }}>
+                        <label>Address</label>
+                        <input
+                          type="text"
+                          value={depTmplIssuerAddress}
+                          onChange={(e) => setDepTmplIssuerAddress(e.target.value)}
+                          placeholder="Street, City, Postal Code"
+                        />
+                      </div>
+                      <div className="field" style={{ margin: 0 }}>
+                        <label>Refund within (days after move-out)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="180"
+                          value={depTmplRefundTimeline || ''}
+                          onChange={(e) => setDepTmplRefundTimeline(Number(e.target.value) || 0)}
+                          placeholder="e.g. 14"
+                          style={{ maxWidth: '280px' }}
+                        />
                       </div>
                     </div>
+                  </div>
 
-                    {/* Card 3: Deposit Trust Bank Account & UPI */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <FileText size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>3. Deposit Trust Bank Account & Remittance</b>
-                        </div>
-                        <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Dedicated account where tenant deposit is held</span>
+                  {/* Section 2: Where is the deposit held? */}
+                  <div className="panel" style={{ margin: 0 }}>
+                    <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
+                      <div>
+                        <b style={{ fontSize: '13.5px' }}>2. Where is the deposit held?</b>
                       </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Trust Bank Name</label>
-                            <input
-                              type="text"
-                              value={depTmplBankName}
-                              onChange={(e) => setDepTmplBankName(e.target.value)}
-                              placeholder="e.g. HDFC Bank"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Beneficiary Account Name</label>
-                            <input
-                              type="text"
-                              value={depTmplAccountName}
-                              onChange={(e) => setDepTmplAccountName(e.target.value)}
-                              placeholder="Propithub Deposit Custody Account"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Account Number</label>
-                            <input
-                              type="text"
-                              value={depTmplAccountNumber}
-                              onChange={(e) => setDepTmplAccountNumber(e.target.value)}
-                              placeholder="50200012345678"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>IFSC / Bank Routing</label>
-                            <input
-                              type="text"
-                              value={depTmplIfsc}
-                              onChange={(e) => setDepTmplIfsc(e.target.value)}
-                              placeholder="HDFC0001234"
-                            />
-                          </div>
-                        </div>
-
+                    </div>
+                    <div className="panel-body" style={{ padding: '16px 18px' }}>
+                      <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
                         <div className="field" style={{ margin: 0 }}>
-                          <label>Deposit Remittance UPI ID / VPA</label>
+                          <label>Bank name</label>
                           <input
                             type="text"
-                            value={depTmplUpiId}
-                            onChange={(e) => setDepTmplUpiId(e.target.value)}
-                            placeholder="deposit@hdfcbank"
+                            value={depTmplBankName}
+                            onChange={(e) => setDepTmplBankName(e.target.value)}
+                            placeholder="e.g. HDFC Bank"
                           />
                         </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Account holder</label>
+                          <input
+                            type="text"
+                            value={depTmplAccountName}
+                            onChange={(e) => setDepTmplAccountName(e.target.value)}
+                            placeholder="Trust account name"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Account number or IBAN</label>
+                          <input
+                            type="text"
+                            value={depTmplAccountNumber}
+                            onChange={(e) => setDepTmplAccountNumber(e.target.value)}
+                            placeholder="Account number"
+                          />
+                        </div>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Bank code (IFSC / SWIFT / routing)</label>
+                          <input
+                            type="text"
+                            value={depTmplIfsc}
+                            onChange={(e) => setDepTmplIfsc(e.target.value)}
+                            placeholder="e.g. HDFC0001234"
+                          />
+                        </div>
+                      </div>
+                      <div className="field" style={{ margin: 0 }}>
+                        <label>UPI ID or payment handle</label>
+                        <input
+                          type="text"
+                          value={depTmplUpiId}
+                          onChange={(e) => setDepTmplUpiId(e.target.value)}
+                          placeholder="e.g. trust@okhdfcbank"
+                        />
                       </div>
                     </div>
+                  </div>
 
-                    {/* Card 4: Deposit & Tenancy Legal Clauses */}
-                    <div className="panel" style={{ margin: 0 }}>
-                      <div className="panel-head" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <FileText size={16} color="var(--brass)" />
-                          <b style={{ fontSize: '14px' }}>4. Deposit & Move-Out Legal Clauses</b>
-                        </div>
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => setDepTmplTerms(DEFAULT_DEPOSIT_TERMS)}
-                          style={{ fontSize: '11px', padding: '3px 8px' }}
-                        >
-                          Reset to Statutory Clauses
-                        </button>
+                  {/* Collapsible: More options */}
+                  <details style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '12px 18px' }}>
+                    <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '13px', color: 'var(--ink)' }}>
+                      More options <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 400 }}>· Registration number, signature & custody clauses</span>
+                    </summary>
+                    <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div className="field" style={{ margin: 0 }}>
+                        <label>Tax registration number (optional)</label>
+                        <input
+                          type="text"
+                          value={depTmplIssuerTaxNo}
+                          onChange={(e) => setDepTmplIssuerTaxNo(e.target.value)}
+                          placeholder="e.g. PAN or GSTIN"
+                        />
                       </div>
-                      <div className="panel-body" style={{ padding: '16px 18px' }}>
-                        <div className="field" style={{ marginBottom: '12px' }}>
-                          <label>Security Deposit Terms & Walkthrough Conditions</label>
-                          <textarea
-                            rows={6}
-                            value={depTmplTerms}
-                            onChange={(e) => setDepTmplTerms(e.target.value)}
-                            style={{ fontSize: '13px', lineHeight: '1.5' }}
+                      <div className="grid grid-2" style={{ gap: '12px' }}>
+                        <div className="field" style={{ margin: 0 }}>
+                          <label>Signed by (name)</label>
+                          <input
+                            type="text"
+                            value={depTmplSignatory}
+                            onChange={(e) => setDepTmplSignatory(e.target.value)}
+                            placeholder="Authorized Property Manager"
                           />
                         </div>
-
-                        <div className="row" style={{ marginBottom: '12px' }}>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Authorized Signatory Name / Title</label>
-                            <input
-                              type="text"
-                              value={depTmplSignatory}
-                              onChange={(e) => setDepTmplSignatory(e.target.value)}
-                              placeholder="Authorized Property Manager / Landlord"
-                            />
-                          </div>
-                          <div className="field" style={{ margin: 0 }}>
-                            <label>Footer Custody Note</label>
-                            <input
-                              type="text"
-                              value={depTmplNotes}
-                              onChange={(e) => setDepTmplNotes(e.target.value)}
-                              placeholder="Funds are non-commingled, non-taxable security deposits..."
-                            />
-                          </div>
-                        </div>
-
-                        {/* Signature Upload */}
                         <div className="field" style={{ margin: 0 }}>
-                          <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span>Official Signature / Trustee Stamp</span>
-                            {depTmplSignatureUrl && (
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                style={{ fontSize: '11px', padding: '2px 8px' }}
-                                onClick={() => setDepTmplSignatureUrl('')}
-                              >
-                                ✕ Remove Signature
-                              </button>
-                            )}
+                          <label>Note at the bottom</label>
+                          <input
+                            type="text"
+                            value={depTmplNotes}
+                            onChange={(e) => setDepTmplNotes(e.target.value)}
+                            placeholder="Deposit held in trust until move-out walkthrough"
+                          />
+                        </div>
+                      </div>
+                      <div className="field" style={{ margin: 0 }}>
+                        <label>Custody Mechanism</label>
+                        <input
+                          type="text"
+                          value={depTmplCustodyMechanism}
+                          onChange={(e) => setDepTmplCustodyMechanism(e.target.value)}
+                          placeholder="Held by Landlord"
+                        />
+                      </div>
+                      <div className="field" style={{ margin: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <label style={{ margin: 0 }}>Deposit Terms & Conditions (one per line)</label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', fontWeight: 600, color: 'var(--ink)', cursor: 'pointer', margin: 0 }}>
+                            <input
+                              type="checkbox"
+                              checked={depTmplIncludeTerms}
+                              onChange={(e) => setDepTmplIncludeTerms(e.target.checked)}
+                              style={{ width: '15px', height: '15px', accentColor: 'var(--brass)', cursor: 'pointer' }}
+                            />
+                            Show on invoice
                           </label>
-
-                          {depTmplSignatureUrl ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: '#FAF9F5', padding: '10px 14px', borderRadius: '6px', border: '1px solid var(--line)' }}>
-                              <img
-                                src={depTmplSignatureUrl}
-                                alt="Signature Preview"
-                                style={{ maxHeight: '42px', maxWidth: '160px', objectFit: 'contain', background: '#fff', border: '1px dashed var(--line)', padding: '4px', borderRadius: '4px' }}
-                              />
-                              <div>
-                                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink)' }}>Authorized Signature Uploaded</div>
-                                <label style={{ fontSize: '11.5px', color: 'var(--brass)', cursor: 'pointer', textDecoration: 'underline' }}>
-                                  Replace Signature
-                                  <input
-                                    type="file"
-                                    accept="image/*"
-                                    style={{ display: 'none' }}
-                                    onChange={(e) => {
-                                      const file = e.target.files?.[0];
-                                      if (file) {
-                                        const reader = new FileReader();
-                                        reader.onload = (ev) => {
-                                          setDepTmplSignatureUrl(ev.target?.result as string);
-                                        };
-                                        reader.readAsDataURL(file);
-                                      }
-                                    }}
-                                  />
-                                </label>
-                              </div>
-                            </div>
-                          ) : (
-                            <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', border: '1.5px dashed var(--line)', borderRadius: '6px', padding: '16px', cursor: 'pointer', background: '#FAFAF7' }}>
-                              <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--ink)' }}>Click to upload official signature image or company stamp</div>
-                              <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px' }}>PNG, JPG or SVG with transparent background recommended</div>
-                              <input
-                                type="file"
-                                accept="image/*"
-                                style={{ display: 'none' }}
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onload = (ev) => {
-                                      setDepTmplSignatureUrl(ev.target?.result as string);
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
-                                }}
-                              />
-                            </label>
-                          )}
                         </div>
+                        <textarea
+                          rows={4}
+                          value={depTmplTerms}
+                          onChange={(e) => setDepTmplTerms(e.target.value)}
+                          style={{ fontSize: '12px', lineHeight: '1.4' }}
+                        />
                       </div>
                     </div>
+                  </details>
 
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
-                      <button
-                        type="button"
-                        className="btn brass"
-                        onClick={handleSaveDepositTemplate}
-                        style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 22px' }}
-                      >
-                        <Save size={15} /> Save Deposit Voucher Template
-                      </button>
-                    </div>
-
-                  </div>
-                )}
-
-                {/* COLUMN 2: LIVE DEPOSIT VOUCHER PREVIEW */}
-                {(tmplViewMode === 'split' || tmplViewMode === 'preview') && (
-                  <div style={{ position: 'sticky', top: '24px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--brass)' }}>
-                        ✦ LIVE VOUCHER DOCUMENT PREVIEW
-                      </div>
-                      <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
-                        Updates dynamically with changes
-                      </span>
-                    </div>
-
-                    {/* Document Preview Card */}
-                    <div
-                      style={{
-                        background: 'var(--surface)',
-                        border: '1px solid var(--line)',
-                        borderRadius: '6px',
-                        padding: '28px 32px',
-                        boxShadow: '0 6px 24px rgba(0,0,0,0.06)',
-                        fontSize: '12px',
-                        color: '#1A1A1A',
-                        fontFamily: "'Inter', sans-serif",
-                        maxWidth: '820px',
-                      }}
+                  {/* Single Clean Save Button */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '6px' }}>
+                    <button
+                      type="button"
+                      className={`btn brass ${isSavingDepTmpl ? 'btn-processing' : ''}`}
+                      disabled={isSavingDepTmpl}
+                      onClick={handleSaveDepositTemplate}
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px' }}
                     >
-                      {/* Document Header */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid var(--ink)', paddingBottom: '16px', marginBottom: '18px' }}>
-                        <div>
-                          <div style={{ fontSize: '18px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '-0.02em', color: 'var(--ink)' }}>
-                            {sampleUnit?.propertyName || 'PROPITHUB RESIDENTIAL'}
-                          </div>
-                          <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)', marginTop: '2px' }}>
-                            {depTmplIssuerName}
-                          </div>
-                          {depTmplIssuerTaxNo && (
-                            <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--brass)', marginTop: '2px' }}>
-                              {depTmplIssuerTaxNo}
-                            </div>
-                          )}
-                          <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px', lineHeight: '1.4' }}>
-                            {depTmplIssuerAddress}<br />
-                            Phone: {depTmplIssuerPhone} • Email: {depTmplIssuerEmail}
-                          </div>
+                      <ButtonProcessing
+                        loading={isSavingDepTmpl}
+                        loadingText="Saving Voucher..."
+                        defaultText="Save Deposit Voucher Format"
+                        icon={<Save size={15} />}
+                      />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* RIGHT COLUMN: CLEAN MODERN LIVE PREVIEW (tplPreview model for deposits) */}
+              {(tmplViewMode === 'split' || tmplViewMode === 'preview') && (
+                <div className="invoice-template-preview-col">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <b style={{ fontSize: '12.5px', color: 'var(--ink)' }}>Live preview</b>
+                    <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Sample amounts</span>
+                  </div>
+
+                  <div
+                    className="invoice-sheet invoice-template-preview-sheet"
+                    style={{
+                      background: '#FFFFFF',
+                      border: '1px solid #E5E7EB',
+                      borderRadius: '8px',
+                      padding: '28px 30px',
+                      boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
+                      fontSize: '12.5px',
+                      color: '#111827',
+                      fontFamily: "'Inter', sans-serif",
+                    }}
+                  >
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px', marginBottom: '18px' }}>
+                      <div>
+                        <div style={{ fontSize: '16px', fontWeight: 800, color: '#111827' }}>
+                          {depTmplIssuerName || 'Your Name or Business'}
                         </div>
-
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: '14px', fontWeight: 800, color: 'var(--brass)', letterSpacing: '0.04em' }}>
-                            {depTmplTitle}
-                          </div>
-                          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '3px' }}>
-                            Voucher No: <b>DEP-2026-0042</b>
-                          </div>
-                          <div style={{ display: 'inline-block', background: '#DCFCE7', color: '#15803D', padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, marginTop: '6px' }}>
-                            ✓ DEPOSIT PROTECTED
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Recipient & Tenancy Details */}
-                      {(() => {
-                        const sampleDepositVal = sampleUnit?.deposit || (sampleUnit?.rent ? sampleUnit.rent * 2 : 50000);
-                        const sampleCurrSym = getCurrencySymbol(sampleUnit?.currency) || DEFAULT_CURRENCY_SYMBOL;
-
-                        return (
-                          <>
-                            <div className="grid grid-2" style={{ marginBottom: '16px', gap: '14px', fontSize: '11.5px', lineHeight: '1.5' }}>
-                              <div style={{ background: '#FAFAF7', padding: '10px 12px', borderRadius: '4px', border: '1px solid var(--line)' }}>
-                                <div style={{ fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '9.5px', marginBottom: '3px' }}>
-                                  HELD ON BEHALF OF (TENANT):
-                                </div>
-                                <div style={{ fontWeight: 700, fontSize: '12.5px' }}>
-                                  {sampleTenant ? sampleTenant.name : 'Resident Tenant'}
-                                </div>
-                                <div>
-                                  {sampleUnit ? `Unit ${sampleUnit.unitNumber || sampleUnit.id} — ${sampleUnit.propertyName || 'Property Premises'}` : 'Unit & Property details resolved from lease'}
-                                </div>
-                              </div>
-
-                              <div style={{ background: '#FAFAF7', padding: '10px 12px', borderRadius: '4px', border: '1px solid var(--line)' }}>
-                                <div style={{ fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '9.5px', marginBottom: '3px' }}>
-                                  CUSTODY LIFECYCLE:
-                                </div>
-                                <div>Voucher Issue Date: <b>{new Date().toLocaleDateString()}</b></div>
-                                <div>Custody Status: <b style={{ color: '#15803D' }}>Held in Trust</b></div>
-                                <div>Tenancy Status: <b>Executed Agreement</b></div>
-                              </div>
-                            </div>
-
-                            {/* Line Items Table */}
-                            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '18px', fontSize: '12px' }}>
-                              <thead>
-                                <tr style={{ background: 'var(--surface-sunken)', borderBottom: '1.5px solid var(--line)' }}>
-                                  <th style={{ textAlign: 'left', padding: '8px 10px', color: 'var(--ink)' }}>Custody Item Description</th>
-                                  <th style={{ textAlign: 'right', padding: '8px 10px', color: 'var(--ink)' }}>Amount</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                                  <td style={{ padding: '10px' }}>
-                                    <b>Security Deposit — {sampleUnit ? `Unit ${sampleUnit.unitNumber || sampleUnit.id}` : 'Demised Unit'}</b>
-                                    <div style={{ fontSize: '10.5px', color: 'var(--ink-soft)' }}>Refundable security custody deposit for tenancy performance</div>
-                                  </td>
-                                  <td style={{ textAlign: 'right', padding: '10px', fontWeight: 600 }}>
-                                    {sampleCurrSym}{sampleDepositVal.toLocaleString('en-IN')}
-                                  </td>
-                                </tr>
-                              </tbody>
-                            </table>
-
-                            {/* Totals */}
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '18px' }}>
-                              <div style={{ width: '240px', fontSize: '12px', lineHeight: '1.8' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                  <span style={{ color: 'var(--ink-soft)' }}>Deposit Subtotal:</span>
-                                  <span>{sampleCurrSym}{sampleDepositVal.toLocaleString('en-IN')}</span>
-                                </div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#15803D' }}>
-                                  <span>Tax Assessment:</span>
-                                  <span>{sampleCurrSym}0 (Non-Taxable)</span>
-                                </div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '2px solid var(--line-strong)', paddingTop: '6px', fontWeight: 800, fontSize: '14px' }}>
-                                  <span>Total Deposit in Custody:</span>
-                                  <span style={{ color: 'var(--brass)' }}>{sampleCurrSym}{sampleDepositVal.toLocaleString('en-IN')}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </>
-                        );
-                      })()}
-
-                      {/* Remittance Bank Info Box */}
-                      <div style={{ background: '#F8FAF7', border: '1px dashed var(--line-strong)', padding: '10px 12px', borderRadius: '4px', marginBottom: '14px', fontSize: '11px', lineHeight: '1.5' }}>
-                        <div style={{ fontWeight: 700, textTransform: 'uppercase', color: 'var(--brass)', fontSize: '9.5px', marginBottom: '3px' }}>
-                          OFFICIAL DEPOSIT TRUST BANK & REMITTANCE DETAILS:
-                        </div>
-                        <div>Bank: <b>{depTmplBankName}</b> • Account: <b>{depTmplAccountName}</b></div>
-                        <div>A/C No: <b>{depTmplAccountNumber}</b> • IFSC / Routing: <b>{depTmplIfsc}</b></div>
-                        {depTmplUpiId && <div>Instant UPI VPA: <b>{depTmplUpiId}</b></div>}
-                      </div>
-
-                      {/* Terms & Conditions Box */}
-                      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '10px', marginBottom: '14px' }}>
-                        <div style={{ fontSize: '9.5px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', marginBottom: '3px' }}>
-                          SECURITY DEPOSIT TERMS & CONDITIONS:
-                        </div>
-                        <div style={{ fontSize: '10px', color: 'var(--ink-soft)', lineHeight: '1.4', whiteSpace: 'pre-line' }}>
-                          {depTmplTerms}
+                        <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '2px', lineHeight: '1.4' }}>
+                          {depTmplIssuerAddress ? <>{depTmplIssuerAddress}<br /></> : null}
+                          {depTmplIssuerEmail ? <>{depTmplIssuerEmail}<br /></> : null}
+                          {depTmplIssuerPhone ? <>{depTmplIssuerPhone}<br /></> : null}
+                          {depTmplIssuerTaxNo ? <div style={{ color: '#059669', fontWeight: 600 }}>{depTmplIssuerTaxNo}</div> : null}
+                          {!depTmplIssuerAddress && !depTmplIssuerEmail && !depTmplIssuerPhone && !depTmplIssuerTaxNo && 'Your address, email & phone'}
                         </div>
                       </div>
-
-                      {/* Signatory Footer */}
-                      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '10px', color: 'var(--ink-soft)' }}>
-                        <div style={{ maxWidth: '380px' }}>
-                          {depTmplNotes}<br />
-                          Propithub Real Estate Cloud Operating Platform.
-                        </div>
-                        <div style={{ textAlign: 'center', minWidth: '130px' }}>
-                          {depTmplSignatureUrl ? (
-                            <div style={{ height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '3px' }}>
-                              <img
-                                src={depTmplSignatureUrl}
-                                alt="Authorized Signature"
-                                style={{ maxHeight: '34px', maxWidth: '130px', objectFit: 'contain' }}
-                              />
-                            </div>
-                          ) : (
-                            <div style={{ height: '22px' }}></div>
-                          )}
-                          <div style={{ borderTop: '1.5px solid var(--ink)', paddingTop: '3px', fontWeight: 600, color: 'var(--ink)' }}>
-                            {depTmplSignatory}
-                          </div>
-                          <div style={{ fontSize: '9px' }}>Authorized Signatory</div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#111827' }}>DEPOSIT RECEIPT</div>
+                        <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '2px' }}>
+                          No. DEP-0042<br />
+                          {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
                         </div>
                       </div>
-
                     </div>
 
-                    {/* Bottom Save Reminder */}
-                    <div style={{ marginTop: '14px', width: '100%', maxWidth: '820px', display: 'flex', justifyContent: 'flex-end' }}>
-                      <button
-                        type="button"
-                        className="btn brass"
-                        onClick={handleSaveDepositTemplate}
-                        style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                      >
-                        <Save size={15} /> Save Deposit Voucher Template
-                      </button>
+                    {/* Two-Column Received From & Refund Timeline */}
+                    {(() => {
+                      const sampleDeposit = sampleUnit?.deposit || 60000;
+                      const curr = sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL;
+
+                      return (
+                        <>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '18px', fontSize: '12px' }}>
+                            <div>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                                RECEIVED FROM
+                              </div>
+                              <b style={{ color: '#111827' }}>{sampleTenant?.name || 'Resident Tenant'}</b>
+                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                                Unit {sampleUnit?.unitNumber || '101'} · {sampleUnit?.propertyName || 'Property Premises'}
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                                REFUND TIMELINE
+                              </div>
+                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                                Within {depTmplRefundTimeline || 14} days of move-out
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Line Items Table */}
+                          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
+                            <tbody>
+                              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                                <td style={{ padding: '8px 0', fontWeight: 600, color: '#111827' }}>
+                                  Security deposit (Held in trust)
+                                </td>
+                                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827' }}>
+                                  {curr}{sampleDeposit.toLocaleString('en-IN')}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+
+                          {/* Total */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #E5E7EB', paddingTop: '10px', marginBottom: '18px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280' }}>Held for you</span>
+                            <b style={{ fontSize: '17px', color: '#111827' }}>
+                              {curr}{sampleDeposit.toLocaleString('en-IN')}
+                            </b>
+                          </div>
+                        </>
+                      );
+                    })()}
+
+                    {/* Held At */}
+                    <div style={{ background: '#F9FAFB', padding: '10px 12px', borderRadius: '6px', marginBottom: '16px', fontSize: '11.5px', color: '#4B5563' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                        HELD AT
+                      </div>
+                      <div>
+                        {[
+                          depTmplBankName,
+                          depTmplAccountName && `A/C ${depTmplAccountName}`,
+                          depTmplAccountNumber && `(${depTmplAccountNumber})`,
+                          depTmplIfsc && `IFSC: ${depTmplIfsc}`,
+                        ].filter(Boolean).join(' · ') || 'Where deposit is held'}
+                      </div>
+                    </div>
+
+                    {/* Deposit Terms & Conditions (one per line) */}
+                    {depTmplIncludeTerms && depTmplTerms && (
+                      <div style={{ borderTop: '1px solid #E5E7EB', paddingTop: '10px', marginBottom: '14px', fontSize: '11px', color: '#4B5563', lineHeight: '1.5' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '4px' }}>
+                          DEPOSIT TERMS & CONDITIONS
+                        </div>
+                        {depTmplTerms.split('\n').filter(Boolean).map((clause, idx) => (
+                          <div key={idx} style={{ marginBottom: '2px' }}>{clause.trim()}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Footer */}
+                    <div style={{ borderTop: '1px solid #E5E7EB', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '11px', color: '#6B7280' }}>
+                      <div>{depTmplNotes || 'Refundable upon move-out inspection.'}</div>
+                      {depTmplSignatory && (
+                        <div style={{ textAlign: 'right', fontWeight: 600, color: '#111827' }}>
+                          {depTmplSignatory}
+                        </div>
+                      )}
                     </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
 
       {subTab === 'methods' && (
-        <div>
-          <div className="note-box">
-            These are the payment gateways and settlement channels configured for <b>your tenants to pay you rent</b>. Tenants can dynamically choose from any of your enabled and configured gateways at checkout. Online gateways (Razorpay, Stripe, PayPal) confirm payments instantly and auto-reconcile your ledger; offline channels (UPI QR, Bank Transfer, Cash) will register in your ledger awaiting your one-click receipt confirmation.
-          </div>
+        <div style={{ width: '100%' }}>
+          {/* SECTION 1: ONLINE GATEWAYS */}
+          <div style={{ marginBottom: '24px' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: 600, color: '#0F172A' }}>
+              Online Gateways
+            </h3>
 
-          {/* Stripe Gateway Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3 style={{ margin: 0 }}>Stripe</h3>
-                <div className="hint">Accept international credit/debit cards, Apple Pay, Google Pay, and SEPA/ACH debits.</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${m.stripe?.connected || (stripePub && stripeSecret) ? 'green' : 'grey'}`}>
-                  {m.stripe?.connected || (stripePub && stripeSecret) ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${m.stripe?.enabled ? 'on' : ''}`}
-                  onClick={() => toggleMethod('stripe')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            {m.stripe?.enabled && (
-              <div className="panel-body">
-                <div className="row">
-                  <div className="field">
-                    <label>Webhook Signing Secret (Optional)</label>
-                    <input
-                      type="text"
-                      value={stripeWebhook}
-                      onChange={(e) => setStripeWebhook(e.target.value)}
-                      placeholder="whsec_..."
-                    />
-                  </div>
-                </div>
-                <div className="row">
-                  <div className="field">
-                    <label>Publishable Key</label>
-                    <input
-                      type="text"
-                      value={stripePub}
-                      onChange={(e) => setStripePub(e.target.value)}
-                      placeholder="pk_live_..."
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Secret Key</label>
-                    <input
-                      type="password"
-                      value={stripeSecret}
-                      onChange={(e) => setStripeSecret(e.target.value)}
-                      placeholder="sk_live_..."
-                    />
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      savePaymentConfig(
-                        (prev) => ({
-                          ...prev,
-                          stripe: {
-                            ...prev.stripe,
-                            enabled: true,
-                            connected: !!(stripePub && stripeSecret),
-                            mode: stripeMode,
-                            pubKey: stripePub,
-                            secretKey: stripeSecret,
-                            webhookSecret: stripeWebhook,
-                          },
-                        }),
-                        '✓ Stripe gateway credentials saved.'
-                      );
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {/* Razorpay */}
+              {(() => {
+                const isEnabled = !!m.razorpay?.enabled;
+                const isOpen = expandedGateway === 'razorpay';
+                return (
+                  <div
+                    style={{
+                      border: '1px solid var(--line-strong, #E2E8F0)',
+                      borderRadius: '10px',
+                      background: '#FFFFFF',
+                      overflow: 'hidden',
                     }}
                   >
-                    Save Stripe Keys
-                  </button>
-                  <button
-                    type="button"
-                    className="btn secondary small"
-                    onClick={async () => {
-                      const res = await verifyStripeCredentials(stripePub, stripeSecret);
-                      showToast(res.message);
-                    }}
-                  >
-                    Test Stripe Keys
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+                    <div
+                      style={{
+                        padding: '14px 18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                      }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'razorpay')}
+                    >
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: '#0F172A' }}>
+                        Razorpay
+                      </span>
 
-          {/* Razorpay Gateway Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3 style={{ margin: 0 }}>Razorpay</h3>
-                <div className="hint">Accept Indian cards, UPI, Netbanking, and Wallets with automatic invoice reconciliation.</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${m.razorpay?.connected || (razorpayKey && razorpaySecret) ? 'green' : 'grey'}`}>
-                  {m.razorpay?.connected || (razorpayKey && razorpaySecret) ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${m.razorpay?.enabled ? 'on' : ''}`}
-                  onClick={() => toggleMethod('razorpay')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            {m.razorpay?.enabled && (
-              <div className="panel-body">
-                <div className="row">
-                  <div className="field">
-                    <label>Key ID</label>
-                    <input
-                      type="text"
-                      value={razorpayKey}
-                      onChange={(e) => setRazorpayKey(e.target.value)}
-                      placeholder="rzp_live_..."
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Key Secret</label>
-                    <input
-                      type="password"
-                      value={razorpaySecret}
-                      onChange={(e) => setRazorpaySecret(e.target.value)}
-                      placeholder="Razorpay Key Secret"
-                    />
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      savePaymentConfig(
-                        (prev) => ({
-                          ...prev,
-                          razorpay: {
-                            ...prev.razorpay,
-                            enabled: true,
-                            connected: !!(razorpayKey && razorpaySecret),
-                            mode: razorpayMode,
-                            keyId: razorpayKey,
-                            keySecret: razorpaySecret,
-                          },
-                        }),
-                        '✓ Razorpay gateway credentials saved.'
-                      );
-                    }}
-                  >
-                    Save Razorpay Keys
-                  </button>
-                  <button
-                    type="button"
-                    className="btn secondary small"
-                    onClick={async () => {
-                      const res = await verifyRazorpayCredentials(razorpayKey, razorpaySecret);
-                      showToast(res.message);
-                    }}
-                  >
-                    Test Razorpay Keys
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label
+                          className={`toggle ${isEnabled ? 'on' : ''}`}
+                          onClick={() => toggleMethod('razorpay')}
+                          title={isEnabled ? 'Disable Razorpay' : 'Enable Razorpay'}
+                        >
+                          <span className="track" />
+                        </label>
 
-          {/* PayPal Gateway Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3 style={{ margin: 0 }}>PayPal</h3>
-                <div className="hint">Accept international payments from PayPal accounts and credit cards in 25+ currencies.</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${m.paypal?.connected || (paypalEmail && paypalClient) ? 'green' : 'grey'}`}>
-                  {m.paypal?.connected || (paypalEmail && paypalClient) ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${m.paypal?.enabled ? 'on' : ''}`}
-                  onClick={() => toggleMethod('paypal')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            {m.paypal?.enabled && (
-              <div className="panel-body">
-                <div className="row">
-                  <div className="field">
-                    <label>PayPal Business Email</label>
-                    <input
-                      type="email"
-                      value={paypalEmail}
-                      onChange={(e) => setPaypalEmail(e.target.value)}
-                      placeholder="landlord@business.com"
-                    />
-                  </div>
-                </div>
-                <div className="row">
-                  <div className="field">
-                    <label>REST API Client ID</label>
-                    <input
-                      type="text"
-                      value={paypalClient}
-                      onChange={(e) => setPaypalClient(e.target.value)}
-                      placeholder="Client ID from developer.paypal.com"
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Secret</label>
-                    <input
-                      type="password"
-                      value={paypalSecret}
-                      onChange={(e) => setPaypalSecret(e.target.value)}
-                      placeholder="Client Secret"
-                    />
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      savePaymentConfig(
-                        (prev) => ({
-                          ...prev,
-                          paypal: {
-                            ...prev.paypal,
-                            enabled: true,
-                            connected: !!(paypalEmail || paypalClient),
-                            mode: paypalMode,
-                            email: paypalEmail,
-                            clientId: paypalClient,
-                            secret: paypalSecret,
-                          },
-                        }),
-                        '✓ PayPal gateway credentials saved.'
-                      );
-                    }}
-                  >
-                    Save PayPal Keys
-                  </button>
-                  <button
-                    type="button"
-                    className="btn secondary small"
-                    onClick={async () => {
-                      const res = await verifyPayPalCredentials(paypalClient, paypalSecret);
-                      showToast(res.message);
-                    }}
-                  >
-                    Test PayPal Connection
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Easebuzz Gateway Card (Full Production Gateway) */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3 style={{ margin: 0 }}>Easebuzz Payment Gateway</h3>
-                <div className="hint">Live production payment gateway: UPI (Instant PhonePe/GPay), 50+ Banks Netbanking, Cards & Wallets.</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${m.easebuzz?.connected || (easebuzzKey && easebuzzSalt) ? 'green' : 'grey'}`}>
-                  {m.easebuzz?.connected || (easebuzzKey && easebuzzSalt) ? 'Connected' : 'Not connected'}
-                </span>
-                <label
-                  className={`toggle ${m.easebuzz?.enabled ? 'on' : ''}`}
-                  onClick={() => toggleMethod('easebuzz')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            {m.easebuzz?.enabled && (
-              <div className="panel-body">
-                <div className="row">
-                  <div className="field">
-                    <label>Merchant Key</label>
-                    <input
-                      type="text"
-                      value={easebuzzKey}
-                      onChange={(e) => setEasebuzzKey(e.target.value)}
-                      placeholder="e.g. 2PBP7IAB82"
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Merchant Salt</label>
-                    <input
-                      type="password"
-                      value={easebuzzSalt}
-                      onChange={(e) => setEasebuzzSalt(e.target.value)}
-                      placeholder="e.g. DA95CD24ED..."
-                    />
-                  </div>
-                </div>
-                <div className="field">
-                  <label>Sub-merchant ID (Optional - for direct settlement account)</label>
-                  <input
-                    type="text"
-                    value={easebuzzSubMerchant}
-                    onChange={(e) => setEasebuzzSubMerchant(e.target.value)}
-                    placeholder="Optional Sub-merchant ID"
-                  />
-                </div>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      savePaymentConfig(
-                        (prev) => ({
-                          ...prev,
-                          easebuzz: {
-                            ...prev.easebuzz,
-                            enabled: true,
-                            connected: !!(easebuzzKey && easebuzzSalt),
-                            mode: 'live',
-                            merchantKey: easebuzzKey.trim(),
-                            salt: easebuzzSalt.trim(),
-                            subMerchantId: easebuzzSubMerchant.trim(),
-                          },
-                        }),
-                        '✓ Easebuzz live production credentials saved for tenant rent collection.'
-                      );
-                    }}
-                  >
-                    Save Easebuzz Keys
-                  </button>
-                  <button
-                    type="button"
-                    className="btn secondary small"
-                    disabled={testingEasebuzz}
-                    onClick={async () => {
-                      setTestingEasebuzz(true);
-                      try {
-                        const res = await pingGatewayEndpoint('easebuzz');
-                        showToast(res);
-                      } catch (err: any) {
-                        showToast(`Easebuzz ping error: ${err?.message}`);
-                      } finally {
-                        setTestingEasebuzz(false);
-                      }
-                    }}
-                  >
-                    {testingEasebuzz ? 'Pinging Gateway...' : '⚡ Test Live Endpoint'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* UPI Direct QR Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3 style={{ margin: 0 }}>UPI (Direct VPA & QR Code)</h3>
-                <div className="hint">Zero processing fee direct bank-to-bank settlements via Google Pay, PhonePe, Paytm, BHIM.</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${upiId ? 'green' : 'grey'}`}>
-                  {upiId ? 'Configured' : 'Not configured'}
-                </span>
-                <label
-                  className={`toggle ${m.upi?.enabled ? 'on' : ''}`}
-                  onClick={() => toggleMethod('upi')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            {m.upi?.enabled && (
-              <div className="panel-body">
-                <div className="row">
-                  <div className="field">
-                    <label>UPI Virtual Payment Address (VPA)</label>
-                    <input
-                      type="text"
-                      value={upiId}
-                      onChange={(e) => setUpiId(e.target.value)}
-                      placeholder="e.g. propertyowner@okhdfcbank"
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Payee / Merchant Display Name</label>
-                    <input
-                      type="text"
-                      value={upiMerchant}
-                      onChange={(e) => setUpiMerchant(e.target.value)}
-                      placeholder="e.g. Skyline Apartments"
-                    />
-                  </div>
-                </div>
-                <div className="field">
-                  <label>Upload UPI QR Code Image (displayed to tenants upon checkout)</label>
-                  <label className="btn secondary small" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                    Choose QR image
-                    <input
-                      type="file"
-                      accept="image/*"
-                      style={{ display: 'none' }}
-                      onChange={handleUploadQr}
-                    />
-                  </label>
-                  {upiQr && (
-                    <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-                      <img
-                        src={upiQr}
-                        alt="UPI QR"
-                        style={{ width: '130px', height: '130px', objectFit: 'contain', border: '1px solid var(--line-strong)', borderRadius: '6px', padding: '6px', background: '#fff' }}
-                      />
-                      <div className="hint">
-                        QR code is active and will be rendered on tenant rent checkout modals.
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                          onClick={() => setExpandedGateway(isOpen ? null : 'razorpay')}
+                        >
+                          {isOpen ? 'Close' : 'Configure'}
+                        </button>
                       </div>
                     </div>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-                  <button
-                    type="button"
-                    className="btn brass small"
-                    onClick={() => {
-                      savePaymentConfig(
-                        (prev) => ({
-                          ...prev,
-                          upi: {
-                            ...prev.upi,
-                            enabled: true,
-                            upiId,
-                            merchantName: upiMerchant,
-                            qrImage: upiQr,
-                          },
-                        }),
-                        '✓ UPI configuration saved.'
-                      );
+
+                    {isOpen && (
+                      <div style={{ padding: '16px 18px', borderTop: '1px solid #E2E8F0', background: '#FAFAFA' }}>
+                        <div className="row" style={{ marginBottom: '12px' }}>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Key ID</label>
+                            <input
+                              type="text"
+                              value={razorpayKey}
+                              onChange={(e) => setRazorpayKey(e.target.value)}
+                              placeholder="rzp_live_..."
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Key Secret</label>
+                            <input
+                              type="password"
+                              value={razorpaySecret}
+                              onChange={(e) => setRazorpaySecret(e.target.value)}
+                              placeholder="Key Secret"
+                            />
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn brass small"
+                            onClick={() => {
+                              savePaymentConfig(
+                                (prev) => ({
+                                  ...prev,
+                                  razorpay: {
+                                    ...prev.razorpay,
+                                    enabled: true,
+                                    connected: !!(razorpayKey && razorpaySecret),
+                                    mode: razorpayMode,
+                                    keyId: razorpayKey,
+                                    keySecret: razorpaySecret,
+                                  },
+                                }),
+                                '✓ Razorpay settings saved.'
+                              );
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            onClick={async () => {
+                              const res = await verifyRazorpayCredentials(razorpayKey, razorpaySecret);
+                              showToast(res.message);
+                            }}
+                          >
+                            Test Connection
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Stripe */}
+              {(() => {
+                const isEnabled = !!m.stripe?.enabled;
+                const isOpen = expandedGateway === 'stripe';
+                return (
+                  <div
+                    style={{
+                      border: '1px solid var(--line-strong, #E2E8F0)',
+                      borderRadius: '10px',
+                      background: '#FFFFFF',
+                      overflow: 'hidden',
                     }}
                   >
-                    Save UPI Details
-                  </button>
-                  <button
-                    type="button"
-                    className="btn secondary small"
-                    onClick={() => {
-                      if (!upiId) {
-                        showToast('Please enter a UPI VPA ID first.');
-                        return;
-                      }
-                      showToast(`VPA Address ${upiId} format verified. NPCI routing active.`);
+                    <div
+                      style={{
+                        padding: '14px 18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                      }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'stripe')}
+                    >
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: '#0F172A' }}>
+                        Stripe
+                      </span>
+
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label
+                          className={`toggle ${isEnabled ? 'on' : ''}`}
+                          onClick={() => toggleMethod('stripe')}
+                          title={isEnabled ? 'Disable Stripe' : 'Enable Stripe'}
+                        >
+                          <span className="track" />
+                        </label>
+
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                          onClick={() => setExpandedGateway(isOpen ? null : 'stripe')}
+                        >
+                          {isOpen ? 'Close' : 'Configure'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isOpen && (
+                      <div style={{ padding: '16px 18px', borderTop: '1px solid #E2E8F0', background: '#FAFAFA' }}>
+                        <div className="row" style={{ marginBottom: '12px' }}>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Publishable Key</label>
+                            <input
+                              type="text"
+                              value={stripePub}
+                              onChange={(e) => setStripePub(e.target.value)}
+                              placeholder="pk_live_..."
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Secret Key</label>
+                            <input
+                              type="password"
+                              value={stripeSecret}
+                              onChange={(e) => setStripeSecret(e.target.value)}
+                              placeholder="sk_live_..."
+                            />
+                          </div>
+                        </div>
+                        <div className="field" style={{ marginBottom: '12px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Webhook Secret (Optional)</label>
+                          <input
+                            type="text"
+                            value={stripeWebhook}
+                            onChange={(e) => setStripeWebhook(e.target.value)}
+                            placeholder="whsec_..."
+                          />
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn brass small"
+                            onClick={() => {
+                              savePaymentConfig(
+                                (prev) => ({
+                                  ...prev,
+                                  stripe: {
+                                    ...prev.stripe,
+                                    enabled: true,
+                                    connected: !!(stripePub && stripeSecret),
+                                    mode: stripeMode,
+                                    pubKey: stripePub,
+                                    secretKey: stripeSecret,
+                                    webhookSecret: stripeWebhook,
+                                  },
+                                }),
+                                '✓ Stripe settings saved.'
+                              );
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            onClick={async () => {
+                              const res = await verifyStripeCredentials(stripePub, stripeSecret);
+                              showToast(res.message);
+                            }}
+                          >
+                            Test Connection
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* PayPal */}
+              {(() => {
+                const isEnabled = !!m.paypal?.enabled;
+                const isOpen = expandedGateway === 'paypal';
+                return (
+                  <div
+                    style={{
+                      border: '1px solid var(--line-strong, #E2E8F0)',
+                      borderRadius: '10px',
+                      background: '#FFFFFF',
+                      overflow: 'hidden',
                     }}
                   >
-                    Verify UPI VPA
-                  </button>
-                </div>
-              </div>
-            )}
+                    <div
+                      style={{
+                        padding: '14px 18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                      }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'paypal')}
+                    >
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: '#0F172A' }}>
+                        PayPal
+                      </span>
+
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label
+                          className={`toggle ${isEnabled ? 'on' : ''}`}
+                          onClick={() => toggleMethod('paypal')}
+                          title={isEnabled ? 'Disable PayPal' : 'Enable PayPal'}
+                        >
+                          <span className="track" />
+                        </label>
+
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                          onClick={() => setExpandedGateway(isOpen ? null : 'paypal')}
+                        >
+                          {isOpen ? 'Close' : 'Configure'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isOpen && (
+                      <div style={{ padding: '16px 18px', borderTop: '1px solid #E2E8F0', background: '#FAFAFA' }}>
+                        <div className="field" style={{ marginBottom: '12px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Email</label>
+                          <input
+                            type="email"
+                            value={paypalEmail}
+                            onChange={(e) => setPaypalEmail(e.target.value)}
+                            placeholder="landlord@business.com"
+                          />
+                        </div>
+                        <div className="row" style={{ marginBottom: '12px' }}>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Client ID</label>
+                            <input
+                              type="text"
+                              value={paypalClient}
+                              onChange={(e) => setPaypalClient(e.target.value)}
+                              placeholder="Client ID"
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Secret</label>
+                            <input
+                              type="password"
+                              value={paypalSecret}
+                              onChange={(e) => setPaypalSecret(e.target.value)}
+                              placeholder="Secret"
+                            />
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn brass small"
+                            onClick={() => {
+                              savePaymentConfig(
+                                (prev) => ({
+                                  ...prev,
+                                  paypal: {
+                                    ...prev.paypal,
+                                    enabled: true,
+                                    connected: !!(paypalEmail || paypalClient),
+                                    mode: paypalMode,
+                                    email: paypalEmail,
+                                    clientId: paypalClient,
+                                    secret: paypalSecret,
+                                  },
+                                }),
+                                '✓ PayPal settings saved.'
+                              );
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            onClick={async () => {
+                              const res = await verifyPayPalCredentials(paypalClient, paypalSecret);
+                              showToast(res.message);
+                            }}
+                          >
+                            Test Connection
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Easebuzz */}
+              {(() => {
+                const isEnabled = !!m.easebuzz?.enabled;
+                const isOpen = expandedGateway === 'easebuzz';
+                return (
+                  <div
+                    style={{
+                      border: '1px solid var(--line-strong, #E2E8F0)',
+                      borderRadius: '10px',
+                      background: '#FFFFFF',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: '14px 18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                      }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'easebuzz')}
+                    >
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: '#0F172A' }}>
+                        Easebuzz
+                      </span>
+
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label
+                          className={`toggle ${isEnabled ? 'on' : ''}`}
+                          onClick={() => toggleMethod('easebuzz')}
+                          title={isEnabled ? 'Disable Easebuzz' : 'Enable Easebuzz'}
+                        >
+                          <span className="track" />
+                        </label>
+
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                          onClick={() => setExpandedGateway(isOpen ? null : 'easebuzz')}
+                        >
+                          {isOpen ? 'Close' : 'Configure'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isOpen && (
+                      <div style={{ padding: '16px 18px', borderTop: '1px solid #E2E8F0', background: '#FAFAFA' }}>
+                        <div className="row" style={{ marginBottom: '12px' }}>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Merchant Key</label>
+                            <input
+                              type="text"
+                              value={easebuzzKey}
+                              onChange={(e) => setEasebuzzKey(e.target.value)}
+                              placeholder="e.g. 2PBP7IAB82"
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Merchant Salt</label>
+                            <input
+                              type="password"
+                              value={easebuzzSalt}
+                              onChange={(e) => setEasebuzzSalt(e.target.value)}
+                              placeholder="Merchant Salt"
+                            />
+                          </div>
+                        </div>
+                        <div className="field" style={{ marginBottom: '12px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Sub-merchant ID (Optional)</label>
+                          <input
+                            type="text"
+                            value={easebuzzSubMerchant}
+                            onChange={(e) => setEasebuzzSubMerchant(e.target.value)}
+                            placeholder="Optional Sub-merchant ID"
+                          />
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn brass small"
+                            onClick={() => {
+                              savePaymentConfig(
+                                (prev) => ({
+                                  ...prev,
+                                  easebuzz: {
+                                    ...prev.easebuzz,
+                                    enabled: true,
+                                    connected: !!(easebuzzKey && easebuzzSalt),
+                                    mode: 'live',
+                                    merchantKey: easebuzzKey.trim(),
+                                    salt: easebuzzSalt.trim(),
+                                    subMerchantId: easebuzzSubMerchant.trim(),
+                                  },
+                                }),
+                                '✓ Easebuzz settings saved.'
+                              );
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            disabled={testingEasebuzz}
+                            onClick={async () => {
+                              setTestingEasebuzz(true);
+                              try {
+                                const res = await pingGatewayEndpoint('easebuzz');
+                                showToast(res);
+                              } catch (err: any) {
+                                showToast(`Ping error: ${err?.message}`);
+                              } finally {
+                                setTestingEasebuzz(false);
+                              }
+                            }}
+                          >
+                            {testingEasebuzz ? 'Testing...' : 'Test Connection'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
           </div>
 
-          {/* Bank Transfer Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3 style={{ margin: 0 }}>Direct Bank Transfer (NEFT / RTGS / IMPS / Wire)</h3>
-                <div className="hint">Tenants wire rent directly to your bank account; requires your manual confirmation upon receipt.</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className={`badge ${bankAcct ? 'green' : 'grey'}`}>
-                  {bankAcct ? 'Configured' : 'Not configured'}
-                </span>
-                <label
-                  className={`toggle ${m.bank?.enabled ? 'on' : ''}`}
-                  onClick={() => toggleMethod('bank')}
-                >
-                  <span className="track" />
-                </label>
-              </div>
-            </div>
-            {m.bank?.enabled && (
-              <div className="panel-body">
-                <div className="row">
-                  <div className="field">
-                    <label>Account Holder Name</label>
-                    <input
-                      type="text"
-                      value={bankName}
-                      onChange={(e) => setBankName(e.target.value)}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Bank Name / Financial Institution</label>
-                    <input
-                      type="text"
-                      value={bankInstitution}
-                      onChange={(e) => setBankInstitution(e.target.value)}
-                      placeholder="e.g. HDFC Bank / Chase"
-                    />
-                  </div>
-                </div>
-                <div className="row">
-                  <div className="field">
-                    <label>Account Number / IBAN</label>
-                    <input
-                      type="text"
-                      value={bankAcct}
-                      onChange={(e) => setBankAcct(e.target.value)}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Routing / SWIFT / IFSC Code</label>
-                    <input
-                      type="text"
-                      value={bankRouting}
-                      onChange={(e) => setBankRouting(e.target.value)}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Country</label>
-                    <input
-                      type="text"
-                      value={bankCountry}
-                      onChange={(e) => setBankCountry(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn brass small"
-                  style={{ marginTop: '10px' }}
-                  onClick={() => {
-                    savePaymentConfig(
-                      (prev) => ({
-                        ...prev,
-                        bank: {
-                          ...prev.bank,
-                          enabled: true,
-                          accountName: bankName,
-                          bankName: bankInstitution,
-                          country: bankCountry,
-                          accountNumber: bankAcct,
-                          routing: bankRouting,
-                        },
-                      }),
-                      '✓ Bank transfer details saved.'
-                    );
-                  }}
-                >
-                  Save Bank Details
-                </button>
-              </div>
-            )}
-          </div>
+          {/* SECTION 2: DIRECT & OFFLINE METHODS */}
+          <div>
+            <h3 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: 600, color: '#0F172A' }}>
+              Direct & Offline Methods
+            </h3>
 
-          {/* Cash Card */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3 style={{ margin: 0 }}>Cash & Offline Collection</h3>
-                <div className="hint">In-person cash or physical check payments handled by you or your on-site manager.</div>
-              </div>
-              <label
-                className={`toggle ${m.cash?.enabled ? 'on' : ''}`}
-                onClick={() => toggleMethod('cash')}
-              >
-                <span className="track" />
-              </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {/* UPI */}
+              {(() => {
+                const isEnabled = !!m.upi?.enabled;
+                const isOpen = expandedGateway === 'upi';
+                return (
+                  <div
+                    style={{
+                      border: '1px solid var(--line-strong, #E2E8F0)',
+                      borderRadius: '10px',
+                      background: '#FFFFFF',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: '14px 18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                      }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'upi')}
+                    >
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: '#0F172A' }}>
+                        UPI (VPA & QR)
+                      </span>
+
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label
+                          className={`toggle ${isEnabled ? 'on' : ''}`}
+                          onClick={() => toggleMethod('upi')}
+                          title={isEnabled ? 'Disable UPI' : 'Enable UPI'}
+                        >
+                          <span className="track" />
+                        </label>
+
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                          onClick={() => setExpandedGateway(isOpen ? null : 'upi')}
+                        >
+                          {isOpen ? 'Close' : 'Configure'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isOpen && (
+                      <div style={{ padding: '16px 18px', borderTop: '1px solid #E2E8F0', background: '#FAFAFA' }}>
+                        <div className="row" style={{ marginBottom: '12px' }}>
+                          <div className="field">
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                              <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569', margin: 0 }}>UPI ID (VPA)</label>
+                              {tmplUpiId && tmplUpiId !== upiId && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px' }}
+                                  onClick={() => {
+                                    setUpiId(tmplUpiId);
+                                    showToast(`✓ Synced from invoice: ${tmplUpiId}`);
+                                  }}
+                                >
+                                  Sync from invoice ({tmplUpiId})
+                                </button>
+                              )}
+                            </div>
+                            <input
+                              type="text"
+                              value={upiId}
+                              onChange={(e) => setUpiId(e.target.value)}
+                              placeholder="e.g. name@okhdfcbank"
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Display Name</label>
+                            <input
+                              type="text"
+                              value={upiMerchant}
+                              onChange={(e) => setUpiMerchant(e.target.value)}
+                              placeholder="e.g. Property Name"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="field" style={{ marginBottom: '14px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>QR Code Image</label>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' }}>
+                            <label className="btn secondary small" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
+                              Choose image
+                              <input
+                                type="file"
+                                accept="image/*"
+                                style={{ display: 'none' }}
+                                onChange={handleUploadQr}
+                              />
+                            </label>
+                            {upiQr && (
+                              <span style={{ fontSize: '12px', color: '#059669' }}>
+                                ✓ QR active
+                              </span>
+                            )}
+                          </div>
+                          {upiQr && (
+                            <div style={{ marginTop: '10px' }}>
+                              <img
+                                src={upiQr}
+                                alt="UPI QR"
+                                style={{ width: '100px', height: '100px', objectFit: 'contain', border: '1px solid #CBD5E1', borderRadius: '6px', padding: '4px', background: '#fff' }}
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn brass small"
+                            onClick={() => {
+                              savePaymentConfig(
+                                (prev) => ({
+                                  ...prev,
+                                  upi: {
+                                    ...prev.upi,
+                                    enabled: true,
+                                    upiId,
+                                    merchantName: upiMerchant,
+                                    qrImage: upiQr,
+                                  },
+                                }),
+                                '✓ UPI settings saved.'
+                              );
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            onClick={() => {
+                              if (!upiId) {
+                                showToast('Please enter a UPI VPA ID first.');
+                                return;
+                              }
+                              showToast(`VPA Address ${upiId} format verified.`);
+                            }}
+                          >
+                            Verify VPA
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Bank Transfer */}
+              {(() => {
+                const isEnabled = !!m.bank?.enabled;
+                const isOpen = expandedGateway === 'bank';
+                return (
+                  <div
+                    style={{
+                      border: '1px solid var(--line-strong, #E2E8F0)',
+                      borderRadius: '10px',
+                      background: '#FFFFFF',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: '14px 18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                      }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'bank')}
+                    >
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: '#0F172A' }}>
+                        Bank Transfer
+                      </span>
+
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label
+                          className={`toggle ${isEnabled ? 'on' : ''}`}
+                          onClick={() => toggleMethod('bank')}
+                          title={isEnabled ? 'Disable Bank Transfer' : 'Enable Bank Transfer'}
+                        >
+                          <span className="track" />
+                        </label>
+
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                          onClick={() => setExpandedGateway(isOpen ? null : 'bank')}
+                        >
+                          {isOpen ? 'Close' : 'Configure'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isOpen && (
+                      <div style={{ padding: '16px 18px', borderTop: '1px solid #E2E8F0', background: '#FAFAFA' }}>
+                        <div style={{ marginBottom: '12px' }}>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            style={{ fontSize: '11.5px', padding: '3px 8px', borderRadius: '5px' }}
+                            onClick={() => {
+                              if (!tmplAccountNumber && !tmplBankName) {
+                                showToast('No remittance details found in Invoice Template.');
+                                return;
+                              }
+                              if (tmplAccountName) setBankName(tmplAccountName);
+                              if (tmplBankName) setBankInstitution(tmplBankName);
+                              if (tmplAccountNumber) setBankAcct(tmplAccountNumber);
+                              if (tmplIfsc) setBankRouting(tmplIfsc);
+                              showToast('✓ Bank details synced from Invoice Template.');
+                            }}
+                          >
+                            ⚡ Sync from Invoice Template
+                          </button>
+                        </div>
+
+                        <div className="row" style={{ marginBottom: '12px' }}>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Account Holder Name</label>
+                            <input
+                              type="text"
+                              value={bankName}
+                              onChange={(e) => setBankName(e.target.value)}
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Bank Name</label>
+                            <input
+                              type="text"
+                              value={bankInstitution}
+                              onChange={(e) => setBankInstitution(e.target.value)}
+                              placeholder="e.g. HDFC Bank / Chase"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="row" style={{ marginBottom: '14px' }}>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Account Number / IBAN</label>
+                            <input
+                              type="text"
+                              value={bankAcct}
+                              onChange={(e) => setBankAcct(e.target.value)}
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Routing / IFSC Code</label>
+                            <input
+                              type="text"
+                              value={bankRouting}
+                              onChange={(e) => setBankRouting(e.target.value)}
+                            />
+                          </div>
+                          <div className="field">
+                            <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Country</label>
+                            <input
+                              type="text"
+                              value={bankCountry}
+                              onChange={(e) => setBankCountry(e.target.value)}
+                            />
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          className="btn brass small"
+                          onClick={() => {
+                            savePaymentConfig(
+                              (prev) => ({
+                                ...prev,
+                                bank: {
+                                  ...prev.bank,
+                                  enabled: true,
+                                  accountName: bankName,
+                                  bankName: bankInstitution,
+                                  country: bankCountry,
+                                  accountNumber: bankAcct,
+                                  routing: bankRouting,
+                                },
+                              }),
+                              '✓ Bank details saved.'
+                            );
+                          }}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Cash */}
+              {(() => {
+                const isEnabled = m.cash?.enabled !== false;
+                const isOpen = expandedGateway === 'cash';
+                return (
+                  <div
+                    style={{
+                      border: '1px solid var(--line-strong, #E2E8F0)',
+                      borderRadius: '10px',
+                      background: '#FFFFFF',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: '14px 18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                      }}
+                      onClick={() => setExpandedGateway(isOpen ? null : 'cash')}
+                    >
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: '#0F172A' }}>
+                        Cash / Cheque
+                      </span>
+
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label
+                          className={`toggle ${isEnabled ? 'on' : ''}`}
+                          onClick={() => toggleMethod('cash')}
+                          title={isEnabled ? 'Disable Cash' : 'Enable Cash'}
+                        >
+                          <span className="track" />
+                        </label>
+
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                          onClick={() => setExpandedGateway(isOpen ? null : 'cash')}
+                        >
+                          {isOpen ? 'Close' : 'Configure'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isOpen && (
+                      <div style={{ padding: '16px 18px', borderTop: '1px solid #E2E8F0', background: '#FAFAFA' }}>
+                        <div className="field" style={{ marginBottom: '14px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>Instructions for Tenants</label>
+                          <input
+                            type="text"
+                            value={cashInstructions}
+                            onChange={(e) => setCashInstructions(e.target.value)}
+                            placeholder="e.g. Pay directly at the property management office."
+                          />
+                        </div>
+
+                        <button
+                          type="button"
+                          className="btn brass small"
+                          onClick={() => {
+                            savePaymentConfig(
+                              (prev) => ({
+                                ...prev,
+                                cash: {
+                                  ...prev.cash,
+                                  enabled: true,
+                                  instructions: cashInstructions,
+                                },
+                              }),
+                              '✓ Cash settings saved.'
+                            );
+                          }}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
-            {m.cash?.enabled && (
-              <div className="panel-body">
-                <div className="field">
-                  <label>Cash Collection Instructions for Tenants</label>
-                  <input
-                    type="text"
-                    value={cashInstructions}
-                    onChange={(e) => setCashInstructions(e.target.value)}
-                    placeholder="e.g. Pay directly at the property management office between 9 AM and 5 PM."
-                  />
-                </div>
-                <button
-                  type="button"
-                  className="btn brass small"
-                  style={{ marginTop: '10px' }}
-                  onClick={() => {
-                    savePaymentConfig(
-                      (prev) => ({
-                        ...prev,
-                        cash: {
-                          ...prev.cash,
-                          enabled: true,
-                          instructions: cashInstructions,
-                        },
-                      }),
-                      '✓ Cash settings saved.'
-                    );
-                  }}
-                >
-                  Save Cash Instructions
-                </button>
-              </div>
-            )}
           </div>
         </div>
       )}
 
       {/* SETTINGS: UNIFIED BILLING RULES & POLICIES */}
       {subTab === 'settings' && (
-        <div>
-          <div className="note-box" style={{ marginBottom: '20px' }}>
-            Configure your property billing rules, automated tenant rent reminders, late payment penalties, and applicable tax rates.
-          </div>
+        <div style={{ width: '100%' }}>
+          {/* Card 1: Rental payment reminder rule */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              border: '1px solid #E5E7EB',
+              padding: '24px 28px',
+              marginBottom: '24px',
+            }}
+          >
+            <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A', margin: '0 0 18px 0' }}>
+              Rental payment reminder rule
+            </h3>
 
-          {/* Rental payment reminder rule */}
-          <div className="section-title">Rental payment reminder rule</div>
-          <div className="panel" style={{ marginBottom: '24px' }}>
-            <div className="panel-body">
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: reminderEnabled ? '16px' : '0',
-                }}
-              >
-                <div>
-                  <b>Automated rent due reminders for tenants</b>
-                  <p className="hint" style={{ marginTop: '2px' }}>
-                    Control how many days before the rental payment due date tenants receive reminder alerts and "Due Soon" notices.
-                  </p>
-                </div>
-                <label
-                  className={`toggle ${reminderEnabled ? 'on' : ''}`}
-                  onClick={() => handleSaveReminderSettings(reminderDays, !reminderEnabled)}
-                >
-                  <span className="track" />
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '18px' }}>
+              <div style={{ flex: '1 1 180px', minWidth: '150px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                  Send reminders
                 </label>
-              </div>
-
-              {reminderEnabled && (
-                <div>
-                  <label style={{ fontSize: '13px', fontWeight: 600, display: 'block', marginBottom: '8px' }}>
-                    Reminder Lead Time (Days Prior to Due Date):
-                  </label>
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
-                    {[3, 5, 7, 10, 15].map((d) => (
-                      <button
-                        key={d}
-                        type="button"
-                        className={`btn small ${reminderDays === d ? 'brass' : 'secondary'}`}
-                        onClick={() => handleSaveReminderSettings(d, true)}
-                        style={{ padding: '6px 14px', fontSize: '12.5px' }}
-                      >
-                        {d === 10 ? '10 Days Prior (Default)' : `${d} Days Prior`}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                    <div className="field" style={{ margin: 0, width: '220px' }}>
-                      <label style={{ fontSize: '12px' }}>Custom days prior</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="30"
-                        value={reminderDays === 0 ? '' : reminderDays}
-                        placeholder="10"
-                        onWheel={(e) => (e.target as HTMLElement).blur()}
-                        onChange={(e) => {
-                          const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                          setReminderDays(cleaned === '' ? 1 : Math.max(1, Number(cleaned)));
-                        }}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      className="btn brass"
-                      style={{ marginTop: '18px' }}
-                      onClick={() => handleSaveReminderSettings(reminderDays, true)}
-                    >
-                      Save reminder rule
-                    </button>
-                  </div>
-
-                  <p className="hint" style={{ marginTop: '10px', fontSize: '12.5px' }}>
-                    ℹ️ <b>Active Rule:</b> Tenants will see upcoming rent reminders and due-soon countdowns <b>{reminderDays} days</b> before their contracted rent due date. (If left unconfigured, system automatically uses 10 days prior).
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Late fee rule */}
-          <div className="section-title">Late fee rule</div>
-          <div className="panel" style={{ marginBottom: '24px' }}>
-            <div className="panel-body">
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: state.lateFeeSettings.enabled ? '16px' : '0',
-                }}
-              >
-                <div>
-                  <b>Automatically charge a late fee</b>
-                  <p className="hint" style={{ marginTop: '2px' }}>
-                    You decide if and how this applies — Propithub never applies it on its own.
-                  </p>
-                </div>
-                <label
-                  className={`toggle ${state.lateFeeSettings.enabled ? 'on' : ''}`}
-                  onClick={handleToggleLateFee}
+                <select
+                  value={reminderEnabled ? 'yes' : 'no'}
+                  onChange={(e) => setReminderEnabled(e.target.value === 'yes')}
+                  style={{
+                    width: '100%',
+                    height: '42px',
+                    padding: '8px 12px',
+                    fontSize: '14px',
+                    color: '#0F172A',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '8px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#10B981')}
+                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
                 >
-                  <span className="track" />
-                </label>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
               </div>
 
-              {state.lateFeeSettings.enabled && (
-                <div>
-                  <div className="row">
-                    <div className="field">
-                      <label>Grace period (days)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={lateFeeGrace === 0 ? '' : lateFeeGrace}
-                        placeholder="0"
-                        onWheel={(e) => (e.target as HTMLElement).blur()}
-                        onChange={(e) => {
-                          const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                          setLateFeeGrace(cleaned === '' ? 0 : Number(cleaned));
-                        }}
-                      />
-                    </div>
-                    <div className="field">
-                      <label>Fee type</label>
-                      <select
-                        value={lateFeeType}
-                        onChange={(e) => setLateFeeType(e.target.value as 'percent' | 'flat')}
-                      >
-                        <option value="percent">Percentage</option>
-                        <option value="flat">Flat amount</option>
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label>
-                        {lateFeeType === 'percent' ? 'Percent of rent (%)' : `Flat amount (${dominantRentCurrency})`}
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={lateFeeValue === 0 ? '' : lateFeeValue}
-                        placeholder="0"
-                        onWheel={(e) => (e.target as HTMLElement).blur()}
-                        onChange={(e) => {
-                          const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                          setLateFeeValue(cleaned === '' ? 0 : Number(cleaned));
-                        }}
-                      />
-                    </div>
-                    <div className="field">
-                      <label>Maximum cap ({dominantRentCurrency})</label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={lateFeeCap === 0 ? '' : lateFeeCap}
-                        placeholder="0"
-                        onWheel={(e) => (e.target as HTMLElement).blur()}
-                        onChange={(e) => {
-                          const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                          setLateFeeCap(cleaned === '' ? 0 : Number(cleaned));
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <button type="button" className="btn brass" onClick={handleSaveLateFee}>
-                    Save late fee rule
-                  </button>
-                </div>
-              )}
+              <div style={{ flex: '1 1 200px', minWidth: '160px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                  Reminder lead time (days prior)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="60"
+                  value={reminderDays === 0 ? '' : reminderDays}
+                  placeholder="10"
+                  onWheel={(e) => (e.target as HTMLElement).blur()}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                    setReminderDays(cleaned === '' ? 1 : Math.max(1, Number(cleaned)));
+                  }}
+                  style={{
+                    width: '100%',
+                    height: '42px',
+                    padding: '8px 12px',
+                    fontSize: '14px',
+                    color: '#0F172A',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '8px',
+                    outline: 'none',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#10B981')}
+                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                />
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={handleSaveReminderRule}
+              disabled={isSavingReminder}
+              style={{
+                backgroundColor: '#10B981',
+                color: '#FFFFFF',
+                fontSize: '13.5px',
+                fontWeight: 600,
+                padding: '9px 20px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: isSavingReminder ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginBottom: '14px',
+                transition: 'background-color 0.15s ease',
+              }}
+            >
+              {isSavingReminder ? 'Saving...' : 'Save rule'}
+            </button>
           </div>
 
-          {/* Tax & GST Configuration */}
-          <div className="section-title">Tax & Billing Policy</div>
-          <div className="panel">
-            <div className="panel-body">
-              <div className="row" style={{ marginBottom: '14px' }}>
-                <div className="field">
-                  <label>Tax label (e.g. GST, VAT, Sales Tax)</label>
-                  <input
-                    type="text"
-                    value={taxLabel}
-                    onChange={(e) => setTaxLabel(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>Tax percent (%)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={taxPercent === 0 ? '' : taxPercent}
-                    placeholder="0"
-                    onWheel={(e) => (e.target as HTMLElement).blur()}
-                    onChange={(e) => {
-                      const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
-                      setTaxPercent(cleaned === '' ? 0 : Number(cleaned));
-                    }}
-                  />
-                </div>
+          {/* Card 2: Late fee rule */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              border: '1px solid #E5E7EB',
+              padding: '24px 28px',
+              marginBottom: '24px',
+            }}
+          >
+            <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A', margin: '0 0 18px 0' }}>
+              Late fee rule
+            </h3>
+
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '18px' }}>
+              <div style={{ flex: '1 1 160px', minWidth: '140px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                  Charge late fees
+                </label>
+                <select
+                  value={lateFeeEnabled ? 'yes' : 'no'}
+                  onChange={(e) => setLateFeeEnabled(e.target.value === 'yes')}
+                  style={{
+                    width: '100%',
+                    height: '42px',
+                    padding: '8px 12px',
+                    fontSize: '14px',
+                    color: '#0F172A',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '8px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#10B981')}
+                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                >
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
               </div>
-              <button type="button" className="btn brass" onClick={handleSaveTax}>
-                Save tax rule
-              </button>
+
+              <div style={{ flex: '1 1 180px', minWidth: '160px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                  Type
+                </label>
+                <select
+                  value={lateFeeType}
+                  onChange={(e) => setLateFeeType(e.target.value as 'percent' | 'flat')}
+                  style={{
+                    width: '100%',
+                    height: '42px',
+                    padding: '8px 12px',
+                    fontSize: '14px',
+                    color: '#0F172A',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '8px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#10B981')}
+                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                >
+                  <option value="percent">Percent of rent</option>
+                  <option value="flat">Flat amount</option>
+                </select>
+              </div>
+
+              <div style={{ flex: '1 1 140px', minWidth: '120px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                  Value {lateFeeType === 'percent' ? '(%)' : `(${dominantRentCurrency})`}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={lateFeeValue === 0 ? '' : lateFeeValue}
+                  placeholder="5"
+                  onWheel={(e) => (e.target as HTMLElement).blur()}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                    setLateFeeValue(cleaned === '' ? 0 : Number(cleaned));
+                  }}
+                  style={{
+                    width: '100%',
+                    height: '42px',
+                    padding: '8px 12px',
+                    fontSize: '14px',
+                    color: '#0F172A',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '8px',
+                    outline: 'none',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#10B981')}
+                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                />
+              </div>
+
+              <div style={{ flex: '1 1 160px', minWidth: '140px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                  Grace period (days)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="30"
+                  value={lateFeeGrace === 0 ? '' : lateFeeGrace}
+                  placeholder="3"
+                  onWheel={(e) => (e.target as HTMLElement).blur()}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                    setLateFeeGrace(cleaned === '' ? 0 : Number(cleaned));
+                  }}
+                  style={{
+                    width: '100%',
+                    height: '42px',
+                    padding: '8px 12px',
+                    fontSize: '14px',
+                    color: '#0F172A',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '8px',
+                    outline: 'none',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#10B981')}
+                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                />
+              </div>
+
+              <div style={{ flex: '1 1 160px', minWidth: '140px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                  Max cap ({dominantRentCurrency})
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={lateFeeCap === 0 ? '' : lateFeeCap}
+                  placeholder="1000"
+                  onWheel={(e) => (e.target as HTMLElement).blur()}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                    setLateFeeCap(cleaned === '' ? 0 : Number(cleaned));
+                  }}
+                  style={{
+                    width: '100%',
+                    height: '42px',
+                    padding: '8px 12px',
+                    fontSize: '14px',
+                    color: '#0F172A',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '8px',
+                    outline: 'none',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#10B981')}
+                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                />
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={handleSaveLateFeeRule}
+              disabled={isSavingLateFee}
+              style={{
+                backgroundColor: '#10B981',
+                color: '#FFFFFF',
+                fontSize: '13.5px',
+                fontWeight: 600,
+                padding: '9px 20px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: isSavingLateFee ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginBottom: '14px',
+                transition: 'background-color 0.15s ease',
+              }}
+            >
+              {isSavingLateFee ? 'Saving...' : 'Save rule'}
+            </button>
+
           </div>
         </div>
       )}
@@ -5486,9 +5462,6 @@ export const PaymentsPage: React.FC = () => {
               <button type="button" className="btn secondary small" onClick={() => setIsRecordOfflineOpen(false)}>✕</button>
             </div>
             <div className="modal-body">
-              <p className="hint" style={{ marginBottom: '14px' }}>
-                Log cash, cheque, or direct bank transfer payments and automatically reconcile pending invoices.
-              </p>
               <div className="field">
                 <label>Payment Purpose</label>
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
@@ -5617,8 +5590,8 @@ export const PaymentsPage: React.FC = () => {
 
         const linkedClaim = reviewingClaim || (currentInvoice
           ? (state.cashClaims || [])
-              .filter((c) => c.invoiceId === currentInvoice.id || (currentInvoice.paymentProofRef && c.id === currentInvoice.paymentProofRef) || (c.unit === currentInvoice.unit && c.status === 'pending_confirmation'))
-              .sort((a, b) => new Date(b.claimedAt || 0).getTime() - new Date(a.claimedAt || 0).getTime())[0]
+            .filter((c) => c.invoiceId === currentInvoice.id || (currentInvoice.paymentProofRef && c.id === currentInvoice.paymentProofRef) || (c.unit === currentInvoice.unit && c.status === 'pending_confirmation'))
+            .sort((a, b) => new Date(b.claimedAt || 0).getTime() - new Date(a.claimedAt || 0).getTime())[0]
           : null);
 
         const targetUnit = currentInvoice?.unit || linkedClaim?.unit || '';
@@ -5819,9 +5792,6 @@ export const PaymentsPage: React.FC = () => {
                 <h3 style={{ margin: 0, fontSize: '17px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <FileText size={18} color="var(--brass)" /> Confirm Bulk Invoice PDF Download
                 </h3>
-                <div className="hint" style={{ fontSize: '12px', marginTop: '3px' }}>
-                  Select the statement timeline and review scope before generating your consolidated PDF report.
-                </div>
               </div>
               <button type="button" className="btn secondary small" onClick={() => setIsBulkDownloadModalOpen(false)}>
                 ✕

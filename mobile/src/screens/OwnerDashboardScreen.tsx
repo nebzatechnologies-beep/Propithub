@@ -25,6 +25,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { getOwnerReminders, isInvoiceForVacatedTenancy, DashboardReminder } from '../lib/reminders';
 import { usePlanLimits } from '../hooks/usePlanLimits';
 import { AddressDisplay } from '../components/AddressDisplay';
+import { resolveEffectiveUnitStatus, isDepositPayment } from '../lib/portfolioReconcile';
 
 interface OwnerDashboardScreenProps {
   onProfilePress?: () => void;
@@ -203,51 +204,12 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
   // 7. Unit Breakdown counts synchronized with active agreements & invitations (H-5 parity)
   const unitStatusMap = useMemo(() => {
     const map = new Map<string, 'occupied' | 'reserved' | 'vacant' | 'maintenance'>();
-
     filteredUnits.forEach((u) => {
-      if (u.status === 'maintenance') {
-        map.set(u.id, 'maintenance');
-        return;
-      }
-
-      // Check active lease agreements
-      const hasActiveAgreement = (state.agreements || []).some(
-        (a) =>
-          a.status === 'active' &&
-          (a.unit === u.unitNumber || a.unitId === u.id) &&
-          (a.ownerId === ownerId || (u.propertyId && a.propertyId === u.propertyId))
-      );
-
-      if (hasActiveAgreement || u.status === 'occupied') {
-        map.set(u.id, 'occupied');
-        return;
-      }
-
-      // Check pending invitations or signature
-      const hasPendingOffer =
-        (state.tenancyRequests || []).some(
-          (r) =>
-            r.status === 'pending' &&
-            (r.unitNumber === u.unitNumber || r.unitId === u.id)
-        ) ||
-        (state.agreements || []).some(
-          (a) =>
-            (a.status === 'awaiting_tenant_signature' ||
-              a.status === 'pending_approval' ||
-              a.status === 'pending_deposit') &&
-            (a.unit === u.unitNumber || a.unitId === u.id)
-        );
-
-      if (hasPendingOffer || u.status === 'reserved') {
-        map.set(u.id, 'reserved');
-        return;
-      }
-
-      map.set(u.id, 'vacant');
+      const eff = resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts);
+      map.set(u.id, eff);
     });
-
     return map;
-  }, [filteredUnits, state.agreements, state.tenancyRequests, ownerId]);
+  }, [filteredUnits, state.agreements, state.tenancyRequests, state.moveOuts]);
 
   const occupiedUnits = useMemo(
     () => filteredUnits.filter((u) => unitStatusMap.get(u.id) === 'occupied'),
@@ -270,10 +232,17 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
   const occupiedCount = occupiedUnits.length;
   const occupancyRate = totalUnitsCount > 0 ? Math.round((occupiedCount / totalUnitsCount) * 100) : 0;
 
-  // Real paid payments & total rent collected
+  // Real paid rent payments & total rent collected (strictly excluding security deposits held in trust and outflows)
   const realPaidPayments = useMemo(
-    () => filteredPayments.filter((p) => p.status === 'paid'),
-    [filteredPayments]
+    () =>
+      filteredPayments.filter(
+        (p) =>
+          p.status === 'paid' &&
+          p.direction !== 'outflow' &&
+          !isDepositPayment(p, state.invoices) &&
+          (p.type === 'rent' || !p.type || (p.type as string) === 'invoice')
+      ),
+    [filteredPayments, state.invoices]
   );
   const realCollectedAmount = useMemo(
     () => realPaidPayments.reduce((acc, p) => {
@@ -287,7 +256,7 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
   const realMonthlyRentRoll = useMemo(
     () => occupiedUnits.reduce((acc, u) => {
       const matchingAgr = (state.agreements || []).find(
-        (a) => a.status === 'active' && (a.unit === u.unitNumber || a.unitId === u.id)
+        (a) => (a.status === 'active' || (a.status as string) === 'signed') && (a.unit === u.unitNumber || a.unitId === u.id)
       );
       const effectiveRent = matchingAgr?.rent || u.rent || 0;
       const uCurr = normalizeCurrency(matchingAgr?.currency || u.currency || 'USD').code;
@@ -339,7 +308,7 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
     return getOwnerReminders(state, ownerId, selectedPropertyId, selectedCurrency);
   }, [state, ownerId, selectedPropertyId, selectedCurrency]);
 
-  // Real 6 Months Revenue Timeline (calculated from actual paid payments)
+  // Real 6 Months Revenue Timeline (calculated from actual paid rent payments, converted to view currency)
   const monthlyRevenueData = useMemo(() => {
     const months: { label: string; key: string; amount: number }[] = [];
     const now = new Date();
@@ -350,19 +319,20 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
       months.push({ label, key, amount: 0 });
     }
 
-    filteredPayments.forEach((p) => {
-      if (p.status === 'paid' && p.date) {
+    realPaidPayments.forEach((p) => {
+      if (p.date) {
         const pMonth = p.date.substring(0, 7);
         const match = months.find((m) => m.key === pMonth);
         if (match) {
-          match.amount += p.amount || 0;
+          const pCurr = getPaymentCurrency(p).code;
+          match.amount += convert(p.amount || 0, pCurr, primaryCurr.code);
         }
       }
     });
 
     const maxVal = Math.max(...months.map((m) => m.amount), 1);
     return { months, maxVal };
-  }, [filteredPayments]);
+  }, [realPaidPayments, convert, primaryCurr.code]);
 
   const formatChartVal = (amount: number) => {
     if (amount === 0) return '—';
@@ -489,7 +459,7 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
 
       {/* Header */}
       <Header
-        title="Propithub"
+        title="Overview"
         onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
@@ -592,41 +562,46 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
           </TourTarget>
 
           <TourTarget id="owner-kpi-grid">
-            {/* 1. Hero Revenue Card (Clean Single-Focus Metric: Label + Value Only) */}
-            <View style={[styles.heroCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-              <Text style={[styles.heroLabel, { color: colors.inkSoft }]}>Total Rent Collected</Text>
-              <Text style={[styles.heroAmount, { color: isDark ? '#34D399' : '#059669' }]}>
-                {format(realCollectedAmount, primaryCurr.code)}
-              </Text>
-            </View>
-
-            {/* 2. Clean 3-Column Metrics Strip (Label + Single Text Value Only) */}
-            <View style={[styles.statsStripCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-              <View style={styles.statColumn}>
-                <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Expected Rent</Text>
-                <Text style={[styles.statColValue, { color: colors.navy }]} numberOfLines={1}>
-                  {format(realMonthlyRentRoll, primaryCurr.code)}
+            {/* Compact 2x2 KPI Grid */}
+            <View style={styles.kpiGridRow}>
+              <View style={[styles.kpiBox, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                <Text style={[styles.kpiBoxLabel, { color: colors.inkSoft }]}>COLLECTED</Text>
+                <Text
+                  style={[styles.kpiBoxValue, { color: isDark ? '#34D399' : '#059669' }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                >
+                  {format(realCollectedAmount, primaryCurr.code)}
                 </Text>
               </View>
 
-              <View style={[styles.statDivider, { backgroundColor: colors.line }]} />
+              <View style={[styles.kpiBox, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                <Text style={[styles.kpiBoxLabel, { color: colors.inkSoft }]}>RENT ROLL</Text>
+                <Text
+                  style={[styles.kpiBoxValue, { color: colors.navy }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                >
+                  {format(realMonthlyRentRoll, primaryCurr.code)}
+                </Text>
+              </View>
+            </View>
 
-              <View style={styles.statColumn}>
-                <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Occupancy</Text>
-                <Text style={[styles.statColValue, { color: colors.navy }]}>{occupancyRate}%</Text>
+            <View style={[styles.kpiGridRow, { marginBottom: 14 }]}>
+              <View style={[styles.kpiBox, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                <Text style={[styles.kpiBoxLabel, { color: colors.inkSoft }]}>OCCUPANCY</Text>
+                <Text style={[styles.kpiBoxValue, { color: colors.navy }]}>{occupancyRate}%</Text>
               </View>
 
-              <View style={[styles.statDivider, { backgroundColor: colors.line }]} />
-
               <TouchableOpacity
-                style={styles.statColumn}
+                style={[styles.kpiBox, { backgroundColor: colors.surface, borderColor: colors.line }]}
                 onPress={() => onNavigate?.('owner_maintenance_dispatch')}
                 activeOpacity={0.75}
               >
-                <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Repairs</Text>
+                <Text style={[styles.kpiBoxLabel, { color: colors.inkSoft }]}>REPAIRS</Text>
                 <Text
                   style={[
-                    styles.statColValue,
+                    styles.kpiBoxValue,
                     { color: activeTickets.length > 0 ? (isDark ? '#F87171' : '#EF4444') : colors.navy },
                   ]}
                 >
@@ -737,7 +712,10 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
               <View style={styles.inflowTotalBadge}>
                 <Text style={[styles.inflowTotalLabel, { color: colors.inkSoft }]}>Total Inflow:</Text>
                 <Text style={[styles.inflowTotalValue, { color: isDark ? '#34D399' : '#059669' }]}>
-                  {format(realCollectedAmount, primaryCurr.code)}
+                  {format(
+                    monthlyRevenueData.months.reduce((sum, item) => sum + item.amount, 0),
+                    primaryCurr.code
+                  )}
                 </Text>
               </View>
             </View>
@@ -769,113 +747,6 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
             </View>
           </View>
 
-          {/* Section 2: Unit Inventory Status (Real breakdown of managed units) */}
-          <View style={[styles.consistCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <View style={styles.consistCardHeader}>
-              <View>
-                <Text style={[styles.consistCardTitle, { color: colors.navy }]}>Unit Inventory Status</Text>
-              </View>
-            </View>
-
-            <View style={styles.inventoryBreakdownList}>
-              {/* 1. Occupied */}
-              <View style={styles.inventoryItem}>
-                <View style={styles.inventoryItemHeader}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <View style={[styles.statusDot, { backgroundColor: '#10B981' }]} />
-                    <Text style={[styles.statusName, { color: colors.navy }]}>Occupied</Text>
-                  </View>
-                  <Text style={[styles.statusCount, { color: colors.inkSoft }]}>
-                    {occupiedCount} unit{occupiedCount === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((occupiedCount / totalUnitsCount) * 100) : 0}%)
-                  </Text>
-                </View>
-                <View style={[styles.progressTrack, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
-                  <View
-                    style={[
-                      styles.progressBar,
-                      {
-                        backgroundColor: '#10B981',
-                        width: `${totalUnitsCount > 0 ? Math.round((occupiedCount / totalUnitsCount) * 100) : 0}%`,
-                      },
-                    ]}
-                  />
-                </View>
-              </View>
-
-              {/* 2. Vacant */}
-              <View style={styles.inventoryItem}>
-                <View style={styles.inventoryItemHeader}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <View style={[styles.statusDot, { backgroundColor: '#3B82F6' }]} />
-                    <Text style={[styles.statusName, { color: colors.navy }]}>Vacant (Available)</Text>
-                  </View>
-                  <Text style={[styles.statusCount, { color: colors.inkSoft }]}>
-                    {vacantUnits.length} unit{vacantUnits.length === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((vacantUnits.length / totalUnitsCount) * 100) : 0}%)
-                  </Text>
-                </View>
-                <View style={[styles.progressTrack, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
-                  <View
-                    style={[
-                      styles.progressBar,
-                      {
-                        backgroundColor: '#3B82F6',
-                        width: `${totalUnitsCount > 0 ? Math.round((vacantUnits.length / totalUnitsCount) * 100) : 0}%`,
-                      },
-                    ]}
-                  />
-                </View>
-              </View>
-
-              {/* 3. Reserved */}
-              <View style={styles.inventoryItem}>
-                <View style={styles.inventoryItemHeader}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <View style={[styles.statusDot, { backgroundColor: '#F59E0B' }]} />
-                    <Text style={[styles.statusName, { color: colors.navy }]}>Reserved (Lease Pending)</Text>
-                  </View>
-                  <Text style={[styles.statusCount, { color: colors.inkSoft }]}>
-                    {reservedUnits.length} unit{reservedUnits.length === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((reservedUnits.length / totalUnitsCount) * 100) : 0}%)
-                  </Text>
-                </View>
-                <View style={[styles.progressTrack, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
-                  <View
-                    style={[
-                      styles.progressBar,
-                      {
-                        backgroundColor: '#F59E0B',
-                        width: `${totalUnitsCount > 0 ? Math.round((reservedUnits.length / totalUnitsCount) * 100) : 0}%`,
-                      },
-                    ]}
-                  />
-                </View>
-              </View>
-
-              {/* 4. Maintenance */}
-              <View style={styles.inventoryItem}>
-                <View style={styles.inventoryItemHeader}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <View style={[styles.statusDot, { backgroundColor: '#EF4444' }]} />
-                    <Text style={[styles.statusName, { color: colors.navy }]}>Maintenance</Text>
-                  </View>
-                  <Text style={[styles.statusCount, { color: colors.inkSoft }]}>
-                    {maintenanceUnits.length} unit{maintenanceUnits.length === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((maintenanceUnits.length / totalUnitsCount) * 100) : 0}%)
-                  </Text>
-                </View>
-                <View style={[styles.progressTrack, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
-                  <View
-                    style={[
-                      styles.progressBar,
-                      {
-                        backgroundColor: '#EF4444',
-                        width: `${totalUnitsCount > 0 ? Math.round((maintenanceUnits.length / totalUnitsCount) * 100) : 0}%`,
-                      },
-                    ]}
-                  />
-                </View>
-              </View>
-            </View>
-          </View>
-
           {/* SECTION: YOUR PROPERTIES WITH CURRENCY PILLS (Web Exact Match) */}
           <View style={styles.sectionHeaderRow}>
             <Text style={[styles.sectionHeading, { color: colors.navy }]}>
@@ -903,8 +774,8 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
               const propUnits = myUnits.filter((u) => u.propertyId === p.id);
               const totalUnits = propUnits.length > 0 ? propUnits.length : (p.unitCount || 1);
               const occupiedPropCount = propUnits.length > 0
-                ? propUnits.filter((u) => u.status === 'occupied').length
-                : (p.occupied || 0);
+                ? propUnits.filter((u) => resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts) === 'occupied').length
+                : 0;
               const isFull = totalUnits > 0 && occupiedPropCount >= totalUnits;
               const occupancyPercent = Math.round((occupiedPropCount / totalUnits) * 100);
 
@@ -1291,6 +1162,53 @@ const createStyles = (colors: any, isDark: boolean) =>
       fontSize: 11.5,
       fontWeight: '700',
       color: '#FFFFFF',
+    },
+    // Compact 2x2 KPI Grid
+    kpiGridRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 10,
+    },
+    kpiBox: {
+      flex: 1,
+      borderWidth: 1,
+      borderRadius: 14,
+      paddingVertical: 12,
+      paddingHorizontal: 14,
+    },
+    kpiBoxLabel: {
+      fontSize: 10,
+      fontWeight: '700',
+      letterSpacing: 0.6,
+      marginBottom: 4,
+    },
+    kpiBoxValue: {
+      fontSize: 20,
+      fontWeight: '800',
+      letterSpacing: -0.4,
+    },
+    invTileRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    invTile: {
+      flex: 1,
+      borderWidth: 1,
+      borderRadius: 12,
+      paddingVertical: 10,
+      paddingHorizontal: 6,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    invTileVal: {
+      fontSize: 18,
+      fontWeight: '800',
+      marginBottom: 2,
+    },
+    invTileLabel: {
+      fontSize: 9.5,
+      fontWeight: '700',
+      letterSpacing: 0.4,
     },
     // 1. Hero Revenue Card (Modern Single-Focus Metric)
     heroCard: {

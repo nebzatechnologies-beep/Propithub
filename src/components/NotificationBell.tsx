@@ -38,6 +38,8 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
         className="bell-btn"
         onClick={() => setIsOpen(!isOpen)}
         title="Notifications"
+        aria-label={unreadCount > 0 ? `${unreadCount} unread notifications` : 'Notifications'}
+        aria-expanded={isOpen}
       >
         <Bell size={17} />
         {unreadCount > 0 && <span className="bell-badge">{unreadCount}</span>}

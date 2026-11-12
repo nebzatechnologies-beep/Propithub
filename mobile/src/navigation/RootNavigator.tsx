@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   StatusBar,
   Alert,
+  Dimensions,
 } from 'react-native';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
@@ -103,19 +104,20 @@ const ROLE_TABS: Record<UserRole, TabConfig[]> = {
     { key: 'tenant_dashboard',   label: 'Overview',     icon: 'home',           iconLib: 'feather' },
     { key: 'tenant_lease',       label: 'My Lease',     icon: 'file-text',      iconLib: 'feather' },
     { key: 'tenant_payments',    label: 'Transactions', icon: 'credit-card',    iconLib: 'feather' },
+    { key: 'tenant_maintenance', label: 'Support',      icon: 'tool',           iconLib: 'feather' },
     { key: '__more__',           label: 'More',         icon: 'menu',           iconLib: 'feather', isMore: true },
   ],
   manager: [
-    { key: 'manager_operations',      label: 'Overview',        icon: 'home',        iconLib: 'feather' },
-    { key: 'manager_properties',      label: 'Properties',      icon: 'grid',        iconLib: 'feather' },
-    { key: 'manager_repair_dispatch', label: 'Repairs',         icon: 'tool',        iconLib: 'feather' },
-    { key: '__more__',                label: 'More',            icon: 'menu',        iconLib: 'feather', isMore: true },
+    { key: 'manager_operations',      label: 'Overview',   icon: 'home',      iconLib: 'feather' },
+    { key: 'manager_properties',      label: 'Properties', icon: 'grid',      iconLib: 'feather' },
+    { key: 'manager_lease_documents', label: 'Leasing',    icon: 'file-text', iconLib: 'feather' },
+    { key: 'manager_repair_dispatch', label: 'Repairs',    icon: 'tool',      iconLib: 'feather' },
   ],
   staff: [
-    { key: 'staff_job_queue', label: 'Jobs',     icon: 'list',        iconLib: 'feather' },
-    { key: 'staff_task_fees', label: 'Earnings', icon: 'credit-card', iconLib: 'feather' },
-    { key: 'staff_ratings',   label: 'Ratings',  icon: 'star',        iconLib: 'feather' },
-    { key: '__more__',        label: 'More',     icon: 'menu',        iconLib: 'feather', isMore: true },
+    { key: 'staff_job_queue',  label: 'Jobs',     icon: 'list',        iconLib: 'feather' },
+    { key: 'staff_task_fees',  label: 'Earnings', icon: 'credit-card', iconLib: 'feather' },
+    { key: 'staff_ratings',    label: 'Ratings',  icon: 'star',        iconLib: 'feather' },
+    { key: 'account_settings', label: 'Settings', icon: 'settings',    iconLib: 'feather' },
   ],
 };
 
@@ -123,34 +125,22 @@ const ROLE_TABS: Record<UserRole, TabConfig[]> = {
 
 const ROLE_MORE_ITEMS: Record<UserRole, MoreMenuItem[]> = {
   owner: [
-    { key: 'tenant_roster',          label: 'Tenants',             sublabel: 'Resident profiles & KYC',          icon: 'users',       iconLib: 'feather', color: '#7C3AED' },
-    { key: 'leasing_hub',            label: 'Leasing',             sublabel: 'Agreements & digital signing',    icon: 'file-text',   iconLib: 'feather', color: '#2563EB' },
-    { key: 'vacates_moveout',        label: 'Move-Outs',           sublabel: 'Inspection & deposit deductions',  icon: 'log-out',     iconLib: 'feather', color: '#DC2626' },
-    { key: 'owner_maintenance_dispatch', label: 'Maintenance',      sublabel: 'Dispatch & ticket oversight',      icon: 'tool',        iconLib: 'feather', color: '#D97706' },
-    { key: 'owner_messages',         label: 'Announcements',        sublabel: 'Broadcast & tenant comms',         icon: 'message-square', iconLib: 'feather', color: '#059669' },
-    { key: 'owner_team_managers',    label: 'Team',                sublabel: 'Staff delegation & access',        icon: 'briefcase',   iconLib: 'feather', color: '#0284C7' },
-    { key: 'owner_disputes_reviews', label: 'Reputation',          sublabel: 'Trust ratings & reviews',          icon: 'award',       iconLib: 'feather', color: '#9333EA' },
-    { key: 'owner_helpdesk',         label: 'Helpdesk',            sublabel: 'Platform support tickets',         icon: 'headphones',  iconLib: 'feather', color: '#0891B2' },
-    { key: 'owner_plan_subscription',label: 'Subscription',        sublabel: 'Billing & quota management',       icon: 'zap',         iconLib: 'feather', color: '#CA8A04' },
-    { key: 'notifications_center',   label: 'Notifications',        sublabel: 'Alerts & activity feed',           icon: 'bell',        iconLib: 'feather', color: '#475569' },
-    { key: 'account_settings',       label: 'Settings',            sublabel: 'Profile & preferences',            icon: 'settings',    iconLib: 'feather', color: '#334155' },
+    { key: 'tenant_roster',              label: 'Tenants',       sublabel: '', icon: 'users',          iconLib: 'feather', color: '#7C3AED' },
+    { key: 'leasing_hub',                label: 'Leasing',       sublabel: '', icon: 'file-text',      iconLib: 'feather', color: '#2563EB' },
+    { key: 'vacates_moveout',            label: 'Move-Outs',     sublabel: '', icon: 'log-out',        iconLib: 'feather', color: '#DC2626' },
+    { key: 'owner_maintenance_dispatch', label: 'Maintenance',   sublabel: '', icon: 'tool',           iconLib: 'feather', color: '#D97706' },
+    { key: 'owner_messages',             label: 'Announcements', sublabel: '', icon: 'message-square', iconLib: 'feather', color: '#059669' },
+    { key: 'owner_team_managers',        label: 'Team',          sublabel: '', icon: 'briefcase',      iconLib: 'feather', color: '#0284C7' },
+    { key: 'owner_disputes_reviews',     label: 'Reputation',    sublabel: '', icon: 'award',          iconLib: 'feather', color: '#9333EA' },
+    { key: 'owner_helpdesk',             label: 'Helpdesk',      sublabel: '', icon: 'headphones',     iconLib: 'feather', color: '#0891B2' },
+    { key: 'owner_plan_subscription',    label: 'Subscription',  sublabel: '', icon: 'zap',            iconLib: 'feather', color: '#CA8A04' },
   ],
   tenant: [
-    { key: 'tenant_find_home',        label: 'Find a Home',         sublabel: 'Browse available listings',       icon: 'search',      iconLib: 'feather', color: '#10B981' },
-    { key: 'tenant_maintenance',     label: 'Support',             sublabel: 'Repairs & tickets',               icon: 'tool',        iconLib: 'feather', color: '#059669' },
-    { key: 'tenant_landlord_reviews',label: 'Reviews',              sublabel: 'Verified reviews & feedback',     icon: 'award',       iconLib: 'feather', color: '#D97706' },
-    { key: 'notifications_center',   label: 'Notifications',         sublabel: 'Rent reminders & alerts',         icon: 'bell',        iconLib: 'feather', color: '#475569' },
-    { key: 'account_settings',       label: 'Settings',            sublabel: 'Profile & preferences',           icon: 'settings',    iconLib: 'feather', color: '#334155' },
+    { key: 'tenant_find_home',         label: 'Find a Home', sublabel: '', icon: 'search', iconLib: 'feather', color: '#10B981' },
+    { key: 'tenant_landlord_reviews',  label: 'Reviews',     sublabel: '', icon: 'award',  iconLib: 'feather', color: '#D97706' },
   ],
-  manager: [
-    { key: 'manager_lease_documents',   label: 'Leasing',           sublabel: 'Tenant contracts & documents',     icon: 'file-text',  iconLib: 'feather', color: '#2563EB' },
-    { key: 'notifications_center',      label: 'Notifications',     sublabel: 'Operational alerts',               icon: 'bell',       iconLib: 'feather', color: '#475569' },
-    { key: 'account_settings',          label: 'Settings',          sublabel: 'Profile & preferences',            icon: 'settings',   iconLib: 'feather', color: '#334155' },
-  ],
-  staff: [
-    { key: 'notifications_center', label: 'Notifications',    sublabel: 'Job assignments & alerts',          icon: 'bell',      iconLib: 'feather', color: '#475569' },
-    { key: 'account_settings',     label: 'Settings',         sublabel: 'Profile & preferences',             icon: 'settings',  iconLib: 'feather', color: '#334155' },
-  ],
+  manager: [],
+  staff: [],
 };
 
 // ─── Root Navigator Props ─────────────────────────────────────────────────────
@@ -193,8 +183,8 @@ const ROLE_META: Record<UserRole, { label: string; emoji: string; color: string;
 
 export const RootNavigator: React.FC<RootNavigatorProps> = () => {
   const { user, role, isAuthenticated, isLoading, logout } = useMobileAuth();
-  const { isOwnerPlanActive } = useMobileAppData();
-  const { colors, isDark } = useMobileTheme();
+  const { isOwnerPlanActive, state } = useMobileAppData();
+  const { colors, isDark, toggleTheme } = useMobileTheme();
   const { registerNavigate, isActive: isTourActive, isMinimized: isTourMinimized } = useMobileTour();
   const [activeScreenKey, setActiveScreenKey] = useState<string>('owner_dashboard');
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
@@ -230,6 +220,16 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
       }
     }
   }, [role, isOwnerActive, activeScreenKey, isGuidedTourExploring]);
+
+  // Memoized 3-column grid rows for the "More / Workspaces" menu modal (unconditional Hook)
+  const moreItems = (role && ROLE_MORE_ITEMS[role]) ? ROLE_MORE_ITEMS[role] : [];
+  const moreItemRows = useMemo(() => {
+    const rows: (typeof moreItems)[] = [];
+    for (let i = 0; i < moreItems.length; i += 3) {
+      rows.push(moreItems.slice(i, i + 3));
+    }
+    return rows;
+  }, [moreItems]);
 
   // Loading indicator while resolving live Firebase auth state
   if (isLoading) {
@@ -316,6 +316,24 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
     else navigate('owner_dashboard');
   };
 
+  const handleLogoutPress = () => {
+    Alert.alert(
+      'Log Out',
+      'Are you sure you want to log out of your account?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Log Out',
+          style: 'destructive',
+          onPress: () => {
+            setShowMoreMenu(false);
+            logout();
+          },
+        },
+      ]
+    );
+  };
+
   const renderActiveScreen = () => {
     switch (activeScreenKey) {
       // ── Owner ──────────────────────────────────────────────────────────────
@@ -353,6 +371,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
             onProfilePress={() => setShowMoreMenu(true)}
             onNewAgreementPress={() => navigate('lease_drafting_builder')}
             onInitiateNoticePress={() => navigate('vacates_moveout')}
+            onNavigate={navigate}
           />
         );
       case 'financial_ledger':
@@ -373,6 +392,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
               navigate('moveout_inspection_checklist');
             }}
             onFileDisputePress={() => navigate('file_formal_dispute')}
+            onNavigate={navigate}
           />
         );
       case 'owner_maintenance_dispatch':
@@ -380,18 +400,46 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
           <OwnerMaintenanceDispatchScreen
             onProfilePress={() => setShowMoreMenu(true)}
             onCreateTicketPress={() => navigate('create_maintenance_ticket')}
+            onNavigate={navigate}
           />
         );
       case 'owner_messages':
-        return <OwnerMessagesScreen onProfilePress={() => setShowMoreMenu(true)} />;
+        return (
+          <OwnerMessagesScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNavigate={navigate}
+          />
+        );
       case 'owner_team_managers':
-        return <OwnerTeamManagersScreen initialTab="managers" onNavigate={navigate} />;
+        return (
+          <OwnerTeamManagersScreen
+            initialTab="managers"
+            onNavigate={navigate}
+            onProfilePress={() => setShowMoreMenu(true)}
+          />
+        );
       case 'manager_compensation':
-        return <OwnerTeamManagersScreen initialTab="payouts" onNavigate={navigate} />;
+        return (
+          <OwnerTeamManagersScreen
+            initialTab="payouts"
+            onNavigate={navigate}
+            onProfilePress={() => setShowMoreMenu(true)}
+          />
+        );
       case 'owner_disputes_reviews':
-        return <OwnerDisputesReviewsScreen />;
+        return (
+          <OwnerDisputesReviewsScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNavigate={navigate}
+          />
+        );
       case 'owner_helpdesk':
-        return <OwnerHelpdeskScreen />;
+        return (
+          <OwnerHelpdeskScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNavigate={navigate}
+          />
+        );
       case 'owner_plan_subscription':
         return (
           <OwnerPlanSubscriptionScreen
@@ -410,11 +458,19 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
           />
         );
       case 'tenant_lease':
-        return <TenantLeaseScreen onGiveNoticePress={() => navigate('vacates_moveout')} />;
+        return (
+          <TenantLeaseScreen
+            onGiveNoticePress={() => navigate('vacates_moveout')}
+            onNavigate={navigate}
+            onProfilePress={() => setShowMoreMenu(true)}
+          />
+        );
       case 'tenant_payments':
         return (
           <TenantPaymentsScreen
             onPayInvoicePress={() => navigate('online_payment_checkout')}
+            onNavigate={navigate}
+            onProfilePress={() => setShowMoreMenu(true)}
           />
         );
       case 'tenant_maintenance':
@@ -422,14 +478,22 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
           <TenantMaintenanceScreen
             onCreateTicketPress={() => navigate('create_maintenance_ticket')}
             onPayChargePress={() => navigate('online_payment_checkout')}
+            onNavigate={navigate}
+            onProfilePress={() => setShowMoreMenu(true)}
           />
         );
       case 'tenant_landlord_reviews':
-        return <TenantLandlordReviewsScreen />;
+        return (
+          <TenantLandlordReviewsScreen
+            onNavigate={navigate}
+            onProfilePress={() => setShowMoreMenu(true)}
+          />
+        );
       case 'tenant_find_home':
         return (
           <TenantFindHomeScreen
-            onBack={() => navigate('dashboard')}
+            onBack={() => navigate('tenant_dashboard')}
+            onNavigate={navigate}
             onProfilePress={() => setShowMoreMenu(true)}
           />
         );
@@ -448,15 +512,22 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
           <ManagerRepairDispatchScreen
             onProfilePress={() => setShowMoreMenu(true)}
             onCreateTicketPress={() => navigate('create_maintenance_ticket')}
+            onNavigate={navigate}
           />
         );
       case 'manager_properties':
-        return <ManagerPropertiesScreen onProfilePress={() => setShowMoreMenu(true)} />;
+        return (
+          <ManagerPropertiesScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNavigate={navigate}
+          />
+        );
       case 'manager_lease_documents':
         return (
           <ManagerLeaseDocumentsScreen
             onProfilePress={() => setShowMoreMenu(true)}
             onViewPdfPress={() => navigate('document_pdf_viewer')}
+            onNavigate={navigate}
           />
         );
       case 'disputes_desk':
@@ -471,22 +542,39 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
       // ── Staff ──────────────────────────────────────────────────────────────
       case 'staff_dashboard':
       case 'staff_job_queue':
-        return <StaffJobQueueScreen onProfilePress={() => setShowMoreMenu(true)} />;
+        return (
+          <StaffJobQueueScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNotificationsPress={() => navigate('notifications_center')}
+          />
+        );
       case 'staff_task_fees':
       case 'staff_earnings':
-        return <StaffTaskPaymentsScreen />;
+        return (
+          <StaffTaskPaymentsScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNotificationsPress={() => navigate('notifications_center')}
+          />
+        );
       case 'staff_ratings':
-        return <StaffRatingsScreen />;
+        return (
+          <StaffRatingsScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNotificationsPress={() => navigate('notifications_center')}
+          />
+        );
 
       // ── Workflow / utility screens ─────────────────────────────────────────
-      case 'property_create_wizard':
+      case 'property_create_wizard': {
+        const retProp = role === 'manager' ? 'manager_properties' : 'property_portfolio';
         return (
           <PropertyCreateWizardScreen
-            onBack={() => navigate('property_portfolio')}
-            onSuccess={() => navigate('property_portfolio')}
+            onBack={() => navigate(retProp)}
+            onSuccess={() => navigate(retProp)}
             onNavigate={navigate}
           />
         );
+      }
       case 'rental_invoice_studio':
         return (
           <RentalInvoiceStudioScreen
@@ -502,13 +590,15 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
             onInitiateVacatePress={() => navigate('vacates_moveout')}
           />
         );
-      case 'lease_drafting_builder':
+      case 'lease_drafting_builder': {
+        const retLease = role === 'manager' ? 'manager_lease_documents' : 'leasing_hub';
         return (
           <LeaseDraftingBuilderScreen
-            onBack={() => navigate('leasing_hub')}
-            onSuccess={() => navigate('leasing_hub')}
+            onBack={() => navigate(retLease)}
+            onSuccess={() => navigate(retLease)}
           />
         );
+      }
       case 'moveout_inspection_checklist':
         return (
           <MoveOutInspectionChecklistScreen
@@ -563,7 +653,6 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
   // ── Tab bar for current role ────────────────────────────────────────────────
 
   const tabs = ROLE_TABS[role] ?? ROLE_TABS.owner;
-  const moreItems = ROLE_MORE_ITEMS[role] ?? [];
   const roleMeta = ROLE_META[role] ?? ROLE_META.owner;
 
   const initials = user.displayName
@@ -629,6 +718,34 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
               );
             }
 
+            const hasStaffBadge =
+              role === 'staff' &&
+              ((tab.key === 'staff_job_queue' &&
+                state.tickets.some(
+                  (t) =>
+                    (t.status === 'open' || t.status === 'assigned' || t.status === 'in_progress') &&
+                    (t.assignedStaffId === user.id ||
+                      (user.displayName && t.assignedStaffName?.toLowerCase().includes(user.displayName.toLowerCase())))
+                )) ||
+                (tab.key === 'staff_task_fees' &&
+                  state.tickets.some(
+                    (t) =>
+                      t.payment &&
+                      (t.payment.status === 'pending_approval' || t.payment.status === 'awaiting_payment') &&
+                      (t.assignedStaffId === user.id ||
+                        (user.displayName && t.assignedStaffName?.toLowerCase().includes(user.displayName.toLowerCase())))
+                  )));
+
+            const hasManagerBadge =
+              role === 'manager' &&
+              ((tab.key === 'manager_repair_dispatch' &&
+                state.tickets.some((t) => t.status === 'open')) ||
+                (tab.key === 'manager_lease_documents' &&
+                  (state.agreements.some((a) => a.status === 'pending_approval' || a.status === 'awaiting_tenant_signature') ||
+                    (state.tenancyRequests || []).some((r) => r.status === 'pending'))));
+
+            const showTabDot = hasStaffBadge || hasManagerBadge;
+
             return (
               <TourTarget key={tab.key} id={`tab-${tab.key}`} style={styles.tabItem}>
                 <TouchableOpacity
@@ -657,16 +774,31 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                     style={[
                       styles.tabIconWrap,
                       isActive && {
-                        backgroundColor: isDark ? 'rgba(16, 185, 129, 0.18)' : '#F0FDF4',
+                        backgroundColor: isDark ? '#0F2920' : '#E6F4EE',
                       },
                     ]}
                   >
-                    <TabIcon tab={tab} color={color} />
+                    <TabIcon tab={tab} color={isActive ? '#059669' : color} />
+                    {showTabDot && (
+                      <View
+                        style={{
+                          position: 'absolute',
+                          top: 3,
+                          right: 11,
+                          width: 8,
+                          height: 8,
+                          borderRadius: 4,
+                          backgroundColor: '#EF4444',
+                          borderWidth: 1.5,
+                          borderColor: colors.surface,
+                        }}
+                      />
+                    )}
                   </View>
                   <Text
                     style={[
                       styles.tabLabel,
-                      { color: isActive ? '#10B981' : colors.inkSoft },
+                      { color: isActive ? '#059669' : colors.inkSoft },
                       isActive && styles.tabLabelActive,
                     ]}
                   >
@@ -686,46 +818,76 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
         />
       </SafeAreaView>
 
-      {/* ── "More" Full-Screen Drawer ───────────────────────────────────────── */}
+      {/* ── Compact Slide-Up More & Profile Bottom Sheet ───────────────────── */}
       <Modal
         visible={showMoreMenu}
-        animationType="slide"
-        transparent={false}
+        animationType="fade"
+        transparent={true}
         onRequestClose={() => setShowMoreMenu(false)}
       >
-        <SafeAreaView style={[styles.moreModalSafe, { backgroundColor: colors.background }]}>
-          <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.surface} />
-
-          {/* ── More header ─────────────────────────────────────────────────── */}
-          <View style={[styles.moreHeader, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-            <PropithubLogo size={24} showText={true} />
-            <TouchableOpacity
-              onPress={() => setShowMoreMenu(false)}
-              style={[styles.moreCloseBtn, { backgroundColor: colors.surfaceSunken }]}
-              activeOpacity={0.8}
-            >
-              <Feather name="x" size={20} color={colors.ink} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView
-            style={[styles.moreScroll, { backgroundColor: colors.background }]}
-            contentContainerStyle={styles.moreScrollContent}
-            showsVerticalScrollIndicator={false}
+        <TouchableOpacity
+          style={styles.sheetBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowMoreMenu(false)}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={() => {}}
+            style={[
+              styles.sheetCard,
+              {
+                backgroundColor: colors.surface,
+                borderColor: isDark ? 'rgba(255,255,255,0.08)' : colors.line,
+              },
+            ]}
           >
-            {/* ── Profile Card ─────────────────────────────────────────────── */}
-            <View style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: isDark ? 'rgba(255,255,255,0.08)' : colors.line }]}>
-              <View style={styles.profileCardLeft}>
-                <View style={[styles.avatar, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: '#10B981' }]}>
-                  <Text style={[styles.avatarText, isDark && { color: '#34D399' }]}>{initials}</Text>
+            {/* Drag Handle */}
+            <View style={[styles.sheetHandle, { backgroundColor: colors.lineStrong }]} />
+
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              contentContainerStyle={{ paddingBottom: 8 }}
+            >
+              {/* Compact Profile Strip */}
+              <View
+                style={[
+                  styles.profileCard,
+                  {
+                    backgroundColor: colors.surfaceSunken,
+                    borderColor: isDark ? 'rgba(255,255,255,0.06)' : colors.line,
+                  },
+                ]}
+              >
+                {/* Top Row: Avatar + Name/Email + Close (X) */}
+                <View style={styles.profileCardTop}>
+                  <View
+                    style={[
+                      styles.avatar,
+                      isDark && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: '#10B981' },
+                    ]}
+                  >
+                    <Text style={[styles.avatarText, isDark && { color: '#34D399' }]}>{initials}</Text>
+                  </View>
+                  <View style={styles.profileInfo}>
+                    <Text style={[styles.profileName, { color: colors.ink }]} numberOfLines={1}>
+                      {user.displayName || 'Propithub User'}
+                    </Text>
+                    <Text style={[styles.profileEmail, { color: colors.inkSoft }]} numberOfLines={1}>
+                      {user.email || ''}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setShowMoreMenu(false)}
+                    style={[styles.moreCloseBtn, { backgroundColor: colors.surface }]}
+                    activeOpacity={0.8}
+                  >
+                    <Feather name="x" size={18} color={colors.inkSoft} />
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.profileInfo}>
-                  <Text style={[styles.profileName, { color: colors.ink }]} numberOfLines={1}>
-                    {user.displayName || 'Propithub User'}
-                  </Text>
-                  <Text style={[styles.profileEmail, { color: colors.inkSoft }]} numberOfLines={1}>
-                    {user.email || ''}
-                  </Text>
+
+                {/* Bottom Row of Profile: Status Badges (Left) + Log Out (Right) */}
+                <View style={styles.profileCardBottom}>
                   <View style={styles.badgesRow}>
                     <View
                       style={[
@@ -740,7 +902,6 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                         {roleMeta.emoji} {roleMeta.label}
                       </Text>
                     </View>
-
                     <View
                       style={[
                         styles.onlineBadge,
@@ -754,123 +915,134 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                       <Text style={[styles.liveText, { color: isDark ? '#34D399' : '#059669' }]}>Online</Text>
                     </View>
                   </View>
+
+                  {/* Safe Log Out Button directly in the Profile Card */}
+                  <TouchableOpacity
+                    style={[
+                      styles.profileLogoutBtn,
+                      {
+                        backgroundColor: isDark ? 'rgba(239, 68, 68, 0.12)' : '#FEE2E2',
+                        borderColor: isDark ? 'rgba(239, 68, 68, 0.25)' : '#FCA5A5',
+                      },
+                    ]}
+                    onPress={handleLogoutPress}
+                    activeOpacity={0.75}
+                  >
+                    <Feather name="log-out" size={12} color={isDark ? '#F87171' : '#DC2626'} />
+                    <Text style={[styles.profileLogoutBtnText, { color: isDark ? '#F87171' : '#DC2626' }]}>
+                      Log Out
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               </View>
-            </View>
 
-            {/* ── Profile actions ──────────────────────────────────────────── */}
-            <View style={styles.profileActions}>
-              <TouchableOpacity
-                style={[
-                  styles.settingsBtn,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: isDark ? 'rgba(255,255,255,0.08)' : colors.line,
-                  },
-                ]}
-                onPress={() => {
-                  setShowMoreMenu(false);
-                  setActiveScreenKey('account_settings');
-                }}
-                activeOpacity={0.8}
-              >
-                <Feather name="settings" size={15} color={colors.ink} />
-                <Text style={[styles.settingsBtnText, { color: colors.ink }]}>Settings</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.logoutBtn,
-                  {
-                    backgroundColor: isDark ? 'rgba(239, 68, 68, 0.14)' : '#FEE2E2',
-                    borderColor: isDark ? 'rgba(239, 68, 68, 0.28)' : '#FCA5A5',
-                  },
-                ]}
-                onPress={() => {
-                  setShowMoreMenu(false);
-                  logout();
-                }}
-                activeOpacity={0.8}
-              >
-                <Feather name="log-out" size={15} color={isDark ? '#F87171' : '#DC2626'} />
-                <Text style={[styles.logoutBtnText, { color: isDark ? '#F87171' : '#DC2626' }]}>Log Out</Text>
-              </TouchableOpacity>
-            </View>
+              {/* ── 3-Column Workspace Grid (Owner & Tenant extra modules) ─── */}
+              {moreItemRows.length > 0 && (
+                <>
+                  <View style={styles.moreSectionLabel}>
+                    <Text style={[styles.moreSectionLabelText, { color: colors.inkSoft }]}>WORKSPACES</Text>
+                  </View>
+                  <View style={styles.gridContainer}>
+                    {moreItemRows.map((row, rIdx) => (
+                      <View key={`row-${rIdx}`} style={styles.gridMenuRow}>
+                        {row.map((item) => {
+                          const isActive = activeScreenKey === item.key;
+                          const accentColor = item.color ?? '#059669';
+                          return (
+                            <TouchableOpacity
+                              key={item.key}
+                              style={[
+                                styles.gridMenuTile,
+                                {
+                                  backgroundColor: isActive
+                                    ? isDark
+                                      ? 'rgba(16, 185, 129, 0.16)'
+                                      : '#ECFDF5'
+                                    : colors.surfaceSunken,
+                                  borderColor: isActive
+                                    ? '#10B981'
+                                    : isDark
+                                    ? 'rgba(255,255,255,0.06)'
+                                    : colors.line,
+                                },
+                              ]}
+                              onPress={() => {
+                                setShowMoreMenu(false);
+                                setActiveScreenKey(item.key);
+                              }}
+                              activeOpacity={0.75}
+                            >
+                              <View
+                                style={[
+                                  styles.gridIconBox,
+                                  { backgroundColor: accentColor + (isDark ? '26' : '16') },
+                                ]}
+                              >
+                                <MenuIcon item={item} color={isActive ? '#10B981' : accentColor} />
+                              </View>
+                              <Text
+                                style={[
+                                  styles.gridMenuLabel,
+                                  { color: isActive ? '#10B981' : colors.ink },
+                                  isActive && { fontWeight: '800' },
+                                ]}
+                                numberOfLines={2}
+                              >
+                                {item.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {row.length < 3 &&
+                          Array.from({ length: 3 - row.length }).map((_, i) => (
+                            <View key={`spacer-${i}`} style={styles.gridMenuTileSpacer} />
+                          ))}
+                      </View>
+                    ))}
+                  </View>
+                </>
+              )}
 
-            {/* ── Section divider ──────────────────────────────────────────── */}
-            <View style={styles.moreSectionLabel}>
-              <Text style={[styles.moreSectionLabelText, { color: colors.inkSoft }]}>NAVIGATION</Text>
-            </View>
+              {/* ── Quick Account & Theme Actions ──────────────────────────── */}
+              <View style={styles.profileActions}>
+                <TouchableOpacity
+                  style={[
+                    styles.settingsBtn,
+                    {
+                      backgroundColor: colors.surfaceSunken,
+                      borderColor: isDark ? 'rgba(255,255,255,0.08)' : colors.line,
+                    },
+                  ]}
+                  onPress={() => {
+                    setShowMoreMenu(false);
+                    setActiveScreenKey('account_settings');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Feather name="settings" size={15} color={colors.ink} />
+                  <Text style={[styles.settingsBtnText, { color: colors.ink }]}>Account Settings</Text>
+                </TouchableOpacity>
 
-            {/* ── Inset Grouped Navigation Menu ─────────────────────────────── */}
-            <View
-              style={[
-                styles.menuGroupCard,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: isDark ? 'rgba(255,255,255,0.08)' : colors.line,
-                },
-              ]}
-            >
-              {moreItems
-                .filter((item) => item.key !== 'account_settings')
-                .map((item, index, filteredItems) => {
-                  const isActive = activeScreenKey === item.key;
-                  const accentColor = item.color ?? '#475569';
-                  const isLast = index === filteredItems.length - 1;
-                  return (
-                    <React.Fragment key={item.key}>
-                      <TouchableOpacity
-                        style={[
-                          styles.menuRowItem,
-                          isActive && {
-                            backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
-                          },
-                        ]}
-                        onPress={() => {
-                          setShowMoreMenu(false);
-                          setActiveScreenKey(item.key);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <View style={[styles.menuIconBox, { backgroundColor: accentColor + (isDark ? '25' : '18') }]}>
-                          <MenuIcon item={item} color={accentColor} />
-                        </View>
-                        <View style={styles.menuRowText}>
-                          <Text
-                            style={[
-                              styles.menuLabel,
-                              { color: colors.ink },
-                              isActive && { color: '#10B981', fontWeight: '800' },
-                            ]}
-                          >
-                            {item.label}
-                          </Text>
-                          <Text style={[styles.menuSublabel, { color: colors.inkSoft }]}>{item.sublabel}</Text>
-                        </View>
-                        <Feather
-                          name="chevron-right"
-                          size={15}
-                          color={isActive ? '#10B981' : isDark ? '#475569' : '#94A3B8'}
-                        />
-                      </TouchableOpacity>
-                      {!isLast && (
-                        <View
-                          style={[
-                            styles.menuDivider,
-                            {
-                              backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : '#F1F5F9',
-                            },
-                          ]}
-                        />
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-            </View>
-
-            <View style={{ height: 32 }} />
-          </ScrollView>
-        </SafeAreaView>
+                <TouchableOpacity
+                  style={[
+                    styles.settingsBtn,
+                    {
+                      backgroundColor: colors.surfaceSunken,
+                      borderColor: isDark ? 'rgba(255,255,255,0.08)' : colors.line,
+                    },
+                  ]}
+                  onPress={() => toggleTheme()}
+                  activeOpacity={0.8}
+                >
+                  <Feather name={isDark ? 'sun' : 'moon'} size={15} color={colors.ink} />
+                  <Text style={[styles.settingsBtnText, { color: colors.ink }]}>
+                    {isDark ? 'Light Mode' : 'Dark Mode'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* ── Interactive Platform Guide HUD Overlay ─────────────────────────── */}
@@ -991,77 +1163,109 @@ const styles = StyleSheet.create({
     opacity: 0.15,
   },
 
-  // ── More Modal ─────────────────────────────────────────────────────────────
-  moreModalSafe: { flex: 1, backgroundColor: '#FFFFFF' },
-  moreHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+  // ── Compact Bottom Sheet ───────────────────────────────────────────────────
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    justifyContent: 'flex-end',
   },
-  moreHeaderTitle: { fontSize: 18, fontWeight: '700', color: '#0F172A' },
+  sheetCard: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 20,
+    maxHeight: '86%',
+  },
+  sheetHandle: {
+    width: 40,
+    height: 5,
+    borderRadius: 3,
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
   moreCloseBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#F1F5F9',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  moreScroll: { flex: 1, backgroundColor: '#F8FAFC' },
-  moreScrollContent: { padding: 16 },
 
   // Profile Card
   profileCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: 16,
+    padding: 13,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    marginBottom: 12,
+    marginBottom: 14,
+  },
+  profileCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  profileCardBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(150, 150, 150, 0.12)',
+  },
+  profileLogoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5.5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  profileLogoutBtnText: {
+    fontSize: 11.5,
+    fontWeight: '700',
   },
   profileCardLeft: { flexDirection: 'row', alignItems: 'center' },
   avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#ECFDF5',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#A7F3D0',
   },
-  avatarText: { fontSize: 18, fontWeight: '800', color: '#059669' },
+  avatarText: { fontSize: 16, fontWeight: '800', color: '#059669' },
   profileInfo: { flex: 1, marginLeft: 12 },
-  profileName: { fontSize: 16, fontWeight: '700', color: '#0F172A' },
-  profileEmail: { fontSize: 12, color: '#64748B', marginTop: 1 },
+  profileName: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  profileEmail: { fontSize: 11.5, color: '#64748B', marginTop: 1 },
   badgesRow: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 6,
-    marginTop: 6,
   },
   roleBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    paddingHorizontal: 9,
-    paddingVertical: 3.5,
-    borderRadius: 14,
+    paddingHorizontal: 8,
+    paddingVertical: 2.5,
+    borderRadius: 12,
     borderWidth: 1,
   },
-  roleBadgeText: { fontSize: 11, fontWeight: '700' },
+  roleBadgeText: { fontSize: 10.5, fontWeight: '700' },
   onlineBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    paddingHorizontal: 8,
-    paddingVertical: 3.5,
-    borderRadius: 14,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 12,
     borderWidth: 1,
     gap: 4,
   },
@@ -1072,7 +1276,7 @@ const styles = StyleSheet.create({
   profileActions: {
     flexDirection: 'row',
     gap: 10,
-    marginBottom: 20,
+    marginTop: 4,
   },
   settingsBtn: {
     flex: 1,
@@ -1081,58 +1285,55 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     borderRadius: 12,
-    paddingVertical: 10.5,
+    paddingVertical: 12,
     borderWidth: 1,
   },
-  settingsBtnText: { fontSize: 13, fontWeight: '600' },
-  logoutBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    borderRadius: 12,
-    paddingVertical: 10.5,
-    borderWidth: 1,
-  },
-  logoutBtnText: { fontSize: 13, fontWeight: '700' },
+  settingsBtnText: { fontSize: 12.5, fontWeight: '600' },
 
   // Section label
-  moreSectionLabel: { marginTop: 2, marginBottom: 8, paddingHorizontal: 4 },
+  moreSectionLabel: { marginBottom: 8, paddingHorizontal: 2 },
   moreSectionLabelText: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 10.5,
+    fontWeight: '800',
     letterSpacing: 0.8,
   },
 
-  // Grouped Navigation Card
-  menuGroupCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    overflow: 'hidden',
-    marginBottom: 20,
+  // 3-Column Workspace Grid
+  gridContainer: {
+    marginBottom: 14,
   },
-  menuRowItem: {
+  gridMenuRow: {
     flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  gridMenuTile: {
+    flex: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 13,
+    justifyContent: 'center',
+    gap: 6,
   },
-  menuDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginLeft: 66,
+  gridMenuTileSpacer: {
+    flex: 1,
+    paddingHorizontal: 4,
   },
-  menuIconBox: {
-    width: 38,
-    height: 38,
+  gridIconBox: {
+    width: 36,
+    height: 36,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
   },
-  menuRowText: { flex: 1 },
-  menuLabel: { fontSize: 14.5, fontWeight: '600' },
-  menuSublabel: { fontSize: 11.5, marginTop: 1 },
+  gridMenuLabel: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 14,
+  },
 
   // Role switcher
   roleSwitcherCard: {

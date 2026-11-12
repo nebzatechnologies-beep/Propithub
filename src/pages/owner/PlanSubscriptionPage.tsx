@@ -1,19 +1,22 @@
 import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { launchRazorpayPayment, launchStripePayment, launchPayPalPayment, launchEasebuzzPayment, launchStripeRecurringMandate, launchRazorpayRecurringMandate, launchPayPalRecurringMandate, launchEasebuzzRecurringMandate } from '../../lib/payments';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { loadCachedTrialDays } from '../../lib/store';
-import { PlatformInvoice } from '../../types';
+import { loadCachedTrialDays, DEFAULT_BOOST_PLANS } from '../../lib/store';
+import { PlatformInvoice, OwnerSettings, ListingBoostPlan } from '../../types';
 import { dispatchSubscriptionReceiptEmail } from '../../lib/receiptMailer';
 import { useCurrency } from '../../context/CurrencyContext';
 import { CurrencyConverterTrigger } from '../../components/common/CurrencyConverterTrigger';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { FileText, Printer, Download, CheckCircle2, Clock } from 'lucide-react';
 import { downloadSinglePlatformInvoicePDF } from '../../lib/pdf';
 
 export const PlanSubscriptionPage: React.FC = () => {
+  const navigate = useNavigate();
   const { state, updateState, showToast, updateOwnerAutopay, cancelOwnerAutopay } = useAppData();
   const { user, updateUserProfile } = useAuth();
 
@@ -42,6 +45,10 @@ export const PlanSubscriptionPage: React.FC = () => {
   const [selectedPlanName, setSelectedPlanName] = useState(state.ownerPlan || 'Growth');
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [buyingBoostPlan, setBuyingBoostPlan] = useState<ListingBoostPlan | null>(null);
+  const [boostUnitId, setBoostUnitId] = useState<string>('');
+  const [boostGateway, setBoostGateway] = useState<'stripe' | 'razorpay' | 'paypal' | 'easebuzz'>('stripe');
+  const [isProcessingBoost, setIsProcessingBoost] = useState(false);
   const [selectedPlatformInvoice, setSelectedPlatformInvoice] = useState<PlatformInvoice | null>(null);
   const [selectedNewGateway, setSelectedNewGateway] = useState<'stripe' | 'razorpay' | 'paypal' | 'easebuzz'>('stripe');
   const [ownerMandateCardName, setOwnerMandateCardName] = useState(user?.displayName || 'Owner');
@@ -56,7 +63,28 @@ export const PlanSubscriptionPage: React.FC = () => {
   const [ownerMandatePaypalEmail, setOwnerMandatePaypalEmail] = useState(user?.email || '');
   const [ownerMandateConsentChecked, setOwnerMandateConsentChecked] = useState(true);
 
-  const { convert, format } = useCurrency();
+  const { convert, format, viewCurrency } = useCurrency();
+
+  const ownerEligibleUnits = useMemo(() => {
+    return (state.units || []).filter(
+      (u) =>
+        (u.ownerId === effectiveOwnerId || !u.ownerId) &&
+        (u.isListedPublicly || u.status === 'vacant')
+    );
+  }, [state.units, effectiveOwnerId]);
+
+  const isBoostPassActive = Boolean(
+    ownerSettings?.popularBoostUntil &&
+    new Date(ownerSettings.popularBoostUntil).getTime() > Date.now()
+  );
+
+  const boostPassDaysRemaining = isBoostPassActive && ownerSettings?.popularBoostUntil
+    ? Math.max(1, Math.ceil((new Date(ownerSettings.popularBoostUntil).getTime() - Date.now()) / 86400000))
+    : 0;
+
+  const isUnitBoostActive = (unit: any) => {
+    return Boolean(unit?.isPopular && unit?.popularUntil && new Date(unit.popularUntil).getTime() > Date.now());
+  };
 
   const handleToggleAutoRenew = async () => {
     if (!effectiveOwnerId) return;
@@ -440,6 +468,7 @@ export const PlanSubscriptionPage: React.FC = () => {
         planId: targetPlan.id,
         planName: chosenPlanName,
         planStatus: 'active' as const,
+        trialEndsAt: ownerSettings?.trialEndsAt ?? null,
         subscriptionEndsAt: expiry,
         billingCycle: isAnnual ? ('annual' as const) : ('monthly' as const),
         autoRenew: true,
@@ -473,14 +502,14 @@ export const PlanSubscriptionPage: React.FC = () => {
             ...(nextOwnerSettings[effectiveOwnerId] || {}),
             ...updatedSettings,
             ownerId: effectiveOwnerId,
-          };
+          } as OwnerSettings;
         }
         if (userFromState?.id && userFromState.id !== effectiveOwnerId) {
           nextOwnerSettings[userFromState.id] = {
             ...(nextOwnerSettings[userFromState.id] || {}),
             ...updatedSettings,
             ownerId: userFromState.id,
-          };
+          } as OwnerSettings;
         }
 
         const nextUsers = prev.users.map((u) => {
@@ -702,6 +731,255 @@ export const PlanSubscriptionPage: React.FC = () => {
     showToast(`Active billing gateway "${billingGateway}" is not configured. Please contact platform admin.`);
   };
 
+  const handleConfirmBoostPurchase = async () => {
+    if (!buyingBoostPlan) return;
+
+    // Guard: Prevent repurchase if an active Spotlight Pass is already running
+    if (isBoostPassActive) {
+      showToast(`⚠️ You already have an active Spotlight Pass running (${boostPassDaysRemaining}d remaining). You cannot purchase another pass until it expires.`);
+      return;
+    }
+
+    setIsProcessingBoost(true);
+
+    const boostPlan = buyingBoostPlan;
+    const planPrice = Number(boostPlan.price) || 0;
+    const boostTxnId = `BOOST-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    const applyBoostActivation = async () => {
+      const nowIso = new Date().toISOString();
+      const expiryIso = new Date(Date.now() + boostPlan.days * 86400000).toISOString();
+
+      const updatedBoostSettings = {
+        popularBoostUntil: expiryIso,
+        popularBoostPlanId: boostPlan.id,
+        popularBoostPlanName: boostPlan.name,
+        popularBoostPlanPrice: planPrice,
+        popularBoostDays: boostPlan.days,
+        popularBoostActivatedAt: nowIso,
+      };
+
+      const invoiceId = `INV-BOOST-${Math.floor(100000 + Math.random() * 900000)}`;
+      const newInvoice: PlatformInvoice = {
+        id: invoiceId,
+        ownerId: effectiveOwnerId,
+        ownerName: user?.displayName || userFromState?.displayName || 'Property Owner',
+        ownerEmail: user?.email || userFromState?.email || 'owner@propithub.com',
+        planId: boostPlan.id,
+        planName: `Spotlight Pass: ${boostPlan.name} (${boostPlan.days} Days · All Available Listings)`,
+        periodStart: nowIso,
+        periodEnd: expiryIso,
+        amount: planPrice,
+        tax: 0,
+        total: planPrice,
+        billingCycle: 'monthly',
+        currency: 'USD',
+        status: 'paid',
+        issueDate: nowIso,
+        dueDate: nowIso,
+        paidAt: nowIso,
+        paymentMethod: boostGateway.toUpperCase(),
+        transactionRef: boostTxnId,
+        notes: `Popular Listing Spotlight Pass (${boostPlan.days} Days) featuring all vacant/available listings`,
+      };
+
+      const updatedUnits: any[] = [];
+
+      updateState((prev) => {
+        const nextOwnerSettings = { ...prev.ownerSettings };
+        if (effectiveOwnerId) {
+          nextOwnerSettings[effectiveOwnerId] = {
+            ...(nextOwnerSettings[effectiveOwnerId] || {}),
+            ...updatedBoostSettings,
+          } as OwnerSettings;
+        }
+
+        const nextUnits = prev.units.map((u) => {
+          if ((u.ownerId === effectiveOwnerId || !u.ownerId) && (u.status === 'vacant' || u.isListedPublicly)) {
+            const up = {
+              ...u,
+              isPopular: true,
+              isListedPublicly: true,
+              popularUntil: expiryIso,
+              popularActivatedAt: nowIso,
+              popularDaysApplied: (u.popularDaysApplied || 0) + boostPlan.days,
+              popularPlanId: boostPlan.id,
+              popularPlanPrice: boostPlan.price,
+            };
+            updatedUnits.push(up);
+            return up;
+          }
+          return u;
+        });
+
+        return {
+          ...prev,
+          ownerSettings: nextOwnerSettings,
+          units: nextUnits,
+          platformInvoices: [newInvoice, ...(prev.platformInvoices || [])],
+        };
+      });
+
+      if (isFirebaseConfigured && effectiveOwnerId) {
+        setDoc(
+          doc(db, 'owners', effectiveOwnerId),
+          { ...updatedBoostSettings },
+          { merge: true }
+        ).catch(console.warn);
+
+        setDoc(doc(db, 'platformInvoices', newInvoice.id), newInvoice, { merge: true }).catch(console.warn);
+
+        for (const u of updatedUnits) {
+          setDoc(doc(db, 'units', u.id), u, { merge: true }).catch(console.warn);
+        }
+      }
+
+      // Receipt email
+      if (user?.email) {
+        dispatchSubscriptionReceiptEmail({
+          invoice: newInvoice,
+          ownerEmail: user.email,
+          ownerName: user.displayName || 'Property Owner',
+          ownerId: effectiveOwnerId,
+          planName: `Spotlight Pass: ${boostPlan.name} (${boostPlan.days} Days)`,
+          billingCycle: 'monthly',
+          amount: planPrice,
+          transactionId: boostTxnId,
+          paymentMethod: boostGateway.toUpperCase(),
+          currencySymbol: '$',
+        }).catch(console.warn);
+      }
+
+      showToast(`✓ "${boostPlan.name}" activated! All your available listings are now Popular on /homes for ${boostPlan.days} days.`);
+      setIsProcessingBoost(false);
+      setBuyingBoostPlan(null);
+    };
+
+    if (planPrice === 0) {
+      await applyBoostActivation();
+      return;
+    }
+
+    // Easebuzz
+    if (boostGateway === 'easebuzz') {
+      const ebKey = state.platformGateways.easebuzz?.merchantKey || '';
+      const ebSalt = state.platformGateways.easebuzz?.salt || '';
+      if (!ebKey || !ebSalt) {
+        await applyBoostActivation();
+        return;
+      }
+      await launchEasebuzzPayment({
+        merchantKey: ebKey,
+        salt: ebSalt,
+        subMerchantId: state.platformGateways.easebuzz?.subMerchantId,
+        amount: Math.round(convert(planPrice, 'USD', 'INR')),
+        currency: 'INR',
+        name: `Propithub Boost: ${boostPlan.name}`,
+        description: `${boostPlan.days}-Day Popular Listing Spotlight`,
+        paymentRecordId: boostTxnId,
+        customerName: user?.displayName || userFromState?.displayName || 'Property Owner',
+        customerEmail: user?.email || userFromState?.email || 'billing@propithub.com',
+        customerPhone: user?.phone || '9876543210',
+        onSuccess: () => {
+          applyBoostActivation();
+        },
+        onError: (err) => {
+          setIsProcessingBoost(false);
+          showToast(`Easebuzz payment notice: ${err}`);
+        },
+      });
+      return;
+    }
+
+    // Razorpay
+    if (boostGateway === 'razorpay') {
+      const rzpKey = state.platformGateways.razorpay?.keyId || '';
+      if (!rzpKey) {
+        await applyBoostActivation();
+        return;
+      }
+      await launchRazorpayPayment({
+        keyId: rzpKey,
+        amount: Math.round(convert(planPrice, 'USD', 'INR')),
+        currency: 'INR',
+        name: `Propithub Boost: ${boostPlan.name}`,
+        description: `${boostPlan.days}-Day Popular Listing Spotlight`,
+        paymentRecordId: boostTxnId,
+        customerName: user?.displayName || 'Owner',
+        customerEmail: user?.email || '',
+        customerPhone: user?.phone || '',
+        role: 'owner',
+        ownerId: effectiveOwnerId,
+        planId: boostPlan.id,
+        billingCycle: 'monthly',
+        onSuccess: () => {
+          applyBoostActivation();
+        },
+        onError: (err) => {
+          setIsProcessingBoost(false);
+          showToast(`Razorpay checkout: ${err}`);
+        },
+      });
+      return;
+    }
+
+    // Stripe
+    if (boostGateway === 'stripe') {
+      const stripePub = state.platformGateways.stripe?.pubKey || '';
+      if (!stripePub) {
+        await applyBoostActivation();
+        return;
+      }
+      await launchStripePayment({
+        publishableKey: stripePub,
+        amount: planPrice,
+        currency: 'usd',
+        paymentRecordId: boostTxnId,
+        customerName: user?.displayName || 'Owner',
+        customerEmail: user?.email || '',
+        role: 'owner',
+        ownerId: effectiveOwnerId,
+        onSuccess: () => {
+          applyBoostActivation();
+        },
+        onError: (err) => {
+          setIsProcessingBoost(false);
+          showToast(`Stripe checkout: ${err}`);
+        },
+      });
+      return;
+    }
+
+    // PayPal
+    if (boostGateway === 'paypal') {
+      const paypalClientId = state.platformGateways.paypal?.clientId || '';
+      if (!paypalClientId) {
+        await applyBoostActivation();
+        return;
+      }
+      await launchPayPalPayment({
+        clientId: paypalClientId,
+        amount: planPrice,
+        currency: 'USD',
+        name: `Propithub Boost: ${boostPlan.name}`,
+        description: `${boostPlan.days}-Day Popular Listing Spotlight`,
+        paymentRecordId: boostTxnId,
+        customerEmail: user?.email || '',
+        onSuccess: () => {
+          applyBoostActivation();
+        },
+        onError: (err) => {
+          setIsProcessingBoost(false);
+          showToast(`PayPal checkout: ${err}`);
+        },
+      });
+      return;
+    }
+
+    // Fallback simulation
+    await applyBoostActivation();
+  };
+
   return (
     <div>
       <div className={selectedPlatformInvoice ? 'no-print' : ''}>
@@ -819,213 +1097,7 @@ export const PlanSubscriptionPage: React.FC = () => {
         </div>
       )}
 
-      {/* Current Plan Overview Card */}
-      <div className="panel">
-        <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <h3 style={{ margin: 0 }}>Your plan: {isTrial ? 'Free Trial' : (currentPlan?.name || currentPlanName || 'Starter')}</h3>
-            {isExpired ? (
-              <span className="badge amber">{dynamicTrialDays === 0 ? 'Subscription Required' : 'Trial Expired'}</span>
-            ) : isTrial ? (
-              <span className="badge green">
-                Free Trial ({daysLeft} {daysLeft === 1 ? 'day' : 'days'} remaining)
-              </span>
-            ) : (
-              <span className="badge green">Active Subscription</span>
-            )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '18px', fontWeight: 800, color: 'var(--ink)' }}>
-              {isTrial ? '$0' : `$${currentPlan?.price || 79}`}
-            </span>
-            <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-              {isTrial ? 'during trial' : '/month'}
-            </span>
-            <CurrencyConverterTrigger amount={isTrial ? 0 : (currentPlan?.price || 79)} currency="USD" label="Convert" />
-          </div>
-        </div>
-        <div className="panel-body">
-          <div className="plan-dashboard-grid">
-            {/* Left Column: Plan Terms & Billing Status */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 }}>
-              <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>
-                Subscription &amp; Billing Details
-              </div>
-
-              <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
-                <span className="k" style={{ color: 'var(--ink-soft)' }}>Current Tier</span>
-                <span style={{ fontWeight: 600, textAlign: 'right', wordBreak: 'break-word' }}>{isTrial ? 'Free Trial' : (currentPlan?.name || currentPlanName || 'Starter')}</span>
-              </div>
-
-              <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
-                <span className="k" style={{ color: 'var(--ink-soft)' }}>Base Price</span>
-                <span style={{ fontWeight: 600, textAlign: 'right', wordBreak: 'break-word' }}>
-                  {isTrial ? '$0 (Trial)' : `$${currentPlan?.price || 79}/month`}
-                </span>
-              </div>
-
-              <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
-                <span className="k" style={{ color: 'var(--ink-soft)' }}>Billing Cycle</span>
-                <span style={{ textTransform: 'capitalize', fontWeight: 600, textAlign: 'right', wordBreak: 'break-word' }}>
-                  {isTrial && !ownerSettings?.subscriptionMandate?.autoRenew
-                    ? `Trial Period (${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} remaining)`
-                    : `${ownerSettings?.billingCycle || 'Monthly'} (${ownerSettings?.cancelsAtPeriodEnd ? 'Cancels at end of period' : 'Auto-renewing'})`}
-                </span>
-              </div>
-
-              {ownerSettings?.subscriptionEndsAt && (
-                <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
-                  <span className="k" style={{ color: 'var(--ink-soft)' }}>Period End / Renewal</span>
-                  <span style={{ fontWeight: 600, color: 'var(--ink)', textAlign: 'right', wordBreak: 'break-word' }}>
-                    {new Date(ownerSettings.subscriptionEndsAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                  </span>
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', marginTop: '12px' }}>
-                <button
-                  type="button"
-                  className="btn brass btn-mobile-full"
-                  onClick={() => {
-                    const commPlans = state.plans.filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial');
-                    setSelectedPlanName(currentPlan?.isTrialOnly ? (commPlans[0]?.name || 'Growth') : (currentPlan?.name || 'Growth'));
-                    setIsChangeModalOpen(true);
-                  }}
-                >
-                  Change plan
-                </button>
-                {!isTrial && ownerSettings?.planStatus === 'active' && (
-                  <button
-                    type="button"
-                    className={`btn btn-mobile-full ${ownerSettings?.cancelsAtPeriodEnd ? 'secondary' : 'danger-soft'}`}
-                    style={{ fontSize: '13px' }}
-                    onClick={handleToggleAutoRenew}
-                  >
-                    {ownerSettings?.cancelsAtPeriodEnd ? 'Reactivate Auto-Renew' : 'Cancel Subscription (Do Not Renew)'}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Right Column: Quota & Capacity Utilization Gauges */}
-            <div className="plan-quota-box">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Resource Quota &amp; Usage
-                </div>
-                <span className="badge grey" style={{ fontSize: '11px' }}>Live Capacity</span>
-              </div>
-
-              {/* Properties Gauge */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '4px' }}>
-                  <span style={{ color: 'var(--ink-soft)' }}>Properties</span>
-                  <span style={{ fontWeight: 600 }}>
-                    {propertiesUsed} / {currentPlan?.properties >= 999 ? 'Unlimited' : currentPlan?.properties}
-                  </span>
-                </div>
-                <div style={{ width: '100%', height: '7px', background: 'var(--line)', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${currentPlan?.properties >= 999 ? Math.min(100, propertiesUsed * 10) : Math.min(100, (propertiesUsed / Math.max(1, currentPlan?.properties || 1)) * 100)}%`,
-                      background: 'var(--teal-primary)',
-                      borderRadius: '999px',
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Units Gauge */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '4px' }}>
-                  <span style={{ color: 'var(--ink-soft)' }}>Units</span>
-                  <span style={{ fontWeight: 600 }}>
-                    {unitsUsed} / {currentPlan?.units >= 9999 ? 'Unlimited' : currentPlan?.units}
-                  </span>
-                </div>
-                <div style={{ width: '100%', height: '7px', background: 'var(--line)', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${currentPlan?.units >= 9999 ? Math.min(100, unitsUsed * 5) : Math.min(100, (unitsUsed / Math.max(1, currentPlan?.units || 1)) * 100)}%`,
-                      background: 'var(--teal-primary)',
-                      borderRadius: '999px',
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Tenants Gauge */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '4px' }}>
-                  <span style={{ color: 'var(--ink-soft)' }}>Tenants</span>
-                  <span style={{ fontWeight: 600 }}>
-                    {tenantsUsed} / {currentPlan?.tenants >= 9999 ? 'Unlimited' : currentPlan?.tenants}
-                  </span>
-                </div>
-                <div style={{ width: '100%', height: '7px', background: 'var(--line)', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${currentPlan?.tenants >= 9999 ? Math.min(100, tenantsUsed * 5) : Math.min(100, (tenantsUsed / Math.max(1, currentPlan?.tenants || 1)) * 100)}%`,
-                      background: 'var(--teal-primary)',
-                      borderRadius: '999px',
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Managers Gauge */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '4px' }}>
-                  <span style={{ color: 'var(--ink-soft)' }}>Managers</span>
-                  <span style={{ fontWeight: 600 }}>
-                    {managersUsed} / {currentPlan?.managers ?? 0}
-                  </span>
-                </div>
-                <div style={{ width: '100%', height: '7px', background: 'var(--line)', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${(currentPlan?.managers ?? 0) === 0 ? 0 : Math.min(100, (managersUsed / Math.max(1, currentPlan?.managers ?? 1)) * 100)}%`,
-                      background: 'var(--amber)',
-                      borderRadius: '999px',
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Staff Gauge */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '4px' }}>
-                  <span style={{ color: 'var(--ink-soft)' }}>Staff Techs</span>
-                  <span style={{ fontWeight: 600 }}>
-                    {staffUsed} / {currentPlan?.staff ?? 0}
-                  </span>
-                </div>
-                <div style={{ width: '100%', height: '7px', background: 'var(--line)', borderRadius: '999px', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${(currentPlan?.staff ?? 0) === 0 ? 0 : Math.min(100, (staffUsed / Math.max(1, currentPlan?.staff ?? 1)) * 100)}%`,
-                      background: 'var(--amber)',
-                      borderRadius: '999px',
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Autopay & Subscription Mandate Card */}
+      {/* 2-Column Dashboard: Your Plan (Left) + Autopay & Mandate (Right) */}
       {(() => {
         const activeMandate = ownerSettings?.subscriptionMandate;
         const hasMandate = Boolean(activeMandate?.mandateId || (activeMandate?.status === 'active' && activeMandate?.activeGateway));
@@ -1044,110 +1116,150 @@ export const PlanSubscriptionPage: React.FC = () => {
             })
           : null;
 
-        // Dynamic base commercial plan configured by admin in Plans database
-        const commercialPlans = state.plans
-          .filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial')
-          .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
-
-        const baseCommercialPlan = commercialPlans.find(
-          (p) =>
-            (ownerSettings?.planId && p.id.toLowerCase() === ownerSettings.planId.toLowerCase() && p.id !== 'free_trial') ||
-            (ownerSettings?.planName && p.name.toLowerCase() === ownerSettings.planName.toLowerCase() && !p.name.toLowerCase().includes('trial'))
-        ) || commercialPlans[0] || { name: 'Starter', price: 29 };
-
         return (
-          <div className="panel" style={{ marginTop: '20px', marginBottom: '24px' }}>
-            <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '20px' }}>🔄</span>
-                <div>
-                  <h3 style={{ margin: 0 }}>Subscription Autopay &amp; Billing Mandate</h3>
-                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                    Single active mandate across all payment gateways — zero double-billing guarantee
-                  </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))', gap: '20px', marginBottom: '24px', alignItems: 'stretch' }}>
+            {/* Left Card: Your Plan */}
+            <div className="panel" style={{ margin: 0, display: 'flex', flexDirection: 'column' }}>
+              <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <h3 style={{ margin: 0 }}>Your plan: {isTrial ? 'Trial' : (currentPlan?.name || currentPlanName || 'Starter')}</h3>
+                  {isExpired ? (
+                    <span className="badge amber">{dynamicTrialDays === 0 ? 'Subscription Required' : 'Trial Expired'}</span>
+                  ) : isTrial ? (
+                    <span className="badge amber">
+                      Trial {trialEnds ? `(ends ${new Date(trialEnds).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })})` : `(${daysLeft}d left)`}
+                    </span>
+                  ) : (
+                    <span className="badge green">Active Subscription</span>
+                  )}
                 </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {isAutopayActive ? (
-                  <span className="badge green" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#22c55e' }}></span>
-                    Autopay Active
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                  <span style={{ fontSize: '20px', fontWeight: 800, color: 'var(--ink)' }}>
+                    {isTrial ? '$0' : `$${currentPlan?.price || 79}`}
                   </span>
-                ) : (
-                  <span className="badge amber">Autopay Disabled</span>
-                )}
+                  <span style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
+                    {isTrial ? '/mo (Free Trial)' : '/mo'}
+                  </span>
+                </div>
               </div>
-            </div>
-            <div className="panel-body">
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '16px', alignItems: 'center' }}>
-                {/* Active Gateway */}
-                <div style={{ background: 'var(--surface-sunken)', padding: '16px', borderRadius: '8px', border: '1px solid var(--line)' }}>
-                  <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--ink-soft)', fontWeight: 700, marginBottom: '8px' }}>
-                    Active Billing Gateway
+
+              <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', flex: 1 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+                    <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Billing Cycle</span>
+                    <span style={{ fontWeight: 600, fontSize: '13.5px', textTransform: 'capitalize' }}>
+                      {isTrial
+                        ? `Trial Period (${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} remaining)`
+                        : (ownerSettings?.billingCycle || 'Monthly')}
+                    </span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <span style={{ fontSize: '28px' }}>{hasMandate && currentGatewayInfo ? currentGatewayInfo.icon : '💳'}</span>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--ink)' }}>
-                        {hasMandate && currentGatewayInfo ? currentGatewayInfo.name : 'None'}
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                        {hasMandate && activeMandate?.mandateId ? `Mandate Ref: ${activeMandate.mandateId}` : 'No payment method or mandate attached'}
-                      </div>
-                    </div>
+
+                  <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+                    <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>
+                      {isTrial ? 'Trial End Date' : ownerSettings?.cancelsAtPeriodEnd ? 'Period End Date' : 'Renews On'}
+                    </span>
+                    <span style={{ fontWeight: 600, fontSize: '13.5px', color: 'var(--ink)' }}>
+                      {isTrial && trialEnds
+                        ? new Date(trialEnds).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                        : ownerSettings?.subscriptionEndsAt
+                        ? new Date(ownerSettings.subscriptionEndsAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                        : trialEnds
+                        ? new Date(trialEnds).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                        : 'Active'}
+                    </span>
+                  </div>
+
+                  <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0' }}>
+                    <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Renewal Status</span>
+                    <span style={{ fontWeight: 600, fontSize: '13px', color: isTrial ? 'var(--ink-soft)' : isAutopayActive ? '#10B981' : 'var(--ink-soft)' }}>
+                      {isTrial
+                        ? 'Requires subscription when trial ends'
+                        : isAutopayActive
+                        ? 'Renews automatically'
+                        : 'Manual renewal required'}
+                    </span>
                   </div>
                 </div>
 
-                {/* Scheduled Renewal */}
-                <div style={{ background: 'var(--surface-sunken)', padding: '16px', borderRadius: '8px', border: '1px solid var(--line)' }}>
-                  <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--ink-soft)', fontWeight: 700, marginBottom: '8px' }}>
-                    {isTrial ? 'Trial Transition Terms' : 'Next Scheduled Billing'}
-                  </div>
-                  <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--ink)' }}>
-                    {isTrial
-                      ? `Base Plan (${baseCommercialPlan.name} @ $${baseCommercialPlan.price}/mo)`
-                      : `${currentPlan?.name || 'Starter'} (${ownerSettings?.billingCycle === 'annual' ? 'Annual' : 'Monthly'})`}
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                    {ownerSettings?.subscriptionEndsAt
-                      ? `Scheduled on ${new Date(ownerSettings.subscriptionEndsAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}`
-                      : trialEnds
-                      ? (isAutopayActive
-                          ? `Auto-bills upon trial expiry (${new Date(trialEnds).toLocaleDateString()})`
-                          : `Trial ends on ${new Date(trialEnds).toLocaleDateString()} (Manual renewal required)`)
-                      : 'On billing cycle end'}
-                  </div>
-                </div>
-
-                {/* Controls */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '220px' }}>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', marginTop: '16px', paddingTop: '14px', borderTop: '1px solid var(--line)' }}>
                   <button
                     type="button"
-                    className="btn brass"
+                    className="btn brass btn-mobile-full"
                     onClick={() => {
-                      setSelectedNewGateway((currentGatewayKey as any) || 'stripe');
-                      setIsChangePaymentMethodOpen(true);
+                      const commPlans = state.plans.filter((p) => !p.isArchived && !p.isTrialOnly && p.id !== 'free_trial');
+                      setSelectedPlanName(currentPlan?.isTrialOnly ? (commPlans[0]?.name || 'Growth') : (currentPlan?.name || 'Growth'));
+                      setIsChangeModalOpen(true);
                     }}
                   >
-                    {hasMandate ? 'Change Payment Method' : 'Set Up Autopay / Add Card'}
+                    Change plan
                   </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Right Card: Payment & Autopay */}
+            <div className="panel" style={{ margin: 0, display: 'flex', flexDirection: 'column' }}>
+              <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '18px' }}>💳</span>
+                  <h3 style={{ margin: 0 }}>Payment &amp; Autopay</h3>
+                </div>
+                <div>
+                  {isAutopayActive ? (
+                    <span className="badge green" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#22c55e' }}></span>
+                      Autopay On
+                    </span>
+                  ) : (
+                    <span className="badge amber">Autopay Off</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', flex: 1 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+                    <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Payment Method</span>
+                    <span style={{ fontWeight: 600, fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      {hasMandate && currentGatewayInfo ? (
+                        <>
+                          <span>{currentGatewayInfo.icon}</span>
+                          <span>{currentGatewayInfo.name}</span>
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--ink-soft)', fontWeight: 400 }}>No payment method on file</span>
+                      )}
+                    </span>
+                  </div>
+
+                  {hasMandate && activeMandate?.mandateId && (
+                    <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+                      <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Mandate ID</span>
+                      <code style={{ fontSize: '11.5px', background: 'var(--surface-sunken)', padding: '2px 6px', borderRadius: '4px' }}>
+                        {activeMandate.mandateId}
+                      </code>
+                    </div>
+                  )}
+
+                  {/* Auto-renew toggle switch */}
                   <div
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      padding: '8px 12px',
+                      padding: '10px 14px',
                       borderRadius: '8px',
                       background: 'var(--surface-sunken)',
                       border: '1px solid var(--line)',
+                      marginTop: '8px',
                     }}
                   >
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--ink)' }}>
-                        Auto-Renew Plan
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
+                        Auto-Renew Subscription
                       </span>
-                      <span style={{ fontSize: '11px', color: isAutopayActive ? '#10B981' : 'var(--ink-soft)', fontWeight: isAutopayActive ? 600 : 400 }}>
-                        {isAutopayActive ? 'Enabled' : 'Disabled'}
+                      <span style={{ fontSize: '11.5px', color: isAutopayActive ? '#10B981' : 'var(--ink-soft)', fontWeight: isAutopayActive ? 600 : 400 }}>
+                        {isAutopayActive ? 'Recurring billing enabled' : hasMandate ? 'Manual renewal required' : 'Set up payment method to enable'}
                       </span>
                     </div>
                     <label
@@ -1166,6 +1278,20 @@ export const PlanSubscriptionPage: React.FC = () => {
                       <span className="track" />
                     </label>
                   </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', marginTop: '16px', paddingTop: '14px', borderTop: '1px solid var(--line)' }}>
+                  <button
+                    type="button"
+                    className="btn secondary btn-mobile-full"
+                    onClick={() => {
+                      setSelectedNewGateway((currentGatewayKey as any) || 'stripe');
+                      setIsChangePaymentMethodOpen(true);
+                    }}
+                    style={{ fontSize: '13px' }}
+                  >
+                    {hasMandate ? 'Change Payment Method' : 'Add Payment Method'}
+                  </button>
                 </div>
               </div>
             </div>
@@ -1228,6 +1354,134 @@ export const PlanSubscriptionPage: React.FC = () => {
         ))}
       </div>
 
+      {/* Popular Listing Boost Plans (Standalone Small Cards - Price & Duration) */}
+      <div className="section-title" style={{ marginTop: '36px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <span>🔥 Popular Listing Boost Plans</span>
+      </div>
+      <p className="hint" style={{ marginTop: '-8px', marginBottom: '16px', color: 'var(--ink-soft)', fontSize: '13px' }}>
+        Promote your vacant listings to the top of <b>/homes</b> and the public landing page with a verified <b>🔥 Popular</b> badge.
+      </p>
+
+      {/* Active Spotlight Pass Banner */}
+      {isBoostPassActive && (
+        <div
+          style={{
+            padding: '14px 18px',
+            background: 'rgba(245, 158, 11, 0.1)',
+            border: '1.5px solid rgba(245, 158, 11, 0.45)',
+            borderRadius: '10px',
+            marginBottom: '18px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 800, color: '#b45309', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>🔥</span> Spotlight Pass Currently Active ({ownerSettings?.popularBoostPlanName || 'Active Pass'})
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--ink)', marginTop: '2px' }}>
+              All your available listings are featured at the top of <b>/homes</b> and the landing page until{' '}
+              <b>{new Date(ownerSettings!.popularBoostUntil!).toLocaleDateString()}</b> ({boostPassDaysRemaining} {boostPassDaysRemaining === 1 ? 'day' : 'days'} remaining).
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
+              You can toggle individual listings ON or OFF anytime in your <b>Properties</b> tab. Repurchase is locked until this pass expires.
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn secondary small"
+            onClick={() => navigate('/owner/properties')}
+            style={{ fontWeight: 700 }}
+          >
+            Manage Listings
+          </button>
+        </div>
+      )}
+
+      <div
+        className="grid"
+        style={{
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
+          width: '100%',
+          marginBottom: '28px',
+        }}
+      >
+        {(state.boostPlans && state.boostPlans.length > 0 ? state.boostPlans : DEFAULT_BOOST_PLANS)
+          .filter((bp) => bp.isActive !== false)
+          .map((bp) => (
+            <div
+              key={bp.id}
+              className="panel"
+              style={{
+                border: bp.isPopular ? '2px solid rgba(245, 158, 11, 0.7)' : '1px solid var(--line)',
+                borderRadius: '12px',
+                padding: '20px 22px',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                position: 'relative',
+                boxShadow: bp.isPopular ? '0 4px 14px rgba(245, 158, 11, 0.12)' : 'none',
+                minWidth: 0,
+              }}
+            >
+              {bp.isPopular && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '-9px',
+                    right: '16px',
+                    background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                    color: '#ffffff',
+                    fontSize: '10px',
+                    fontWeight: 800,
+                    padding: '2px 10px',
+                    borderRadius: '999px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  Most Popular
+                </div>
+              )}
+
+              <div>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)', marginBottom: '8px' }}>
+                  {bp.name}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '28px', fontWeight: 800, color: 'var(--ink)', letterSpacing: '-0.02em' }}>
+                    ${bp.price}
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 600 }}>USD</span>
+                </div>
+
+                <div style={{ fontSize: '13px', fontWeight: 700, color: bp.isPopular ? '#d97706' : 'var(--ink-soft)' }}>
+                  ⏱ {bp.days} Days Duration
+                </div>
+              </div>
+
+              <div style={{ marginTop: '16px' }}>
+                <button
+                  type="button"
+                  className={`btn ${bp.isPopular ? 'brass' : 'secondary'}`}
+                  style={{ width: '100%', fontSize: '13px', fontWeight: 700, padding: '8px 14px' }}
+                  disabled={isBoostPassActive}
+                  onClick={() => {
+                    setBuyingBoostPlan(bp);
+                    setBoostGateway(selectedBillingGateway || 'stripe');
+                  }}
+                >
+                  {isBoostPassActive ? `Pass Active (${boostPassDaysRemaining}d left)` : 'Buy'}
+                </button>
+              </div>
+            </div>
+          ))}
+      </div>
+
       {/* Billing History & Platform Invoices (Admin <-> Owner) */}
       <div className="section-title" style={{ marginTop: '32px' }}>
         Billing History & Official Platform Invoices
@@ -1235,8 +1489,7 @@ export const PlanSubscriptionPage: React.FC = () => {
       <div className="panel">
         <div className="panel-head">
           <div>
-            <h3>Propithub SaaS Subscription Receipts</h3>
-            <div className="hint">Invoices issued to your account for platform hosting and plan subscriptions</div>
+            <h3>Subscription Receipts</h3>
           </div>
         </div>
         <div className="panel-body">
@@ -1248,7 +1501,7 @@ export const PlanSubscriptionPage: React.FC = () => {
                     <th>Invoice ID</th>
                     <th>Subscription Plan</th>
                     <th>Billing Period</th>
-                    <th>Total Amount</th>
+                    <th>{getTableCurrencyHeader('Total Amount', viewCurrency)}</th>
                     <th>Status</th>
                     <th>Issue / Settlement Date</th>
                     <th>Action</th>
@@ -1285,7 +1538,7 @@ export const PlanSubscriptionPage: React.FC = () => {
                           </td>
                           <td>{period}</td>
                           <td>
-                            <b>${inv.total.toFixed(2)}</b>
+                            <b><CurrencyAmount amount={inv.total} currency={inv.currency || 'USD'} /></b>
                           </td>
                           <td>
                             <span className={`badge ${isPaid ? 'green' : 'amber'}`}>
@@ -1354,7 +1607,9 @@ export const PlanSubscriptionPage: React.FC = () => {
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderTop: '1px solid var(--line)', fontSize: '12.5px' }}>
                       <span style={{ color: 'var(--ink-soft)' }}>Total Amount</span>
-                      <b style={{ fontSize: '14px', color: 'var(--ledger)' }}>${inv.total.toFixed(2)}</b>
+                      <b style={{ fontSize: '14px', color: 'var(--ledger)' }}>
+                        <CurrencyAmount amount={inv.total} currency={inv.currency || 'USD'} />
+                      </b>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderTop: '1px solid var(--line)', fontSize: '12px' }}>
@@ -2230,6 +2485,147 @@ export const PlanSubscriptionPage: React.FC = () => {
                 }}
               >
                 {isProcessing ? 'Authorizing...' : 'Authorize'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Buy Boost Plan Modal (Same checkout flow as subscription plan) */}
+      {buyingBoostPlan && (
+        <div className="modal-backdrop" onClick={() => !isProcessingBoost && setBuyingBoostPlan(null)}>
+          <div className="modal-card" style={{ maxWidth: '520px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '20px' }}>🔥</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '17px' }}>Buy Boost Plan: {buyingBoostPlan.name}</h3>
+                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
+                    {buyingBoostPlan.days} Days Guaranteed Top Placement on /homes
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn secondary small"
+                disabled={isProcessingBoost}
+                onClick={() => setBuyingBoostPlan(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {/* Order Summary Box */}
+              <div
+                style={{
+                  padding: '14px 16px',
+                  background: 'var(--surface-sunken)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '10px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--ink-soft)', fontWeight: 700 }}>
+                    Selected Boost Package
+                  </div>
+                  <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--ink)', marginTop: '2px' }}>
+                    {buyingBoostPlan.name}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#d97706', fontWeight: 600 }}>
+                    ⏱ {buyingBoostPlan.days} Days Spotlight
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '24px', fontWeight: 800, color: 'var(--ink)' }}>
+                    ${buyingBoostPlan.price}
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>USD One-Time</div>
+                </div>
+              </div>
+
+              {/* All-Listings Spotlight Feature Information */}
+              <div
+                style={{
+                  padding: '14px 16px',
+                  background: 'rgba(16, 185, 129, 0.08)',
+                  border: '1px solid rgba(16, 185, 129, 0.25)',
+                  borderRadius: '10px',
+                  display: 'flex',
+                  gap: '12px',
+                  alignItems: 'flex-start',
+                }}
+              >
+                <span style={{ fontSize: '22px', lineHeight: 1 }}>🔥</span>
+                <div>
+                  <div style={{ fontSize: '13.5px', fontWeight: 800, color: 'var(--ink)' }}>
+                    Boosts All Your Available Listings Simultaneously
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '4px', lineHeight: 1.5 }}>
+                    All of your vacant and publicly listed properties will immediately receive the verified <b>🔥 Popular</b> badge and move to the top of <b>/homes</b> and the public landing page for <b>{buyingBoostPlan.days} days</b>.
+                  </div>
+                  <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '6px' }}>
+                    💡 <i>You can also individually toggle any listing ON or OFF anytime during the {buyingBoostPlan.days} days from your Properties dashboard.</i>
+                  </div>
+                </div>
+              </div>
+
+              {/* Billing Gateway Selector */}
+              <div className="field" style={{ margin: 0 }}>
+                <label style={{ fontSize: '12px', fontWeight: 700, display: 'block', marginBottom: '6px' }}>
+                  Select Billing Gateway
+                </label>
+                <select
+                  value={boostGateway}
+                  onChange={(e) => setBoostGateway(e.target.value as any)}
+                  style={{ fontWeight: 600, fontSize: '13px' }}
+                >
+                  {availableBillingGateways.map((gw) => (
+                    <option key={gw.key} value={gw.key}>
+                      {gw.name} — ${buyingBoostPlan.price} USD
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ fontSize: '12px', color: 'var(--ink-soft)', lineHeight: 1.5 }}>
+                Official platform invoice and payment receipt will be generated automatically and recorded to your billing history.
+              </div>
+            </div>
+
+            <div
+              className="modal-foot"
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '8px',
+                padding: '16px 20px',
+                borderTop: '1px solid var(--line)',
+                flexWrap: 'wrap',
+              }}
+            >
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={isProcessingBoost}
+                onClick={() => setBuyingBoostPlan(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn brass"
+                disabled={isProcessingBoost || isBoostPassActive}
+                onClick={handleConfirmBoostPurchase}
+              >
+                {isProcessingBoost
+                  ? 'Connecting to Gateway...'
+                  : isBoostPassActive
+                  ? `Pass Active (${boostPassDaysRemaining}d left · Locked)`
+                  : `Confirm & Pay ($${buyingBoostPlan.price} via ${(availableBillingGateways.find((g) => g.key === boostGateway)?.shortTitle || 'Gateway')})`}
               </button>
             </div>
           </div>

@@ -37,6 +37,7 @@ export const Spinner: React.FC<SpinnerProps> = ({
   return (
     <span
       className={`inline-flex items-center gap-2 align-middle leading-none ${className}`}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', lineHeight: 1 }}
       role="status"
       aria-live="polite"
       aria-label={label || 'Loading...'}
@@ -44,6 +45,7 @@ export const Spinner: React.FC<SpinnerProps> = ({
       <Loader2
         size={pixelSize}
         className={`animate-spin-fast ${variantClass} flex-shrink-0`}
+        style={{ flexShrink: 0 }}
       />
       {label && <span className="text-xs font-medium tracking-wide">{label}</span>}
     </span>
@@ -67,7 +69,10 @@ export const ButtonProcessing: React.FC<ButtonProcessingProps> = ({
 }) => {
   if (loading) {
     return (
-      <span className="inline-flex items-center justify-center gap-2" style={{ pointerEvents: 'none' }}>
+      <span
+        className="inline-flex items-center justify-center gap-2"
+        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px', pointerEvents: 'none' }}
+      >
         <Spinner size={spinnerSize} variant="current" />
         <span>{loadingText || 'Processing...'}</span>
       </span>
@@ -75,7 +80,10 @@ export const ButtonProcessing: React.FC<ButtonProcessingProps> = ({
   }
 
   return (
-    <span className="inline-flex items-center justify-center gap-2" style={{ pointerEvents: 'none' }}>
+    <span
+      className="inline-flex items-center justify-center gap-2"
+      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px', pointerEvents: 'none' }}
+    >
       {icon}
       <span>{defaultText}</span>
     </span>

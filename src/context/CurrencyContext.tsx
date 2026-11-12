@@ -56,9 +56,9 @@ const getInitialCurrencyForRole = (roleKey: string): string => {
       const legacy = localStorage.getItem(LEGACY_STORAGE_VIEW_CURRENCY);
       if (legacy) return legacy;
     }
-    return 'USD';
+    return 'LOCAL';
   } catch {
-    return 'USD';
+    return 'LOCAL';
   }
 };
 
@@ -103,6 +103,12 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setViewCurrencyState(clean);
       try {
         localStorage.setItem(roleKey, clean);
+        localStorage.setItem(LEGACY_STORAGE_VIEW_CURRENCY, clean);
+        localStorage.setItem('propithub_preferred_view_currency_tenant', clean);
+        localStorage.setItem('propithub_preferred_view_currency_owner', clean);
+        localStorage.setItem('propithub_preferred_view_currency_manager', clean);
+        localStorage.setItem('propithub_preferred_view_currency_staff', clean);
+        localStorage.setItem('propithub_mobile_view_currency_v1', clean);
       } catch (e) {
         console.warn('Failed to save preferred currency:', e);
       }

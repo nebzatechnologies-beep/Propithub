@@ -11,6 +11,7 @@ import { ButtonProcessing } from '../../components/common/Spinner';
 import { Wrench, Plus, UserPlus } from 'lucide-react';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 
 export const MaintenancePage: React.FC = () => {
   const { state, updateState, createOwnerMaintenanceTicket, saveTicket, saveStaff, deleteStaff, showToast } = useAppData();
@@ -391,7 +392,7 @@ export const MaintenancePage: React.FC = () => {
               <div className="panel" style={{ gridColumn: '1 / -1' }}>
                 <div className="panel-body" style={{ textAlign: 'center', padding: '40px 20px' }}>
                   <h3 style={{ marginBottom: '6px' }}>No maintenance staff onboarded</h3>
-                  <p className="hint" style={{ marginBottom: '0' }}>Click &quot;+ Onboard staff member&quot; above to add technicians to your portfolio (Allowance: {maxStaff} members).</p>
+
                 </div>
               </div>
             ) : (
@@ -667,7 +668,7 @@ export const MaintenancePage: React.FC = () => {
                         <th>Ticket</th>
                         <th>Staff</th>
                         <th>Payer</th>
-                        <th>Amount</th>
+                        <th>{getTableCurrencyHeader('Amount', viewCurrency)}</th>
                         <th>Method</th>
                         <th>Status</th>
                         <th>Action</th>
@@ -689,16 +690,10 @@ export const MaintenancePage: React.FC = () => {
                               <td>{t.assignedTo}</td>
                               <td style={{ textTransform: 'capitalize' }}>{t.payment.payer}</td>
                               <td>
-                                {t.payment?.amount ? `${resolveTicketCurrency(t)}${(t.payment.amount ?? 0).toLocaleString()}` : '—'}
-                              {t.payment?.amount && viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(resolveTicketCurrency(t)) && (
-                                <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '4px' }}>
-                                  (~{format(convert(t.payment.amount, resolveTicketCurrency(t), viewCurrency), viewCurrency)})
-                                </span>
-                              )}
-                                {t.payment?.amount && viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(resolveTicketCurrency(t)) && (
-                                  <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
-                                    ~{format(convert(t.payment.amount, resolveTicketCurrency(t), viewCurrency), viewCurrency)}
-                                  </span>
+                                {t.payment?.amount ? (
+                                  <CurrencyAmount amount={t.payment.amount} currency={resolveTicketCurrency(t)} />
+                                ) : (
+                                  '—'
                                 )}
                               </td>
                               <td>{t.payment.method || '—'}</td>
@@ -920,7 +915,7 @@ export const MaintenancePage: React.FC = () => {
               </div>
 
               <p className="hint">
-                This person will be available for tickets across all of your properties.
+
               </p>
             </div>
             <div className="modal-foot" style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: '8px', padding: '16px 20px', borderTop: '1px solid var(--line)' }}>
@@ -960,7 +955,7 @@ export const MaintenancePage: React.FC = () => {
                 </div>
                 <div>
                   <h3 style={{ margin: 0, fontSize: '16px' }}>Staff Credentials Ready</h3>
-                  <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Technician account provisioned</span>
+
                 </div>
               </div>
               <button type="button" className="btn secondary small" onClick={() => setStaffCredentialsModal(null)}>✕</button>
@@ -1250,7 +1245,7 @@ export const MaintenancePage: React.FC = () => {
                 </select>
               </div>
               <p className="hint">
-                This sends a confirmation request to {payingTicket.assignedTo} — they'll mark it received on their end.
+
               </p>
             </div>
             <div className="modal-foot" style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: '8px', padding: '16px 20px', borderTop: '1px solid var(--line)' }}>

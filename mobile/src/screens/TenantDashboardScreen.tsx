@@ -16,10 +16,12 @@ import {
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { Header } from '../components/Header';
 import { PropithubLogo, PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
+import { normalizeCurrencyCode } from '../lib/currencyService';
 import { useMobileToast } from '../context/MobileToastContext';
 import { useTenantActiveUnit, resolveInvoiceCurrency } from '../hooks/useTenantActiveUnit';
 import { useMobileTheme } from '../context/MobileThemeContext';
@@ -54,7 +56,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
     confirmRefundReceipt,
   } = useMobileAppData();
   const { user } = useMobileAuth();
-  const { format, viewCurrency, setViewCurrency } = useMobileCurrency();
+  const { format, viewCurrency, setViewCurrency, convert } = useMobileCurrency();
   const { showToast } = useMobileToast();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -84,6 +86,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
   const userEmail = (user?.email || '').toLowerCase().trim();
 
   // Modals & review state
+  const [showAllNeedsYou, setShowAllNeedsYou] = useState(false);
   const [reviewingRequest, setReviewingRequest] = useState<MobileTenancyRequest | null>(null);
   const [galleryFilter, setGalleryFilter] = useState<'all' | 'unit' | 'property' | 'amenity'>('all');
   const [galleryActiveIndex, setGalleryActiveIndex] = useState(0);
@@ -455,20 +458,37 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
       {/* StatusBar managed globally */}
       <ScreenStatusBar />
 
-      {/* Screen Header with Notification Count & Currency Trigger */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <PropithubLogo size={26} showText={true} />
-        </View>
+      {/* Unified Screen Header */}
+      <Header
+        title="Overview"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
-        <TourTarget id="tenant-topbar-actions" style={styles.headerActions}>
-          {/* Currency Trigger Pill */}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#10B981']}
+            tintColor="#10B981"
+          />
+        }
+      >
+        {/* Top Utility Strip: Currency Switcher + Unit Context */}
+        <TourTarget id="tenant-topbar-actions" style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <Text style={{ fontSize: 11, fontWeight: '700', color: colors.inkSoft, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            {activeProperty?.name ? `${activeProperty.name} • Unit ${activeUnit?.unitNumber || currentTenant.unit}` : 'Resident Workspace'}
+          </Text>
           <TouchableOpacity
             style={styles.currencyPill}
             onPress={() => {
               Alert.alert(
                 'Switch Display Currency',
-                `Current currency: ${viewCurrency}\nChoose currency for display conversions:`,
+                `Current currency: ${viewCurrency}`,
                 [
                   { text: 'USD ($)', onPress: () => setViewCurrency('USD') },
                   { text: 'EUR (€)', onPress: () => setViewCurrency('EUR') },
@@ -484,46 +504,9 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
             }}
             activeOpacity={0.8}
           >
-            <Text style={styles.currencyPillText}>{viewCurrency}</Text>
-          </TouchableOpacity>
-
-          {/* Notifications Bell */}
-          <TouchableOpacity
-            style={styles.notifBtn}
-            onPress={() => onNavigate?.('notifications_center')}
-            activeOpacity={0.8}
-          >
-            <Feather name="bell" size={18} color={colors.navy} />
-            {unreadNotifCount > 0 && (
-              <View style={styles.notifBadge}>
-                <Text style={styles.notifBadgeText}>{unreadNotifCount}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.roleBadge}
-            onPress={onProfilePress}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.roleBadgeText}>RESIDENT</Text>
+            <Text style={styles.currencyPillText}>{viewCurrency} ▾</Text>
           </TouchableOpacity>
         </TourTarget>
-      </View>
-
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={['#10B981']}
-            tintColor="#10B981"
-          />
-        }
-      >
         {/* Preserved Archive Banner for Decoupled Tenants */}
         {((currentTenant as any)?.status === 'unmanaged_archive' || (activeAgreement?.status as string) === 'unmanaged_archive') && (
           <View
@@ -551,325 +534,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
           </View>
         )}
 
-        {/* SECTION 0: Real-Time Action Center & Automated Reminder Hub (1-to-1 Web Parity) */}
-        {tenantReminders.length > 0 && (
-          <View style={styles.reminderHubBox}>
-            <View style={styles.reminderHubHead}>
-              <View style={styles.reminderHubTitleRow}>
-                <Feather name="bell" size={15} color="#D97706" />
-                <Text style={styles.reminderHubTitle}>Reminders ({tenantReminders.length})</Text>
-              </View>
-            </View>
-
-            <ScrollView
-              style={tenantReminders.length > 2 ? { maxHeight: 220 } : undefined}
-              nestedScrollEnabled={true}
-              showsVerticalScrollIndicator={tenantReminders.length > 2}
-            >
-              {tenantReminders.map((reminder) => {
-              const isUrgent = reminder.severity === 'urgent';
-              const isPositive = reminder.severity === 'positive';
-              const borderColor = isUrgent ? '#EF4444' : isPositive ? '#10B981' : '#F59E0B';
-              const iconColor = isUrgent ? '#EF4444' : isPositive ? '#10B981' : '#D97706';
-
-              return (
-                <View key={reminder.id} style={[styles.reminderItem, { borderLeftColor: borderColor }]}>
-                  <View style={styles.reminderItemHeader}>
-                    <Feather
-                      name={
-                        reminder.icon === 'alert-triangle'
-                          ? 'alert-triangle'
-                          : reminder.icon === 'clock'
-                            ? 'clock'
-                            : reminder.icon === 'calendar'
-                              ? 'calendar'
-                              : reminder.icon === 'credit-card'
-                                ? 'credit-card'
-                                : reminder.icon === 'tool'
-                                  ? 'tool'
-                                  : 'file-text'
-                      }
-                      size={15}
-                      color={iconColor}
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text style={[styles.reminderItemTitle, { color: isUrgent ? '#B91C1C' : colors.navy }]} numberOfLines={2}>
-                      {reminder.title}
-                    </Text>
-                  </View>
-
-                  <Text style={styles.reminderItemSub}>
-                    {reminder.description}
-                  </Text>
-
-                  <View style={styles.reminderActionRow}>
-                    <TouchableOpacity
-                      style={[
-                        styles.reminderActionBtn,
-                        isUrgent
-                          ? { backgroundColor: '#EF4444' }
-                          : isPositive
-                            ? { backgroundColor: '#10B981' }
-                            : { backgroundColor: '#059669' },
-                      ]}
-                      onPress={() => {
-                        if (reminder.actionType === 'modal' && incomingRequest) {
-                          setReviewingRequest(incomingRequest);
-                        } else if (reminder.actionScreen) {
-                          onNavigate?.(reminder.actionScreen);
-                        }
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={styles.reminderActionBtnText}>{reminder.actionLabel}</Text>
-                      <Feather name="chevron-right" size={13} color="#FFFFFF" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              );
-            })}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* SECTION: Actionable Cash Refund Handover Confirmation Banner (1-to-1 Web Parity) */}
-        {activeMoveOut?.cashRefundHandover?.status === 'pending_confirmation' && (
-          <View style={styles.cashBanner}>
-            <View style={styles.cashBannerHead}>
-              <View style={styles.cashBannerTag}>
-                <Text style={styles.cashBannerTagText}>⚡ Cash Handover</Text>
-              </View>
-            </View>
-            <Text style={styles.cashBannerTitle}>
-              {activeMoveOut.cashRefundHandover.claimedByName} reported handing you {format(activeMoveOut.cashRefundHandover.amount, activeMoveOut.cashRefundHandover.currency || viewCurrency)} in Cash
-            </Text>
-            <Text style={styles.cashBannerMeta}>
-              Date: {activeMoveOut.cashRefundHandover.handoverDate} • Unit: {activeMoveOut.unit}
-              {activeMoveOut.cashRefundHandover.handoverLocation ? ` • Location: ${activeMoveOut.cashRefundHandover.handoverLocation}` : ''}
-              {activeMoveOut.cashRefundHandover.notes ? `\n"${activeMoveOut.cashRefundHandover.notes}"` : ''}
-            </Text>
-            <View style={styles.cashBtnRow}>
-              <TouchableOpacity
-                style={styles.cashConfirmBtn}
-                onPress={() => {
-                  confirmCashClaim(activeMoveOut.id);
-                  Alert.alert('Cash Received ✓', 'Your deposit refund has been settled.');
-                }}
-                activeOpacity={0.85}
-              >
-                <Feather name="check" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
-                <Text style={styles.cashConfirmBtnText} numberOfLines={1}>Confirm Cash</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.cashDeclineBtn}
-                onPress={() => {
-                  Alert.prompt
-                    ? Alert.prompt(
-                      'Decline Cash Handover',
-                      'Please enter the reason for declining this cash refund:',
-                      (reason) => {
-                        if (reason && reason.trim()) {
-                          rejectCashClaim(activeMoveOut.id, reason.trim());
-                          Alert.alert('Declined', 'Landlord has been notified of the discrepancy.');
-                        }
-                      }
-                    )
-                    : (() => {
-                      rejectCashClaim(activeMoveOut.id, 'Cash handover not confirmed by tenant');
-                      Alert.alert('Declined', 'Landlord notified.');
-                    })();
-                }}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.cashDeclineBtnText} numberOfLines={1}>Decline</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* SECTION: Actionable Deposit Refund Received Confirmation Banner (1-to-1 Web Parity) */}
-        {activeMoveOut &&
-          (activeMoveOut.status === 'refund_completed' || activeMoveOut.status === 'settled') &&
-          !activeMoveOut.tenantConfirmedReceipt && (
-            <View style={[styles.cashBanner, { backgroundColor: '#FFFBEB', borderColor: '#F59E0B' }]}>
-              <View style={styles.cashBannerHead}>
-                <View style={[styles.cashBannerTag, { backgroundColor: '#FEF3C7' }]}>
-                  <Text style={[styles.cashBannerTagText, { color: '#B45309' }]}>⚡ Refund Disbursed</Text>
-                </View>
-              </View>
-              <Text style={styles.cashBannerTitle}>
-                Landlord disbursed {format(activeMoveOut.netRefundAmount || activeMoveOut.depositHeld, activeMoveOut.currency || viewCurrency)} Deposit Refund
-              </Text>
-              <Text style={styles.cashBannerMeta}>
-                Unit: {activeMoveOut.unit} • Method: {(activeMoveOut.payoutMethod || 'Direct Transfer').toUpperCase()}
-                {'\n'}Please verify that the funds reached your account and confirm receipt to conclude your tenancy.
-              </Text>
-              <View style={styles.cashBtnRow}>
-                <TouchableOpacity
-                  style={[styles.cashConfirmBtn, { backgroundColor: '#059669' }]}
-                  onPress={() => {
-                    Alert.alert(
-                      'Confirm Refund Received',
-                      `Have you verified that the deposit refund of ${format(activeMoveOut.netRefundAmount || activeMoveOut.depositHeld, activeMoveOut.currency || viewCurrency)} has reached your account?\n\nConfirming receipt will formally conclude your tenancy, release this residence, and clear any outstanding dues.`,
-                      [
-                        { text: 'Not Yet', style: 'cancel' },
-                        {
-                          text: '✓ Yes, Confirm Receipt',
-                          onPress: async () => {
-                            await confirmRefundReceipt(activeMoveOut.id);
-                            Alert.alert('Tenancy Concluded ✓', 'Deposit refund confirmed. Unit obligations and active records have been cleared.');
-                          },
-                        },
-                      ]
-                    );
-                  }}
-                  activeOpacity={0.85}
-                >
-                  <Feather name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                  <Text style={styles.cashConfirmBtnText} numberOfLines={1}>Confirm Receipt</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.cashDeclineBtn}
-                  onPress={() => onNavigate?.('tenant_lease')}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.cashDeclineBtnText} numberOfLines={1}>Settlement</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-        {/* SECTION: Building Announcements (1-to-1 Web Parity) */}
-        {activeAnnouncements.length > 0 && (
-          <ScrollView
-            style={{ maxHeight: 155, marginBottom: 12 }}
-            nestedScrollEnabled
-            showsVerticalScrollIndicator={true}
-          >
-            {activeAnnouncements.map((a) => {
-              const isUrgent = a.priority === 'urgent' || a.category === 'emergency';
-              return (
-                <View
-                  key={a.id}
-                  style={[
-                    styles.emergencyCard,
-                    isUrgent ? { borderLeftColor: '#DC2626', backgroundColor: '#FEF2F2' } : { borderLeftColor: '#2563EB', backgroundColor: '#EFF6FF' },
-                  ]}
-                >
-                  <View style={styles.emergencyTopRow}>
-                    <Feather
-                      name={isUrgent ? 'alert-triangle' : 'bell'}
-                      size={16}
-                      color={isUrgent ? '#DC2626' : '#2563EB'}
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text style={[styles.emergencyTitle, !isUrgent && { color: '#2563EB' }]}>
-                      {a.title.toUpperCase()}
-                    </Text>
-                  </View>
-                  <Text style={styles.emergencyBody}>{a.body}</Text>
-                  <TouchableOpacity
-                    style={[styles.ackBtn, isUrgent ? { backgroundColor: '#DC2626' } : { backgroundColor: '#2563EB' }]}
-                    onPress={() => acknowledgeAnnouncement(a.id, user?.id || currentTenant.id)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.ackBtnText}>Read & Acknowledge</Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
-          </ScrollView>
-        )}
-
-        {/* SECTION 1: Pending Tenancy Invitations Card (1-to-1 Web Parity) */}
-        {incomingRequest && (
-          <View style={styles.inviteCard}>
-            <View style={styles.inviteTopRow}>
-              <View style={styles.inviteTitleWrap}>
-                <Feather name="mail" size={15} color="#0D9488" style={{ marginRight: 6 }} />
-                <Text style={styles.inviteTitle} numberOfLines={1}>Tenancy Invitation</Text>
-              </View>
-              <View style={styles.inviteBadgeAmber}>
-                <Text style={styles.inviteBadgeAmberText}>Awaiting Response</Text>
-              </View>
-            </View>
-
-            <Text style={styles.inviteSubHeader}>
-              From: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{incomingRequest.ownerName}</Text> • Property: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{incomingRequest.propertyName}{(incomingRequest.unit || incomingRequest.unitNumber) ? ` (${incomingRequest.unit || incomingRequest.unitNumber})` : ''}</Text>
-            </Text>
-
-            <View style={styles.inviteMetaRow}>
-              <Text style={styles.inviteMetaItem}>
-                Rent: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{format(incomingRequest.rent, incomingRequest.currency || viewCurrency)}/mo</Text>
-              </Text>
-              <Text style={styles.inviteMetaItem}>
-                Deposit: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{format(incomingRequest.deposit, incomingRequest.currency || viewCurrency)}</Text>
-              </Text>
-              <Text style={styles.inviteMetaItem}>
-                Period: <Text style={{ fontWeight: '600' }}>{incomingRequest.leaseStart || 'Flexible'} → {incomingRequest.leaseEnd || '12 Months'}</Text>
-              </Text>
-            </View>
-
-            {incomingRequest.message ? (
-              <View style={styles.inviteNoteBox}>
-                <Text style={styles.inviteNoteText}>"{incomingRequest.message}"</Text>
-              </View>
-            ) : null}
-
-            {incomingRequest.requireTenantId && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginBottom: 10, gap: 6 }}>
-                <Feather name="shield" size={14} color="#D97706" />
-                <Text style={{ fontSize: 11.5, color: '#92400E', fontWeight: '600', flex: 1 }}>
-                  Verification ID Requested: {incomingRequest.requiredIdList?.map((i) => i.name).join(', ') || incomingRequest.requiredIdTypes?.join(', ') || incomingRequest.requiredIdType || 'Identity Document'}
-                </Text>
-              </View>
-            )}
-
-            <View style={styles.inviteBtnRow}>
-              <TouchableOpacity
-                style={styles.acceptBtn}
-                onPress={() => {
-                  updateTenancyRequest(incomingRequest.id, 'accepted');
-                  Alert.alert(
-                    'Tenancy Invitation Accepted! 🎉',
-                    `Welcome to ${incomingRequest.propertyName}! Unit ${incomingRequest.unit || incomingRequest.unitNumber} is reserved. Please proceed to My Lease to review and sign.`,
-                    [{ text: 'Go to My Lease', onPress: () => onNavigate?.('tenant_lease') }]
-                  );
-                }}
-                activeOpacity={0.85}
-              >
-                <Feather name="check" size={14} color="#FFFFFF" />
-                <Text style={styles.acceptBtnText} numberOfLines={1}>Accept Offer</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.reviewProposalBtn}
-                onPress={() => {
-                  setGalleryActiveIndex(0);
-                  setGalleryFilter('all');
-                  setReviewingRequest(incomingRequest);
-                }}
-                activeOpacity={0.85}
-              >
-                <Feather name="eye" size={14} color="#0F766E" />
-                <Text style={styles.reviewProposalBtnText} numberOfLines={1}>Review</Text>
-              </TouchableOpacity>
-            </View>
-
-            <TouchableOpacity
-              style={styles.declineCleanBtn}
-              onPress={() => {
-                updateTenancyRequest(incomingRequest.id, 'declined');
-                Alert.alert('Invitation Declined', 'Unit released back to vacant.');
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.declineCleanBtnText}>Decline this offer</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* SECTION 2: Multi-Property Dropdown Switcher (Tap to switch active context) */}
+        {/* Multi-Property Switcher (if multiple residences) */}
         {isMultiUnit && (
           <TenantMultiPropertySwitcher
             myUnits={myUnits}
@@ -878,251 +543,542 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
           />
         )}
 
-        {/* SECTION 3: Active Tenancy or Concluded Tenancy / New Resident View */}
-        {myUnits.length === 0 ? (
-          completedMoveOut ? (
-            /* Concluded Tenancy View (1-to-1 Web Parity) */
-            <View>
-              {/* Concluded Key Metrics */}
-              <View style={styles.statsRow}>
-                <View style={styles.statCard}>
-                  <Text style={styles.statNum}>{format(0, viewCurrency)}</Text>
-                  <Text style={styles.statLbl}>Monthly Rent</Text>
-                  <Text style={[styles.statDelta, { color: '#059669' }]}>✓ No active rent</Text>
-                </View>
-                <View style={styles.statCard}>
-                  <Text style={styles.statNum}>
-                    {format(completedMoveOut.netRefundAmount || completedMoveOut.depositHeld, completedMoveOut.currency || viewCurrency)}
-                  </Text>
-                  <Text style={styles.statLbl}>Deposit Refunded</Text>
-                  <Text style={[styles.statDelta, { color: '#059669' }]}>✓ Fully Settled</Text>
-                </View>
-                <View style={styles.statCard}>
-                  <Text style={styles.statNum}>0</Text>
-                  <Text style={styles.statLbl}>Open Repairs</Text>
-                  <Text style={styles.statDelta}>All closed</Text>
-                </View>
-              </View>
+        {/* 1. Top Rent / Onboarding Status Banner + Quick Action Pills (Web Parity) */}
+        {myUnits.length > 0 && (() => {
+          const hasPendingInvite = Boolean(incomingRequest) || (state.tenancyRequests || []).some(
+            (r) =>
+              r.status === 'pending' &&
+              ((user?.id && r.tenantId === user.id) || (userEmail && r.tenantEmail?.toLowerCase().trim() === userEmail)) &&
+              (!activeUnit || r.unitId === activeUnit.id || (r.unitNumber && activeUnit.unitNumber && r.unitNumber.toLowerCase().trim() === activeUnit.unitNumber.toLowerCase().trim()))
+          );
+          const isTenancyActive = !hasPendingInvite && activeAgreement?.status === 'active' && activeAgreement?.depositStatus === 'paid';
+          if (hasPendingInvite && !isTenancyActive) return null;
 
-              <View style={styles.card}>
-                <View style={styles.concludedTop}>
-                  <Ionicons name="checkmark-circle" size={24} color="#059669" />
-                  <View style={{ marginLeft: 10, flex: 1 }}>
-                    <Text style={styles.concludedTitle}>Past Tenancy Concluded</Text>
-                    <Text style={styles.concludedSub}>
-                      Unit {completedMoveOut.unit} • {completedMoveOut.propertyName}
-                    </Text>
-                  </View>
-                  <View style={styles.badgeSettled}>
-                    <Text style={styles.badgeSettledText}>VACATED & RELEASED</Text>
-                  </View>
-                </View>
+          const isDepositPending = !isTenancyActive && (activeAgreement?.status === 'pending_deposit' || activeAgreement?.depositStatus === 'unpaid');
+          const isSignaturePending = !isTenancyActive && (activeAgreement?.status === 'awaiting_tenant_signature' || activeAgreement?.status === 'awaiting_tenant_upload');
+          const isApprovalPending = !isTenancyActive && (activeAgreement?.status === 'pending_approval' || (activeAgreement?.status as any) === 'awaiting_owner_signature');
 
-                <View style={styles.cardDivider} />
+          const isDiffCurr = Boolean(viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(activeCurrency));
+          const convertedRent = isDiffCurr ? convert(Number(activeRent) || 0, activeCurrency, viewCurrency) : null;
+          const convertedDeposit = isDiffCurr ? convert(Number(activeDeposit) || 0, activeCurrency, viewCurrency) : null;
+          const displayCurrency = viewCurrency || activeCurrency;
+          const displayRentAmount = isDiffCurr && convertedRent !== null ? Math.round(convertedRent) : (Number(activeRent) || 0);
+          const displayDepositAmount = isDiffCurr && convertedDeposit !== null ? Math.round(convertedDeposit) : (Number(activeDeposit) || 0);
 
-                <Text style={styles.metaRowLabel}>Handover & Refund Status:</Text>
-                <Text style={styles.metaRowVal}>
-                  Final net refund of {format(completedMoveOut.netRefundAmount, completedMoveOut.currency || viewCurrency)} has been processed and settled.
-                </Text>
+          let bannerLabel = 'Next rent due';
+          let bannerAmount = format(totalDue > 0 ? totalDue : displayRentAmount, totalDue > 0 ? dueCurrency : displayCurrency);
+          let bannerDesc = pendingInvoices.length > 0 ? `Due ${pendingInvoices[0].due}` : 'Due on the 1st of the month.';
+          let bannerBg = isDark ? 'rgba(16, 185, 129, 0.12)' : '#ECFDF5';
+          let bannerBorder = isDark ? 'rgba(16, 185, 129, 0.3)' : '#D1FAE5';
 
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-                  <TouchableOpacity
-                    style={styles.viewLeaseBtn}
-                    onPress={() => onNavigate?.('tenant_lease')}
-                    activeOpacity={0.8}
-                  >
-                    <Feather name="file-text" size={14} color="#0D9488" />
-                    <Text style={styles.viewLeaseBtnText}>Clearance Certificate</Text>
-                  </TouchableOpacity>
+          if (totalDue > 0) {
+            bannerLabel = 'Payment due';
+            const convertedTotalDue = isDiffCurr ? convert(totalDue, dueCurrency, viewCurrency) : null;
+            bannerAmount = format(isDiffCurr && convertedTotalDue !== null ? Math.round(convertedTotalDue) : totalDue, displayCurrency);
+            bannerDesc = `${pendingInvoices.length} open invoice${pendingInvoices.length > 1 ? 's' : ''} ready for payment.`;
+            bannerBg = isDark ? 'rgba(239, 68, 68, 0.12)' : '#FEF2F2';
+            bannerBorder = isDark ? 'rgba(239, 68, 68, 0.3)' : '#FECACA';
+          } else if (isDepositPending) {
+            bannerLabel = 'Security deposit due';
+            bannerAmount = format(displayDepositAmount, displayCurrency);
+            bannerDesc = 'Pay your security deposit to activate your lease.';
+            bannerBg = isDark ? 'rgba(245, 158, 11, 0.12)' : '#FFFBEB';
+            bannerBorder = isDark ? 'rgba(245, 158, 11, 0.3)' : '#FDE68A';
+          } else if (isSignaturePending) {
+            bannerLabel = 'Signature required';
+            bannerAmount = `Unit ${activeUnit?.unitNumber || currentTenant.unit}`;
+            bannerDesc = 'Download, sign, and upload your lease agreement.';
+            bannerBg = isDark ? 'rgba(245, 158, 11, 0.12)' : '#FFFBEB';
+            bannerBorder = isDark ? 'rgba(245, 158, 11, 0.3)' : '#FDE68A';
+          } else if (isApprovalPending) {
+            bannerLabel = 'Waiting on your landlord';
+            bannerAmount = `Unit ${activeUnit?.unitNumber || currentTenant.unit}`;
+            bannerDesc = 'Signed copy uploaded. Waiting for landlord approval.';
+          } else if (!isTenancyActive) {
+            bannerLabel = 'Tenancy Status';
+            bannerAmount = 'No Active Rent Due';
+            bannerDesc = activeAgreement?.status === 'terminated'
+              ? 'Your lease for this unit has concluded.'
+              : 'No active lease or upcoming payment.';
+            bannerBg = isDark ? 'rgba(100, 116, 139, 0.12)' : '#F1F5F9';
+            bannerBorder = isDark ? 'rgba(100, 116, 139, 0.3)' : '#E2E8F0';
+          }
 
-                  <TouchableOpacity
-                    style={[styles.viewLeaseBtn, { borderColor: '#E2E8F0' }]}
-                    onPress={() => onNavigate?.('tenant_payments')}
-                    activeOpacity={0.8}
-                  >
-                    <Feather name="credit-card" size={14} color="#475569" />
-                    <Text style={[styles.viewLeaseBtnText, { color: '#475569' }]}>Payment Receipts</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          ) : (
-            /* New Resident Onboarding View (1-to-1 Web Parity) */
+          return (
             <TourTarget id="tenant-overview-hero">
-            <View style={styles.newResidentCard}>
-              <View style={styles.newResidentIcon}>
-                <Feather name="home" size={28} color="#0D9488" />
-              </View>
-              <Text style={styles.newResidentTitle}>Welcome to Propithub, {currentTenant.name}!</Text>
-              <Text style={styles.newResidentSub}>
-                Your resident account is active. Invitations will appear here.
-              </Text>
-
-              <View style={styles.profileBox}>
-                <Text style={styles.profileBoxTitle}>YOUR REGISTERED RESIDENT PROFILE</Text>
-                <Text style={styles.profileLine}>Name: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{currentTenant.name}</Text></Text>
-                <Text style={styles.profileLine}>Email: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{user?.email || 'N/A'}</Text></Text>
-                <Text style={styles.profileLine}>Phone: <Text style={{ fontWeight: '700', color: '#0F172A' }}>{user?.phone || 'Not specified'}</Text></Text>
-                <Text style={styles.profileLine}>Resident ID: <Text style={{ fontFamily: 'monospace', color: '#0D9488' }}>{user?.id}</Text></Text>
-              </View>
-
-              <Text style={styles.tipText}>
-                💡 Tip: Share your email with your landlord for unit invitations.
-              </Text>
-            </View>
-            </TourTarget>
-          )
-        ) : (
-          /* Active Resident Tenancy View */
-          <View>
-            {/* Hero Rent Status Card */}
-            {(() => {
-              const hasPendingInvite = Boolean(incomingRequest) || (state.tenancyRequests || []).some(
-                (r) =>
-                  r.status === 'pending' &&
-                  ((user?.id && r.tenantId === user.id) || (userEmail && r.tenantEmail?.toLowerCase().trim() === userEmail)) &&
-                  (!activeUnit || r.unitId === activeUnit.id || (r.unitNumber && activeUnit.unitNumber && r.unitNumber.toLowerCase().trim() === activeUnit.unitNumber.toLowerCase().trim()))
-              );
-
-              const isTenancyActive = !hasPendingInvite && activeAgreement?.status === 'active' && activeAgreement?.depositStatus === 'paid';
-
-              // If the resident only has a pending tenancy invitation (no active lease yet),
-              // the dedicated full Section 1 Invitation Card above already handles review/acceptance.
-              // Delete the redundant hero card to avoid duplicate banners.
-              if (hasPendingInvite && !isTenancyActive) {
-                return null;
-              }
-
-              const isDepositPending = !isTenancyActive && (activeAgreement?.status === 'pending_deposit' || activeAgreement?.depositStatus === 'unpaid');
-              const isSignaturePending = !isTenancyActive && (activeAgreement?.status === 'awaiting_tenant_signature' || activeAgreement?.status === 'awaiting_tenant_upload');
-              const isCountersignPending = !isTenancyActive && (activeAgreement?.status === 'pending_approval' || (activeAgreement?.status as any) === 'awaiting_owner_signature');
-              const isOnboarding = !isTenancyActive && Boolean(activeAgreement);
-
-              const badgeText = totalDue > 0
-                ? `${pendingInvoices.length} Due`
-                : isOnboarding
-                  ? isDepositPending
-                    ? 'Deposit Due'
-                    : isSignaturePending
-                      ? 'Sign Lease'
-                      : isCountersignPending
-                        ? 'Pending Approval'
-                        : 'Onboarding'
-                  : isTenancyActive
-                    ? 'All Paid Up'
-                    : 'Pending Offer';
-
-              const badgeColor = totalDue > 0
-                ? '#DC2626'
-                : isOnboarding
-                  ? isCountersignPending ? '#2563EB' : '#D97706'
-                  : isTenancyActive
-                    ? '#059669'
-                    : '#64748B';
-
-              const badgeBg = totalDue > 0
-                ? (isDark ? 'rgba(239, 68, 68, 0.18)' : '#FEE2E2')
-                : isOnboarding
-                  ? isCountersignPending
-                    ? (isDark ? 'rgba(37, 99, 235, 0.18)' : '#DBEAFE')
-                    : (isDark ? 'rgba(217, 119, 6, 0.18)' : '#FEF3C7')
-                  : isTenancyActive
-                    ? (isDark ? 'rgba(16, 185, 129, 0.18)' : '#DCFCE7')
-                    : (isDark ? '#334155' : '#F1F5F9');
-
-              const badgeIcon = totalDue > 0
-                ? 'alert-circle'
-                : isOnboarding
-                  ? isDepositPending ? 'shield' : isSignaturePending ? 'edit-3' : 'clock'
-                  : isTenancyActive
-                    ? 'check-circle'
-                    : 'clock';
-
-              const displayAmount = totalDue > 0
-                ? format(totalDue, dueCurrency)
-                : isTenancyActive
-                  ? format(activeRent, activeCurrency)
-                  : format(0, activeCurrency);
-
-              return (
-                <TourTarget id="tenant-overview-hero">
-                <View style={[styles.heroCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <View style={styles.heroTopRow}>
-                    <Text style={[styles.heroLabel, { color: colors.inkSoft }]}>
-                      {isOnboarding ? 'Move-in Pending' : 'Rent Status'}
+              <View style={{ marginBottom: 18 }}>
+                <View
+                  style={{
+                    backgroundColor: bannerBg,
+                    borderWidth: 1,
+                    borderColor: bannerBorder,
+                    borderRadius: 12,
+                    padding: 16,
+                    marginBottom: 10,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: colors.inkSoft, marginBottom: 2 }}>
+                      {bannerLabel}
                     </Text>
-                    <View style={[styles.heroPillBadge, { backgroundColor: badgeBg }]}>
-                      <Feather
-                        name={badgeIcon as any}
-                        size={12}
-                        color={badgeColor}
-                      />
-                      <Text
-                        style={[
-                          styles.heroPillText,
-                          { color: badgeColor },
-                        ]}
-                      >
-                        {badgeText}
-                      </Text>
-                    </View>
+                    <Text style={{ fontSize: 24, fontWeight: '800', color: colors.navy, marginBottom: 2 }}>
+                      {bannerAmount}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: colors.inkSoft }}>
+                      {bannerDesc}
+                    </Text>
                   </View>
 
-                  <Text
-                    style={[
-                      styles.heroAmount,
-                      {
-                        color: totalDue > 0
-                          ? '#DC2626'
-                          : isOnboarding
-                            ? colors.inkSoft
-                            : isTenancyActive
-                              ? (isDark ? '#34D399' : '#059669')
-                              : colors.inkSoft,
-                      },
-                    ]}
-                  >
-                    {displayAmount}
-                  </Text>
-
-                  {totalDue > 0 && (
+                  {(totalDue > 0 || isDepositPending) && (
                     <TouchableOpacity
-                      style={styles.heroActionBtn}
+                      style={{
+                        backgroundColor: totalDue > 0 ? '#DC2626' : '#D97706',
+                        paddingHorizontal: 14,
+                        paddingVertical: 9,
+                        borderRadius: 8,
+                      }}
                       onPress={() => onNavigate?.('tenant_payments')}
                       activeOpacity={0.85}
                     >
-                      <Text style={styles.heroActionBtnText}>Pay</Text>
-                      <Feather name="arrow-right" size={13} color="#FFFFFF" style={{ marginLeft: 6 }} />
+                      <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }}>
+                        {isDepositPending ? 'Pay Deposit' : 'Pay Now'}
+                      </Text>
                     </TouchableOpacity>
                   )}
 
-                  {totalDue === 0 && isOnboarding && isDepositPending && (
+                  {isSignaturePending && (
                     <TouchableOpacity
-                      style={[styles.heroActionBtn, { backgroundColor: '#D97706' }]}
-                      onPress={() => onNavigate?.('tenant_payments')}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={styles.heroActionBtnText}>Pay Deposit</Text>
-                      <Feather name="arrow-right" size={13} color="#FFFFFF" style={{ marginLeft: 6 }} />
-                    </TouchableOpacity>
-                  )}
-
-                  {totalDue === 0 && isOnboarding && isSignaturePending && (
-                    <TouchableOpacity
-                      style={[styles.heroActionBtn, { backgroundColor: '#0D9488' }]}
+                      style={{
+                        backgroundColor: '#0D9488',
+                        paddingHorizontal: 14,
+                        paddingVertical: 9,
+                        borderRadius: 8,
+                      }}
                       onPress={() => onNavigate?.('tenant_lease')}
                       activeOpacity={0.85}
                     >
-                      <Text style={styles.heroActionBtnText}>Sign Lease</Text>
-                      <Feather name="arrow-right" size={13} color="#FFFFFF" style={{ marginLeft: 6 }} />
+                      <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }}>Sign Lease</Text>
                     </TouchableOpacity>
                   )}
                 </View>
-                </TourTarget>
-              );
-            })()}
 
-            {/* 3 Key Metrics Row (Non-wrapping clean single-line numbers) */}
+                {/* Quick Action Pills matching Web */}
+                <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: colors.surface,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 7,
+                    }}
+                    onPress={() => onNavigate?.('tenant_maintenance')}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12.5, fontWeight: '600', color: colors.navy }}>Report a problem</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: colors.surface,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 7,
+                    }}
+                    onPress={() => onNavigate?.('tenant_lease')}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12.5, fontWeight: '600', color: colors.navy }}>My lease</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: colors.surface,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 7,
+                    }}
+                    onPress={() => onNavigate?.('tenant_payments')}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12.5, fontWeight: '600', color: colors.navy }}>All payments</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TourTarget>
+          );
+        })()}
+
+        {/* 2. Unified "Needs you" Section (1-to-1 Web Parity: max 2 visible by default + Show more) */}
+        {(() => {
+          const cards: React.ReactNode[] = [];
+
+          // A. Pending Tenancy Invitation
+          if (incomingRequest) {
+            cards.push(
+              <View
+                key={`req-${incomingRequest.id}`}
+                style={{
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.line,
+                  borderRadius: 10,
+                  padding: 14,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' }} />
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy, flex: 1 }}>
+                    Lease offer: {incomingRequest.propertyName} · Unit {incomingRequest.unit || incomingRequest.unitNumber}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 12.5, color: colors.inkSoft, paddingLeft: 16, marginBottom: 10 }}>
+                  {format(incomingRequest.rent, incomingRequest.currency || viewCurrency)}/mo · Deposit {format(incomingRequest.deposit, incomingRequest.currency || viewCurrency)} · From {incomingRequest.ownerName}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, paddingLeft: 16, flexWrap: 'wrap' }}>
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: colors.surface,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                    }}
+                    onPress={() => {
+                      setGalleryActiveIndex(0);
+                      setGalleryFilter('all');
+                      setReviewingRequest(incomingRequest);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: colors.navy }}>Review details</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: colors.surface,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                    }}
+                    onPress={() => {
+                      updateTenancyRequest(incomingRequest.id, 'declined');
+                      Alert.alert('Invitation Declined', 'Unit released back to vacant.');
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: '#DC2626' }}>Decline</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: '#059669',
+                      borderRadius: 8,
+                      paddingHorizontal: 14,
+                      paddingVertical: 6,
+                    }}
+                    onPress={() => {
+                      updateTenancyRequest(incomingRequest.id, 'accepted');
+                      Alert.alert(
+                        'Invitation Accepted ✓',
+                        `Unit ${incomingRequest.unit || incomingRequest.unitNumber} reserved. Proceed to My Lease to sign.`,
+                        [{ text: 'Go to My Lease', onPress: () => onNavigate?.('tenant_lease') }]
+                      );
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#FFFFFF' }}>Accept</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          }
+
+          // B. Cash Refund Handover Confirmation
+          if (activeMoveOut?.cashRefundHandover?.status === 'pending_confirmation') {
+            cards.push(
+              <View
+                key={`cash-${activeMoveOut.id}`}
+                style={{
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.line,
+                  borderRadius: 10,
+                  padding: 14,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#D97706' }} />
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy, flex: 1 }}>
+                    Cash refund reported: {format(activeMoveOut.cashRefundHandover.amount, activeMoveOut.cashRefundHandover.currency || viewCurrency)}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 12.5, color: colors.inkSoft, paddingLeft: 16, marginBottom: 10 }}>
+                  Unit {activeMoveOut.unit} · {activeMoveOut.cashRefundHandover.handoverDate} · Reported by {activeMoveOut.cashRefundHandover.claimedByName}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, paddingLeft: 16 }}>
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#059669', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 }}
+                    onPress={() => {
+                      confirmCashClaim(activeMoveOut.id);
+                      Alert.alert('Cash Received ✓', 'Your deposit refund has been settled.');
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#FFFFFF' }}>Confirm received</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 }}
+                    onPress={() => {
+                      rejectCashClaim(activeMoveOut.id, 'Cash handover not confirmed by tenant');
+                      Alert.alert('Declined', 'Landlord notified.');
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: '#DC2626' }}>Decline</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          }
+
+          // C. Refund Disbursed Confirmation
+          if (
+            activeMoveOut &&
+            (activeMoveOut.status === 'refund_completed' || activeMoveOut.status === 'settled') &&
+            !activeMoveOut.tenantConfirmedReceipt
+          ) {
+            cards.push(
+              <View
+                key={`refund-${activeMoveOut.id}`}
+                style={{
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.line,
+                  borderRadius: 10,
+                  padding: 14,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#D97706' }} />
+                  <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy, flex: 1 }}>
+                    Move-out deposit refund · {format(activeMoveOut.netRefundAmount || activeMoveOut.depositHeld, activeMoveOut.currency || viewCurrency)}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 12.5, color: colors.inkSoft, paddingLeft: 16, marginBottom: 10 }}>
+                  Unit {activeMoveOut.unit} · Disbursed via {(activeMoveOut.payoutMethod || 'Direct Transfer').toUpperCase()}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, paddingLeft: 16 }}>
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#059669', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 }}
+                    onPress={async () => {
+                      await confirmRefundReceipt(activeMoveOut.id);
+                      Alert.alert('Tenancy Concluded ✓', 'Deposit refund confirmed.');
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#FFFFFF' }}>Confirm received</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 }}
+                    onPress={() => onNavigate?.('tenant_lease')}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: colors.navy }}>Review settlement</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          }
+
+          // D. Automated Lifecycle Reminders (excluding duplicate invitation reminder)
+          tenantReminders
+            .filter((r) => !r.id.startsWith('tenant_invitation_'))
+            .forEach((rem) => {
+              const dotCol =
+                rem.severity === 'urgent'
+                  ? '#DC2626'
+                  : rem.severity === 'positive'
+                    ? '#10B981'
+                    : '#D97706';
+              cards.push(
+                <View
+                  key={`rem-${rem.id}`}
+                  style={{
+                    backgroundColor: colors.surface,
+                    borderWidth: 1,
+                    borderColor: colors.line,
+                    borderRadius: 10,
+                    padding: 14,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dotCol }} />
+                      <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy, flex: 1 }} numberOfLines={1}>
+                        {rem.title}
+                      </Text>
+                    </View>
+                    <Text style={{ fontSize: 12, color: colors.inkSoft, paddingLeft: 16 }} numberOfLines={2}>
+                      {rem.description}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: '#059669',
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                    }}
+                    onPress={() => {
+                      if (rem.actionType === 'modal' && incomingRequest) {
+                        setReviewingRequest(incomingRequest);
+                      } else if (rem.actionScreen) {
+                        onNavigate?.(rem.actionScreen);
+                      }
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#FFFFFF' }}>{rem.actionLabel}</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            });
+
+          if (cards.length === 0) return null;
+          const visibleCards = showAllNeedsYou ? cards : cards.slice(0, 2);
+
+          return (
+            <View style={{ marginBottom: 18 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy }}>Needs you</Text>
+                {cards.length > 1 && (
+                  <View
+                    style={{
+                      paddingHorizontal: 7,
+                      paddingVertical: 1,
+                      borderRadius: 999,
+                      backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: colors.inkSoft }}>{cards.length}</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={{ gap: 8 }}>{visibleCards}</View>
+
+              {cards.length > 2 && (
+                <TouchableOpacity
+                  style={{
+                    alignSelf: 'flex-start',
+                    marginTop: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderRadius: 8,
+                    backgroundColor: colors.surface,
+                    borderWidth: 1,
+                    borderColor: colors.line,
+                  }}
+                  onPress={() => setShowAllNeedsYou((prev) => !prev)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: '600', color: colors.inkSoft }}>
+                    {showAllNeedsYou ? 'Show less ▴' : `Show ${cards.length - 2} more ▾`}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          );
+        })()}
+
+        {/* 3. Active Tenancy Metrics or Minimal Onboarding State (1-to-1 Web Parity) */}
+        {myUnits.length === 0 ? (
+          completedMoveOut ? (
+            <View style={styles.card}>
+              <View style={styles.concludedTop}>
+                <Ionicons name="checkmark-circle" size={22} color="#059669" />
+                <View style={{ marginLeft: 8, flex: 1 }}>
+                  <Text style={styles.concludedTitle}>Past Tenancy Concluded</Text>
+                  <Text style={styles.concludedSub}>
+                    Unit {completedMoveOut.unit} • {completedMoveOut.propertyName}
+                  </Text>
+                </View>
+                <View style={styles.badgeSettled}>
+                  <Text style={styles.badgeSettledText}>SETTLED</Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={styles.viewLeaseBtn}
+                  onPress={() => onNavigate?.('tenant_lease')}
+                  activeOpacity={0.8}
+                >
+                  <Feather name="file-text" size={14} color="#0D9488" />
+                  <Text style={styles.viewLeaseBtnText}>Clearance Certificate</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.viewLeaseBtn, { borderColor: colors.line }]}
+                  onPress={() => onNavigate?.('tenant_payments')}
+                  activeOpacity={0.8}
+                >
+                  <Feather name="credit-card" size={14} color={colors.inkSoft} />
+                  <Text style={[styles.viewLeaseBtnText, { color: colors.navy }]}>Receipts</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : !incomingRequest ? (
+            <TourTarget id="tenant-overview-hero">
+              <View
+                style={{
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.line,
+                  borderRadius: 12,
+                  padding: 24,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 15, fontWeight: '700', color: colors.navy, marginBottom: 6 }}>
+                  No active lease yet
+                </Text>
+                <Text style={{ fontSize: 13, color: colors.inkSoft, textAlign: 'center', lineHeight: 19, marginBottom: 16 }}>
+                  Share your email ({user?.email}) with your landlord to receive a lease invitation, or browse available homes.
+                </Text>
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: '#059669',
+                    paddingHorizontal: 16,
+                    paddingVertical: 9,
+                    borderRadius: 8,
+                  }}
+                  onPress={() => onNavigate?.('tenant_find_home')}
+                  activeOpacity={0.85}
+                >
+                  <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '700' }}>Browse homes</Text>
+                </TouchableOpacity>
+              </View>
+            </TourTarget>
+          ) : null
+        ) : (
+          <View>
+            {/* 3 Clean Summary Stat Cards matching Web DashboardPage.tsx */}
             {(() => {
               const hasPendingInvite = Boolean(incomingRequest) || (state.tenancyRequests || []).some(
                 (r) =>
@@ -1131,334 +1087,94 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
                   (!activeUnit || r.unitId === activeUnit.id || (r.unitNumber && activeUnit.unitNumber && r.unitNumber.toLowerCase().trim() === activeUnit.unitNumber.toLowerCase().trim()))
               );
               const isTenancyActive = !hasPendingInvite && activeAgreement?.status === 'active' && activeAgreement?.depositStatus === 'paid';
+              const isDiffCurr = Boolean(viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(activeCurrency));
+              const convertedRent = isDiffCurr ? convert(Number(activeRent) || 0, activeCurrency, viewCurrency) : null;
+              const convertedDeposit = isDiffCurr ? convert(Number(activeDeposit) || 0, activeCurrency, viewCurrency) : null;
+              const displayCurrency = viewCurrency || activeCurrency;
+              const displayRentAmount = isDiffCurr && convertedRent !== null ? Math.round(convertedRent) : (Number(activeRent) || 0);
+              const displayDepositAmount = isDiffCurr && convertedDeposit !== null ? Math.round(convertedDeposit) : (Number(activeDeposit) || 0);
+
               return (
                 <View style={styles.statsRow}>
                   <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    <Text
-                      style={[styles.statNum, { color: colors.navy }]}
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                    >
-                      {isTenancyActive ? format(activeRent, activeCurrency) : format(0, activeCurrency)}
+                    <Text style={[styles.statNum, { color: colors.navy }]} numberOfLines={1} adjustsFontSizeToFit>
+                      {isTenancyActive ? format(displayRentAmount, displayCurrency) : format(0, displayCurrency)}
                     </Text>
                     <Text style={[styles.statLbl, { color: colors.inkSoft }]} numberOfLines={1}>
-                      {isTenancyActive ? 'Rent' : 'Rent (Pending)'}
+                      Monthly rent
+                    </Text>
+                  </View>
+
+                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <Text style={[styles.statNum, { color: colors.navy }]} numberOfLines={1} adjustsFontSizeToFit>
+                      {isTenancyActive ? format(displayDepositAmount, displayCurrency) : format(0, displayCurrency)}
+                    </Text>
+                    <Text style={[styles.statLbl, { color: colors.inkSoft }]} numberOfLines={1}>
+                      Security deposit
                     </Text>
                   </View>
 
                   <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                     <Text
-                      style={[styles.statNum, { color: colors.navy }]}
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                    >
-                      {isTenancyActive ? format(activeDeposit, activeCurrency) : format(0, activeCurrency)}
-                    </Text>
-                    <Text style={[styles.statLbl, { color: colors.inkSoft }]} numberOfLines={1}>
-                      {isTenancyActive ? 'Deposit' : 'Deposit (Held)'}
-                    </Text>
-                  </View>
-
-                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    <Text
-                      style={[styles.statNum, { color: activeTickets.length > 0 ? (isDark ? '#F87171' : '#EF4444') : colors.navy }]}
+                      style={[styles.statNum, { color: activeTickets.length > 0 ? '#DC2626' : colors.navy }]}
                       numberOfLines={1}
                       adjustsFontSizeToFit
                     >
                       {isTenancyActive ? activeTickets.length : 0}
                     </Text>
-                    <Text style={[styles.statLbl, { color: colors.inkSoft }]} numberOfLines={1}>Repairs</Text>
+                    <Text style={[styles.statLbl, { color: colors.inkSoft }]} numberOfLines={1}>
+                      Open repairs
+                    </Text>
                   </View>
                 </View>
               );
             })()}
 
-            {/* Active Tenancy Details (1-to-1 Web Parity) */}
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionHeading}>Tenancy Details</Text>
-            </View>
-
-            <View style={styles.tenancyCard}>
-              {/* Optional Hero Image banner */}
-              {(() => {
-                // Prioritize actual real property cover photo (respecting coverPhotoIndex)
-                const realPropImgs = (activeProperty?.images || []).filter((i) => i && !i.includes('unsplash.com'));
-                const propCover = realPropImgs.length > 0
-                  ? (typeof activeProperty?.coverPhotoIndex === 'number' && realPropImgs[activeProperty.coverPhotoIndex]
-                    ? realPropImgs[activeProperty.coverPhotoIndex]
-                    : realPropImgs[0])
-                  : (activeProperty?.images && activeProperty.images[0]);
-
-                const realUnitImgs = (activeUnit?.images || []).filter((i) => i && !i.includes('unsplash.com'));
-                const unitImg = realUnitImgs.length > 0 ? realUnitImgs[0] : (activeUnit?.image && !activeUnit.image.includes('unsplash.com') ? activeUnit.image : null);
-
-                const heroImg =
-                  propCover ||
-                  unitImg ||
-                  (activeUnit?.images && activeUnit.images[0]) ||
-                  activeUnit?.image ||
-                  (activeProperty?.images && activeProperty.images[0]);
-                if (!heroImg) return null;
-                return (
-                  <View style={styles.tenancyHeroBanner}>
-                    <Image source={{ uri: heroImg }} style={styles.tenancyHeroImage} resizeMode="cover" />
-                    <View style={styles.tenancyHeroOverlay}>
-                      <Text style={styles.tenancyHeroBadge}>
-                        Unit {activeUnit?.unitNumber || currentTenant.unit} Residence
-                      </Text>
-                    </View>
-                  </View>
-                );
-              })()}
-
-              <View style={{ padding: 14 }}>
-                <View style={styles.propHeader}>
-                  <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={styles.propTitle}>
-                      {activeProperty?.name || activeAgreement?.propertyName || activeUnit?.propertyName || 'Residence Overview'}
-                    </Text>
-                    <Text style={styles.unitSub}>
-                      Unit {activeUnit?.unitNumber || currentTenant.unit} {activeUnit?.unitType ? `(${activeUnit.unitType})` : ''}
-                    </Text>
-                  </View>
-                  {(() => {
-                    const isUnitConcluded = Boolean(
-                      activeMoveOut &&
-                      (activeMoveOut.status === 'refund_completed' || activeMoveOut.status === 'settled' || activeMoveOut.tenantConfirmedReceipt)
-                    );
-                    const isUnitVacating = Boolean(activeMoveOut && !isUnitConcluded);
-
-                    // Check if this unit / tenant has an unaccepted invitation
-                    const hasPendingInvite = Boolean(incomingRequest) || (state.tenancyRequests || []).some(
-                      (r) =>
-                        r.status === 'pending' &&
-                        ((user?.id && r.tenantId === user.id) || (userEmail && r.tenantEmail?.toLowerCase().trim() === userEmail)) &&
-                        (!activeUnit || r.unitId === activeUnit.id || (r.unitNumber && activeUnit.unitNumber && r.unitNumber.toLowerCase().trim() === activeUnit.unitNumber.toLowerCase().trim()))
-                    );
-
-                    const isTenancyActive = !hasPendingInvite && activeAgreement?.status === 'active' && activeAgreement?.depositStatus === 'paid';
-                    const isOnboarding = !isTenancyActive && !hasPendingInvite && Boolean(activeAgreement);
-                    const isPendingDeposit = !hasPendingInvite && (activeAgreement?.status === 'pending_deposit' || activeAgreement?.depositStatus === 'unpaid');
-
-                    const pillBg = hasPendingInvite
-                      ? (isDark ? '#78350F' : '#FEF3C7')
-                      : isUnitConcluded
-                        ? (isDark ? '#334155' : '#F1F5F9')
-                        : isUnitVacating
-                          ? (isDark ? '#78350F' : '#FEF3C7')
-                          : isOnboarding
-                            ? (isDark ? '#78350F' : '#FEF3C7')
-                            : isTenancyActive
-                              ? (isDark ? 'rgba(16, 185, 129, 0.2)' : '#DCFCE7')
-                              : (isDark ? '#1E293B' : '#F1F5F9');
-
-                    const pillColor = hasPendingInvite
-                      ? (isDark ? '#FBBF24' : '#B45309')
-                      : isUnitConcluded
-                        ? (isDark ? '#94A3B8' : '#64748B')
-                        : isUnitVacating
-                          ? (isDark ? '#FBBF24' : '#B45309')
-                          : isOnboarding
-                            ? (isDark ? '#FBBF24' : '#B45309')
-                            : isTenancyActive
-                              ? (isDark ? '#34D399' : '#15803D')
-                              : (isDark ? '#94A3B8' : '#64748B');
-
-                    const pillText = hasPendingInvite
-                      ? 'PENDING ACCEPTANCE'
-                      : isUnitConcluded
-                        ? 'CONCLUDED'
-                        : isUnitVacating
-                          ? 'VACATING'
-                          : isOnboarding
-                            ? (isPendingDeposit ? 'PENDING DEPOSIT' : 'IN ONBOARDING')
-                            : isTenancyActive
-                              ? 'ACTIVE LEASE'
-                              : 'PENDING';
-
-                    return (
-                      <View style={[styles.activePill, { backgroundColor: pillBg }]}>
-                        <Text style={[styles.activePillText, { color: pillColor }]}>
-                          {pillText}
-                        </Text>
-                      </View>
-                    );
-                  })()}
-                </View>
-
-                <View style={styles.cardDivider} />
-
-                {/* Property Address */}
-                {Boolean(activeProperty?.address) && (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Address</Text>
-                    <AddressDisplay
-                      address={activeProperty?.address}
-                      fallback="—"
-                      style={{ maxWidth: '65%', justifyContent: 'flex-end' }}
-                      textStyle={styles.detailValue}
-                      numberOfLines={2}
-                    />
-                  </View>
-                )}
-
-                {/* Assigned Unit */}
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Assigned Unit</Text>
-                  <Text style={[styles.detailValue, { fontWeight: '700', color: '#0F172A' }]}>
-                    Unit {activeUnit?.unitNumber || currentTenant.unit} {activeUnit?.unitType ? `(${activeUnit.unitType})` : ''}
-                  </Text>
-                </View>
-
-                {/* Furnishing Status */}
-                {Boolean(activeUnit?.furnishing) && (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Furnishing</Text>
-                    <Text style={styles.detailValue}>{activeUnit?.furnishing}</Text>
-                  </View>
-                )}
-
-                {/* Lease Period */}
-                {(Boolean(activeAgreement?.start) || Boolean(activeAgreement?.end)) && (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Lease Period</Text>
-                    <Text style={styles.detailValue}>
-                      {activeAgreement?.start || '—'}{activeAgreement?.end ? ` → ${activeAgreement.end}` : ''}
-                    </Text>
-                  </View>
-                )}
-
-                {/* Agreed Rent */}
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Agreed Rent</Text>
-                  <Text style={[styles.detailValue, { fontWeight: '700', color: '#0D9488' }]}>
-                    {format(activeRent, activeCurrency)} / mo
-                  </Text>
-                </View>
-
-                {/* Security Deposit */}
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Security Deposit</Text>
-                  <Text style={[styles.detailValue, { fontWeight: '700', color: '#0F172A' }]}>
-                    {format(activeDeposit, activeCurrency)}
-                  </Text>
-                </View>
-
-                {/* Landlord Name */}
-                {(() => {
-                  const ownerUser = state.users?.find((u) => u.id === (activeAgreement?.ownerId || activeProperty?.ownerId || activeUnit?.ownerId));
-                  const ownerName = activeAgreement?.ownerName || (activeProperty as any)?.ownerName || ownerUser?.displayName || (ownerUser as any)?.name || 'Building Management';
-                  return (
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Landlord</Text>
-                      <Text style={styles.detailValue}>{ownerName}</Text>
-                    </View>
-                  );
-                })()}
-
-                {/* Notice Period */}
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Notice Period</Text>
-                  <Text style={styles.detailValue}>
-                    {activeAgreement?.noticePeriodDays ? `${activeAgreement.noticePeriodDays} Days` : '30 Days'}
-                  </Text>
-                </View>
-
-                {/* Building Amenities Badges */}
-                {Boolean(activeProperty?.amenities && activeProperty.amenities.length > 0) && (
-                  <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
-                    <Text style={{ fontSize: 11.5, color: '#64748B', fontWeight: '600', marginBottom: 6 }}>
-                      Building Amenities:
-                    </Text>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                      {activeProperty!.amenities.map((am, idx) => (
-                        <View key={idx} style={styles.amenityBadge}>
-                          <Text style={styles.amenityBadgeText}>✓ {am}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                <TouchableOpacity
-                  style={[styles.viewLeaseBtn, { marginTop: 14 }]}
-                  onPress={() => onNavigate?.('tenant_lease')}
-                  activeOpacity={0.8}
-                >
-                  <Feather name="file-text" size={14} color="#0D9488" />
-                  <Text style={styles.viewLeaseBtnText}>View Digital Lease</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Outstanding Rent & Billing Banner */}
-            <View style={styles.billingCard}>
-              <View style={styles.billingTop}>
-                <View style={{ flex: 1, paddingRight: 8 }}>
-                  <Text style={styles.billingLabel}>CURRENT OUTSTANDING</Text>
-                  <Text style={styles.billingAmount}>
-                    {format(totalDue, dueCurrency)}
-                  </Text>
-                  <Text style={styles.billingDueDate} numberOfLines={2}>
-                    {pendingInvoices.length > 0
-                      ? `Due: ${pendingInvoices[0].due} (${pendingInvoices[0].items[0]?.description || pendingInvoices[0].notes || 'Rent Due'})`
-                      : 'All rent dues cleared up to date'}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.payNowBtn}
-                  onPress={() => {
-                    if (pendingInvoices.length > 0) {
-                      onNavigate?.('online_payment_checkout');
-                    } else {
-                      onNavigate?.('tenant_payments');
-                    }
-                  }}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.payNowText}>
-                    {totalDue > 0 ? 'Pay Dues' : 'View Invoices'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-
-            {/* Active Repair Tickets Section */}
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionHeading}>Active Repair Tickets</Text>
-              <TouchableOpacity
-                onPress={() => onNavigate?.('create_maintenance_ticket')}
-                activeOpacity={0.75}
+            {/* Notices from your landlord (Web Parity) */}
+            {activeAnnouncements.length > 0 && (
+              <View
+                style={{
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.line,
+                  borderRadius: 12,
+                  padding: 16,
+                  marginTop: 6,
+                }}
               >
-                <Text style={styles.sectionLink}>+ Raise Ticket</Text>
-              </TouchableOpacity>
-            </View>
-
-            {activeTickets.length === 0 ? (
-              <View style={styles.emptyTicketsCard}>
-                <Feather name="check" size={20} color="#10B981" />
-                <Text style={styles.emptyTicketsText}>No open repair tickets</Text>
-              </View>
-            ) : (
-              activeTickets.slice(0, 2).map((t) => (
-                <TouchableOpacity
-                  key={t.id}
-                  style={styles.ticketCard}
-                  onPress={() => onNavigate?.('tenant_maintenance')}
-                  activeOpacity={0.8}
-                >
-                  <View style={styles.ticketTop}>
-                    <Text style={styles.ticketTitle}>{t.issue}</Text>
-                    <View style={styles.ticketBadge}>
-                      <Text style={styles.ticketBadgeText}>{t.status.toUpperCase()}</Text>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: colors.navy, marginBottom: 12 }}>
+                  Notices from your landlord
+                </Text>
+                {activeAnnouncements.map((a, idx) => (
+                  <View
+                    key={a.id}
+                    style={{
+                      paddingBottom: idx < activeAnnouncements.length - 1 ? 12 : 0,
+                      marginBottom: idx < activeAnnouncements.length - 1 ? 12 : 0,
+                      borderBottomWidth: idx < activeAnnouncements.length - 1 ? 1 : 0,
+                      borderBottomColor: colors.line,
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy, flex: 1 }}>{a.title}</Text>
+                      <TouchableOpacity
+                        style={{
+                          backgroundColor: '#059669',
+                          paddingHorizontal: 10,
+                          paddingVertical: 4,
+                          borderRadius: 6,
+                          marginLeft: 8,
+                        }}
+                        onPress={() => acknowledgeAnnouncement(a.id, user?.id || currentTenant.id)}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF' }}>Acknowledge</Text>
+                      </TouchableOpacity>
                     </View>
+                    <Text style={{ fontSize: 12.5, color: colors.inkSoft, lineHeight: 18 }}>{a.body}</Text>
                   </View>
-                  <Text style={styles.ticketSub}>
-                    ID: #{t.id} • Category: {t.category}
-                  </Text>
-                </TouchableOpacity>
-              ))
+                ))}
+              </View>
             )}
           </View>
         )}

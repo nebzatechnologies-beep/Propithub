@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons, Feather, FontAwesome } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { Header } from '../components/Header';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
@@ -25,11 +26,15 @@ import { MobileTicket } from '../types';
 interface TenantMaintenanceScreenProps {
   onCreateTicketPress?: () => void;
   onPayChargePress?: (amount: number) => void;
+  onNavigate?: (screenKey: string) => void;
+  onProfilePress?: () => void;
 }
 
 export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = ({
   onCreateTicketPress,
   onPayChargePress,
+  onNavigate,
+  onProfilePress,
 }) => {
   const { colors, isDark } = useMobileTheme();
   const { state, saveTicket, updateTicket } = useMobileAppData();
@@ -67,6 +72,7 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
   const [rating, setRating] = useState(5);
   const [feedback, setFeedback] = useState('');
   const [ratedTicketId, setRatedTicketId] = useState<string | null>(null);
+  const [expandedRateId, setExpandedRateId] = useState<string | null>(null);
 
   const tenantName = user.displayName || 'Resident';
   const tenantEmail = (user.email || '').toLowerCase();
@@ -203,27 +209,12 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
       {/* Screen Status Bar */}
       <ScreenStatusBar />
 
-      {/* Screen Header */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <View style={styles.logoBadge}>
-            <Feather name="tool" size={18} color="#FFFFFF" />
-          </View>
-          <View>
-            <Text style={styles.headerTitle}>Maintenance</Text>
-          </View>
-        </View>
-        {hasActiveTenancy && (
-          <TouchableOpacity
-            style={styles.newTicketHeaderBtn}
-            onPress={handleOpenCreateModal}
-            activeOpacity={0.85}
-          >
-            <Feather name="plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
-            <Text style={styles.newTicketHeaderBtnText}>New Ticket</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* Unified Header */}
+      <Header
+        title="Support"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       <ScrollView
         style={styles.scroll}
@@ -239,101 +230,114 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
           />
         )}
 
-        {!hasActiveTenancy ? (
-          <TourTarget id="tenant-maintenance-hero">
-          <View style={[styles.emptyCard, { marginTop: 16 }]}>
-            <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: isDark ? '#1E293B' : '#F1F5F9', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
-              <Feather name="tool" size={22} color={isDark ? '#94A3B8' : '#64748B'} />
-            </View>
-            <Text style={styles.emptyTitle}>No Active Rented Unit</Text>
-            <Text style={styles.emptySub}>
-              Maintenance and repair requests are linked to your assigned unit. Once you are onboarded to an active property, you can submit repair tickets here.
+        <TourTarget id="tenant-maintenance-hero">
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text style={[styles.sectionHeading, { marginBottom: 0 }]}>
+              Your tickets
             </Text>
-          </View>
-          </TourTarget>
-        ) : (
-          <>
-            {/* Raise New Repair Banner */}
-            <TourTarget id="tenant-maintenance-hero">
             <TouchableOpacity
-              style={styles.raiseBanner}
+              style={[styles.newTicketHeaderBtn, !hasActiveTenancy && { opacity: 0.5 }]}
               onPress={handleOpenCreateModal}
               activeOpacity={0.85}
             >
-              <View style={styles.raiseBannerLeft}>
-                <View style={styles.raiseIconBox}>
-                  <Feather name="plus-circle" size={22} color="#059669" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.raiseBannerTitle}>Request Repair</Text>
-                  <Text style={styles.raiseBannerSub}>
-                    Plumbing, Electrical, Air Conditioning, Carpentry, Painting
-                  </Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#64748B" />
+              <Feather name="plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
+              <Text style={styles.newTicketHeaderBtnText}>Raise a ticket</Text>
             </TouchableOpacity>
+          </View>
+        </TourTarget>
 
-            </TourTarget>
+        {!hasActiveTenancy && (
+          <View style={{ padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, marginBottom: 12 }}>
+            <Text style={{ fontSize: 13, color: colors.inkSoft }}>
+              Available once you have an active lease.
+            </Text>
+          </View>
+        )}
 
-        {/* Section: Active Tickets */}
-        <Text style={styles.sectionHeading}>
-          Active Requests ({activeTickets.length})
-        </Text>
-
-        {activeTickets.length === 0 ? (
+        {activeTickets.length + resolvedTickets.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Feather name="check-circle" size={32} color="#10B981" />
-            <Text style={styles.emptyTitle}>Zero Open Tickets</Text>
-            <Text style={styles.emptySub}>Everything in your unit is operating smoothly.</Text>
+            <Text style={[styles.emptySub, { marginTop: 0 }]}>No tickets yet.</Text>
           </View>
         ) : (
-          activeTickets.map((t) => {
+          [...activeTickets, ...resolvedTickets].map((t) => {
+            const isResolved = t.status === 'resolved';
             const hasBillableCharge =
-              t.category.toLowerCase().includes('plumb') || t.priority === 'High';
+              !isResolved && (t.category.toLowerCase().includes('plumb') || t.priority === 'High');
+            const isRated = Boolean(t.rating || ratedTicketId === t.id);
+            const isExpandedForRate = expandedRateId === t.id;
 
             return (
               <View key={t.id} style={styles.ticketCard}>
                 <View style={styles.ticketTopRow}>
-                  <View style={{ flex: 1 }}>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: colors.inkSoft }}>#{t.id}</Text>
+                      <Text style={styles.ticketSub}>
+                        Unit {t.unit}{t.propertyName ? ` · ${t.propertyName}` : ''}
+                      </Text>
+                    </View>
                     <Text style={styles.ticketTitle}>{t.issue}</Text>
-                    <Text style={styles.ticketSub}>
-                      ID: #{t.id} • Category: {t.category} • Unit {t.unit}
-                    </Text>
                   </View>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      t.status === 'in_progress' ? styles.inProgressPill : styles.openPill,
-                    ]}
-                  >
-                    <Text
-                      style={
-                        t.status === 'in_progress' ? styles.inProgressPillText : styles.openPillText
-                      }
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, backgroundColor: colors.surfaceSunken }}>
+                      <Text style={{ fontSize: 10, fontWeight: '700', color: colors.inkSoft }}>{t.priority}</Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.statusPill,
+                        isResolved
+                          ? styles.resolvedPill
+                          : t.status === 'in_progress'
+                            ? styles.inProgressPill
+                            : styles.openPill,
+                      ]}
                     >
-                      {t.status.replace('_', ' ').toUpperCase()}
-                    </Text>
+                      <Text
+                        style={
+                          isResolved
+                            ? styles.resolvedPillText
+                            : t.status === 'in_progress'
+                              ? styles.inProgressPillText
+                              : styles.openPillText
+                        }
+                      >
+                        {t.status.replace('_', ' ')}
+                      </Text>
+                    </View>
                   </View>
                 </View>
 
-                {/* Assigned Technician */}
-                <View style={styles.assignedRow}>
-                  <Feather name="user-check" size={14} color="#059669" style={{ marginRight: 6 }} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.line }}>
                   <Text style={styles.assignedLabel}>
-                    Assigned Technician:{' '}
+                    {t.category} · Assigned:{' '}
                     <Text style={styles.assignedName}>
-                      {t.assignedStaffName || 'Ramesh Kumar (Certified Staff)'}
+                      {t.assignedStaffName || 'Unassigned'}
                     </Text>
                   </Text>
+
+                  {isResolved && (
+                    isRated ? (
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#059669' }}>
+                        ✓ Rated ({t.rating || rating}/5 ★)
+                      </Text>
+                    ) : (
+                      <TouchableOpacity
+                        onPress={() => setExpandedRateId(isExpandedForRate ? null : t.id)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.brass }}>
+                          {isExpandedForRate ? 'Cancel' : '★ Rate Repair'}
+                        </Text>
+                      </TouchableOpacity>
+                    )
+                  )}
                 </View>
 
-                {/* Billable Charge Box */}
                 {hasBillableCharge && (
                   <View style={styles.chargeBox}>
                     <View style={styles.chargeLeft}>
-                      <Text style={styles.chargeTitle}>Tenant Billable Charge</Text>
-                      <Text style={styles.chargeSub}>Repair fee classified as tenant-fault</Text>
+                      <Text style={styles.chargeTitle}>Tenant Repair Charge</Text>
+                      <Text style={styles.chargeSub}>Payable repair charge</Text>
                     </View>
                     <TouchableOpacity
                       style={styles.payChargeBtn}
@@ -344,41 +348,9 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
                     </TouchableOpacity>
                   </View>
                 )}
-              </View>
-            );
-          })
-        )}
 
-        {/* Section: Rate Completed Jobs */}
-        <Text style={[styles.sectionHeading, { marginTop: 18 }]}>Rate Completed Repairs</Text>
-
-        {resolvedTickets.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Feather name="award" size={28} color="#94A3B8" />
-            <Text style={styles.emptyTitle}>No Resolved Work Orders to Rate</Text>
-            <Text style={styles.emptySub}>Completed maintenance jobs will appear here for feedback.</Text>
-          </View>
-        ) : (
-          resolvedTickets.map((rt) => {
-            const isRated = ratedTicketId === rt.id;
-
-            return (
-              <View key={rt.id} style={styles.ticketCard}>
-                <View style={styles.ticketTopRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.ticketTitle}>{rt.issue}</Text>
-                    <Text style={styles.ticketSub}>
-                      Serviced by {rt.assignedStaffName || 'Ramesh Kumar'} • Unit {rt.unit}
-                    </Text>
-                  </View>
-                  <View style={styles.resolvedPill}>
-                    <Text style={styles.resolvedPillText}>RESOLVED</Text>
-                  </View>
-                </View>
-
-                {!isRated ? (
-                  <>
-                    <Text style={styles.rateLabel}>Rate Technician Service Quality</Text>
+                {isResolved && !isRated && isExpandedForRate && (
+                  <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.line }}>
                     <View style={styles.starRow}>
                       {[1, 2, 3, 4, 5].map((star) => (
                         <TouchableOpacity
@@ -389,41 +361,35 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
                         >
                           <FontAwesome
                             name={star <= rating ? 'star' : 'star-o'}
-                            size={22}
+                            size={20}
                             color="#D97706"
                           />
                         </TouchableOpacity>
                       ))}
                     </View>
-
                     <TextInput
                       style={styles.feedbackInput}
                       value={feedback}
                       onChangeText={setFeedback}
-                      placeholder="Write feedback regarding technician conduct & repair quality..."
+                      placeholder="Optional feedback on repair quality..."
                       multiline
                     />
-
                     <TouchableOpacity
                       style={styles.submitReviewBtn}
-                      onPress={() => handleSubmitRating(rt.id)}
+                      onPress={() => {
+                        handleSubmitRating(t.id);
+                        setExpandedRateId(null);
+                      }}
                       activeOpacity={0.85}
                     >
                       <Feather name="check" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                      <Text style={styles.submitReviewText}>Submit Verified Review</Text>
+                      <Text style={styles.submitReviewText}>Submit Rating</Text>
                     </TouchableOpacity>
-                  </>
-                ) : (
-                  <View style={styles.ratedDoneBox}>
-                    <Feather name="check-circle" size={15} color="#15803D" />
-                    <Text style={styles.ratedDoneText}>Rating & Feedback Submitted (5/5 Stars)</Text>
                   </View>
                 )}
               </View>
             );
           })
-        )}
-          </>
         )}
 
         <View style={{ height: 40 }} />

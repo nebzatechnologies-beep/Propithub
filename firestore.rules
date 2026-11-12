@@ -207,7 +207,16 @@ service cloud.firestore {
     // In-App Notifications
     match /notifications/{notifId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+      allow create: if true;
+      allow update, delete: if isAuthenticated();
+    }
+
+    // Public Listing & Prospective Tenant Enquiries
+    match /enquiries/{enquiryId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if isAuthenticated();
+      allow delete: if isOwner() || isSuperAdmin();
     }
 
     // Lease Renewals
@@ -240,10 +249,17 @@ service cloud.firestore {
       allow write: if isAuthenticated();
     }
 
-    // Cash Handover Claims
+    // Cash Handover Claims (Strictly scoped to participants)
     match /cashClaims/{claimId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        isOwner() || isManager() || isSuperAdmin() ||
+        request.resource.data.tenantId == request.auth.uid
+      );
+      allow update, delete: if isAuthenticated() && (
+        isOwner() || isManager() || isSuperAdmin() ||
+        resource.data.tenantId == request.auth.uid
+      );
     }
 
     // Communication Logs

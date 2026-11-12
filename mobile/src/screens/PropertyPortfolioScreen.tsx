@@ -16,6 +16,7 @@ import {
   Linking,
 } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
@@ -31,6 +32,7 @@ import { TourTarget } from '../context/MobileTourContext';
 import { AddressDisplay } from '../components/AddressDisplay';
 import { getCleanAddressText } from '../lib/addressUtils';
 import { getUnitTypesForProperty } from '../lib/propertyTypes';
+import { resolveEffectiveUnitStatus } from '../lib/portfolioReconcile';
 
 interface PropertyPortfolioScreenProps {
   onProfilePress?: () => void;
@@ -81,6 +83,60 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [openEditDropdown, setOpenEditDropdown] = useState<'type' | 'furnishing' | 'status' | null>(null);
   const [openAddDropdown, setOpenAddDropdown] = useState<'type' | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
+  const [uploadingAmenityKey, setUploadingAmenityKey] = useState<string | null>(null);
+  const [uploadingUnitId, setUploadingUnitId] = useState<string | null>(null);
+
+  const handleAmenityPhotoUpload = async (prop: MobileProperty, amenityName: string) => {
+    const key = `${prop.id}_${amenityName}`;
+    try {
+      const picked = await pickSingleImage({ quality: 0.8 });
+      if (!picked) return;
+      setUploadingAmenityKey(key);
+      const payload = picked.file || picked.base64 || picked.uri;
+      const url = await uploadOrCompressImage(
+        payload,
+        `properties/${prop.id}/amenities/${Date.now()}_${amenityName.replace(/[^a-zA-Z0-9]/g, '_')}.jpg`
+      );
+      if (url) {
+        const existingPhotos = (prop.amenityPhotos || []).filter((ap) => ap.name !== amenityName);
+        const updatedProp: MobileProperty = {
+          ...prop,
+          amenityPhotos: [...existingPhotos, { name: amenityName, image: url }],
+        };
+        await saveProperty(updatedProp);
+      }
+    } catch (err: any) {
+      Alert.alert('Upload Failed', err?.message || 'Could not upload amenity photo.');
+    } finally {
+      setUploadingAmenityKey(null);
+    }
+  };
+
+  const handleQuickUnitPhotoUpload = async (unit: MobileUnit) => {
+    try {
+      const picked = await pickSingleImage({ quality: 0.8 });
+      if (!picked) return;
+      setUploadingUnitId(unit.id);
+      const payload = picked.file || picked.base64 || picked.uri;
+      const url = await uploadOrCompressImage(
+        payload,
+        `units/${unit.id}/${Date.now()}_photo.jpg`
+      );
+      if (url) {
+        const cleanExisting = (unit.images || []).filter((img) => img && !img.includes('unsplash.com'));
+        await saveUnit({
+          ...unit,
+          images: [url, ...cleanExisting],
+          image: url,
+        });
+      }
+    } catch (err: any) {
+      Alert.alert('Upload Failed', err?.message || 'Could not upload unit photo.');
+    } finally {
+      setUploadingUnitId(null);
+    }
+  };
 
   const availableAddUnitTypes = useMemo(() => {
     if (!targetProperty) return [];
@@ -326,24 +382,11 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
       <ScreenStatusBar />
 
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <Text style={[styles.headerTitle, { color: colors.navy }]}>Properties</Text>
-        </View>
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            style={styles.avatarBtn}
-            onPress={onProfilePress}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.avatarText}>
-              {user?.displayName
-                ? user.displayName.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()
-                : 'OW'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      <Header
+        title="Properties"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       <ScrollView
         style={[styles.scroll, { backgroundColor: colors.background }]}
@@ -353,7 +396,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
         {/* Plan Limits Indicator Strip */}
         <View style={[styles.planUsageStrip, isDark && { backgroundColor: 'rgba(37, 99, 235, 0.15)', borderColor: 'rgba(37, 99, 235, 0.3)' }]}>
           <Text style={[styles.planUsageText, isDark && { color: '#60A5FA' }]}>
-            PRO TIER • {planUsage.propertiesUsed}/{planUsage.propertiesMax} Properties • {planUsage.unitsUsed}/{planUsage.unitsMax} Units
+            {currentPlanName.toUpperCase()} • {planUsage.propertiesUsed}/{planUsage.propertiesMax} Properties • {planUsage.unitsUsed}/{planUsage.unitsMax} Units
           </Text>
         </View>
 
@@ -405,14 +448,13 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
           <View>
             {filteredProperties.length === 0 ? (
               <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <Ionicons name="business-outline" size={40} color={colors.inkSoft} />
+                <Ionicons name="business-outline" size={32} color={colors.inkSoft} />
                 <Text style={[styles.emptyTitle, { color: colors.navy }]}>No properties found</Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>Add a new building using the studio wizard above.</Text>
               </View>
             ) : (
               filteredProperties.map((prop) => {
                 const propUnits = myUnits.filter((u) => u.propertyId === prop.id);
-                const occupiedCount = propUnits.filter((u) => u.status === 'occupied').length;
+                const occupiedCount = propUnits.filter((u) => resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts) === 'occupied').length;
                 const totalUnits = propUnits.length > 0 ? propUnits.length : prop.unitCount;
                 const occupancyRate = totalUnits > 0 ? Math.round((occupiedCount / totalUnits) * 100) : 0;
                 
@@ -444,13 +486,22 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                 return (
                   <View key={prop.id} style={[styles.propertyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                     {coverImg ? (
-                      <TouchableOpacity onPress={handlePropertyPhotoUpload} activeOpacity={0.9} style={{ position: 'relative' }}>
-                        <Image source={{ uri: coverImg }} style={styles.propertyImage} resizeMode="cover" />
-                        <View style={styles.photoChangeBadge}>
+                      <View style={{ position: 'relative' }}>
+                        <TouchableOpacity
+                          onPress={() => setPreviewImage({ url: coverImg, title: prop.name })}
+                          activeOpacity={0.9}
+                        >
+                          <Image source={{ uri: coverImg }} style={styles.propertyImage} resizeMode="cover" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.photoChangeBadge}
+                          onPress={handlePropertyPhotoUpload}
+                          activeOpacity={0.85}
+                        >
                           <Feather name="camera" size={12} color="#FFFFFF" />
                           <Text style={{ fontSize: 10, color: '#FFFFFF', fontWeight: '700' }}>Change</Text>
-                        </View>
-                      </TouchableOpacity>
+                        </TouchableOpacity>
+                      </View>
                     ) : (
                       <TouchableOpacity onPress={handlePropertyPhotoUpload} activeOpacity={0.8} style={[styles.propertyImageBlank, isDark && { backgroundColor: '#1E293B', borderColor: '#334155' }]}>
                         <View style={styles.propertyImageBlankIcon}>
@@ -476,31 +527,76 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                         </View>
                         <View style={[styles.occupiedBadge, occupancyRate === 100 && styles.occupiedBadgeFull]}>
                           <Text style={styles.occupiedBadgeText}>
-                            {occupancyRate}% OCCUPIED ({occupiedCount}/{totalUnits})
+                            {occupancyRate}% ({occupiedCount}/{totalUnits})
                           </Text>
                         </View>
                       </View>
 
-                      {/* Amenities Pills */}
-                      <View style={styles.amenitiesPreviewRow}>
-                        {prop.amenities.slice(0, 3).map((am) => (
-                          <View key={am} style={styles.amenityMiniPill}>
-                            <Text style={styles.amenityMiniText}>{am}</Text>
-                          </View>
-                        ))}
-                        {prop.amenities.length > 3 && (
-                          <View style={styles.amenityMiniPill}>
-                            <Text style={styles.amenityMiniText}>+{prop.amenities.length - 3} more</Text>
-                          </View>
-                        )}
-                      </View>
+                      {/* Amenities Pills with Photo Preview & Upload */}
+                      {prop.amenities && prop.amenities.length > 0 && (
+                        <View style={styles.amenitiesPreviewRow}>
+                          {prop.amenities.map((am) => {
+                            const amPhoto = (prop.amenityPhotos || []).find((ap) => ap.name === am)?.image;
+                            const isUpAm = uploadingAmenityKey === `${prop.id}_${am}`;
+                            return (
+                              <View
+                                key={am}
+                                style={[
+                                  styles.amenityMiniPill,
+                                  {
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 5,
+                                    paddingRight: 6,
+                                  },
+                                ]}
+                              >
+                                <TouchableOpacity
+                                  style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}
+                                  onPress={() => {
+                                    if (amPhoto) {
+                                      setPreviewImage({ url: amPhoto, title: `${prop.name} • ${am}` });
+                                    } else {
+                                      handleAmenityPhotoUpload(prop, am);
+                                    }
+                                  }}
+                                  activeOpacity={0.75}
+                                >
+                                  {amPhoto && (
+                                    <Image
+                                      source={{ uri: amPhoto }}
+                                      style={{ width: 16, height: 16, borderRadius: 4 }}
+                                    />
+                                  )}
+                                  <Text style={styles.amenityMiniText}>{am}</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                  onPress={() => handleAmenityPhotoUpload(prop, am)}
+                                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                >
+                                  {isUpAm ? (
+                                    <ActivityIndicator size={10} color="#059669" />
+                                  ) : (
+                                    <Feather
+                                      name="camera"
+                                      size={11}
+                                      color={amPhoto ? '#059669' : '#64748B'}
+                                    />
+                                  )}
+                                </TouchableOpacity>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      )}
 
                       <View style={styles.divider} />
 
                       {/* Action Bar for this property */}
                       <View style={styles.propActionRow}>
                         <Text style={styles.unitDirectoryEyebrow}>
-                          INVENTORY: {propUnits.length} UNITS
+                          UNITS ({propUnits.length})
                         </Text>
                         <TouchableOpacity
                           style={styles.addUnitSmallBtn}
@@ -513,37 +609,99 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                       </View>
 
                       {/* Units within this property */}
-                      {propUnits.map((u) => (
-                        <View key={u.id} style={styles.unitItem}>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.unitItemTitle}>
-                              Unit {u.unitNumber} ({u.unitType}) • {u.floor}
-                            </Text>
-                            <Text style={styles.unitItemSub}>
-                              Rent: {format(u.rent, u.currency || viewCurrency)} • Dep: {format(u.deposit, u.currency || viewCurrency)}
-                              {u.tenant ? ` • ${u.tenant}` : ''}
-                            </Text>
-                          </View>
+                      {propUnits.map((u) => {
+                        const unitPhotos = (u.images || []).filter((img) => img && !img.includes('unsplash.com'));
+                        const unitThumb = unitPhotos[0] || (u.image && !u.image.includes('unsplash.com') ? u.image : null);
+                        const isUploadingThisUnit = uploadingUnitId === u.id;
 
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            {(() => {
-                              const badge = getUnitStatusBadge(u.status);
-                              return (
-                                <View style={badge.badge}>
-                                  <Text style={badge.text}>{badge.label}</Text>
-                                </View>
-                              );
-                            })()}
-
+                        return (
+                          <View key={u.id} style={[styles.unitItem, { gap: 10 }]}>
+                            {/* Unit Photo Thumbnail / Quick Upload */}
                             <TouchableOpacity
-                              style={styles.editUnitIconBtn}
-                              onPress={() => handleOpenEditUnit(u)}
+                              onPress={() => {
+                                if (unitThumb) {
+                                  setPreviewImage({ url: unitThumb, title: `${prop.name} • Unit ${u.unitNumber}` });
+                                } else {
+                                  handleQuickUnitPhotoUpload(u);
+                                }
+                              }}
+                              style={{
+                                width: 38,
+                                height: 38,
+                                borderRadius: 8,
+                                backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+                                borderWidth: 1,
+                                borderColor: colors.line,
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                overflow: 'hidden',
+                              }}
+                              activeOpacity={0.8}
                             >
-                              <Feather name="edit-2" size={14} color="#64748B" />
+                              {isUploadingThisUnit ? (
+                                <ActivityIndicator size="small" color="#059669" />
+                              ) : unitThumb ? (
+                                <Image source={{ uri: unitThumb }} style={{ width: '100%', height: '100%' }} />
+                              ) : (
+                                <Feather name="camera" size={14} color={colors.inkSoft} />
+                              )}
                             </TouchableOpacity>
+
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.unitItemTitle, { color: colors.navy }]}>
+                                Unit {u.unitNumber} ({u.unitType}) • {u.floor}
+                              </Text>
+                              <Text style={[styles.unitItemSub, { color: colors.inkSoft }]}>
+                                {format(u.rent, u.currency || viewCurrency)}/mo • Dep {format(u.deposit, u.currency || viewCurrency)}
+                                {u.tenant ? ` • ${u.tenant}` : ''}
+                              </Text>
+                            </View>
+
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              {(!u.status || u.status === 'vacant') && (
+                                <TouchableOpacity
+                                  onPress={() => saveUnit({ ...u, isListedPublicly: !u.isListedPublicly })}
+                                  style={{
+                                    paddingHorizontal: 7,
+                                    paddingVertical: 3,
+                                    borderRadius: 6,
+                                    backgroundColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.14)' : 'rgba(100, 116, 139, 0.12)',
+                                    borderWidth: 1,
+                                    borderColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.35)' : colors.line,
+                                  }}
+                                  activeOpacity={0.75}
+                                >
+                                  <Text
+                                    style={{
+                                      fontSize: 9.5,
+                                      fontWeight: '800',
+                                      color: u.isListedPublicly ? '#059669' : colors.inkSoft,
+                                    }}
+                                  >
+                                    {u.isListedPublicly ? 'LIVE' : 'UNLISTED'}
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
+
+                              {(() => {
+                                const badge = getUnitStatusBadge(u.status);
+                                return (
+                                  <View style={badge.badge}>
+                                    <Text style={badge.text}>{badge.label}</Text>
+                                  </View>
+                                );
+                              })()}
+
+                              <TouchableOpacity
+                                style={styles.editUnitIconBtn}
+                                onPress={() => handleOpenEditUnit(u)}
+                              >
+                                <Feather name="edit-2" size={14} color="#64748B" />
+                              </TouchableOpacity>
+                            </View>
                           </View>
-                        </View>
-                      ))}
+                        );
+                      })}
                     </View>
                   </View>
                 );
@@ -555,68 +713,119 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
         {/* TAB 2: GLOBAL UNIT DIRECTORY */}
         {activeTab === 'directory' && (
           <View>
-            <View style={styles.directoryHeaderBox}>
-              <Text style={[styles.directoryHeaderText, { color: colors.navy }]}>
-                All Units Across Portfolio ({filteredUnits.length})
-              </Text>
-            </View>
-
             {filteredUnits.length === 0 ? (
               <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <Ionicons name="cube-outline" size={40} color={colors.inkSoft} />
+                <Ionicons name="cube-outline" size={32} color={colors.inkSoft} />
                 <Text style={[styles.emptyTitle, { color: colors.navy }]}>No units found</Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>No units match your search query.</Text>
               </View>
             ) : (
-              filteredUnits.map((u) => (
-              <View key={u.id} style={[styles.directoryUnitCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <View style={styles.dirUnitTop}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.dirUnitTitle, { color: colors.navy }]}>
-                      Unit {u.unitNumber} • {u.propertyName}
-                    </Text>
-                    <Text style={[styles.dirUnitSub, { color: colors.inkSoft }]}>
-                      {u.unitType} • {u.floor} • {u.areaSqFt ? `${u.areaSqFt} sq.ft` : ''}
-                    </Text>
-                  </View>
-                  {(() => {
-                    const badge = getUnitStatusBadge(u.status);
-                    return (
-                      <View style={badge.badge}>
-                        <Text style={badge.text}>{badge.label}</Text>
+              filteredUnits.map((u) => {
+                const unitPhotos = (u.images || []).filter((img) => img && !img.includes('unsplash.com'));
+                const unitThumb = unitPhotos[0] || (u.image && !u.image.includes('unsplash.com') ? u.image : null);
+
+                return (
+                  <View key={u.id} style={[styles.directoryUnitCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <View style={[styles.dirUnitTop, { alignItems: 'center', gap: 10 }]}>
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (unitThumb) {
+                            setPreviewImage({ url: unitThumb, title: `${u.propertyName} • Unit ${u.unitNumber}` });
+                          } else {
+                            handleQuickUnitPhotoUpload(u);
+                          }
+                        }}
+                        style={{
+                          width: 42,
+                          height: 42,
+                          borderRadius: 10,
+                          backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+                          borderWidth: 1,
+                          borderColor: colors.line,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {unitThumb ? (
+                          <Image source={{ uri: unitThumb }} style={{ width: '100%', height: '100%' }} />
+                        ) : (
+                          <Feather name="camera" size={16} color={colors.inkSoft} />
+                        )}
+                      </TouchableOpacity>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.dirUnitTitle, { color: colors.navy }]}>
+                          Unit {u.unitNumber} • {u.propertyName}
+                        </Text>
+                        <Text style={[styles.dirUnitSub, { color: colors.inkSoft }]}>
+                          {u.unitType} • {u.floor}{u.areaSqFt ? ` • ${u.areaSqFt} sq.ft` : ''}
+                        </Text>
                       </View>
-                    );
-                  })()}
-                </View>
+                      {(() => {
+                        const badge = getUnitStatusBadge(u.status);
+                        return (
+                          <View style={badge.badge}>
+                            <Text style={badge.text}>{badge.label}</Text>
+                          </View>
+                        );
+                      })()}
+                    </View>
 
-                <View style={styles.dirFinancialRow}>
-                  <View>
-                    <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>Monthly Rent</Text>
-                    <Text style={[styles.dirFinVal, { color: colors.navy }]}>{format(u.rent, u.currency || viewCurrency)}</Text>
-                  </View>
-                  <View>
-                    <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>Deposit Held</Text>
-                    <Text style={[styles.dirFinVal, { color: colors.navy }]}>{format(u.deposit, u.currency || viewCurrency)}</Text>
-                  </View>
-                  <View>
-                    <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>Sub-Meter</Text>
-                    <Text style={[styles.dirFinVal, { color: colors.navy }]}>{u.electricityMeter || 'None'}</Text>
-                  </View>
-                </View>
+                    <View style={styles.dirFinancialRow}>
+                      <View>
+                        <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>RENT</Text>
+                        <Text style={[styles.dirFinVal, { color: colors.navy }]}>{format(u.rent, u.currency || viewCurrency)}</Text>
+                      </View>
+                      <View>
+                        <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>DEPOSIT</Text>
+                        <Text style={[styles.dirFinVal, { color: colors.navy }]}>{format(u.deposit, u.currency || viewCurrency)}</Text>
+                      </View>
+                      <View>
+                        <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>METER</Text>
+                        <Text style={[styles.dirFinVal, { color: colors.navy }]}>{u.electricityMeter || '—'}</Text>
+                      </View>
+                    </View>
 
-                <View style={[styles.dirTenantRow, isDark && { borderTopColor: colors.line }]}>
-                  <Text style={[styles.dirTenantText, { color: colors.inkSoft }]}>
-                    Resident: <Text style={{ fontWeight: '700', color: colors.navy }}>{u.tenant || 'Vacant'}</Text>
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.dirEditBtn}
-                    onPress={() => handleOpenEditUnit(u)}
-                  >
-                    <Text style={styles.dirEditBtnText}>Edit Unit</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )))}
+                    <View style={[styles.dirTenantRow, isDark && { borderTopColor: colors.line }]}>
+                      <Text style={[styles.dirTenantText, { color: colors.inkSoft }]}>
+                        Resident: <Text style={{ fontWeight: '700', color: colors.navy }}>{u.tenant || 'Vacant'}</Text>
+                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        {(!u.status || u.status === 'vacant') && (
+                          <TouchableOpacity
+                            onPress={() => saveUnit({ ...u, isListedPublicly: !u.isListedPublicly })}
+                            style={{
+                              paddingHorizontal: 9,
+                              paddingVertical: 5,
+                              borderRadius: 8,
+                              backgroundColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.14)' : 'rgba(100, 116, 139, 0.12)',
+                              borderWidth: 1,
+                              borderColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.35)' : colors.line,
+                            }}
+                            activeOpacity={0.75}
+                          >
+                            <Text
+                              style={{
+                                fontSize: 10.5,
+                                fontWeight: '800',
+                                color: u.isListedPublicly ? '#059669' : colors.inkSoft,
+                              }}
+                            >
+                              {u.isListedPublicly ? '● Listed Publicly' : '○ Unlisted'}
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                        <TouchableOpacity
+                          style={styles.dirEditBtn}
+                          onPress={() => handleOpenEditUnit(u)}
+                        >
+                          <Text style={styles.dirEditBtnText}>Edit Unit</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+            )}
           </View>
         )}
         <View style={{ height: 100 }} />
@@ -790,9 +999,6 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                   <View style={{ flex: 1 }}>
                     <Text style={styles.modalTitle}>
                       Edit Unit {editingUnit.unitNumber || editingUnit.id}
-                    </Text>
-                    <Text style={styles.modalSubtitle}>
-                      Modify unit specifications, rental rates, and occupancy
                     </Text>
                   </View>
                 </View>
@@ -1182,6 +1388,58 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
           </View>
         </Modal>
       )}
+
+      {/* Lightbox Image Preview Modal */}
+      <Modal
+        visible={!!previewImage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewImage(null)}
+      >
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(15, 23, 42, 0.92)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 20,
+          }}
+        >
+          <View
+            style={{
+              width: '100%',
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: 14,
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '800', flex: 1 }} numberOfLines={1}>
+              {previewImage?.title}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setPreviewImage(null)}
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 17,
+                backgroundColor: 'rgba(255,255,255,0.15)',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Ionicons name="close" size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+          {previewImage?.url && (
+            <Image
+              source={{ uri: previewImage.url }}
+              style={{ width: '100%', height: 340, borderRadius: 16 }}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
 
       {/* Plan Quota Limit Interception Modal */}
       <PlanLimitModal

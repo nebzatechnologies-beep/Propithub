@@ -22,9 +22,13 @@ import { useMobileTheme } from '../context/MobileThemeContext';
 
 interface OwnerMessagesScreenProps {
   onProfilePress?: () => void;
+  onNavigate?: (screenKey: string) => void;
 }
 
-export const OwnerMessagesScreen: React.FC<OwnerMessagesScreenProps> = ({ onProfilePress }) => {
+export const OwnerMessagesScreen: React.FC<OwnerMessagesScreenProps> = ({
+  onProfilePress,
+  onNavigate,
+}) => {
   const { colors, isDark } = useMobileTheme();
   const { user } = useMobileAuth();
   const {
@@ -139,7 +143,7 @@ export const OwnerMessagesScreen: React.FC<OwnerMessagesScreenProps> = ({ onProf
       {/* Header */}
       <Header
         title="Announcements"
-        onNotificationPress={() => {}}
+        onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
 
@@ -179,11 +183,8 @@ export const OwnerMessagesScreen: React.FC<OwnerMessagesScreenProps> = ({ onProf
           {/* Announcements List */}
           {displayedAnnouncements.length === 0 ? (
             <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-              <Feather name="bell" size={36} color={colors.inkSoft} />
+              <Feather name="bell" size={32} color={colors.inkSoft} />
               <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Announcements in {activeTab}</Text>
-              <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                Tap the &quot;New Broadcast&quot; button above to create and publish a message to tenants.
-              </Text>
             </View>
           ) : (
             displayedAnnouncements.map((ann) => {

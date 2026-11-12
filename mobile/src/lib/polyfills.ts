@@ -1,3 +1,5 @@
+declare const global: any;
+
 // Polyfills for React Native (Hermes / Expo) runtime environment
 // Resolves: "Uncaught Error: Unknown encoding: latin1" from fast-png / jspdf
 
@@ -124,5 +126,42 @@ try {
     expo.createPermissionHook = expoModulesCore.createPermissionHook;
   }
 } catch (_e) {}
+
+// 4. Blob Polyfill for React Native to support ArrayBuffer & Uint8Array in new Blob([part])
+if (typeof globalScope.Blob !== 'undefined') {
+  const OriginalBlob = globalScope.Blob;
+  try {
+    // Check if OriginalBlob supports ArrayBuffer
+    new OriginalBlob([new Uint8Array([0])]);
+  } catch (err: any) {
+    if (err?.message?.includes('ArrayBuffer')) {
+      const PatchedBlob = function (this: any, parts: any[] = [], options?: any) {
+        const sanitizedParts = parts.map((part) => {
+          if (part instanceof ArrayBuffer) {
+            const bytes = new Uint8Array(part);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+            return binary;
+          }
+          if (ArrayBuffer.isView(part)) {
+            const bytes = new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+            return binary;
+          }
+          return part;
+        });
+        return new (OriginalBlob as any)(sanitizedParts, options);
+      };
+      PatchedBlob.prototype = OriginalBlob.prototype;
+      Object.assign(PatchedBlob, OriginalBlob);
+      globalScope.Blob = PatchedBlob;
+    }
+  }
+}
 
 export {};

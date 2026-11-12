@@ -48,19 +48,26 @@ export const ManagerDashboardPage: React.FC = () => {
       return props.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id);
     }
     const explicitlyAssigned = props.filter((p) => p.assignedManagerId === user?.id);
-    return explicitlyAssigned;
+    return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
   }, [state.properties, ownerId, assignedPropertyId, user?.id]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
 
   const myUnits = useMemo(() => {
-    if (!ownerId) return [];
-    return state.units.filter((u) => u.ownerId === ownerId && (!u.propertyId || myPropertyIds.has(u.propertyId)));
+    if (!ownerId && myPropertyIds.size === 0) return [];
+    return state.units.filter((u) => {
+      const matchOwner = ownerId ? u.ownerId === ownerId : false;
+      const matchProp = Boolean(u.propertyId && myPropertyIds.has(u.propertyId));
+      return matchOwner || matchProp;
+    });
   }, [state.units, ownerId, myPropertyIds]);
 
   const myTickets = useMemo(() => {
-    if (!ownerId) return [];
-    return state.tickets.filter((t) => t.ownerId === ownerId && (!t.propertyId || myPropertyIds.has(t.propertyId)));
+    if (!ownerId && myPropertyIds.size === 0) return [];
+    return state.tickets.filter((t) => {
+      if (t.ownerId && ownerId && t.ownerId !== ownerId) return false;
+      return !t.propertyId || myPropertyIds.has(t.propertyId);
+    });
   }, [state.tickets, ownerId, myPropertyIds]);
 
   const myStaff = ownerId ? state.staff.filter((s) => s.ownerId === ownerId) : [];
@@ -280,9 +287,6 @@ export const ManagerDashboardPage: React.FC = () => {
           <div className="num" style={{ fontSize: '28px', fontWeight: 800, color: activeTickets.length > 0 ? '#ea580c' : 'var(--ink)' }}>
             {activeTickets.length}
           </div>
-          <div className="delta" style={{ marginTop: '4px', fontSize: '12px', color: 'var(--ink-soft)' }}>
-            {activeTickets.filter((t) => t.priority === 'High').length} high priority tickets
-          </div>
         </div>
 
         <div className="stat" style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '14px', padding: '18px 20px' }}>
@@ -292,9 +296,6 @@ export const ManagerDashboardPage: React.FC = () => {
           </div>
           <div className="num" style={{ fontSize: '28px', fontWeight: 800, color: 'var(--ink)' }}>
             {myProperties.length}
-          </div>
-          <div className="delta" style={{ marginTop: '4px', fontSize: '12px', color: 'var(--ink-soft)' }}>
-            {myUnits.length} total units assigned
           </div>
         </div>
 
@@ -306,9 +307,6 @@ export const ManagerDashboardPage: React.FC = () => {
           <div className="num" style={{ fontSize: '28px', fontWeight: 800, color: 'var(--ink)' }}>
             {myStaff.length}
           </div>
-          <div className="delta" style={{ marginTop: '4px', fontSize: '12px', color: 'var(--ink-soft)' }}>
-            support team
-          </div>
         </div>
       </div>
 
@@ -317,7 +315,6 @@ export const ManagerDashboardPage: React.FC = () => {
         <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Priority Maintenance Tickets</h3>
-            <div className="hint" style={{ fontSize: '12px' }}>Latest open issues requiring operational attention</div>
           </div>
           <button
             type="button"

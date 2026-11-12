@@ -135,7 +135,7 @@ export const GlobalSearch: React.FC = () => {
         { id: 'page-tenant-lease', category: 'Pages', title: 'My Lease Agreement', subtitle: 'View digital lease terms, signed PDF documents, and dates', link: '/tenant/lease', icon: <FileText size={16} /> },
         { id: 'page-tenant-payments', category: 'Pages', title: 'Pay Rent & Transaction History', subtitle: 'Pay active rent invoices, security deposit, and payment receipts', link: '/tenant/payments', icon: <CreditCard size={16} /> },
         { id: 'page-tenant-support', category: 'Pages', title: 'Support & Tickets', subtitle: 'Submit tickets with photos, track technicians, and report issues', link: '/tenant/support', icon: <Wrench size={16} /> },
-        { id: 'page-tenant-reviews', category: 'Pages', title: 'Landlord Reviews & Trust', subtitle: 'Rate property management and browse community landlord ratings', link: '/tenant/trust', icon: <Award size={16} /> },
+        { id: 'page-tenant-reviews', category: 'Pages', title: 'Reviews & Enquiries', subtitle: 'Track your home viewing enquiries and rate your landlords', link: '/tenant/trust', icon: <Award size={16} /> },
         { id: 'page-tenant-settings', category: 'Pages', title: 'Account Settings', subtitle: 'Manage contact email, phone number, and password', link: '/tenant/settings', icon: <Compass size={16} /> },
       );
     } else if (role === 'manager') {

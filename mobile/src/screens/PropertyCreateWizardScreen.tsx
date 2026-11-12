@@ -6,26 +6,38 @@ import {
   ScrollView,
   TouchableOpacity,
   SafeAreaView,
-  StatusBar,
   TextInput,
   Image,
   Alert,
   LayoutAnimation,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
-import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { ThemePalette } from '../theme/colors';
-import { MobileProperty, MobileUnit } from '../types';
+import { MobileProperty, MobileUnit, MobilePropertyAddress } from '../types';
 import { uploadOrCompressImage } from '../lib/imageUploader';
 import { pickSingleImage, pickMultipleImages } from '../lib/nativePicker';
 import { usePlanLimits, ResourceQuotaType } from '../hooks/usePlanLimits';
 import { PlanLimitModal } from '../components/PlanLimitModal';
-import { GLOBAL_CURRENCIES } from '../lib/currencyService';
+import {
+  GLOBAL_CURRENCIES,
+  normalizeCurrencyCode,
+  getCurrencySymbol,
+  CurrencyMeta,
+} from '../lib/currencyService';
+import {
+  PROPERTY_TYPE_OPTIONS,
+  PropertyStructure,
+  getDefaultPropertyStructure,
+  getPropertyCategory,
+  getUnitTypesForProperty,
+} from '../lib/propertyTypes';
 
 interface PropertyCreateWizardScreenProps {
   onBack?: () => void;
@@ -42,28 +54,13 @@ interface UnitDraft {
   rent: number;
   deposit: number;
   currency: string;
-  electricityMeter: string;
+  electricityMeter?: string;
+  waterMeter?: string;
   images?: string[];
 }
 
-const UNIT_LAYOUT_TYPES = [
-  'Studio',
-  '1 BHK',
-  '2 BHK',
-  '3 BHK',
-  '4 BHK',
-  'Penthouse',
-  'Commercial Office',
-  'Shop / Retail',
-];
-
-const UNIT_FURNISHING_TYPES: ('Unfurnished' | 'Semi-Furnished' | 'Fully Furnished')[] = [
-  'Unfurnished',
-  'Semi-Furnished',
-  'Fully Furnished',
-];
-
 const COUNTRY_OPTIONS = [
+  { name: 'India', currency: 'INR', symbol: '₹', defaultRent: 26000, defaultDeposit: 52000, city: 'Bengaluru', state: 'Karnataka', postalCode: '560001', address: 'Plot 12, Indiranagar' },
   { name: 'United States', currency: 'USD', symbol: '$', defaultRent: 2200, defaultDeposit: 4400, city: 'Austin', state: 'Texas', postalCode: '78701', address: '100 Grand Avenue' },
   { name: 'United Kingdom', currency: 'GBP', symbol: '£', defaultRent: 1800, defaultDeposit: 3600, city: 'London', state: 'Greater London', postalCode: 'EC1A 1BB', address: '24 Baker Street' },
   { name: 'European Union', currency: 'EUR', symbol: '€', defaultRent: 1900, defaultDeposit: 3800, city: 'Berlin', state: 'Berlin', postalCode: '10115', address: 'Friedrichstraße 45' },
@@ -71,40 +68,7 @@ const COUNTRY_OPTIONS = [
   { name: 'Canada', currency: 'CAD', symbol: 'CA$', defaultRent: 2400, defaultDeposit: 4800, city: 'Toronto', state: 'Ontario', postalCode: 'M5V 2T6', address: '250 Front Street W' },
   { name: 'Australia', currency: 'AUD', symbol: 'A$', defaultRent: 2600, defaultDeposit: 5200, city: 'Sydney', state: 'New South Wales', postalCode: '2000', address: '50 George Street' },
   { name: 'Singapore', currency: 'SGD', symbol: 'S$', defaultRent: 3500, defaultDeposit: 7000, city: 'Singapore', state: 'Central', postalCode: '018981', address: '12 Marina Boulevard' },
-  { name: 'India', currency: 'INR', symbol: '₹', defaultRent: 26000, defaultDeposit: 52000, city: 'Bengaluru', state: 'Karnataka', postalCode: '560001', address: 'Plot 12, Indiranagar' },
 ];
-
-const ALL_GLOBAL_COUNTRIES = GLOBAL_CURRENCIES.map((c) => {
-  const existingPreset = COUNTRY_OPTIONS.find((p) => p.currency === c.code || p.name === c.country);
-  return {
-    name: c.country ? `${c.country} (${c.name})` : c.name,
-    currency: c.code,
-    symbol: c.symbol,
-    flag: c.flag,
-    defaultRent: existingPreset ? existingPreset.defaultRent : 1500,
-    defaultDeposit: existingPreset ? existingPreset.defaultDeposit : 3000,
-    city: existingPreset ? existingPreset.city : (c.country || c.name),
-    state: existingPreset ? existingPreset.state : (c.country || c.name),
-    postalCode: existingPreset ? existingPreset.postalCode : '00000',
-    address: existingPreset ? existingPreset.address : 'Main Boulevard',
-  };
-});
-
-const PROPERTY_TYPES = [
-  'Residential Apartment Complex',
-  'Commercial Office Building',
-  'Gated Community / Villa',
-  'Mixed-Use Commercial & Res',
-  'Co-Living / PG Building',
-];
-
-const getPropertyTypeIcon = (type: string): keyof typeof Feather.glyphMap => {
-  if (type.includes('Commercial')) return 'briefcase';
-  if (type.includes('Villa')) return 'shield';
-  if (type.includes('Co-Living')) return 'users';
-  if (type.includes('Mixed')) return 'layers';
-  return 'home';
-};
 
 const PREDEFINED_AMENITIES = [
   '24/7 Security',
@@ -114,14 +78,16 @@ const PREDEFINED_AMENITIES = [
   'Swimming Pool',
   'Power Backup',
   'CCTV Surveillance',
+  'Intercom',
   'Clubhouse',
   'EV Charging Station',
   'Visitor Parking',
   'Water Softener',
   'Rooftop Garden',
+  'Solar Water Heater',
 ];
 
-export const POPULAR_GOOGLE_PLACES = [
+const POPULAR_GOOGLE_PLACES = [
   {
     formattedAddress: 'Golf Course Extension Road, Sector 65, Gurugram, Haryana 122018, India',
     addressLine: 'Sector 65, Golf Course Extension Road',
@@ -173,46 +139,6 @@ export const POPULAR_GOOGLE_PLACES = [
     lng: 78.3762,
   },
   {
-    formattedAddress: 'Gachibowli Financial District, Hyderabad, Telangana 500032, India',
-    addressLine: 'Financial District, Nanakramguda, Gachibowli',
-    city: 'Hyderabad',
-    state: 'Telangana',
-    country: 'India',
-    postalCode: '500032',
-    lat: 17.4194,
-    lng: 78.3432,
-  },
-  {
-    formattedAddress: 'Bandra Kurla Complex (BKC), Bandra East, Mumbai, Maharashtra 400051, India',
-    addressLine: 'G Block, Bandra Kurla Complex',
-    city: 'Mumbai',
-    state: 'Maharashtra',
-    country: 'India',
-    postalCode: '400051',
-    lat: 19.0657,
-    lng: 72.8687,
-  },
-  {
-    formattedAddress: 'Koregaon Park North Main Road, Pune, Maharashtra 411001, India',
-    addressLine: 'Lane 5, North Main Road, Koregaon Park',
-    city: 'Pune',
-    state: 'Maharashtra',
-    country: 'India',
-    postalCode: '411001',
-    lat: 18.5362,
-    lng: 73.8940,
-  },
-  {
-    formattedAddress: 'Connaught Place, Central Delhi, New Delhi, Delhi 110001, India',
-    addressLine: 'Inner Circle, Connaught Place',
-    city: 'New Delhi',
-    state: 'Delhi',
-    country: 'India',
-    postalCode: '110001',
-    lat: 28.6315,
-    lng: 77.2167,
-  },
-  {
     formattedAddress: '350 5th Ave, Manhattan, New York, NY 10118, United States',
     addressLine: '350 5th Avenue, Midtown',
     city: 'New York',
@@ -251,7 +177,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
 }) => {
   const { state, planUsage, saveProperty } = useMobileAppData();
   const { user } = useMobileAuth();
-  const { viewCurrency, getSymbol, format } = useMobileCurrency();
+  const { viewCurrency, getSymbol, format, convert } = useMobileCurrency();
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const { usage, currentPlanName } = usePlanLimits();
@@ -263,24 +189,20 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
 
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
-  // Step 1: Identity & Structure
-  const [propertyName, setPropertyName] = useState('Grand Palms Residence');
-  const [propertyType, setPropertyType] = useState('Residential Apartment Complex');
-  const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
+  // STEP 1 STATE: Identity & Structure
+  const [propertyName, setPropertyName] = useState('Maple Heights Residency');
   const [country, setCountry] = useState(initialCountryOption.name);
-  const [currency, setCurrency] = useState(initialCountryOption.currency);
   const [isCountryDropdownOpen, setIsCountryDropdownOpen] = useState(false);
   const [countrySearchQuery, setCountrySearchQuery] = useState('');
-  const [addressLine, setAddressLine] = useState(initialCountryOption.address);
-  const [city, setCity] = useState(initialCountryOption.city);
-  const [stateName, setStateName] = useState(initialCountryOption.state);
-  const [postalCode, setPostalCode] = useState(initialCountryOption.postalCode);
-  const [floorsCount, setFloorsCount] = useState('4');
-  const [yearBuilt, setYearBuilt] = useState('2023');
+
+  const [propertyType, setPropertyType] = useState('Residential Apartment Complex');
+  const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
+  const [propStructure, setPropStructure] = useState<PropertyStructure>('multi_unit');
+
   const [assignedManagerId, setAssignedManagerId] = useState('');
   const [isManagerDropdownOpen, setIsManagerDropdownOpen] = useState(false);
 
-  // Google Maps Places (New) state & handlers
+  // Address & Places state
   const GOOGLE_MAPS_API_KEY =
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
     'AIzaSyCag0ilgHZgDX4cUuI1SOWstKXyK12vfZI';
@@ -292,19 +214,103 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
   const placesDebounceRef = useRef<any>(null);
   const activePlacesQueryRef = useRef<string>('');
 
-  const [confirmedLocation, setConfirmedLocation] = useState<string>(
-    `${initialCountryOption.address}, ${initialCountryOption.city}, ${initialCountryOption.state}`
-  );
-  const [selectedCoordinates, setSelectedCoordinates] = useState<{ lat?: number; lng?: number }>({
-    lat: 28.3973,
-    lng: 77.0694,
+  const [confirmedAddress, setConfirmedAddress] = useState<MobilePropertyAddress>({
+    formattedAddress: `${initialCountryOption.address}, ${initialCountryOption.city}, ${initialCountryOption.state}`,
+    country: initialCountryOption.name,
+    city: initialCountryOption.city,
+    placeId: 'default_place',
+    lat: initialCountryOption.defaultRent ? 28.3973 : 0,
+    lng: initialCountryOption.defaultRent ? 77.0694 : 0,
   });
 
+  const [floorsCount, setFloorsCount] = useState('4');
+  const [yearBuilt, setYearBuilt] = useState('2022');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // STEP 2 STATE: Policies & Amenities
+  const [propCurrency, setPropCurrency] = useState(initialCountryOption.currency);
+  const [isCurrencyDropdownOpen, setIsCurrencyDropdownOpen] = useState(false);
+  const [currencySearchQuery, setCurrencySearchQuery] = useState('');
+
+  const [propRules, setPropRules] = useState({
+    petsAllowed: false,
+    smokingAllowed: false,
+    sublettingAllowed: false,
+    minLeaseMonths: 11,
+    noticePeriodDays: 30,
+  });
+
+  const [propAmenities, setPropAmenities] = useState<string[]>([
+    '24/7 Security',
+    'Elevator',
+    'Covered Parking',
+    'Power Backup',
+  ]);
+  const [customAmenityInput, setCustomAmenityInput] = useState('');
+  const [propAmenityPhotos, setPropAmenityPhotos] = useState<Record<string, string>>({});
+
+  // STEP 3 STATE: Units Builder
+  // A. Single-Unit Asset Mode State
+  const [singleUnitType, setSingleUnitType] = useState('Villa / House');
+  const [singleUnitLabel, setSingleUnitLabel] = useState('Entire House');
+  const [singleUnitRent, setSingleUnitRent] = useState(initialCountryOption.defaultRent || 35000);
+  const [singleUnitDeposit, setSingleUnitDeposit] = useState(initialCountryOption.defaultDeposit || 70000);
+  const [singleUnitAreaSqFt, setSingleUnitAreaSqFt] = useState(2200);
+  const [singleUnitFurnishing, setSingleUnitFurnishing] = useState<'Unfurnished' | 'Semi-Furnished' | 'Fully Furnished'>('Semi-Furnished');
+  const [singleUnitElectricityMeter, setSingleUnitElectricityMeter] = useState('');
+  const [singleUnitWaterMeter, setSingleUnitWaterMeter] = useState('');
+
+  // B. Multi-Unit Mode State
+  const [unitsBuilderMode, setUnitsBuilderMode] = useState<'table' | 'bulk'>('table');
+  const [bulkFloorsStart, setBulkFloorsStart] = useState('1');
+  const [bulkFloorsEnd, setBulkFloorsEnd] = useState('4');
+  const [bulkUnitsPerFloor, setBulkUnitsPerFloor] = useState('2');
+  const [bulkUnitType, setBulkUnitType] = useState('2 BHK');
+  const [bulkFurnishing, setBulkFurnishing] = useState<'Unfurnished' | 'Semi-Furnished' | 'Fully Furnished'>('Semi-Furnished');
+  const [bulkAreaSqFt, setBulkAreaSqFt] = useState('1100');
+  const [bulkBaseRent, setBulkBaseRent] = useState(String(initialCountryOption.defaultRent || 25000));
+  const [bulkBaseDeposit, setBulkBaseDeposit] = useState(String(initialCountryOption.defaultDeposit || 50000));
+  const [bulkDefaultPhoto, setBulkDefaultPhoto] = useState<string | null>(null);
+
+  const [initialUnits, setInitialUnits] = useState<UnitDraft[]>([
+    {
+      unitNumber: '101',
+      unitType: '2 BHK',
+      floor: '1st Floor',
+      areaSqFt: 1100,
+      furnishing: 'Semi-Furnished',
+      rent: initialCountryOption.defaultRent || 25000,
+      deposit: initialCountryOption.defaultDeposit || 50000,
+      currency: initialCountryOption.currency,
+      electricityMeter: 'MTR-101',
+    },
+    {
+      unitNumber: '102',
+      unitType: '2 BHK',
+      floor: '1st Floor',
+      areaSqFt: 1100,
+      furnishing: 'Semi-Furnished',
+      rent: initialCountryOption.defaultRent || 25000,
+      deposit: initialCountryOption.defaultDeposit || 50000,
+      currency: initialCountryOption.currency,
+      electricityMeter: 'MTR-102',
+    },
+  ]);
+
+  const [expandedUnitIndices, setExpandedUnitIndices] = useState<Record<number, boolean>>({});
+  const [openUnitDropdown, setOpenUnitDropdown] = useState<{ idx: number; field: 'layout' | 'furnishing' } | null>(null);
+
+  // STEP 4 STATE: Photos & Review
+  const [propImages, setPropImages] = useState<string[]>([]);
+  const [coverPhotoIndex, setCoverPhotoIndex] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Available managers from state
   const availableManagers = useMemo(() => {
     const list: { id: string; name: string; role: string; phone?: string; email?: string }[] = [];
     if (state.propertyManagers && state.propertyManagers.length > 0) {
       state.propertyManagers
-        .filter((m) => (!user?.id || !m.ownerId || m.ownerId === user.id))
+        .filter((m) => !user?.id || !m.ownerId || m.ownerId === user.id)
         .forEach((m) => {
           list.push({
             id: m.id,
@@ -318,7 +324,8 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
     return list;
   }, [state.propertyManagers, user?.id]);
 
-  const searchGooglePlacesNew = async (query: string): Promise<typeof POPULAR_GOOGLE_PLACES> => {
+  // Google Places autocomplete search
+  const searchGooglePlaces = async (query: string): Promise<typeof POPULAR_GOOGLE_PLACES> => {
     const trimmed = query.trim();
     if (!trimmed || !GOOGLE_MAPS_API_KEY) return [];
 
@@ -332,9 +339,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         body: JSON.stringify({ input: trimmed }),
       });
 
-      if (!res.ok) {
-        return [];
-      }
+      if (!res.ok) return [];
 
       const data = await res.json();
       if (data.suggestions && Array.isArray(data.suggestions)) {
@@ -347,533 +352,441 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
             const secondary = pred.structuredFormat?.secondaryText?.text || '';
             const parts = secondary.split(',').map((p: string) => p.trim());
             const city = parts[0] || '';
-            const country = parts[parts.length - 1] || '';
+            const countryVal = parts[parts.length - 1] || '';
 
             return {
-              formattedAddress: text,
+              formattedAddress: `${text}${secondary ? `, ${secondary}` : ''}`,
               addressLine,
               city,
-              state: parts.length > 2 ? parts[1] : '',
-              country,
+              state: parts.length > 2 ? parts[1] : city,
+              country: countryVal,
               postalCode: '',
               lat: 0,
               lng: 0,
-              placeId: pred.placeId,
             };
           });
       }
-    } catch (err) {
-      console.warn('Failed to fetch Places API predictions on mobile:', err);
-    }
-
-    return [];
-  };
-
-  const fetchGooglePlaceDetails = async (
-    placeId: string,
-    fallback: typeof POPULAR_GOOGLE_PLACES[0] & { placeId?: string }
-  ): Promise<typeof POPULAR_GOOGLE_PLACES[0] & { placeId?: string }> => {
-    if (!placeId || !GOOGLE_MAPS_API_KEY) return fallback;
-
-    try {
-      const res = await fetch(
-        `https://places.googleapis.com/v1/places/${placeId}?fields=id,displayName,formattedAddress,addressComponents,location&key=${GOOGLE_MAPS_API_KEY}`
-      );
-      if (!res.ok) {
-        return fallback;
-      }
-
-      const data = await res.json();
-      let city = fallback.city;
-      let state = fallback.state;
-      let country = fallback.country;
-      let postalCode = fallback.postalCode;
-      let addressLine = fallback.addressLine;
-
-      if (data.addressComponents && Array.isArray(data.addressComponents)) {
-        for (const comp of data.addressComponents) {
-          const text = comp.longText || comp.shortText || '';
-          const types: string[] = comp.types || [];
-          if (types.includes('locality') || types.includes('postal_town')) city = text;
-          else if (!city && types.includes('administrative_area_level_2')) city = text;
-          if (types.includes('administrative_area_level_1')) state = text;
-          if (types.includes('country')) country = text;
-          if (types.includes('postal_code')) postalCode = text;
-          if (types.includes('route')) {
-            addressLine = addressLine ? `${addressLine}, ${text}` : text;
-          }
-        }
-      }
-
-      return {
-        formattedAddress: data.formattedAddress || data.displayName?.text || fallback.formattedAddress,
-        addressLine: addressLine || fallback.addressLine,
-        city: city || fallback.city,
-        state: state || fallback.state,
-        country: country || fallback.country,
-        postalCode: postalCode || fallback.postalCode,
-        lat: data.location?.latitude || fallback.lat,
-        lng: data.location?.longitude || fallback.lng,
-        placeId,
-      };
-    } catch (err) {
-      console.warn('Failed to fetch Places API details on mobile:', err);
-      return fallback;
+      return [];
+    } catch {
+      return [];
     }
   };
 
   const placesSuggestions = useMemo(() => {
-    const q = placesSearchQuery.trim().toLowerCase();
-    if (!q) {
-      return POPULAR_GOOGLE_PLACES.slice(0, 5);
+    if (!placesSearchQuery.trim()) {
+      return POPULAR_GOOGLE_PLACES.filter(
+        (p) => !country || p.country.toLowerCase().includes(country.toLowerCase()) || country.toLowerCase().includes(p.country.toLowerCase())
+      );
     }
-    if (livePlaces.length > 0) {
-      return livePlaces;
-    }
-    return POPULAR_GOOGLE_PLACES.filter(
-      (p) =>
+    if (livePlaces.length > 0) return livePlaces;
+    return POPULAR_GOOGLE_PLACES.filter((p) => {
+      const q = placesSearchQuery.toLowerCase();
+      return (
         p.formattedAddress.toLowerCase().includes(q) ||
         p.city.toLowerCase().includes(q) ||
-        p.country.toLowerCase().includes(q)
-    );
-  }, [placesSearchQuery, livePlaces]);
+        p.addressLine.toLowerCase().includes(q)
+      );
+    });
+  }, [placesSearchQuery, livePlaces, country]);
 
-  const handleSelectPlace = async (p: typeof POPULAR_GOOGLE_PLACES[0] & { placeId?: string }) => {
-    let finalPlace = p;
-    if (p.placeId) {
-      setIsPlacesLoading(true);
-      finalPlace = await fetchGooglePlaceDetails(p.placeId, p);
-      setIsPlacesLoading(false);
+  const handleSelectPlace = (place: (typeof POPULAR_GOOGLE_PLACES)[0]) => {
+    setConfirmedAddress({
+      formattedAddress: place.formattedAddress,
+      country: place.country || country,
+      city: place.city,
+      placeId: `place_${Date.now()}`,
+      lat: place.lat || 0,
+      lng: place.lng || 0,
+    });
+    if (place.country) {
+      setCountry(place.country);
+      const matchCountry = COUNTRY_OPTIONS.find((c) => c.name.toLowerCase() === place.country.toLowerCase());
+      if (matchCountry) {
+        setPropCurrency(matchCountry.currency);
+      }
     }
-
-    setConfirmedLocation(finalPlace.formattedAddress);
-    setPlacesSearchQuery(finalPlace.formattedAddress);
-    setAddressLine(finalPlace.addressLine || finalPlace.formattedAddress);
-    if (finalPlace.city) setCity(finalPlace.city);
-    if (finalPlace.state) setStateName(finalPlace.state);
-    if (finalPlace.postalCode) setPostalCode(finalPlace.postalCode);
-    if (finalPlace.lat && finalPlace.lng) {
-      setSelectedCoordinates({ lat: finalPlace.lat, lng: finalPlace.lng });
-    }
+    setPlacesSearchQuery('');
     setIsPlacesDropdownOpen(false);
-    if (finalPlace.country && finalPlace.country !== country) {
-      handleCountrySelect(finalPlace.country);
+    if (fieldErrors.propAddress) {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.propAddress;
+        return next;
+      });
     }
   };
 
   const handleSelectCustomQueryAsLocation = () => {
-    if (!placesSearchQuery.trim()) return;
-    setConfirmedLocation(placesSearchQuery.trim());
-    setAddressLine(placesSearchQuery.trim());
+    const trimmed = placesSearchQuery.trim();
+    if (!trimmed) return;
+    setConfirmedAddress({
+      formattedAddress: trimmed,
+      country,
+      city: '',
+      placeId: `custom_${Date.now()}`,
+      lat: 0,
+      lng: 0,
+    });
+    setPlacesSearchQuery('');
     setIsPlacesDropdownOpen(false);
-  };
-
-  const handleStep1Next = () => {
-    if (!propertyName.trim()) {
-      Alert.alert('Required', 'Please enter a property name.');
-      return;
-    }
-    if (!addressLine.trim() || !city.trim()) {
-      Alert.alert('Address Required', 'Please enter or select a valid Google Maps address in Step 1.');
-      return;
-    }
-    setStep(2);
-  };
-
-  // Step 2: Operational Policies & Amenities
-  const [petsAllowed, setPetsAllowed] = useState(true);
-  const [smokingAllowed, setSmokingAllowed] = useState(false);
-  const [sublettingAllowed, setSublettingAllowed] = useState(false);
-  const [minLeaseMonths, setMinLeaseMonths] = useState(11);
-  const [noticePeriodDays, setNoticePeriodDays] = useState(30);
-
-  const [amenities, setAmenities] = useState<string[]>([
-    '24/7 Security',
-    'Elevator',
-    'Covered Parking',
-    'Gymnasium',
-    'Power Backup',
-  ]);
-  const [isAmenitiesDropdownOpen, setIsAmenitiesDropdownOpen] = useState(false);
-  const [customAmenityInput, setCustomAmenityInput] = useState('');
-  const [amenityPhotos, setAmenityPhotos] = useState<Record<string, string>>({
-    'Gymnasium': 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=600&auto=format&fit=crop&q=80',
-    '24/7 Security': 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=600&auto=format&fit=crop&q=80',
-  });
-
-  // Step 3: Units Inventory Setup & Bulk Generator
-  const [unitsMode, setUnitsMode] = useState<'bulk' | 'table'>('table');
-  const [bulkStartFloor, setBulkStartFloor] = useState('1');
-  const [bulkEndFloor, setBulkEndFloor] = useState('3');
-  const [bulkUnitsPerFloor, setBulkUnitsPerFloor] = useState('2');
-  const [bulkLayoutType, setBulkLayoutType] = useState('2 BHK');
-  const [bulkFurnishing, setBulkFurnishing] = useState<'Unfurnished' | 'Semi-Furnished' | 'Fully Furnished'>('Semi-Furnished');
-  const [bulkAreaSqFt, setBulkAreaSqFt] = useState('1100');
-  const [bulkBaseRent, setBulkBaseRent] = useState(String(initialCountryOption.defaultRent));
-  const [bulkBaseDeposit, setBulkBaseDeposit] = useState(String(initialCountryOption.defaultDeposit));
-  const [bulkNumberingScheme, setBulkNumberingScheme] = useState<'standard' | 'suffix' | 'tower'>('standard');
-  const [bulkTowerPrefix, setBulkTowerPrefix] = useState('Wing A');
-  const [bulkMeterPrefix, setBulkMeterPrefix] = useState('MTR');
-  const [openUnitDropdown, setOpenUnitDropdown] = useState<{ idx: number; field: 'layout' | 'furnishing' } | null>(null);
-  const [isBulkLayoutDropdownOpen, setIsBulkLayoutDropdownOpen] = useState(false);
-  const [isBulkFurnishingDropdownOpen, setIsBulkFurnishingDropdownOpen] = useState(false);
-
-  const [initialUnits, setInitialUnits] = useState<UnitDraft[]>([
-    {
-      unitNumber: '101',
-      unitType: '2 BHK',
-      floor: '1st Floor',
-      areaSqFt: 1100,
-      furnishing: 'Semi-Furnished',
-      rent: initialCountryOption.defaultRent,
-      deposit: initialCountryOption.defaultDeposit,
-      currency: initialCountryOption.currency,
-      electricityMeter: 'MTR-101',
-    },
-    {
-      unitNumber: '102',
-      unitType: '2 BHK',
-      floor: '1st Floor',
-      areaSqFt: 1100,
-      furnishing: 'Semi-Furnished',
-      rent: initialCountryOption.defaultRent,
-      deposit: initialCountryOption.defaultDeposit,
-      currency: initialCountryOption.currency,
-      electricityMeter: 'MTR-102',
-    },
-    {
-      unitNumber: '201',
-      unitType: '3 BHK',
-      floor: '2nd Floor',
-      areaSqFt: 1450,
-      furnishing: 'Fully Furnished',
-      rent: Math.round(initialCountryOption.defaultRent * 1.3),
-      deposit: Math.round(initialCountryOption.defaultDeposit * 1.3),
-      currency: initialCountryOption.currency,
-      electricityMeter: 'MTR-201',
-    },
-  ]);
-  const [expandedUnitIndices, setExpandedUnitIndices] = useState<Record<number, boolean>>({});
-
-  // Step 4: Gallery & Review
-  const [galleryImages, setGalleryImages] = useState<string[]>([]);
-  const [coverPhotoIndex, setCoverPhotoIndex] = useState(0);
-
-  const handleUploadGalleryPhotos = async () => {
-    try {
-      const picked = await pickMultipleImages({ quality: 0.8 });
-      if (picked.length === 0) return;
-      Alert.alert('Processing Photos', `Compressing & uploading ${picked.length} property photo(s)...`);
-      const newUploadedUrls: string[] = [];
-      for (const item of picked) {
-        const payload = item.file || item.base64 || item.uri;
-        const url = await uploadOrCompressImage(
-          payload,
-          `properties/gallery/${Date.now()}_${item.name.replace(/[^a-zA-Z0-9.]/g, '_')}`
-        );
-        if (url) newUploadedUrls.push(url);
-      }
-      if (newUploadedUrls.length > 0) {
-        const updated = [...galleryImages, ...newUploadedUrls];
-        setGalleryImages(updated);
-        setCoverPhotoIndex(0);
-        Alert.alert('Upload Complete ✓', `Added ${newUploadedUrls.length} photo(s) to property gallery.`);
-      }
-    } catch (err: any) {
-      Alert.alert('Upload Error', err?.message || 'Could not upload photos.');
+    if (fieldErrors.propAddress) {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.propAddress;
+        return next;
+      });
     }
   };
 
-  // Handlers
-  const handleCountrySelect = (cName: string, explicitCurrency?: string) => {
+  const handleCountrySelect = (cName: string, cCurrency: string) => {
     setCountry(cName);
-    const match = ALL_GLOBAL_COUNTRIES.find((c) => c.name === cName || (explicitCurrency && c.currency === explicitCurrency)) || COUNTRY_OPTIONS.find((c) => c.name === cName);
-    if (match) {
-      setCurrency(match.currency);
-      setBulkBaseRent(String(match.defaultRent));
-      setBulkBaseDeposit(String(match.defaultDeposit));
+    setPropCurrency(cCurrency);
+    setIsCountryDropdownOpen(false);
+    const preset = COUNTRY_OPTIONS.find((c) => c.name === cName);
+    if (preset) {
+      setSingleUnitRent(preset.defaultRent);
+      setSingleUnitDeposit(preset.defaultDeposit);
+      setBulkBaseRent(String(preset.defaultRent));
+      setBulkBaseDeposit(String(preset.defaultDeposit));
       setInitialUnits((prev) =>
         prev.map((u) => ({
           ...u,
-          currency: match.currency,
-          rent: match.defaultRent,
-          deposit: match.defaultDeposit,
+          currency: preset.currency,
+          rent: preset.defaultRent,
+          deposit: preset.defaultDeposit,
         }))
       );
-      setAddressLine(match.address);
-      setCity(match.city);
-      setStateName(match.state);
-      setPostalCode(match.postalCode);
-      setConfirmedLocation(`${match.address}, ${match.city}, ${match.state} ${match.postalCode}`);
-      setPlacesSearchQuery('');
     }
   };
 
-  const toggleAmenity = (name: string) => {
-    if (amenities.includes(name)) {
-      setAmenities(amenities.filter((a) => a !== name));
-    } else {
-      setAmenities([...amenities, name]);
+  // Property type selection handler
+  const handlePropertyTypeSelect = (selectedLabel: string) => {
+    setPropertyType(selectedLabel);
+    const defStructure = getDefaultPropertyStructure(selectedLabel);
+    setPropStructure(defStructure);
+    if (defStructure === 'single_unit') {
+      setFloorsCount('2');
     }
-  };
-
-  const handleAddCustomAmenity = () => {
-    const clean = customAmenityInput.trim();
-    if (clean && !amenities.includes(clean)) {
-      setAmenities([...amenities, clean]);
-      setCustomAmenityInput('');
+    const validTypes = getUnitTypesForProperty(selectedLabel);
+    if (validTypes.length > 0) {
+      setSingleUnitType(validTypes[0]);
+      setBulkUnitType(validTypes[0]);
     }
+    setIsTypeDropdownOpen(false);
   };
 
-  const handleUploadAmenityPhoto = async (am: string) => {
-    try {
-      const picked = await pickSingleImage({ quality: 0.8 });
-      if (!picked) return;
-      Alert.alert('Processing Photo', `Optimizing photo for ${am}...`);
-      const payload = picked.file || picked.base64 || picked.uri;
-      const url = await uploadOrCompressImage(
-        payload,
-        `properties/amenities/${Date.now()}_${picked.name.replace(/[^a-zA-Z0-9.]/g, '_')}`
-      );
-      if (url) {
-        setAmenityPhotos((prev) => ({ ...prev, [am]: url }));
-        Alert.alert('Photo Attached ✓', `Uploaded photo for ${am}`);
-      }
-    } catch (err: any) {
-      Alert.alert('Upload Error', err?.message || 'Could not upload photo.');
-    }
-  };
-
-  const handleRemoveAmenityPhoto = (am: string) => {
-    setAmenityPhotos((prev) => {
-      const next = { ...prev };
-      delete next[am];
-      return next;
-    });
-  };
-
+  // Bulk Generator Execution
   const handleGenerateBulkUnits = () => {
-    const startF = Math.max(1, parseInt(bulkStartFloor, 10) || 1);
-    const endF = Math.max(startF, parseInt(bulkEndFloor, 10) || 1);
-    const perFloor = Math.max(1, parseInt(bulkUnitsPerFloor, 10) || 2);
-    const rentNum = parseInt(bulkBaseRent, 10) || 25000;
-    const depNum = parseInt(bulkBaseDeposit, 10) || 50000;
-    const sqFtNum = parseInt(bulkAreaSqFt, 10) || 1100;
+    const startF = Math.max(1, parseInt(bulkFloorsStart, 10) || 1);
+    const endF = Math.max(startF, parseInt(bulkFloorsEnd, 10) || 1);
+    const perF = Math.max(1, Math.min(20, parseInt(bulkUnitsPerFloor, 10) || 2));
+    const baseR = Math.max(0, parseInt(bulkBaseRent, 10) || 0);
+    const baseD = Math.max(0, parseInt(bulkBaseDeposit, 10) || 0);
+    const area = Math.max(0, parseInt(bulkAreaSqFt, 10) || 0);
 
-    const suffixes = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
     const generated: UnitDraft[] = [];
-    for (let f = startF; f <= endF; f++) {
-      for (let u = 1; u <= perFloor; u++) {
-        let uNum = `${f * 100 + u}`;
-        if (bulkNumberingScheme === 'suffix') {
-          uNum = `${f}${suffixes[(u - 1) % suffixes.length]}`;
-        } else if (bulkNumberingScheme === 'tower') {
-          uNum = `${bulkTowerPrefix ? bulkTowerPrefix + '-' : ''}${f * 100 + u}`;
-        }
+    for (let floorNum = startF; floorNum <= endF; floorNum++) {
+      const floorLabel =
+        floorNum === 1 ? '1st Floor' : floorNum === 2 ? '2nd Floor' : floorNum === 3 ? '3rd Floor' : `${floorNum}th Floor`;
+
+      for (let unitIdx = 1; unitIdx <= perF; unitIdx++) {
+        const unitNumber = `${floorNum}${unitIdx.toString().padStart(2, '0')}`;
         generated.push({
-          unitNumber: uNum,
-          unitType: bulkLayoutType,
-          floor: `Floor ${f}`,
-          areaSqFt: sqFtNum,
+          unitNumber,
+          unitType: bulkUnitType,
+          floor: floorLabel,
+          areaSqFt: area,
           furnishing: bulkFurnishing,
-          rent: rentNum,
-          deposit: depNum,
-          currency: currency,
-          electricityMeter: `${bulkMeterPrefix}-${uNum.replace(/[^a-zA-Z0-9]/g, '')}`,
+          rent: baseR,
+          deposit: baseD,
+          currency: propCurrency,
+          electricityMeter: `MTR-${unitNumber}`,
+          images: bulkDefaultPhoto ? [bulkDefaultPhoto] : [],
         });
       }
     }
+
     setInitialUnits(generated);
-    setUnitsMode('table');
-    Alert.alert('Units Generated ⚡', `Successfully created ${generated.length} units across ${endF - startF + 1} floors!`);
+    setUnitsBuilderMode('table');
+    Alert.alert('Batch Units Generated! ⚡', `${generated.length} units have been created in your inventory.`);
   };
 
+  // Unit row management
   const handleAddIndividualUnit = () => {
-    const nextNum = (100 + initialUnits.length + 1).toString();
-    setInitialUnits([
-      ...initialUnits,
+    const nextNum = 100 + initialUnits.length + 1;
+    setInitialUnits((prev) => [
+      ...prev,
       {
-        unitNumber: nextNum,
+        unitNumber: `${nextNum}`,
         unitType: '2 BHK',
         floor: '1st Floor',
         areaSqFt: 1100,
         furnishing: 'Semi-Furnished',
-        rent: 25000,
-        deposit: 50000,
-        currency: currency,
+        rent: parseInt(bulkBaseRent, 10) || 25000,
+        deposit: parseInt(bulkBaseDeposit, 10) || 50000,
+        currency: propCurrency,
         electricityMeter: `MTR-${nextNum}`,
       },
     ]);
   };
 
-  const handleDeleteUnit = (index: number) => {
-    setInitialUnits(initialUnits.filter((_, idx) => idx !== index));
+  const handleDeleteUnit = (idx: number) => {
+    setInitialUnits((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const toggleUnitExpand = (idx: number) => {
-    setExpandedUnitIndices((prev) => ({
-      ...prev,
-      [idx]: !prev[idx],
-    }));
-  };
-
-  const handleUploadUnitPhoto = async (unitIndex: number) => {
+  const handleUploadUnitPhoto = async (idx: number) => {
     try {
       const picked = await pickSingleImage({ quality: 0.8 });
-      if (!picked) return;
-      Alert.alert('Processing Photo', 'Compressing & uploading unit photo...');
-      const payload = picked.file || picked.base64 || picked.uri;
-      const optimized = await uploadOrCompressImage(
-        payload,
-        `units/${Date.now()}_${picked.name.replace(/[^a-zA-Z0-9.]/g, '_')}`
-      );
-      if (optimized) {
+      if (picked) {
+        const optimized = await uploadOrCompressImage(
+          picked.file || picked.uri,
+          `units/${Date.now()}_unit_${idx}`
+        );
         setInitialUnits((prev) =>
-          prev.map((item, idx) =>
-            idx === unitIndex ? { ...item, images: [optimized] } : item
+          prev.map((item, i) =>
+            i === idx ? { ...item, images: [optimized] } : item
           )
         );
-        Alert.alert('Photo Attached ✓', `Photo attached to Unit ${initialUnits[unitIndex]?.unitNumber}`);
       }
-    } catch (err: any) {
-      Alert.alert('Upload Error', err?.message || 'Could not upload unit photo.');
+    } catch (err) {
+      console.warn('Unit photo upload error:', err);
     }
   };
 
-  const handleRemoveUnitPhoto = (unitIndex: number) => {
+  const handleRemoveUnitPhoto = (idx: number) => {
     setInitialUnits((prev) =>
-      prev.map((item, idx) =>
-        idx === unitIndex ? { ...item, images: [] } : item
-      )
+      prev.map((item, i) => (i === idx ? { ...item, images: [] } : item))
     );
   };
 
-  const totalProjectedMonthlyRent = initialUnits.reduce((sum, u) => sum + (u.rent || 0), 0);
+  // Amenity photo upload
+  const handleUploadAmenityPhoto = async (amName: string) => {
+    try {
+      const picked = await pickSingleImage({ quality: 0.8 });
+      if (picked) {
+        const optimized = await uploadOrCompressImage(
+          picked.file || picked.uri,
+          `amenities/${Date.now()}_${amName.replace(/[^a-zA-Z0-9]/g, '_')}`
+        );
+        setPropAmenityPhotos((prev) => ({ ...prev, [amName]: optimized }));
+      }
+    } catch (err) {
+      console.warn('Amenity photo upload error:', err);
+    }
+  };
 
-  const handleSaveAndPublish = () => {
+  const handleRemoveAmenityPhoto = (amName: string) => {
+    setPropAmenityPhotos((prev) => {
+      const next = { ...prev };
+      delete next[amName];
+      return next;
+    });
+  };
+
+  const handleAddCustomAmenity = () => {
+    const trimmed = customAmenityInput.trim();
+    if (!trimmed) return;
+    if (!propAmenities.includes(trimmed)) {
+      setPropAmenities((prev) => [...prev, trimmed]);
+    }
+    setCustomAmenityInput('');
+  };
+
+  // Gallery photo upload
+  const handleUploadGalleryPhotos = async () => {
+    try {
+      const pickedList = await pickMultipleImages({ quality: 0.8 });
+      if (pickedList.length > 0) {
+        const optimizedList: string[] = [];
+        for (const item of pickedList) {
+          const opt = await uploadOrCompressImage(
+            item.file || item.uri,
+            `properties/gallery/${Date.now()}_${item.name || 'photo'}`
+          );
+          optimizedList.push(opt);
+        }
+        setPropImages((prev) => [...prev, ...optimizedList]);
+      }
+    } catch (err) {
+      console.warn('Gallery upload error:', err);
+    }
+  };
+
+  // Projected metrics
+  const totalProjectedMonthlyRent = useMemo(() => {
+    if (propStructure === 'single_unit') {
+      return singleUnitRent || 0;
+    }
+    return initialUnits.reduce((sum, u) => sum + (Number(u.rent) || 0), 0);
+  }, [propStructure, singleUnitRent, initialUnits]);
+
+  // Step 1 Validation & Progression
+  const handleStep1Next = () => {
+    const errors: Record<string, string> = {};
     if (!propertyName.trim()) {
-      setStep(1);
-      Alert.alert('Required', 'Please enter a property name.');
+      errors.propName = 'Property name is required.';
+    }
+    if (!confirmedAddress?.formattedAddress) {
+      errors.propAddress = 'Location is required. Please search and select from Google Maps Places.';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      Alert.alert('Required Information Missing', 'Please fill the highlighted fields in Step 1.');
       return;
     }
-    if (initialUnits.length === 0) {
-      setStep(3);
-      Alert.alert('Units Required', 'Please configure at least one unit before publishing.');
+    setFieldErrors({});
+    setStep(2);
+  };
+
+  // Step 3 Validation & Progression
+  const handleStep3Next = () => {
+    if (propStructure === 'multi_unit' && initialUnits.length === 0) {
+      Alert.alert('No Units Configured', 'Please add at least one unit or generate units using the Bulk Generator.');
       return;
     }
-    if (planUsage.isPropertyLimitReached) {
-      Alert.alert(
-        'Plan Limit Reached',
-        `You have used all ${planUsage.propertiesMax} properties on your ${planUsage.planName}. Please upgrade your tier.`
-      );
+    if (propStructure === 'single_unit' && (!singleUnitRent || singleUnitRent <= 0)) {
+      Alert.alert('Expected Rent Missing', 'Please specify expected monthly rent for this single-unit property.');
       return;
     }
+    setStep(4);
+  };
 
-    const propId = `prop-${Date.now()}`;
-    const sortedImages = [...galleryImages];
-    if (coverPhotoIndex > 0 && coverPhotoIndex < sortedImages.length) {
-      const [cover] = sortedImages.splice(coverPhotoIndex, 1);
-      sortedImages.unshift(cover);
-    }
+  // Final Publish Handler (Parity with Web PropertiesPage handleCreateProperty)
+  const handleSaveAndPublish = async () => {
+    if (!user) return;
+    const effectiveOwnerId = user.role === 'manager' && user.ownerId ? user.ownerId : user.id;
 
-    const effectiveOwnerId = user.role === 'manager' ? (user.ownerId || '') : user.id;
-
-    const newProp: MobileProperty = {
-      id: propId,
-      ownerId: effectiveOwnerId,
-      name: propertyName.trim(),
-      propertyType,
-      floorsCount: parseInt(floorsCount, 10) || 3,
-      yearBuilt: parseInt(yearBuilt, 10) || 2023,
-      country,
-      currency,
-      address: {
-        formattedAddress: confirmedLocation || `${addressLine.trim()}, ${city.trim()}, ${stateName.trim()} ${postalCode.trim()}`,
-        city: city.trim(),
-        state: stateName.trim(),
-        country,
-        postalCode: postalCode.trim(),
-        lat: selectedCoordinates.lat,
-        lng: selectedCoordinates.lng,
-      },
-      unitCount: initialUnits.length,
-      occupied: 0,
-      amenities,
-      amenityPhotos: Object.entries(amenityPhotos)
-        .filter(([name]) => amenities.includes(name))
-        .map(([name, image]) => ({ name, image })),
-      images: sortedImages,
-      coverPhotoIndex: 0,
-      assignedManagerId: user.role === 'manager' ? user.id : (assignedManagerId || undefined),
-      rules: {
-        petsAllowed,
-        smokingAllowed,
-        sublettingAllowed,
-        minLeaseMonths,
-        noticePeriodDays,
-      },
-      createdAt: new Date().toISOString(),
-    };
-
-    const newUnitsList: MobileUnit[] = initialUnits.map((u) => ({
-      id: `unit-${propId}-${u.unitNumber}`,
-      propertyId: propId,
-      propertyName: propertyName.trim(),
-      ownerId: effectiveOwnerId,
-      unitNumber: u.unitNumber,
-      unitType: u.unitType,
-      floor: u.floor,
-      areaSqFt: u.areaSqFt,
-      furnishing: u.furnishing,
-      rent: u.rent,
-      deposit: u.deposit,
-      currency: currency,
-      status: 'vacant',
-      isListedPublicly: true,
-      tenant: null,
-      currentTenantId: null,
-      electricityMeter: u.electricityMeter,
-      images: galleryImages.length > 0 ? [galleryImages[0]] : [],
-      image: galleryImages[0] || '',
-    }));
-
+    // Check Plan Limits
     if (usage.properties.isFull) {
       setLimitModalType('properties');
       return;
     }
-    if (usage.units.used + newUnitsList.length > usage.units.max) {
+    const unitCountToRegister = propStructure === 'single_unit' ? 1 : initialUnits.length;
+    if (usage.units.used + unitCountToRegister > usage.units.max) {
       setLimitModalType('units');
       return;
     }
 
-    saveProperty(newProp, newUnitsList);
-    Alert.alert(
-      'Property Published! 🎉',
-      `"${newProp.name}" with ${newUnitsList.length} configured units is now live in your portfolio.`
-    );
-    if (onSuccess) onSuccess();
-    else if (onBack) onBack();
+    setIsSubmitting(true);
+    try {
+      const propId = `prop_${Date.now()}`;
+      const sortedImages = [...propImages];
+      if (coverPhotoIndex > 0 && coverPhotoIndex < sortedImages.length) {
+        const [cover] = sortedImages.splice(coverPhotoIndex, 1);
+        sortedImages.unshift(cover);
+      }
+
+      const newProp: MobileProperty = {
+        id: propId,
+        ownerId: effectiveOwnerId,
+        name: propertyName.trim(),
+        propertyType,
+        propertyStructure: propStructure,
+        propertyCategory: getPropertyCategory(propertyType),
+        isSingleUnit: propStructure === 'single_unit',
+        floorsCount: parseInt(floorsCount, 10) || 1,
+        yearBuilt: yearBuilt ? parseInt(yearBuilt, 10) : undefined,
+        assignedManagerId: user.role === 'manager' ? user.id : (assignedManagerId || undefined),
+        address: confirmedAddress,
+        country,
+        currency: propCurrency,
+        amenities: propAmenities,
+        amenityPhotos: Object.entries(propAmenityPhotos)
+          .filter(([name]) => propAmenities.includes(name))
+          .map(([name, image]) => ({ name, image })),
+        images: sortedImages,
+        coverPhotoIndex: 0,
+        rules: propRules,
+        unitCount: unitCountToRegister,
+        occupied: 0,
+        createdAt: new Date().toISOString(),
+      };
+
+      let newUnitsList: MobileUnit[] = [];
+      if (propStructure === 'single_unit') {
+        newUnitsList = [
+          {
+            id: `unit-${propId}-main`,
+            propertyId: propId,
+            propertyName: propertyName.trim(),
+            country,
+            address: confirmedAddress.formattedAddress,
+            ownerId: effectiveOwnerId,
+            unitNumber: singleUnitLabel.trim() || 'Entire House',
+            unitType: singleUnitType,
+            floor: 'Whole Property',
+            areaSqFt: singleUnitAreaSqFt || 0,
+            furnishing: singleUnitFurnishing,
+            rent: singleUnitRent || 0,
+            deposit: singleUnitDeposit || 0,
+            currency: propCurrency,
+            status: 'vacant',
+            isListedPublicly: true,
+            tenant: null,
+            currentTenantId: null,
+            electricityMeter: singleUnitElectricityMeter || undefined,
+            waterMeter: singleUnitWaterMeter || undefined,
+            isWholeProperty: true,
+            images: sortedImages.length > 0 ? sortedImages : [],
+            image: sortedImages[0] || '',
+          },
+        ];
+      } else {
+        newUnitsList = initialUnits.map((u) => ({
+          id: `unit-${propId}-${u.unitNumber}`,
+          propertyId: propId,
+          propertyName: propertyName.trim(),
+          country,
+          address: confirmedAddress.formattedAddress,
+          ownerId: effectiveOwnerId,
+          unitNumber: u.unitNumber,
+          unitType: u.unitType,
+          floor: u.floor,
+          areaSqFt: u.areaSqFt,
+          furnishing: u.furnishing,
+          rent: u.rent,
+          deposit: u.deposit,
+          currency: propCurrency,
+          status: 'vacant',
+          isListedPublicly: true,
+          tenant: null,
+          currentTenantId: null,
+          electricityMeter: u.electricityMeter || undefined,
+          waterMeter: u.waterMeter || undefined,
+          images: u.images && u.images.length > 0 ? u.images : (sortedImages.length > 0 ? [sortedImages[0]] : []),
+          image: (u.images && u.images[0]) || sortedImages[0] || '',
+        }));
+      }
+
+      saveProperty(newProp, newUnitsList);
+      Alert.alert(
+        'Property Published! 🎉',
+        propStructure === 'single_unit'
+          ? `"${newProp.name}" (Single-Unit Asset) is now published in your portfolio.`
+          : `"${newProp.name}" with ${newUnitsList.length} configured units is now live in your portfolio.`
+      );
+      if (onSuccess) onSuccess();
+      else if (onBack) onBack();
+    } catch (err: any) {
+      console.error('Error saving property:', err);
+      Alert.alert('Save Failed', err?.message || 'Could not create property. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* StatusBar managed globally */}
-
-      {/* Real Screen Status Bar */}
       <ScreenStatusBar />
 
-      {/* Screen Header */}
+      {/* Header */}
       <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
         <View style={styles.headerLeft}>
-          <TouchableOpacity onPress={onBack} style={[styles.backBtn, isDark && { backgroundColor: '#1E293B' }]} activeOpacity={0.7}>
+          <TouchableOpacity onPress={onBack} style={styles.backBtn} activeOpacity={0.7}>
             <Ionicons name="arrow-back" size={20} color={colors.navy} />
           </TouchableOpacity>
-          <View style={styles.logoBadge}>
-            <Feather name="home" size={18} color="#FFFFFF" />
-          </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.navy }]}>New Property</Text>
-          </View>
+          <Text style={[styles.headerTitle, { color: colors.navy }]}>Add New Property</Text>
         </View>
         <View style={[styles.stepBadge, isDark && { backgroundColor: '#064E3B', borderColor: '#059669' }]}>
           <Text style={[styles.stepBadgeText, isDark && { color: '#6EE7B7' }]}>STEP {step} / 4</Text>
@@ -885,98 +798,142 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Tier Quota Indicator Banner */}
-        <View style={[styles.quotaBanner, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.12)', borderColor: 'rgba(16, 185, 129, 0.3)' }]}>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.quotaBannerTitle, isDark && { color: '#6EE7B7' }]}>
-              {planUsage.planName}: {planUsage.propertiesUsed} / {planUsage.propertiesMax} Properties Used
-            </Text>
-            <Text style={[styles.quotaBannerSub, isDark && { color: '#A7F3D0' }]}>
-              {planUsage.unitsUsed} / {planUsage.unitsMax} Units registered in portfolio
-            </Text>
-          </View>
-          <View style={styles.quotaBadge}>
-            <Text style={styles.quotaBadgeText}>Quota OK</Text>
-          </View>
-        </View>
+        {/* Current Stage Chip Only (Web Parity Clean UX) */}
+        {(() => {
+          const stepDefs = [
+            { num: 1, label: 'Identity & Structure', icon: 'home' },
+            { num: 2, label: 'Policies & Amenities', icon: 'shield' },
+            { num: 3, label: propStructure === 'single_unit' ? 'Single-Unit Terms' : `Units Inventory (${initialUnits.length})`, icon: 'layers' },
+            { num: 4, label: 'Photos & Final Review', icon: 'image' },
+          ];
+          const currentStage = stepDefs.find((s) => s.num === step) || stepDefs[0];
 
-        {/* Step Progress Segmented Bar - Web Parity Flow */}
-        <View style={styles.stepsNavRow}>
-          {[
-            { num: 1, label: 'Info', icon: 'home' },
-            { num: 2, label: 'Rules', icon: 'shield' },
-            { num: 3, label: 'Units', icon: 'layers' },
-            { num: 4, label: 'Photos', icon: 'image' },
-          ].map((s) => (
-            <TouchableOpacity
-              key={s.num}
-              style={[
-                styles.stepTabPill,
-                { backgroundColor: colors.surface, borderColor: colors.line },
-                step === s.num && styles.stepTabPillActive,
-                step > s.num && (isDark ? { backgroundColor: 'rgba(16, 185, 129, 0.18)', borderColor: 'rgba(16, 185, 129, 0.35)' } : styles.stepTabPillCompleted),
-              ]}
-              onPress={() => setStep(s.num as any)}
-              activeOpacity={0.8}
-            >
-              <Feather
-                name={(step > s.num ? 'check' : s.icon) as any}
-                size={12}
-                color={step === s.num ? '#FFFFFF' : step > s.num ? (isDark ? '#34D399' : '#059669') : colors.inkSoft}
-                style={{ marginRight: 3 }}
-              />
-              <Text
-                style={[
-                  styles.stepTabPillText,
-                  { color: colors.inkSoft },
-                  step === s.num && styles.stepTabPillTextActive,
-                  step > s.num && (isDark ? { color: '#34D399' } : styles.stepTabPillTextCompleted),
-                ]}
-              >
-                {s.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+          return (
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+              <View style={styles.currentStageChip}>
+                <Feather
+                  name={currentStage.icon as any}
+                  size={13}
+                  color="#FFFFFF"
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={styles.currentStageChipText}>
+                  {currentStage.label}
+                </Text>
+              </View>
+            </View>
+          );
+        })()}
 
-        {/* STEP 1: IDENTITY & GEOLOCATION */}
+        {/* ========================================================================= */}
+        {/* STEP 1: IDENTITY & STRUCTURE                                              */}
+        {/* ========================================================================= */}
         {step === 1 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
             <Text style={[styles.cardTitle, { color: colors.navy }]}>1. Identity & Physical Structure</Text>
 
-            <Text style={styles.inputLabel}>Property Name *</Text>
+            {/* Property Name */}
+            <Text style={[styles.inputLabel, fieldErrors.propName && { color: '#EF4444' }]}>
+              Property Name *
+            </Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, fieldErrors.propName && styles.inputError]}
               value={propertyName}
-              onChangeText={setPropertyName}
-              placeholder="e.g. Palm Residency, Tower A"
+              onChangeText={(val) => {
+                setPropertyName(val);
+                if (fieldErrors.propName) {
+                  setFieldErrors((prev) => {
+                    const next = { ...prev };
+                    delete next.propName;
+                    return next;
+                  });
+                }
+              }}
+              placeholder="e.g. Maple Heights Residency, Tower A"
               placeholderTextColor={colors.inkSoft}
             />
+            {fieldErrors.propName && (
+              <Text style={styles.errorText}>⚠️ {fieldErrors.propName}</Text>
+            )}
 
-            <Text style={styles.inputLabel}>Property Classification</Text>
-            <View style={{ marginBottom: 16 }}>
+            {/* Country * */}
+            <Text style={styles.inputLabel}>Country *</Text>
+            <View style={{ marginBottom: 14 }}>
               <TouchableOpacity
-                style={[
-                  styles.dropdownTrigger,
-                  isTypeDropdownOpen && styles.dropdownTriggerActive,
-                ]}
+                style={[styles.dropdownTrigger, isCountryDropdownOpen && styles.dropdownTriggerActive]}
                 onPress={() => {
                   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                  setIsTypeDropdownOpen((prev) => !prev);
-                  if (isCountryDropdownOpen) setIsCountryDropdownOpen(false);
+                  setIsCountryDropdownOpen((prev) => !prev);
+                  setIsTypeDropdownOpen(false);
+                  setIsManagerDropdownOpen(false);
                 }}
                 activeOpacity={0.8}
               >
                 <View style={styles.dropdownLeft}>
                   <View style={styles.dropdownBadge}>
-                    <Feather
-                      name={getPropertyTypeIcon(propertyType)}
-                      size={14}
-                      color={isDark ? '#34D399' : '#059669'}
-                    />
+                    <Text style={styles.dropdownBadgeSymbol}>
+                      {COUNTRY_OPTIONS.find((c) => c.name === country)?.symbol || getSymbol(propCurrency)}
+                    </Text>
                   </View>
                   <Text style={styles.dropdownText}>
-                    {propertyType || 'Select Property Classification'}
+                    {country} ({COUNTRY_OPTIONS.find((c) => c.name === country)?.currency || propCurrency})
+                  </Text>
+                </View>
+                <Feather
+                  name={isCountryDropdownOpen ? 'chevron-up' : 'chevron-down'}
+                  size={18}
+                  color={isCountryDropdownOpen ? colors.primary : colors.inkSoft}
+                />
+              </TouchableOpacity>
+
+              {isCountryDropdownOpen && (
+                <View style={styles.dropdownMenu}>
+                  <ScrollView nestedScrollEnabled style={{ maxHeight: 220 }}>
+                    {COUNTRY_OPTIONS.map((c) => {
+                      const isSelected = country === c.name;
+                      return (
+                        <TouchableOpacity
+                          key={c.name}
+                          style={[styles.dropdownItem, isSelected && styles.dropdownItemActive]}
+                          onPress={() => handleCountrySelect(c.name, c.currency)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                            <View style={[styles.dropdownBadge, isSelected && { backgroundColor: '#D1FAE5' }]}>
+                              <Text style={styles.dropdownBadgeSymbol}>{c.symbol}</Text>
+                            </View>
+                            <Text style={[styles.dropdownItemText, isSelected && styles.dropdownItemTextActive]}>
+                              {c.name} ({c.currency})
+                            </Text>
+                          </View>
+                          {isSelected && <Feather name="check" size={16} color={colors.primary} />}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+
+            {/* Property Classification (Categorized) */}
+            <Text style={styles.inputLabel}>Property Classification</Text>
+            <View style={{ marginBottom: 16 }}>
+              <TouchableOpacity
+                style={[styles.dropdownTrigger, isTypeDropdownOpen && styles.dropdownTriggerActive]}
+                onPress={() => {
+                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  setIsTypeDropdownOpen((prev) => !prev);
+                  setIsCountryDropdownOpen(false);
+                  setIsManagerDropdownOpen(false);
+                }}
+                activeOpacity={0.8}
+              >
+                <View style={styles.dropdownLeft}>
+                  <View style={styles.dropdownBadge}>
+                    <Feather name="home" size={14} color={isDark ? '#34D399' : '#059669'} />
+                  </View>
+                  <Text style={styles.dropdownText} numberOfLines={1}>
+                    {propertyType}
                   </Text>
                 </View>
                 <Feather
@@ -988,189 +945,117 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
 
               {isTypeDropdownOpen && (
                 <View style={styles.dropdownMenu}>
-                  {PROPERTY_TYPES.map((type) => {
-                    const isSelected = propertyType === type;
-                    return (
-                      <TouchableOpacity
-                        key={type}
-                        style={[
-                          styles.dropdownItem,
-                          isSelected && (isDark ? { backgroundColor: '#064E3B33' } : styles.dropdownItemActive),
-                          isDark && { borderBottomColor: '#334155' },
-                        ]}
-                        onPress={() => {
-                          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                          setPropertyType(type);
-                          setIsTypeDropdownOpen(false);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <View
-                            style={[
-                              styles.dropdownBadge,
-                              isSelected && { backgroundColor: '#D1FAE5', borderColor: '#6EE7B7' },
-                            ]}
-                          >
-                            <Feather
-                              name={getPropertyTypeIcon(type)}
-                              size={13}
-                              color={isSelected ? '#059669' : '#64748B'}
-                            />
+                  <ScrollView nestedScrollEnabled style={{ maxHeight: 280 }}>
+                    {['residential', 'commercial', 'mixed'].map((catKey) => {
+                      const categoryLabel =
+                        catKey === 'residential'
+                          ? 'Residential Options'
+                          : catKey === 'commercial'
+                            ? 'Commercial Real Estate'
+                            : 'Mixed-Use Development';
+                      const options = PROPERTY_TYPE_OPTIONS.filter((o) => o.category === catKey);
+
+                      return (
+                        <View key={catKey}>
+                          <View style={styles.dropdownGroupHeader}>
+                            <Text style={styles.dropdownGroupHeaderText}>{categoryLabel.toUpperCase()}</Text>
                           </View>
-                          <Text
-                            style={[
-                              styles.dropdownItemText,
-                              isSelected && styles.dropdownItemTextActive,
-                            ]}
-                          >
-                            {type}
-                          </Text>
-                        </View>
-                        {isSelected && <Feather name="check" size={16} color="#059669" />}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              )}
-            </View>
-
-            <Text style={styles.inputLabel}>Operational Country & Currency</Text>
-            {(() => {
-              const selectedCountry =
-                ALL_GLOBAL_COUNTRIES.find((c) => c.name === country || c.currency === currency) ||
-                COUNTRY_OPTIONS.find((c) => c.name === country) || initialCountryOption;
-
-              const filteredCountries = ALL_GLOBAL_COUNTRIES.filter((c) => {
-                const q = countrySearchQuery.toLowerCase().trim();
-                if (!q) return true;
-                return (
-                  c.name.toLowerCase().includes(q) ||
-                  c.currency.toLowerCase().includes(q) ||
-                  (c.symbol && c.symbol.toLowerCase().includes(q))
-                );
-              });
-
-              return (
-                <View>
-                  <TouchableOpacity
-                    style={[
-                      styles.dropdownTrigger,
-                      isCountryDropdownOpen && styles.dropdownTriggerActive,
-                    ]}
-                    onPress={() => {
-                      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                      setIsCountryDropdownOpen((prev) => !prev);
-                      if (isTypeDropdownOpen) setIsTypeDropdownOpen(false);
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <View style={styles.dropdownLeft}>
-                      <View style={styles.dropdownBadge}>
-                        <Text style={styles.dropdownBadgeSymbol}>{selectedCountry.symbol}</Text>
-                      </View>
-                      <Text style={styles.dropdownText}>
-                        {selectedCountry.name} ({selectedCountry.currency})
-                      </Text>
-                    </View>
-                    <Feather
-                      name={isCountryDropdownOpen ? 'chevron-up' : 'chevron-down'}
-                      size={18}
-                      color={isCountryDropdownOpen ? colors.primary : colors.inkSoft}
-                    />
-                  </TouchableOpacity>
-
-                  {isCountryDropdownOpen && (
-                    <View style={styles.dropdownMenu}>
-                      {/* Real-time search input */}
-                      <View style={{ padding: 8, borderBottomWidth: 1, borderBottomColor: colors.line }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surfaceSunken, borderRadius: 6, paddingHorizontal: 8 }}>
-                          <Feather name="search" size={14} color={colors.inkSoft} style={{ marginRight: 6 }} />
-                          <TextInput
-                            placeholder="Search 160+ currencies & countries..."
-                            placeholderTextColor={colors.inkSoft}
-                            value={countrySearchQuery}
-                            onChangeText={setCountrySearchQuery}
-                            style={{ flex: 1, paddingVertical: 6, fontSize: 13, color: colors.ink }}
-                            autoCapitalize="none"
-                          />
-                          {countrySearchQuery.length > 0 && (
-                            <TouchableOpacity onPress={() => setCountrySearchQuery('')}>
-                              <Feather name="x" size={14} color={colors.inkSoft} />
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      </View>
-
-                      {/* Scrollable list of 160+ currencies */}
-                      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                        {filteredCountries.length === 0 ? (
-                          <View style={{ padding: 14, alignItems: 'center' }}>
-                            <Text style={{ fontSize: 12, color: colors.inkSoft }}>No matching currencies found</Text>
-                          </View>
-                        ) : (
-                          filteredCountries.map((c) => {
-                            const isSelected = (country === c.name) || (currency === c.currency);
+                          {options.map((opt) => {
+                            const isSelected = propertyType === opt.label;
                             return (
                               <TouchableOpacity
-                                key={`${c.name}-${c.currency}`}
-                                style={[
-                                  styles.dropdownItem,
-                                  isSelected && styles.dropdownItemActive,
-                                ]}
-                                onPress={() => {
-                                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                                  handleCountrySelect(c.name, c.currency);
-                                  setIsCountryDropdownOpen(false);
-                                  setCountrySearchQuery('');
-                                }}
+                                key={opt.label}
+                                style={[styles.dropdownItem, isSelected && styles.dropdownItemActive]}
+                                onPress={() => handlePropertyTypeSelect(opt.label)}
                                 activeOpacity={0.7}
                               >
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                                  <View
-                                    style={[
-                                      styles.dropdownBadge,
-                                      isSelected && { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#D1FAE5', borderColor: isDark ? 'rgba(16, 185, 129, 0.4)' : '#6EE7B7' },
-                                    ]}
-                                  >
-                                    <Text style={styles.dropdownBadgeSymbol}>{c.symbol}</Text>
-                                  </View>
-                                  <Text
-                                    style={[
-                                      styles.dropdownItemText,
-                                      isSelected && styles.dropdownItemTextActive,
-                                    ]}
-                                    numberOfLines={1}
-                                  >
-                                    {c.name} ({c.currency})
+                                <View style={{ flex: 1 }}>
+                                  <Text style={[styles.dropdownItemText, isSelected && styles.dropdownItemTextActive]}>
+                                    {opt.label}
                                   </Text>
                                 </View>
                                 {isSelected && <Feather name="check" size={16} color={colors.primary} />}
                               </TouchableOpacity>
                             );
-                          })
-                        )}
-                      </ScrollView>
-                    </View>
-                  )}
+                          })}
+                        </View>
+                      );
+                    })}
+                  </ScrollView>
                 </View>
-              );
-            })()}
+              )}
+            </View>
+
+            {/* Property Structure & Leasing Model * (Exact 1:1 Web Parity) */}
+            <View style={[styles.structureBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
+              <Text style={[styles.structureBoxTitle, { color: colors.navy }]}>
+                Property Structure & Leasing Model *
+              </Text>
+              <Text style={[styles.hintText, { marginBottom: 12 }]}>
+                Choose whether this asset is leased as a single unified property or partitioned into individual rentable units.
+              </Text>
+
+              <View style={styles.structureCardsRow}>
+                {/* Option 1: Single-Unit Asset */}
+                <TouchableOpacity
+                  style={[
+                    styles.structureCard,
+                    { backgroundColor: colors.surface, borderColor: colors.line },
+                    propStructure === 'single_unit' && styles.structureCardActive,
+                  ]}
+                  onPress={() => {
+                    setPropStructure('single_unit');
+                    setFloorsCount('2');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.structureRadioRow}>
+                    <View style={[styles.radioCircle, propStructure === 'single_unit' && styles.radioCircleActive]}>
+                      {propStructure === 'single_unit' && <View style={styles.radioDot} />}
+                    </View>
+                    <Text style={[styles.structureCardName, { color: colors.navy }]}>🏡 Single-Unit Asset</Text>
+                  </View>
+                  <Text style={[styles.structureCardDesc, { color: colors.inkSoft }]}>
+                    Entire house, standalone 4BHK villa, bungalow, or single shop leased as 1 complete property.
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Option 2: Multi-Unit Complex */}
+                <TouchableOpacity
+                  style={[
+                    styles.structureCard,
+                    { backgroundColor: colors.surface, borderColor: colors.line },
+                    propStructure === 'multi_unit' && styles.structureCardActive,
+                  ]}
+                  onPress={() => {
+                    setPropStructure('multi_unit');
+                    setFloorsCount('4');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.structureRadioRow}>
+                    <View style={[styles.radioCircle, propStructure === 'multi_unit' && styles.radioCircleActive]}>
+                      {propStructure === 'multi_unit' && <View style={styles.radioDot} />}
+                    </View>
+                    <Text style={[styles.structureCardName, { color: colors.navy }]}>🏢 Multi-Unit Complex</Text>
+                  </View>
+                  <Text style={[styles.structureCardDesc, { color: colors.inkSoft }]}>
+                    Apartment building, gated villa community, or office plaza with multiple leasable units.
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
 
             {/* Assigned Property Manager */}
             <Text style={styles.inputLabel}>Assigned Property Manager</Text>
             <View style={{ marginBottom: 16 }}>
               <TouchableOpacity
-                style={[
-                  styles.dropdownTrigger,
-                  isManagerDropdownOpen && styles.dropdownTriggerActive,
-                ]}
+                style={[styles.dropdownTrigger, isManagerDropdownOpen && styles.dropdownTriggerActive]}
                 onPress={() => {
                   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                   setIsManagerDropdownOpen((prev) => !prev);
-                  if (isTypeDropdownOpen) setIsTypeDropdownOpen(false);
-                  if (isCountryDropdownOpen) setIsCountryDropdownOpen(false);
-                  if (isPlacesDropdownOpen) setIsPlacesDropdownOpen(false);
+                  setIsTypeDropdownOpen(false);
+                  setIsCountryDropdownOpen(false);
                 }}
                 activeOpacity={0.8}
               >
@@ -1197,13 +1082,8 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                 <View style={styles.dropdownMenu}>
                   <ScrollView nestedScrollEnabled style={{ maxHeight: 200 }}>
                     <TouchableOpacity
-                      style={[
-                        styles.dropdownItem,
-                        !assignedManagerId && (isDark ? { backgroundColor: '#064E3B33' } : styles.dropdownItemActive),
-                        isDark && { borderBottomColor: '#334155' },
-                      ]}
+                      style={[styles.dropdownItem, !assignedManagerId && styles.dropdownItemActive]}
                       onPress={() => {
-                        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                         setAssignedManagerId('');
                         setIsManagerDropdownOpen(false);
                       }}
@@ -1213,9 +1093,8 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                         <Text style={[styles.dropdownItemText, !assignedManagerId && styles.dropdownItemTextActive]}>
                           None (Direct Owner Operations)
                         </Text>
-                        <Text style={{ fontSize: 11, color: '#64748B' }}>Owner handles all operations directly</Text>
                       </View>
-                      {!assignedManagerId && <Feather name="check" size={16} color="#059669" />}
+                      {!assignedManagerId && <Feather name="check" size={16} color={colors.primary} />}
                     </TouchableOpacity>
 
                     {availableManagers.map((m) => {
@@ -1223,10 +1102,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                       return (
                         <TouchableOpacity
                           key={m.id}
-                          style={[
-                            styles.dropdownItem,
-                            isSelected && styles.dropdownItemActive,
-                          ]}
+                          style={[styles.dropdownItem, isSelected && styles.dropdownItemActive]}
                           onPress={() => {
                             setAssignedManagerId(m.id);
                             setIsManagerDropdownOpen(false);
@@ -1237,32 +1113,29 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                             <Text style={[styles.dropdownItemText, isSelected && styles.dropdownItemTextActive]}>
                               {m.name}
                             </Text>
-                            <Text style={{ fontSize: 11, color: '#64748B' }}>
+                            <Text style={styles.dropdownItemSub}>
                               {m.role} {m.phone ? `• ${m.phone}` : m.email ? `• ${m.email}` : ''}
                             </Text>
                           </View>
-                          {isSelected && <Feather name="check" size={16} color="#059669" />}
+                          {isSelected && <Feather name="check" size={16} color={colors.primary} />}
                         </TouchableOpacity>
                       );
                     })}
                   </ScrollView>
                 </View>
               )}
-              {availableManagers.length === 0 && (
-                <Text style={styles.fieldHelpText}>
-                  No managers onboarded yet. You can onboard delegated property managers from Team & Managers.
-                </Text>
-              )}
             </View>
 
             {/* Google Maps Places Address * */}
             <View style={{ marginBottom: 14 }}>
-              <Text style={styles.inputLabel}>Google Maps Places Address *</Text>
+              <Text style={[styles.inputLabel, fieldErrors.propAddress && { color: '#EF4444' }]}>
+                Google Maps Places Address *
+              </Text>
               <Text style={styles.hintText}>
                 Search and select location to auto-populate city, state, country, and coordinates.
               </Text>
 
-              <View style={styles.placesSearchBox}>
+              <View style={[styles.placesSearchBox, fieldErrors.propAddress && styles.inputError]}>
                 <Feather name="search" size={16} color="#64748B" />
                 <TextInput
                   style={styles.placesSearchInput}
@@ -1281,7 +1154,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
 
                     setIsPlacesLoading(true);
                     placesDebounceRef.current = setTimeout(async () => {
-                      const results = await searchGooglePlacesNew(val);
+                      const results = await searchGooglePlaces(val);
                       if (activePlacesQueryRef.current === val) {
                         setLivePlaces(results);
                         setIsPlacesLoading(false);
@@ -1290,12 +1163,10 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                   }}
                   onFocus={() => setIsPlacesDropdownOpen(true)}
                   placeholder="Search street, city, or landmark (Google Maps)..."
-                  placeholderTextColor="#94A3B8"
+                  placeholderTextColor={colors.inkSoft}
                   autoCapitalize="none"
                 />
-                {isPlacesLoading && (
-                  <ActivityIndicator size="small" color="#059669" style={{ marginRight: 6 }} />
-                )}
+                {isPlacesLoading && <ActivityIndicator size="small" color="#059669" style={{ marginRight: 6 }} />}
                 {placesSearchQuery ? (
                   <TouchableOpacity
                     onPress={() => {
@@ -1303,12 +1174,14 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                       setLivePlaces([]);
                       setIsPlacesDropdownOpen(false);
                     }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <Ionicons name="close-circle" size={16} color="#94A3B8" />
                   </TouchableOpacity>
                 ) : null}
               </View>
+              {fieldErrors.propAddress && (
+                <Text style={styles.errorText}>⚠️ {fieldErrors.propAddress}</Text>
+              )}
 
               {isPlacesDropdownOpen && (
                 <View style={styles.placesDropdownMenu}>
@@ -1346,9 +1219,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                           <Text style={[styles.placeItemText, { color: '#059669' }]} numberOfLines={1}>
                             Use Custom: "{placesSearchQuery.trim()}"
                           </Text>
-                          <Text style={styles.placeItemSub}>
-                            Apply as verified property location
-                          </Text>
+                          <Text style={styles.placeItemSub}>Apply as verified property location</Text>
                         </View>
                       </TouchableOpacity>
                     )}
@@ -1356,187 +1227,232 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                 </View>
               )}
 
-              {confirmedLocation ? (
+              {confirmedAddress?.formattedAddress ? (
                 <View style={styles.confirmedLocationCard}>
                   <View style={styles.confirmedLocationHeader}>
                     <Feather name="map-pin" size={14} color="#059669" />
                     <Text style={styles.confirmedLocationTitle}>Confirmed Location</Text>
                   </View>
-                  <Text style={styles.confirmedLocationText}>{confirmedLocation} ({country})</Text>
-                  <Text style={styles.confirmedLocationHint}>
-                    Auto-populated into verified street address fields below.
+                  <Text style={styles.confirmedLocationText}>
+                    {confirmedAddress.formattedAddress} ({confirmedAddress.country})
                   </Text>
                 </View>
               ) : null}
             </View>
 
-            <View style={styles.divider} />
-            <Text style={styles.sectionHeader}>Verified Street Address</Text>
-
-            <Text style={styles.inputLabel}>Street / Building / Landmark</Text>
-            <TextInput
-              style={styles.input}
-              value={addressLine}
-              onChangeText={setAddressLine}
-              placeholder="e.g. Plot 12, Golf Course Ext Road"
-              placeholderTextColor="#94A3B8"
-            />
-
+            {/* Total Floors & Year Built Grid */}
             <View style={styles.grid2}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>City</Text>
-                <TextInput
-                  style={styles.input}
-                  value={city}
-                  onChangeText={setCity}
-                  placeholder="Gurugram"
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>State / Region</Text>
-                <TextInput
-                  style={styles.input}
-                  value={stateName}
-                  onChangeText={setStateName}
-                  placeholder="Haryana"
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
-            </View>
-
-            <View style={styles.grid2}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Postal / PIN Code</Text>
-                <TextInput
-                  style={styles.input}
-                  value={postalCode}
-                  onChangeText={setPostalCode}
-                  placeholder="122018"
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Total Floors</Text>
+                <Text style={styles.inputLabel}>Total Number of Floors</Text>
                 <TextInput
                   style={styles.input}
                   value={floorsCount}
                   onChangeText={setFloorsCount}
                   keyboardType="numeric"
                   placeholder="4"
-                  placeholderTextColor="#94A3B8"
+                  placeholderTextColor={colors.inkSoft}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Year Built / Commissioned</Text>
+                <TextInput
+                  style={styles.input}
+                  value={yearBuilt}
+                  onChangeText={setYearBuilt}
+                  keyboardType="numeric"
+                  placeholder="e.g. 2022"
+                  placeholderTextColor={colors.inkSoft}
                 />
               </View>
             </View>
 
-            <Text style={styles.inputLabel}>Year Built / Commissioned</Text>
-            <TextInput
-              style={styles.input}
-              value={yearBuilt}
-              onChangeText={setYearBuilt}
-              keyboardType="numeric"
-              placeholder="2023"
-              placeholderTextColor="#94A3B8"
-            />
-
-            <TouchableOpacity
-              style={[styles.nextBtn, { marginTop: 16 }]}
-              onPress={handleStep1Next}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.nextBtnText}>Next</Text>
+            <TouchableOpacity style={[styles.nextBtn, { marginTop: 16 }]} onPress={handleStep1Next} activeOpacity={0.85}>
+              <Text style={styles.nextBtnText}>Next Step →</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* STEP 2: POLICIES, RULES & AMENITIES */}
+        {/* ========================================================================= */}
+        {/* STEP 2: POLICIES, RULES & AMENITIES                                       */}
+        {/* ========================================================================= */}
         {step === 2 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Text style={[styles.cardTitle, { color: colors.navy }]}>2. Operational Policies & Amenities</Text>
+            <Text style={[styles.cardTitle, { color: colors.navy }]}>2. Policies & Amenities</Text>
 
-            {/* Interactive House Rules */}
-            <View style={styles.rulesCard}>
-              <Text style={styles.rulesHeader}>Standard House Rules & Conduct</Text>
+            {/* Operational Rental Currency - 160+ Global Search Dropdown (Web Parity) */}
+            <Text style={styles.inputLabel}>Operational Rental Currency (160+ Global Currencies)</Text>
+            {(() => {
+              const selectedCurrencyObj =
+                GLOBAL_CURRENCIES.find((c) => c.code === propCurrency || c.symbol === propCurrency) ||
+                GLOBAL_CURRENCIES[0];
 
-              <TouchableOpacity
-                style={styles.toggleRow}
-                onPress={() => setPetsAllowed(!petsAllowed)}
-                activeOpacity={0.8}
-              >
-                <View style={styles.toggleLeft}>
-                  <Text style={styles.toggleIcon}>🐾</Text>
-                  <Text style={styles.toggleTitle}>Pets Permitted</Text>
+              const filteredCurrencies = GLOBAL_CURRENCIES.filter((c) => {
+                const q = currencySearchQuery.toLowerCase().trim();
+                if (!q) return true;
+                return (
+                  c.code.toLowerCase().includes(q) ||
+                  c.name.toLowerCase().includes(q) ||
+                  c.country.toLowerCase().includes(q) ||
+                  (c.symbol && c.symbol.toLowerCase().includes(q))
+                );
+              });
+
+              return (
+                <View style={{ marginBottom: 18 }}>
+                  <TouchableOpacity
+                    style={[styles.dropdownTrigger, isCurrencyDropdownOpen && styles.dropdownTriggerActive]}
+                    onPress={() => setIsCurrencyDropdownOpen((prev) => !prev)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.dropdownLeft}>
+                      <Text style={{ fontSize: 18, marginRight: 6 }}>{selectedCurrencyObj.flag}</Text>
+                      <Text style={styles.dropdownText}>
+                        {selectedCurrencyObj.code} • {selectedCurrencyObj.name} ({selectedCurrencyObj.symbol})
+                      </Text>
+                    </View>
+                    <Feather
+                      name={isCurrencyDropdownOpen ? 'chevron-up' : 'chevron-down'}
+                      size={18}
+                      color={isCurrencyDropdownOpen ? colors.primary : colors.inkSoft}
+                    />
+                  </TouchableOpacity>
+
+                  {isCurrencyDropdownOpen && (
+                    <View style={styles.dropdownMenu}>
+                      <View style={{ padding: 8, borderBottomWidth: 1, borderBottomColor: colors.line }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surfaceSunken, borderRadius: 6, paddingHorizontal: 8 }}>
+                          <Feather name="search" size={14} color={colors.inkSoft} style={{ marginRight: 6 }} />
+                          <TextInput
+                            placeholder="Search by currency code, country, or symbol..."
+                            placeholderTextColor={colors.inkSoft}
+                            value={currencySearchQuery}
+                            onChangeText={setCurrencySearchQuery}
+                            style={{ flex: 1, paddingVertical: 6, fontSize: 13, color: colors.ink }}
+                            autoCapitalize="none"
+                          />
+                        </View>
+                      </View>
+                      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                        {filteredCurrencies.map((c) => {
+                          const isSelected = propCurrency === c.code || propCurrency === c.symbol;
+                          return (
+                            <TouchableOpacity
+                              key={c.code}
+                              style={[styles.dropdownItem, isSelected && styles.dropdownItemActive]}
+                              onPress={() => {
+                                setPropCurrency(c.symbol || c.code);
+                                setIsCurrencyDropdownOpen(false);
+                                setCurrencySearchQuery('');
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                                <Text style={{ fontSize: 16 }}>{c.flag}</Text>
+                                <Text style={[styles.dropdownItemText, isSelected && styles.dropdownItemTextActive]}>
+                                  {c.code} ({c.symbol}) - {c.name}
+                                </Text>
+                              </View>
+                              {isSelected && <Feather name="check" size={16} color={colors.primary} />}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  )}
                 </View>
-                <Ionicons
-                  name={petsAllowed ? 'checkbox' : 'square-outline'}
-                  size={22}
-                  color={petsAllowed ? '#10B981' : '#94A3B8'}
-                />
-              </TouchableOpacity>
+              );
+            })()}
 
-              <TouchableOpacity
-                style={styles.toggleRow}
-                onPress={() => setSmokingAllowed(!smokingAllowed)}
-                activeOpacity={0.8}
-              >
-                <View style={styles.toggleLeft}>
-                  <Text style={styles.toggleIcon}>🚭</Text>
-                  <Text style={styles.toggleTitle}>Smoking Permitted</Text>
-                </View>
-                <Ionicons
-                  name={smokingAllowed ? 'checkbox' : 'square-outline'}
-                  size={22}
-                  color={smokingAllowed ? '#10B981' : '#94A3B8'}
-                />
-              </TouchableOpacity>
+            {/* Standard House Rules & Lease Policy */}
+            <View style={[styles.rulesCard, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
+              <Text style={[styles.rulesHeader, { color: colors.navy }]}>Standard House Rules & Lease Policy</Text>
 
-              <TouchableOpacity
-                style={styles.toggleRow}
-                onPress={() => setSublettingAllowed(!sublettingAllowed)}
-                activeOpacity={0.8}
-              >
-                <View style={styles.toggleLeft}>
-                  <Text style={styles.toggleIcon}>🤝</Text>
-                  <Text style={styles.toggleTitle}>Subletting Permitted</Text>
-                </View>
-                <Ionicons
-                  name={sublettingAllowed ? 'checkbox' : 'square-outline'}
-                  size={22}
-                  color={sublettingAllowed ? '#10B981' : '#94A3B8'}
-                />
-              </TouchableOpacity>
-            </View>
+              {/* Checkboxes Row */}
+              <View style={styles.rulesCheckboxList}>
+                <TouchableOpacity
+                  style={styles.toggleRow}
+                  onPress={() => setPropRules({ ...propRules, petsAllowed: !propRules.petsAllowed })}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.toggleLeft}>
+                    <Text style={styles.toggleIcon}>🐾</Text>
+                    <Text style={[styles.toggleTitle, { color: colors.ink }]}>Pets Permitted</Text>
+                  </View>
+                  <Ionicons
+                    name={propRules.petsAllowed ? 'checkbox' : 'square-outline'}
+                    size={22}
+                    color={propRules.petsAllowed ? '#10B981' : colors.inkSoft}
+                  />
+                </TouchableOpacity>
 
-            {/* Lease Minimums & Notice (Stacked One Below Other) */}
-            <View style={{ gap: 12 }}>
-              <View>
-                <Text style={styles.inputLabel}>Min Lease Duration</Text>
+                <TouchableOpacity
+                  style={styles.toggleRow}
+                  onPress={() => setPropRules({ ...propRules, smokingAllowed: !propRules.smokingAllowed })}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.toggleLeft}>
+                    <Text style={styles.toggleIcon}>🚭</Text>
+                    <Text style={[styles.toggleTitle, { color: colors.ink }]}>Smoking Permitted</Text>
+                  </View>
+                  <Ionicons
+                    name={propRules.smokingAllowed ? 'checkbox' : 'square-outline'}
+                    size={22}
+                    color={propRules.smokingAllowed ? '#10B981' : colors.inkSoft}
+                  />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.toggleRow}
+                  onPress={() => setPropRules({ ...propRules, sublettingAllowed: !propRules.sublettingAllowed })}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.toggleLeft}>
+                    <Text style={styles.toggleIcon}>🤝</Text>
+                    <Text style={[styles.toggleTitle, { color: colors.ink }]}>Subletting Allowed</Text>
+                  </View>
+                  <Ionicons
+                    name={propRules.sublettingAllowed ? 'checkbox' : 'square-outline'}
+                    size={22}
+                    color={propRules.sublettingAllowed ? '#10B981' : colors.inkSoft}
+                  />
+                </TouchableOpacity>
+              </View>
+
+              {/* Standard Minimum Lease Duration */}
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.subLabel}>Standard Minimum Lease Duration</Text>
                 <View style={styles.segmentedSmall}>
-                  {[6, 11, 12, 24].map((m) => (
+                  {[
+                    { m: 6, label: '6 Mos' },
+                    { m: 11, label: '11 Mos (India)' },
+                    { m: 12, label: '12 Mos (Global)' },
+                    { m: 24, label: '24 Mos' },
+                  ].map((item) => (
                     <TouchableOpacity
-                      key={m}
-                      style={[styles.smallSegBtn, minLeaseMonths === m && styles.smallSegBtnActive]}
-                      onPress={() => setMinLeaseMonths(m)}
+                      key={item.m}
+                      style={[styles.smallSegBtn, propRules.minLeaseMonths === item.m && styles.smallSegBtnActive]}
+                      onPress={() => setPropRules({ ...propRules, minLeaseMonths: item.m })}
                     >
-                      <Text style={[styles.smallSegText, minLeaseMonths === m && styles.smallSegTextActive]}>
-                        {m}M
+                      <Text style={[styles.smallSegText, propRules.minLeaseMonths === item.m && styles.smallSegTextActive]}>
+                        {item.label}
                       </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
               </View>
 
-              <View>
-                <Text style={styles.inputLabel}>Vacate Notice Days</Text>
+              {/* Default Notice Period */}
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.subLabel}>Default Notice Period</Text>
                 <View style={styles.segmentedSmall}>
-                  {[15, 30, 60].map((d) => (
+                  {[15, 30, 60, 90].map((d) => (
                     <TouchableOpacity
                       key={d}
-                      style={[styles.smallSegBtn, noticePeriodDays === d && styles.smallSegBtnActive]}
-                      onPress={() => setNoticePeriodDays(d)}
+                      style={[styles.smallSegBtn, propRules.noticePeriodDays === d && styles.smallSegBtnActive]}
+                      onPress={() => setPropRules({ ...propRules, noticePeriodDays: d })}
                     >
-                      <Text style={[styles.smallSegText, noticePeriodDays === d && styles.smallSegTextActive]}>
-                        {d}d
+                      <Text style={[styles.smallSegText, propRules.noticePeriodDays === d && styles.smallSegTextActive]}>
+                        {d} Days
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -1544,906 +1460,659 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
               </View>
             </View>
 
-            <View style={styles.divider} />
-            <Text style={styles.sectionHeader}>Property Amenities ({amenities.length} selected)</Text>
-
-            <TouchableOpacity
-              style={[styles.dropdownTrigger, isAmenitiesDropdownOpen && styles.dropdownTriggerActive]}
-              onPress={() => setIsAmenitiesDropdownOpen((prev) => !prev)}
-              activeOpacity={0.8}
-            >
-              <View style={styles.dropdownLeft}>
-                <View style={styles.dropdownBadge}>
-                  <Text style={styles.dropdownBadgeSymbol}>{amenities.length}</Text>
-                </View>
-                <Text style={styles.dropdownText}>
-                  {amenities.length === 0
-                    ? 'Select Amenities'
-                    : `${amenities.length} Amenit${amenities.length === 1 ? 'y' : 'ies'} Selected`}
-                </Text>
-              </View>
-              <Feather
-                name={isAmenitiesDropdownOpen ? 'chevron-up' : 'chevron-down'}
-                size={18}
-                color={isAmenitiesDropdownOpen ? '#059669' : '#64748B'}
-              />
-            </TouchableOpacity>
-
-            {isAmenitiesDropdownOpen && (
-              <View style={styles.dropdownMenu}>
-                <ScrollView nestedScrollEnabled style={{ maxHeight: 220 }}>
-                  {PREDEFINED_AMENITIES.map((item) => {
-                    const isSelected = amenities.includes(item);
-                    return (
-                      <TouchableOpacity
-                        key={item}
-                        style={[styles.dropdownItem, isSelected && styles.dropdownItemActive]}
-                        onPress={() => toggleAmenity(item)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={[styles.dropdownItemText, isSelected && styles.dropdownItemTextActive]}>
-                          {item}
-                        </Text>
-                        {isSelected && <Feather name="check" size={16} color="#059669" />}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
-
-            {/* Selected Amenities Tag Cloud */}
-            {amenities.length > 0 && (
-              <View style={[styles.chipGrid, { marginTop: 8 }]}>
-                {amenities.map((item) => (
-                  <View key={item} style={styles.selectedAmenityPill}>
-                    <Text style={styles.selectedAmenityPillText}>{item}</Text>
-                    <TouchableOpacity
-                      onPress={() => toggleAmenity(item)}
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                    >
-                      <Ionicons name="close-circle" size={14} color="#059669" />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Custom Amenity Input */}
-            <View style={styles.customAmenityRow}>
-              <TextInput
-                style={styles.customAmenityInput}
-                value={customAmenityInput}
-                onChangeText={setCustomAmenityInput}
-                placeholder="Custom amenity (e.g. Lounge)"
-                placeholderTextColor="#94A3B8"
-              />
-              <TouchableOpacity
-                style={styles.addAmenityBtn}
-                onPress={handleAddCustomAmenity}
-                disabled={!customAmenityInput.trim()}
-              >
-                <Text style={styles.addAmenityBtnText}>Add</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Upload Amenity Photos - Web Parity Grid */}
-            <View style={{ marginTop: 18 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                <Text style={styles.sectionHeader}>
-                  Upload Amenity Photos ({Object.keys(amenityPhotos).filter((k) => amenities.includes(k)).length}/{amenities.length})
-                </Text>
-                <View style={styles.amenityCounterBadge}>
-                  <Text style={styles.amenityCounterText}>
-                    {Object.keys(amenityPhotos).filter((k) => amenities.includes(k)).length} Attached
-                  </Text>
-                </View>
-              </View>
-              <Text style={[styles.hintText, { marginBottom: 12, textAlign: 'center' }]}>
-                Attach photos for active amenities (Gymnasium, Pool, Rooftop, etc.) to showcase on public directory.
+            {/* Property Amenities & Perks */}
+            <View style={{ marginTop: 16 }}>
+              <Text style={styles.inputLabel}>Property Amenities & Perks</Text>
+              <Text style={styles.hintText}>
+                Select existing amenities or add custom perks unique to this property.
               </Text>
 
-              {amenities.length === 0 ? (
-                <View style={styles.emptyAmenityBox}>
-                  <Feather name="info" size={16} color="#64748B" />
-                  <Text style={styles.emptyAmenityText}>Select at least one amenity above to attach amenity photos.</Text>
-                </View>
-              ) : (
-                <View style={styles.amenityPhotoGrid}>
-                  {amenities.map((am) => {
-                    const photo = amenityPhotos[am];
-                    return (
-                      <View
-                        key={am}
-                        style={[
-                          styles.amenityPhotoCard,
-                          {
-                            backgroundColor: isDark ? (photo ? '#152132' : '#131B28') : (photo ? '#F7FAF8' : '#FAFAF7'),
-                            borderColor: isDark ? (photo ? '#10B981' : '#334155') : (photo ? '#A7F3D0' : '#CBD5E1'),
-                          },
-                        ]}
-                      >
-                        <View style={styles.amenityCardHeader}>
-                          <Text
-                            style={[styles.amenityCardName, { color: isDark ? '#F1F5F9' : '#0F172A' }]}
-                            numberOfLines={1}
-                          >
-                            {am}
-                          </Text>
-                          {photo && (
-                            <View style={[styles.photoAttachedBadge, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.2)' }]}>
-                              <Text style={[styles.photoAttachedBadgeText, isDark && { color: '#34D399' }]}>✓ Photo</Text>
+              <View style={styles.chipGrid}>
+                {PREDEFINED_AMENITIES.map((am) => {
+                  const isSelected = propAmenities.includes(am);
+                  const hasPhoto = Boolean(propAmenityPhotos[am]);
+                  return (
+                    <TouchableOpacity
+                      key={am}
+                      style={[
+                        styles.amenityBadge,
+                        isSelected && styles.amenityBadgeActive,
+                      ]}
+                      onPress={() => {
+                        setPropAmenities((prev) =>
+                          prev.includes(am) ? prev.filter((x) => x !== am) : [...prev, am]
+                        );
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.amenityBadgeText, isSelected && styles.amenityBadgeTextActive]}>
+                        {isSelected ? '✓ ' : '+ '}
+                        {hasPhoto ? '📷 ' : ''}
+                        {am}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                {propAmenities
+                  .filter((a) => !PREDEFINED_AMENITIES.includes(a))
+                  .map((customAm) => (
+                    <TouchableOpacity
+                      key={customAm}
+                      style={[styles.amenityBadge, styles.amenityBadgeActive]}
+                      onPress={() => setPropAmenities((prev) => prev.filter((x) => x !== customAm))}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.amenityBadgeText, styles.amenityBadgeTextActive]}>
+                        ✓ {propAmenityPhotos[customAm] ? '📷 ' : ''}{customAm} ✕
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+              </View>
+
+              {/* Add Custom Amenity Row */}
+              <View style={styles.customAmenityRow}>
+                <TextInput
+                  style={styles.customAmenityInput}
+                  value={customAmenityInput}
+                  onChangeText={setCustomAmenityInput}
+                  placeholder="Add custom amenity (e.g. Badminton Court, Co-Working Lounge)"
+                  placeholderTextColor={colors.inkSoft}
+                />
+                <TouchableOpacity
+                  style={styles.addAmenityBtn}
+                  onPress={handleAddCustomAmenity}
+                  disabled={!customAmenityInput.trim()}
+                >
+                  <Text style={styles.addAmenityBtnText}>+ Add</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Amenity Photos Showcase & Upload Section (Web Parity) */}
+              {propAmenities.length > 0 && (
+                <View style={{ marginTop: 18, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.line }}>
+                  <Text style={[styles.sectionHeader, { color: colors.navy }]}>
+                    Upload Amenity Photos ({Object.keys(propAmenityPhotos).length}/{propAmenities.length} with photos)
+                  </Text>
+                  <Text style={styles.hintText}>
+                    Attach photos for active amenities to showcase on public listings and verification pages.
+                  </Text>
+
+                  <View style={styles.amenityPhotoGrid}>
+                    {propAmenities.map((am) => {
+                      const photo = propAmenityPhotos[am];
+                      return (
+                        <View
+                          key={am}
+                          style={[
+                            styles.amenityPhotoCard,
+                            { backgroundColor: colors.surfaceSunken, borderColor: photo ? '#10B981' : colors.line },
+                          ]}
+                        >
+                          <View style={styles.amenityCardHeader}>
+                            <Text style={[styles.amenityCardName, { color: colors.navy }]} numberOfLines={1}>
+                              {am}
+                            </Text>
+                            {photo && (
+                              <View style={styles.photoAttachedBadge}>
+                                <Text style={styles.photoAttachedBadgeText}>✓ Photo</Text>
+                              </View>
+                            )}
+                          </View>
+
+                          {photo ? (
+                            <View style={styles.amenityThumbContainer}>
+                              <Image source={{ uri: photo }} style={styles.amenityThumbImg} resizeMode="cover" />
+                              <View style={styles.amenityActionRow}>
+                                <TouchableOpacity
+                                  style={styles.amenityReplaceBtn}
+                                  onPress={() => handleUploadAmenityPhoto(am)}
+                                >
+                                  <Text style={styles.amenityReplaceBtnText}>Replace</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.amenityRemoveBtn}
+                                  onPress={() => handleRemoveAmenityPhoto(am)}
+                                >
+                                  <Feather name="trash-2" size={13} color="#DC2626" />
+                                </TouchableOpacity>
+                              </View>
                             </View>
+                          ) : (
+                            <TouchableOpacity
+                              style={styles.amenityUploadPlaceholder}
+                              onPress={() => handleUploadAmenityPhoto(am)}
+                              activeOpacity={0.7}
+                            >
+                              <Feather name="camera" size={18} color={colors.inkSoft} />
+                              <Text style={[styles.amenityPlaceholderText, { color: colors.primary }]}>
+                                + Upload Photo
+                              </Text>
+                            </TouchableOpacity>
                           )}
                         </View>
-
-                        {photo ? (
-                          <View style={styles.amenityThumbContainer}>
-                            <Image source={{ uri: photo }} style={styles.amenityThumbImg} resizeMode="cover" />
-                            <View style={styles.amenityActionRow}>
-                              <TouchableOpacity
-                                style={styles.amenityReplaceBtn}
-                                onPress={() => handleUploadAmenityPhoto(am)}
-                                activeOpacity={0.8}
-                              >
-                                <Feather name="refresh-cw" size={10} color="#FFFFFF" />
-                                <Text style={styles.amenityReplaceBtnText}>Replace</Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                style={styles.amenityRemoveBtn}
-                                onPress={() => handleRemoveAmenityPhoto(am)}
-                                activeOpacity={0.8}
-                              >
-                                <Feather name="trash-2" size={12} color="#DC2626" />
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-                        ) : (
-                          <TouchableOpacity
-                            style={styles.amenityUploadPlaceholder}
-                            onPress={() => handleUploadAmenityPhoto(am)}
-                            activeOpacity={0.7}
-                          >
-                            <Feather name="camera" size={20} color="#94A3B8" />
-                            <Text style={styles.amenityPlaceholderText}>No photo attached</Text>
-                            <View style={styles.amenityAttachBtn}>
-                              <Feather name="upload" size={11} color="#059669" />
-                              <Text style={styles.amenityAttachBtnText}>Attach Photo</Text>
-                            </View>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    );
-                  })}
+                      );
+                    })}
+                  </View>
                 </View>
               )}
             </View>
 
             <View style={styles.btnRow}>
-              <TouchableOpacity
-                style={styles.backStepBtn}
-                onPress={() => setStep(1)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.backStepText}>Back</Text>
+              <TouchableOpacity style={styles.backStepBtn} onPress={() => setStep(1)} activeOpacity={0.8}>
+                <Text style={styles.backStepText}>← Back</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.nextBtn, { flex: 1 }]}
-                onPress={() => setStep(3)}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.nextBtnText}>Next</Text>
+              <TouchableOpacity style={[styles.nextBtn, { flex: 1 }]} onPress={() => setStep(3)} activeOpacity={0.85}>
+                <Text style={styles.nextBtnText}>Next Step →</Text>
               </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* STEP 3: DUAL-MODE UNITS INVENTORY GENERATOR */}
+        {/* ========================================================================= */}
+        {/* STEP 3: UNITS BUILDER (Single-Unit vs Multi-Unit Exact Parity)            */}
+        {/* ========================================================================= */}
         {step === 3 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Text style={[styles.cardTitle, { color: colors.navy }]}>3. Units Inventory & Generator</Text>
+            <Text style={[styles.cardTitle, { color: colors.navy }]}>
+              3. {propStructure === 'single_unit' ? 'Single-Unit Asset Configuration' : 'Units Builder & Generator'}
+            </Text>
 
-            {/* Live Portfolio Aggregate Metrics */}
-            <View style={[styles.metricsBox, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.metricsLabel, { color: colors.inkSoft }]} numberOfLines={1}>TOTAL UNITS</Text>
-                <Text style={[styles.metricsValue, { color: colors.navy }]}>{initialUnits.length} Units</Text>
-              </View>
-              <View style={{ flex: 1, alignItems: 'flex-end' }}>
-                <Text style={[styles.metricsLabel, { color: colors.inkSoft }]} numberOfLines={1}>MONTHLY RENT</Text>
-                <Text style={styles.metricsRent} numberOfLines={1}>
-                  {format(totalProjectedMonthlyRent, currency)}
-                </Text>
-              </View>
-            </View>
-
-            {/* Mode Switcher */}
-            <View style={styles.modeTabs}>
-              <TouchableOpacity
-                style={[styles.modeTab, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }, unitsMode === 'table' && styles.modeTabActive]}
-                onPress={() => setUnitsMode('table')}
-              >
-                <Text style={[styles.modeTabText, { color: colors.inkSoft }, unitsMode === 'table' && styles.modeTabTextActive]} numberOfLines={1}>
-                  📋 Inventory ({initialUnits.length})
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modeTab, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }, unitsMode === 'bulk' && styles.modeTabActive]}
-                onPress={() => setUnitsMode('bulk')}
-              >
-                <Text style={[styles.modeTabText, { color: colors.inkSoft }, unitsMode === 'bulk' && styles.modeTabTextActive]} numberOfLines={1}>
-                  ⚡ Bulk Generator
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* BULK GENERATOR FORM */}
-            {unitsMode === 'bulk' && (
-              <View style={[styles.bulkBox, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.1)', borderColor: 'rgba(16, 185, 129, 0.25)' }]}>
-                <Text style={[styles.bulkBoxTitle, isDark && { color: '#6EE7B7' }]}>⚡ Multi-Unit Automated Batch Generator</Text>
-                <Text style={[styles.bulkBoxSub, isDark && { color: '#A7F3D0' }]}>
-                  Instantly creates numbered apartments across selected floors with standard rent and deposit.
-                </Text>
-
-                <View style={styles.grid3}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>From Floor</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={bulkStartFloor}
-                      onChangeText={setBulkStartFloor}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>To Floor</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={bulkEndFloor}
-                      onChangeText={setBulkEndFloor}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>Units/Floor</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={bulkUnitsPerFloor}
-                      onChangeText={setBulkUnitsPerFloor}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                </View>
-
-                {/* Layout Type Presets */}
-                <Text style={styles.inputLabel}>Layout Type Preset</Text>
-                <View style={styles.chipGrid}>
-                  {[
-                    { label: '1 RK / Studio', sqFt: '550', rent: '15000', dep: '30000' },
-                    { label: '1 BHK', sqFt: '750', rent: '20000', dep: '40000' },
-                    { label: '2 BHK', sqFt: '1100', rent: '26000', dep: '52000' },
-                    { label: '3 BHK', sqFt: '1650', rent: '38000', dep: '76000' },
-                    { label: '4 BHK Villa', sqFt: '2400', rent: '55000', dep: '110000' },
-                    { label: 'Commercial Office', sqFt: '1800', rent: '45000', dep: '90000' },
-                  ].map((preset) => (
-                    <TouchableOpacity
-                      key={preset.label}
-                      style={[styles.amenityChip, bulkLayoutType === preset.label && styles.amenityChipActive]}
-                      onPress={() => {
-                        setBulkLayoutType(preset.label);
-                        setBulkAreaSqFt(preset.sqFt);
-                        setBulkBaseRent(preset.rent);
-                        setBulkBaseDeposit(preset.dep);
-                      }}
-                    >
-                      <Text style={[styles.amenityChipText, bulkLayoutType === preset.label && styles.amenityChipTextActive]}>
-                        {preset.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {/* Numbering Scheme Selector */}
-                <Text style={styles.inputLabel}>Unit Numbering Scheme</Text>
-                <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12 }}>
-                  {[
-                    { id: 'standard', label: '101, 102...' },
-                    { id: 'suffix', label: '1A, 1B, 2A...' },
-                    { id: 'tower', label: 'Tower/Wing' },
-                  ].map((s) => (
-                    <TouchableOpacity
-                      key={s.id}
-                      style={[
-                        styles.smallSegBtn,
-                        bulkNumberingScheme === s.id && styles.smallSegBtnActive,
-                        { flex: 1, paddingVertical: 6 },
-                      ]}
-                      onPress={() => setBulkNumberingScheme(s.id as any)}
-                    >
-                      <Text style={[styles.smallSegText, bulkNumberingScheme === s.id && styles.smallSegTextActive]}>
-                        {s.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {bulkNumberingScheme === 'tower' && (
-                  <View style={{ marginBottom: 10 }}>
-                    <Text style={styles.inputLabel}>Tower / Wing Prefix</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={bulkTowerPrefix}
-                      onChangeText={setBulkTowerPrefix}
-                      placeholder="e.g. Tower A"
-                    />
-                  </View>
-                )}
-
-                <View style={styles.grid2}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>Layout / Type</Text>
-                    <TouchableOpacity
-                      style={[
-                        styles.drawerDropdownBtn,
-                        isBulkLayoutDropdownOpen && styles.drawerDropdownBtnActive,
-                      ]}
-                      onPress={() => {
-                        setIsBulkLayoutDropdownOpen((prev) => !prev);
-                        setIsBulkFurnishingDropdownOpen(false);
-                      }}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={styles.drawerDropdownBtnText}>
-                        {bulkLayoutType || 'Select Layout'}
-                      </Text>
-                      <Feather
-                        name={isBulkLayoutDropdownOpen ? 'chevron-up' : 'chevron-down'}
-                        size={15}
-                        color="#059669"
-                      />
-                    </TouchableOpacity>
-                    {isBulkLayoutDropdownOpen && (
-                      <View style={styles.drawerDropdownList}>
-                        {UNIT_LAYOUT_TYPES.map((lt) => {
-                          const isSelected = bulkLayoutType === lt;
-                          return (
-                            <TouchableOpacity
-                              key={lt}
-                              style={[styles.drawerDropdownOption, isSelected && styles.drawerDropdownOptionActive]}
-                              onPress={() => {
-                                setBulkLayoutType(lt);
-                                setIsBulkLayoutDropdownOpen(false);
-                              }}
-                              activeOpacity={0.7}
-                            >
-                              <Text style={[styles.drawerDropdownOptionText, isSelected && styles.drawerDropdownOptionTextActive]}>
-                                {lt}
-                              </Text>
-                              {isSelected && <Feather name="check" size={13} color="#059669" />}
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-                  </View>
-
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>Furnishing Status</Text>
-                    <TouchableOpacity
-                      style={[
-                        styles.drawerDropdownBtn,
-                        isBulkFurnishingDropdownOpen && styles.drawerDropdownBtnActive,
-                      ]}
-                      onPress={() => {
-                        setIsBulkFurnishingDropdownOpen((prev) => !prev);
-                        setIsBulkLayoutDropdownOpen(false);
-                      }}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={styles.drawerDropdownBtnText}>
-                        {bulkFurnishing || 'Select Furnishing'}
-                      </Text>
-                      <Feather
-                        name={isBulkFurnishingDropdownOpen ? 'chevron-up' : 'chevron-down'}
-                        size={15}
-                        color="#059669"
-                      />
-                    </TouchableOpacity>
-                    {isBulkFurnishingDropdownOpen && (
-                      <View style={styles.drawerDropdownList}>
-                        {UNIT_FURNISHING_TYPES.map((f) => {
-                          const isSelected = bulkFurnishing === f;
-                          return (
-                            <TouchableOpacity
-                              key={f}
-                              style={[styles.drawerDropdownOption, isSelected && styles.drawerDropdownOptionActive]}
-                              onPress={() => {
-                                setBulkFurnishing(f);
-                                setIsBulkFurnishingDropdownOpen(false);
-                              }}
-                              activeOpacity={0.7}
-                            >
-                              <Text style={[styles.drawerDropdownOptionText, isSelected && styles.drawerDropdownOptionTextActive]}>
-                                {f}
-                              </Text>
-                              {isSelected && <Feather name="check" size={13} color="#059669" />}
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-                  </View>
-                </View>
-
-                <View style={{ marginBottom: 10 }}>
-                  <Text style={styles.inputLabel}>Carpet Area (Sq Ft)</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={bulkAreaSqFt}
-                    onChangeText={setBulkAreaSqFt}
-                    keyboardType="numeric"
-                  />
-                </View>
-
-                <View style={styles.grid2}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>Base Rent ({getSymbol(currency)})</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={bulkBaseRent}
-                      onChangeText={setBulkBaseRent}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.inputLabel}>Deposit ({getSymbol(currency)})</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={bulkBaseDeposit}
-                      onChangeText={setBulkBaseDeposit}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                </View>
-
-                <View style={{ marginBottom: 10 }}>
-                  <Text style={styles.inputLabel}>Electricity Sub-Meter Prefix</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={bulkMeterPrefix}
-                    onChangeText={setBulkMeterPrefix}
-                    placeholder="MTR"
-                    autoCapitalize="characters"
-                  />
-                </View>
-
-                <TouchableOpacity
-                  style={styles.executeBulkBtn}
-                  onPress={handleGenerateBulkUnits}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.executeBulkBtnText}>
-                    ⚡ Generate{' '}
-                    {(Math.max(1, parseInt(bulkEndFloor, 10) || 1) -
-                      Math.max(1, parseInt(bulkStartFloor, 10) || 1) +
-                      1) *
-                      Math.max(1, parseInt(bulkUnitsPerFloor, 10) || 1)}{' '}
-                    Units Now
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* GRANULAR UNIT INVENTORY LIST */}
-            {unitsMode === 'table' && (
+            {/* SINGLE-UNIT ASSET MODE (Whole House / Villa / Facility) */}
+            {propStructure === 'single_unit' ? (
               <View>
-                {initialUnits.map((u, idx) => {
-                  const isExpanded = !!expandedUnitIndices[idx];
-                  const hasPhoto = u.images && u.images.length > 0;
+                <View style={[styles.singleAssetBanner, { backgroundColor: '#FAF8F5', borderColor: '#C5A059' }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <View style={styles.brassBadge}>
+                      <Text style={styles.brassBadgeText}>🏡 Single-Unit Asset Mode</Text>
+                    </View>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>
+                      Lease Terms & Property Specifications
+                    </Text>
+                  </View>
+                  <Text style={{ fontSize: 12, color: colors.inkSoft, lineHeight: 17 }}>
+                    This entire property will be leased as a single unified asset without managing internal sub-units.
+                  </Text>
+                </View>
 
-                  return (
-                    <View key={idx} style={[styles.unitRowCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                      {/* TOP ROW: Unit Name + Delete Only */}
-                      <View style={styles.unitRowTopBar}>
-                        <View style={[styles.unitPillEditable, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.3)' }]}>
-                          <Text style={[styles.unitPillPrefix, isDark && { color: '#34D399' }]}>Unit</Text>
-                          <TextInput
-                            style={[styles.unitPillInput, isDark && { color: '#6EE7B7' }]}
-                            value={u.unitNumber}
-                            onChangeText={(val) => {
-                              setInitialUnits(
-                                initialUnits.map((item, i) =>
-                                  i === idx ? { ...item, unitNumber: val } : item
-                                )
-                              );
-                            }}
-                            placeholder="101"
-                            placeholderTextColor="#059669"
-                            selectTextOnFocus
-                          />
-                        </View>
+                {/* Layout Type & Property Identifier */}
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Layout / House Type *</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={singleUnitType}
+                      onChangeText={setSingleUnitType}
+                      placeholder="e.g. 4 BHK Villa / Whole House"
+                      placeholderTextColor={colors.inkSoft}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Property Identifier / Unit Label</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={singleUnitLabel}
+                      onChangeText={setSingleUnitLabel}
+                      placeholder="e.g. Entire House, Main Villa"
+                      placeholderTextColor={colors.inkSoft}
+                    />
+                  </View>
+                </View>
 
-                        {/* Beside unit name: ONLY delete */}
+                {/* Expected Rent & Security Deposit */}
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Expected Monthly Rent ({getSymbol(propCurrency)}) *</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={singleUnitRent ? String(singleUnitRent) : ''}
+                      onChangeText={(val) => setSingleUnitRent(parseInt(val, 10) || 0)}
+                      keyboardType="numeric"
+                      placeholder="35000"
+                      placeholderTextColor={colors.inkSoft}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Security Deposit ({getSymbol(propCurrency)})</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={singleUnitDeposit ? String(singleUnitDeposit) : ''}
+                      onChangeText={(val) => setSingleUnitDeposit(parseInt(val, 10) || 0)}
+                      keyboardType="numeric"
+                      placeholder="70000"
+                      placeholderTextColor={colors.inkSoft}
+                    />
+                  </View>
+                </View>
+
+                {/* Carpet Area & Furnishing State */}
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Carpet Area (Sq.Ft)</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={singleUnitAreaSqFt ? String(singleUnitAreaSqFt) : ''}
+                      onChangeText={(val) => setSingleUnitAreaSqFt(parseInt(val, 10) || 0)}
+                      keyboardType="numeric"
+                      placeholder="2200"
+                      placeholderTextColor={colors.inkSoft}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Furnishing State</Text>
+                    <View style={styles.segmentedSmall}>
+                      {(['Unfurnished', 'Semi-Furnished', 'Fully Furnished'] as const).map((furn) => (
                         <TouchableOpacity
-                          onPress={() => handleDeleteUnit(idx)}
-                          style={styles.deleteUnitBtn}
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          key={furn}
+                          style={[styles.smallSegBtn, singleUnitFurnishing === furn && styles.smallSegBtnActive]}
+                          onPress={() => setSingleUnitFurnishing(furn)}
                         >
-                          <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                          <Text style={[styles.smallSegText, singleUnitFurnishing === furn && styles.smallSegTextActive]}>
+                            {furn.replace('-Furnished', '').replace(' Furnished', '')}
+                          </Text>
                         </TouchableOpacity>
-                      </View>
+                      ))}
+                    </View>
+                  </View>
+                </View>
 
-                      {/* SECOND ROW (BELOW UNIT NAME): Photo Upload (img 1) + Quick Specs Dropdown (img 2) */}
-                      <View style={styles.unitRowActionsBar}>
-                        {/* Unit Photo thumbnail or + Photo button (img 1) */}
-                        {hasPhoto ? (
-                          <View style={styles.unitPhotoThumbWrapper}>
-                            <Image source={{ uri: u.images![0] }} style={styles.unitPhotoThumb} resizeMode="cover" />
+                {/* Meter Numbers */}
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Electricity Meter # (Optional)</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={singleUnitElectricityMeter}
+                      onChangeText={setSingleUnitElectricityMeter}
+                      placeholder="e.g. EB-887711"
+                      placeholderTextColor={colors.inkSoft}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputLabel}>Water Meter # (Optional)</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={singleUnitWaterMeter}
+                      onChangeText={setSingleUnitWaterMeter}
+                      placeholder="e.g. WTR-4422"
+                      placeholderTextColor={colors.inkSoft}
+                    />
+                  </View>
+                </View>
+              </View>
+            ) : (
+              /* MULTI-UNIT COMPLEX MODE */
+              <View>
+                {/* Stats Bar */}
+                <View style={[styles.metricsBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.metricsLabel}>CONFIGURED UNITS</Text>
+                    <Text style={[styles.metricsValue, { color: colors.navy }]}>{initialUnits.length} Units</Text>
+                  </View>
+                  <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                    <Text style={styles.metricsLabel}>PROJECTED RENT</Text>
+                    <Text style={styles.metricsRent}>
+                      {getSymbol(propCurrency)}{totalProjectedMonthlyRent.toLocaleString()}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Mode Switcher */}
+                <View style={styles.modeTabs}>
+                  <TouchableOpacity
+                    style={[styles.modeTab, unitsBuilderMode === 'table' && styles.modeTabActive]}
+                    onPress={() => setUnitsBuilderMode('table')}
+                  >
+                    <Text style={[styles.modeTabText, unitsBuilderMode === 'table' && styles.modeTabTextActive]}>
+                      📋 Units Inventory Table ({initialUnits.length})
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modeTab, unitsBuilderMode === 'bulk' && styles.modeTabActive]}
+                    onPress={() => setUnitsBuilderMode('bulk')}
+                  >
+                    <Text style={[styles.modeTabText, unitsBuilderMode === 'bulk' && styles.modeTabTextActive]}>
+                      ⚡ Bulk Unit Generator
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Bulk Generator Form */}
+                {unitsBuilderMode === 'bulk' && (
+                  <View style={[styles.bulkBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
+                    <Text style={[styles.bulkBoxTitle, { color: colors.navy }]}>
+                      ⚡ Multi-Unit Automated Batch Generator
+                    </Text>
+                    <Text style={styles.bulkBoxSub}>
+                      Instantly generate units across your floors. Existing units in table will be replaced by this batch.
+                    </Text>
+
+                    <View style={styles.grid3}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>From Floor</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={bulkFloorsStart}
+                          onChangeText={setBulkFloorsStart}
+                          keyboardType="numeric"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>To Floor</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={bulkFloorsEnd}
+                          onChangeText={setBulkFloorsEnd}
+                          keyboardType="numeric"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>Units/Floor</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={bulkUnitsPerFloor}
+                          onChangeText={setBulkUnitsPerFloor}
+                          keyboardType="numeric"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.grid2}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>Layout / Type</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={bulkUnitType}
+                          onChangeText={setBulkUnitType}
+                          placeholder="e.g. 2 BHK"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>Furnishing</Text>
+                        <View style={styles.segmentedSmall}>
+                          {(['Unfurnished', 'Semi-Furnished', 'Fully Furnished'] as const).map((furn) => (
                             <TouchableOpacity
-                              style={styles.unitPhotoRemoveBtn}
-                              onPress={() => handleRemoveUnitPhoto(idx)}
-                              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                              key={furn}
+                              style={[styles.smallSegBtn, bulkFurnishing === furn && styles.smallSegBtnActive]}
+                              onPress={() => setBulkFurnishing(furn)}
                             >
-                              <Ionicons name="close" size={10} color="#FFFFFF" />
+                              <Text style={[styles.smallSegText, bulkFurnishing === furn && styles.smallSegTextActive]}>
+                                {furn.replace('-Furnished', '').replace(' Furnished', '')}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.grid2}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>Carpet Area (Sq Ft)</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={bulkAreaSqFt}
+                          onChangeText={setBulkAreaSqFt}
+                          keyboardType="numeric"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>Base Rent ({getSymbol(propCurrency)})</Text>
+                        <TextInput
+                          style={styles.input}
+                          value={bulkBaseRent}
+                          onChangeText={setBulkBaseRent}
+                          keyboardType="numeric"
+                        />
+                      </View>
+                    </View>
+
+                    {/* Batch Unit Photo (Opt) */}
+                    <View style={{ marginTop: 6, marginBottom: 14 }}>
+                      <Text style={styles.inputLabel}>Batch Unit Photo (Optional)</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                        {bulkDefaultPhoto ? (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Image source={{ uri: bulkDefaultPhoto }} style={{ width: 44, height: 44, borderRadius: 6 }} />
+                            <TouchableOpacity onPress={() => setBulkDefaultPhoto(null)}>
+                              <Text style={{ color: '#EF4444', fontSize: 12, fontWeight: '700' }}>✕ Remove</Text>
                             </TouchableOpacity>
                           </View>
                         ) : (
                           <TouchableOpacity
-                            style={[styles.unitPhotoAttachBtn, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line }]}
-                            onPress={() => handleUploadUnitPhoto(idx)}
-                            activeOpacity={0.7}
+                            style={[styles.unitPhotoAttachBtn, { paddingVertical: 8, paddingHorizontal: 12 }]}
+                            onPress={async () => {
+                              const picked = await pickSingleImage();
+                              if (picked) {
+                                const opt = await uploadOrCompressImage(picked.file || picked.uri, `units/bulk/${Date.now()}`);
+                                setBulkDefaultPhoto(opt);
+                              }
+                            }}
                           >
-                            <Feather name="camera" size={12} color="#059669" />
-                            <Text style={styles.unitPhotoAttachText}>+ Photo</Text>
+                            <Feather name="camera" size={14} color="#059669" />
+                            <Text style={styles.unitPhotoAttachText}>+ Attach Batch Photo</Text>
                           </TouchableOpacity>
                         )}
-
-                        {/* Summary & Expand toggle button (img 2) */}
-                        <TouchableOpacity
-                          style={[styles.unitSpecsToggleBtn, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line }]}
-                          onPress={() => toggleUnitExpand(idx)}
-                          activeOpacity={0.7}
-                        >
-                          <Text style={[styles.unitMetaText, { color: colors.inkSoft }]} numberOfLines={1}>
-                            {u.floor || 'Floor'} • {u.unitType || 'Type'} • {u.areaSqFt ? `${u.areaSqFt} sq.ft` : 'Area'}
-                          </Text>
-                          <Feather
-                            name={isExpanded ? 'chevron-up' : 'chevron-down'}
-                            size={14}
-                            color="#059669"
-                          />
-                        </TouchableOpacity>
                       </View>
+                    </View>
 
-                      {/* EXPANDED SPECS DRAWER (Floor, Layout Type, Sq. Ft, Furnishing) */}
-                      {isExpanded && (
-                        <View style={styles.unitExpandedDrawer}>
-                          {/* Layout / Type Dropdown */}
-                          <Text style={styles.drawerSubLabel}>Layout / Type</Text>
-                          <TouchableOpacity
-                            style={[
-                              styles.drawerDropdownBtn,
-                              openUnitDropdown?.idx === idx && openUnitDropdown?.field === 'layout' && styles.drawerDropdownBtnActive,
-                            ]}
-                            onPress={() =>
-                              setOpenUnitDropdown((prev) =>
-                                prev?.idx === idx && prev?.field === 'layout' ? null : { idx, field: 'layout' }
-                              )
-                            }
-                            activeOpacity={0.75}
-                          >
-                            <Text style={styles.drawerDropdownBtnText}>
-                              {u.unitType || 'Select Layout / Type'}
-                            </Text>
-                            <Feather
-                              name={
-                                openUnitDropdown?.idx === idx && openUnitDropdown?.field === 'layout'
-                                  ? 'chevron-up'
-                                  : 'chevron-down'
-                              }
-                              size={15}
-                              color="#059669"
-                            />
-                          </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.executeBulkBtn}
+                      onPress={handleGenerateBulkUnits}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.executeBulkBtnText}>
+                        ⚡ Generate {(Math.max(1, parseInt(bulkFloorsEnd, 10) || 1) - Math.max(1, parseInt(bulkFloorsStart, 10) || 1) + 1) * Math.max(1, parseInt(bulkUnitsPerFloor, 10) || 1)} Units Now
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
 
-                          {openUnitDropdown?.idx === idx && openUnitDropdown?.field === 'layout' && (
-                            <View style={styles.drawerDropdownList}>
-                              {UNIT_LAYOUT_TYPES.map((lt) => {
-                                const isSelected = u.unitType === lt;
-                                return (
-                                  <TouchableOpacity
-                                    key={lt}
-                                    style={[styles.drawerDropdownOption, isSelected && styles.drawerDropdownOptionActive]}
-                                    onPress={() => {
+                {/* Inventory Table List */}
+                {unitsBuilderMode === 'table' && (
+                  <View>
+                    {initialUnits.map((u, idx) => {
+                      const isExpanded = Boolean(expandedUnitIndices[idx]);
+                      const hasPhoto = u.images && u.images.length > 0;
+
+                      return (
+                        <View key={idx} style={[styles.unitRowCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                          <View style={styles.unitRowTopBar}>
+                            <View style={styles.unitPillEditable}>
+                              <Text style={styles.unitPillPrefix}>Unit</Text>
+                              <TextInput
+                                style={styles.unitPillInput}
+                                value={u.unitNumber}
+                                onChangeText={(val) => {
+                                  setInitialUnits(
+                                    initialUnits.map((item, i) => (i === idx ? { ...item, unitNumber: val } : item))
+                                  );
+                                }}
+                                selectTextOnFocus
+                              />
+                            </View>
+
+                            <TouchableOpacity
+                              onPress={() => handleDeleteUnit(idx)}
+                              style={styles.deleteUnitBtn}
+                            >
+                              <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                            </TouchableOpacity>
+                          </View>
+
+                          <View style={styles.unitRowActionsBar}>
+                            {hasPhoto ? (
+                              <View style={styles.unitPhotoThumbWrapper}>
+                                <Image source={{ uri: u.images![0] }} style={styles.unitPhotoThumb} resizeMode="cover" />
+                                <TouchableOpacity
+                                  style={styles.unitPhotoRemoveBtn}
+                                  onPress={() => handleRemoveUnitPhoto(idx)}
+                                >
+                                  <Ionicons name="close" size={10} color="#FFFFFF" />
+                                </TouchableOpacity>
+                              </View>
+                            ) : (
+                              <TouchableOpacity
+                                style={styles.unitPhotoAttachBtn}
+                                onPress={() => handleUploadUnitPhoto(idx)}
+                              >
+                                <Feather name="camera" size={12} color="#059669" />
+                                <Text style={styles.unitPhotoAttachText}>+ Photo</Text>
+                              </TouchableOpacity>
+                            )}
+
+                            <TouchableOpacity
+                              style={styles.unitSpecsToggleBtn}
+                              onPress={() => {
+                                setExpandedUnitIndices((prev) => ({ ...prev, [idx]: !prev[idx] }));
+                              }}
+                            >
+                              <Text style={[styles.unitMetaText, { color: colors.inkSoft }]} numberOfLines={1}>
+                                {u.floor} • {u.unitType} • {u.areaSqFt} sq.ft
+                              </Text>
+                              <Feather name={isExpanded ? 'chevron-up' : 'chevron-down'} size={14} color="#059669" />
+                            </TouchableOpacity>
+                          </View>
+
+                          {/* Expanded Specs Drawer */}
+                          {isExpanded && (
+                            <View style={styles.unitExpandedDrawer}>
+                              <View style={styles.grid2}>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={styles.drawerSubLabel}>Floor</Text>
+                                  <TextInput
+                                    style={styles.smallInput}
+                                    value={u.floor}
+                                    onChangeText={(val) => {
                                       setInitialUnits(
-                                        initialUnits.map((item, i) =>
-                                          i === idx ? { ...item, unitType: lt } : item
-                                        )
+                                        initialUnits.map((item, i) => (i === idx ? { ...item, floor: val } : item))
                                       );
-                                      setOpenUnitDropdown(null);
                                     }}
-                                    activeOpacity={0.7}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.drawerDropdownOptionText,
-                                        isSelected && styles.drawerDropdownOptionTextActive,
-                                      ]}
-                                    >
-                                      {lt}
-                                    </Text>
-                                    {isSelected && <Feather name="check" size={13} color="#059669" />}
-                                  </TouchableOpacity>
-                                );
-                              })}
+                                  />
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={styles.drawerSubLabel}>Carpet Area (Sq.Ft)</Text>
+                                  <TextInput
+                                    style={styles.smallInput}
+                                    value={String(u.areaSqFt || '')}
+                                    onChangeText={(val) => {
+                                      const num = parseInt(val, 10) || 0;
+                                      setInitialUnits(
+                                        initialUnits.map((item, i) => (i === idx ? { ...item, areaSqFt: num } : item))
+                                      );
+                                    }}
+                                    keyboardType="numeric"
+                                  />
+                                </View>
+                              </View>
                             </View>
                           )}
 
-                          {/* Floor & Carpet Area Grid */}
-                          <View style={[styles.grid2, { marginTop: 10 }]}>
+                          {/* Financials & Meters Grid */}
+                          <View style={styles.unitInputsGrid}>
                             <View style={{ flex: 1 }}>
-                              <Text style={styles.drawerSubLabel}>Floor</Text>
+                              <Text style={styles.subLabel}>Rent ({getSymbol(propCurrency)})</Text>
                               <TextInput
                                 style={styles.smallInput}
-                                value={u.floor}
-                                placeholder="e.g. 1st Floor"
-                                placeholderTextColor="#94A3B8"
+                                value={String(u.rent || 0)}
+                                keyboardType="numeric"
                                 onChangeText={(val) => {
+                                  const num = parseInt(val, 10) || 0;
                                   setInitialUnits(
-                                    initialUnits.map((item, i) =>
-                                      i === idx ? { ...item, floor: val } : item
-                                    )
+                                    initialUnits.map((item, i) => (i === idx ? { ...item, rent: num } : item))
                                   );
                                 }}
                               />
                             </View>
                             <View style={{ flex: 1 }}>
-                              <Text style={styles.drawerSubLabel}>Carpet Area (Sq. Ft)</Text>
+                              <Text style={styles.subLabel}>Deposit ({getSymbol(propCurrency)})</Text>
                               <TextInput
                                 style={styles.smallInput}
-                                value={String(u.areaSqFt || '')}
+                                value={String(u.deposit || 0)}
                                 keyboardType="numeric"
-                                placeholder="1100"
-                                placeholderTextColor="#94A3B8"
                                 onChangeText={(val) => {
                                   const num = parseInt(val, 10) || 0;
                                   setInitialUnits(
-                                    initialUnits.map((item, i) =>
-                                      i === idx ? { ...item, areaSqFt: num } : item
-                                    )
+                                    initialUnits.map((item, i) => (i === idx ? { ...item, deposit: num } : item))
+                                  );
+                                }}
+                              />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.subLabel}>Meter #</Text>
+                              <TextInput
+                                style={styles.smallInput}
+                                value={u.electricityMeter || ''}
+                                placeholder="Meter"
+                                onChangeText={(val) => {
+                                  setInitialUnits(
+                                    initialUnits.map((item, i) => (i === idx ? { ...item, electricityMeter: val } : item))
                                   );
                                 }}
                               />
                             </View>
                           </View>
-
-                          {/* Furnishing Status Dropdown */}
-                          <Text style={[styles.drawerSubLabel, { marginTop: 10 }]}>Furnishing Status</Text>
-                          <TouchableOpacity
-                            style={[
-                              styles.drawerDropdownBtn,
-                              openUnitDropdown?.idx === idx && openUnitDropdown?.field === 'furnishing' && styles.drawerDropdownBtnActive,
-                            ]}
-                            onPress={() =>
-                              setOpenUnitDropdown((prev) =>
-                                prev?.idx === idx && prev?.field === 'furnishing' ? null : { idx, field: 'furnishing' }
-                              )
-                            }
-                            activeOpacity={0.75}
-                          >
-                            <Text style={styles.drawerDropdownBtnText}>
-                              {u.furnishing || 'Select Furnishing'}
-                            </Text>
-                            <Feather
-                              name={
-                                openUnitDropdown?.idx === idx && openUnitDropdown?.field === 'furnishing'
-                                  ? 'chevron-up'
-                                  : 'chevron-down'
-                              }
-                              size={15}
-                              color="#059669"
-                            />
-                          </TouchableOpacity>
-
-                          {openUnitDropdown?.idx === idx && openUnitDropdown?.field === 'furnishing' && (
-                            <View style={styles.drawerDropdownList}>
-                              {UNIT_FURNISHING_TYPES.map((f) => {
-                                const isSelected = u.furnishing === f;
-                                return (
-                                  <TouchableOpacity
-                                    key={f}
-                                    style={[styles.drawerDropdownOption, isSelected && styles.drawerDropdownOptionActive]}
-                                    onPress={() => {
-                                      setInitialUnits(
-                                        initialUnits.map((item, i) =>
-                                          i === idx ? { ...item, furnishing: f } : item
-                                        )
-                                      );
-                                      setOpenUnitDropdown(null);
-                                    }}
-                                    activeOpacity={0.7}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.drawerDropdownOptionText,
-                                        isSelected && styles.drawerDropdownOptionTextActive,
-                                      ]}
-                                    >
-                                      {f}
-                                    </Text>
-                                    {isSelected && <Feather name="check" size={13} color="#059669" />}
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-                          )}
                         </View>
-                      )}
+                      );
+                    })}
 
-                      {/* FINANCIALS & METERING INPUTS GRID */}
-                      <View style={styles.unitInputsGrid}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={[styles.subLabel, { color: colors.inkSoft }]} numberOfLines={1}>Rent ({getSymbol(currency)})</Text>
-                          <TextInput
-                            style={[styles.smallInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                            value={u.rent.toString()}
-                            keyboardType="numeric"
-                            placeholderTextColor={colors.inkSoft}
-                            onChangeText={(val) => {
-                              const num = parseInt(val, 10) || 0;
-                              setInitialUnits(
-                                initialUnits.map((item, i) => (i === idx ? { ...item, rent: num } : item))
-                              );
-                            }}
-                          />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={[styles.subLabel, { color: colors.inkSoft }]} numberOfLines={1}>Deposit ({getSymbol(currency)})</Text>
-                          <TextInput
-                            style={[styles.smallInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                            value={u.deposit.toString()}
-                            keyboardType="numeric"
-                            placeholderTextColor={colors.inkSoft}
-                            onChangeText={(val) => {
-                              const num = parseInt(val, 10) || 0;
-                              setInitialUnits(
-                                initialUnits.map((item, i) => (i === idx ? { ...item, deposit: num } : item))
-                              );
-                            }}
-                          />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={[styles.subLabel, { color: colors.inkSoft }]} numberOfLines={1}>Meter ID</Text>
-                          <TextInput
-                            style={[styles.smallInput, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', borderColor: colors.line, color: colors.navy }]}
-                            value={u.electricityMeter}
-                            placeholderTextColor={colors.inkSoft}
-                            onChangeText={(val) => {
-                              setInitialUnits(
-                                initialUnits.map((item, i) =>
-                                  i === idx ? { ...item, electricityMeter: val } : item
-                                )
-                              );
-                            }}
-                          />
-                        </View>
-                      </View>
-                    </View>
-                  );
-                })}
-
-                <TouchableOpacity
-                  style={[styles.addIndividualBtn, { backgroundColor: colors.surface, borderColor: colors.line }]}
-                  onPress={handleAddIndividualUnit}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.addIndividualBtnText, { color: colors.primary }]}>+ Add Individual Unit</Text>
-                </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.addIndividualBtn, { backgroundColor: colors.surface, borderColor: colors.line }]}
+                      onPress={handleAddIndividualUnit}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={[styles.addIndividualBtnText, { color: colors.primary }]}>+ Add Individual Unit</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
             )}
 
             <View style={styles.btnRow}>
-              <TouchableOpacity
-                style={styles.backStepBtn}
-                onPress={() => setStep(2)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.backStepText}>Back</Text>
+              <TouchableOpacity style={styles.backStepBtn} onPress={() => setStep(2)} activeOpacity={0.8}>
+                <Text style={styles.backStepText}>← Back</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.nextBtn, { flex: 1 }]}
-                onPress={() => setStep(4)}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.nextBtnText}>Next</Text>
+              <TouchableOpacity style={[styles.nextBtn, { flex: 1 }]} onPress={handleStep3Next} activeOpacity={0.85}>
+                <Text style={styles.nextBtnText}>Next Step →</Text>
               </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* STEP 4: GALLERY & FINAL REVIEW */}
+        {/* ========================================================================= */}
+        {/* STEP 4: PHOTOS & REVIEW                                                   */}
+        {/* ========================================================================= */}
         {step === 4 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
             <Text style={[styles.cardTitle, { color: colors.navy }]}>4. Photos & Final Review</Text>
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, marginTop: 4 }}>
+            {/* Property Photos Gallery */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
               <View style={{ flex: 1, marginRight: 8 }}>
-                <Text style={styles.inputLabel}>Property Photo Gallery ({galleryImages.length} photos)</Text>
-                <Text style={styles.hintText}>Tap star to set primary cover photo.</Text>
+                <Text style={styles.inputLabel}>Property Photos Gallery ({propImages.length} photos)</Text>
               </View>
               <TouchableOpacity
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  backgroundColor: '#059669',
-                  paddingHorizontal: 12,
-                  paddingVertical: 8,
-                  borderRadius: 8,
-                  gap: 6,
-                }}
+                style={styles.uploadPhotosBtn}
                 onPress={handleUploadGalleryPhotos}
                 activeOpacity={0.85}
               >
                 <Feather name="upload" size={13} color="#FFFFFF" />
-                <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>Upload Photos</Text>
+                <Text style={styles.uploadPhotosBtnText}>Upload Photos</Text>
               </TouchableOpacity>
             </View>
 
-            {galleryImages.length === 0 ? (
+            {propImages.length === 0 ? (
               <TouchableOpacity
-                style={{
-                  borderWidth: 1.5,
-                  borderStyle: 'dashed',
-                  borderColor: isDark ? '#334155' : '#CBD5E1',
-                  borderRadius: 12,
-                  backgroundColor: isDark ? '#131B28' : '#F8FAFC',
-                  paddingVertical: 24,
-                  paddingHorizontal: 16,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginBottom: 16,
-                  gap: 8,
-                }}
+                style={[styles.galleryEmptyBox, { borderColor: colors.line }]}
                 onPress={handleUploadGalleryPhotos}
                 activeOpacity={0.8}
               >
-                <View
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: 22,
-                    backgroundColor: isDark ? '#1E293B' : '#FFFFFF',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderWidth: 1,
-                    borderColor: isDark ? '#334155' : '#E2E8F0',
-                  }}
-                >
-                  <Feather name="camera" size={20} color={isDark ? '#94A3B8' : '#64748B'} />
-                </View>
-                <Text style={{ fontSize: 13, fontWeight: '600', color: isDark ? '#F1F5F9' : '#0F172A' }}>No property photos added yet</Text>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 5,
-                    backgroundColor: isDark ? '#064E3B44' : '#ECFDF5',
-                    borderWidth: 1,
-                    borderColor: isDark ? '#05966966' : '#A7F3D0',
-                    borderRadius: 16,
-                    paddingHorizontal: 10,
-                    paddingVertical: 4,
-                    marginTop: 2,
-                  }}
-                >
-                  <Feather name="plus" size={12} color={isDark ? '#34D399' : '#059669'} />
-                  <Text style={{ fontSize: 11.5, fontWeight: '700', color: isDark ? '#34D399' : '#059669' }}>Add Photos</Text>
-                </View>
+                <Feather name="camera" size={24} color={colors.inkSoft} />
+                <Text style={[styles.galleryEmptyText, { color: colors.navy }]}>No property photos added yet</Text>
+                <Text style={{ fontSize: 11, color: colors.inkSoft }}>Select exterior, lobby, or facade photos</Text>
               </TouchableOpacity>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.galleryScroll}>
-                {galleryImages.map((imgUrl, idx) => (
-                  <View key={idx} style={[styles.galleryCard, { position: 'relative' }]}>
+                {propImages.map((imgUrl, idx) => (
+                  <View key={idx} style={styles.galleryCard}>
                     <Image source={{ uri: imgUrl }} style={styles.galleryThumb} />
                     <TouchableOpacity
                       style={[styles.coverStarBtn, coverPhotoIndex === idx && styles.coverStarBtnActive]}
@@ -2451,65 +2120,88 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     >
                       <Ionicons
                         name={coverPhotoIndex === idx ? 'star' : 'star-outline'}
-                        size={14}
+                        size={12}
                         color="#FFFFFF"
                       />
-                      <Text style={styles.coverStarText}>
-                        {coverPhotoIndex === idx ? 'Cover' : 'Set Cover'}
-                      </Text>
+                      <Text style={styles.coverStarText}>{coverPhotoIndex === idx ? 'Cover' : 'Set Cover'}</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={{
-                        position: 'absolute',
-                        top: 6,
-                        right: 6,
-                        backgroundColor: 'rgba(220, 38, 38, 0.85)',
-                        borderRadius: 12,
-                        width: 24,
-                        height: 24,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
+                      style={styles.galleryDeleteBtn}
                       onPress={() => {
-                        const next = galleryImages.filter((_, i) => i !== idx);
-                        setGalleryImages(next);
+                        const next = propImages.filter((_, i) => i !== idx);
+                        setPropImages(next);
                         if (coverPhotoIndex >= next.length) setCoverPhotoIndex(0);
                       }}
-                      activeOpacity={0.8}
                     >
-                      <Feather name="trash-2" size={12} color="#FFFFFF" />
+                      <Feather name="trash-2" size={11} color="#FFFFFF" />
                     </TouchableOpacity>
                   </View>
                 ))}
-
-                <TouchableOpacity
-                  style={{
-                    width: 140,
-                    height: 110,
-                    borderWidth: 1.5,
-                    borderStyle: 'dashed',
-                    borderColor: '#059669',
-                    borderRadius: 10,
-                    backgroundColor: '#ECFDF5',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginRight: 10,
-                  }}
-                  onPress={handleUploadGalleryPhotos}
-                  activeOpacity={0.8}
-                >
-                  <Feather name="plus-circle" size={24} color="#059669" />
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#059669', marginTop: 4 }}>Add Photos</Text>
-                </TouchableOpacity>
               </ScrollView>
             )}
 
-            <View style={styles.divider} />
-            <Text style={styles.sectionHeader}>Property Summary Review</Text>
+            {/* Amenity Photos Showcase in Review */}
+            {Object.keys(propAmenityPhotos).length > 0 && (
+              <View style={[styles.reviewSectionBox, { marginTop: 14 }]}>
+                <Text style={styles.reviewSectionTitle}>
+                  AMENITY PHOTOS SHOWCASE ({Object.keys(propAmenityPhotos).length})
+                </Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                  {Object.entries(propAmenityPhotos).map(([name, photo]) => (
+                    <View key={name} style={styles.amenityReviewCard}>
+                      <Image source={{ uri: photo }} style={styles.amenityReviewImg} />
+                      <View style={styles.amenityReviewLabelBox}>
+                        <Text style={styles.amenityReviewLabelText} numberOfLines={1}>{name}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
 
-            <View style={styles.reviewContainer}>
-              {/* 1. HERO IDENTITY & LOCATION CARD */}
+            {/* Configured Units Showcase in Review */}
+            <View style={[styles.reviewSectionBox, { marginTop: 14 }]}>
+              <Text style={styles.reviewSectionTitle}>
+                {propStructure === 'single_unit' ? 'SINGLE-UNIT ASSET SPECS' : `CONFIGURED UNITS (${initialUnits.length})`}
+              </Text>
+              {propStructure === 'single_unit' ? (
+                <View style={styles.singleUnitReviewSpecs}>
+                  <Text style={styles.singleUnitReviewLine}>
+                    <b>Identifier:</b> {singleUnitLabel || 'Entire House'} • <b>Type:</b> {singleUnitType}
+                  </Text>
+                  <Text style={styles.singleUnitReviewLine}>
+                    <b>Monthly Rent:</b> {getSymbol(propCurrency)}{singleUnitRent.toLocaleString()}/mo • <b>Deposit:</b> {getSymbol(propCurrency)}{singleUnitDeposit.toLocaleString()}
+                  </Text>
+                  <Text style={styles.singleUnitReviewLine}>
+                    <b>Area:</b> {singleUnitAreaSqFt} sq.ft • <b>Furnishing:</b> {singleUnitFurnishing}
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                  {initialUnits.map((u, i) => (
+                    <View key={i} style={[styles.unitReviewTile, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                      {u.images && u.images[0] ? (
+                        <Image source={{ uri: u.images[0] }} style={styles.unitReviewTileImg} />
+                      ) : (
+                        <View style={styles.unitReviewTilePlaceholder}>
+                          <Feather name="home" size={14} color={colors.inkSoft} />
+                        </View>
+                      )}
+                      <View>
+                        <Text style={styles.unitReviewTileTitle}>Unit {u.unitNumber} ({u.unitType})</Text>
+                        <Text style={styles.unitReviewTileSub}>
+                          {getSymbol(propCurrency)}{u.rent.toLocaleString()}/mo • {u.floor}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+
+            {/* Comprehensive Property Verification & Summary */}
+            <View style={[styles.reviewContainer, { marginTop: 16 }]}>
               <View style={styles.reviewHeroCard}>
                 <View style={styles.reviewHeroHeader}>
                   <View style={styles.reviewHeroIconWrap}>
@@ -2520,43 +2212,39 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                       {propertyName || 'Unnamed Property'}
                     </Text>
                     <Text style={styles.reviewPropTypeSub} numberOfLines={1}>
-                      {propertyType} • {country}
+                      {propertyType} • {propStructure === 'single_unit' ? 'Single-Unit Asset' : 'Multi-Unit Complex'}
                     </Text>
                   </View>
                 </View>
 
-                {/* Location row */}
                 <View style={styles.reviewLocationRow}>
                   <Feather name="map-pin" size={13} color="#059669" style={{ marginTop: 2, marginRight: 6 }} />
                   <Text style={styles.reviewLocationText} numberOfLines={2}>
-                    {confirmedLocation || `${addressLine || ''}, ${city || ''}`.trim().replace(/^,\s*|,\s*$/g, '') || 'Address Pending'}
+                    {confirmedAddress.formattedAddress} ({country})
                   </Text>
                 </View>
               </View>
 
-              {/* 2. STATS & KEY METRICS (2x2 Grid) */}
+              {/* 2x2 Metric Tiles */}
               <View style={styles.reviewStatsGrid}>
-                {/* Metric 1: Monthly Rent */}
                 <View style={[styles.reviewStatTile, styles.reviewStatTileHighlighted]}>
                   <Text style={styles.reviewStatLabelHighlighted}>PROJECTED RENT</Text>
                   <Text style={styles.reviewStatValueHighlighted} numberOfLines={1}>
-                    {format(totalProjectedMonthlyRent, currency)}
+                    {getSymbol(propCurrency)}{totalProjectedMonthlyRent.toLocaleString()}
                   </Text>
                   <Text style={styles.reviewStatSubHighlighted}>per month</Text>
                 </View>
 
-                {/* Metric 2: Structure / Scale */}
                 <View style={styles.reviewStatTile}>
-                  <Text style={styles.reviewStatLabel}>SCALE</Text>
+                  <Text style={styles.reviewStatLabel}>TOTAL CAPACITY</Text>
                   <Text style={styles.reviewStatValue} numberOfLines={1}>
-                    {initialUnits.length} Units
+                    {propStructure === 'single_unit' ? '1 Asset' : `${initialUnits.length} Units`}
                   </Text>
                   <Text style={styles.reviewStatSub} numberOfLines={1}>
-                    {floorsCount} Floors
+                    {floorsCount} Floors • {yearBuilt}
                   </Text>
                 </View>
 
-                {/* Metric 3: Operations & Management */}
                 <View style={styles.reviewStatTile}>
                   <Text style={styles.reviewStatLabel}>OPERATIONS</Text>
                   <Text style={styles.reviewStatValue} numberOfLines={1}>
@@ -2567,111 +2255,48 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     })()}
                   </Text>
                   <Text style={styles.reviewStatSub} numberOfLines={1}>
-                    {(() => {
-                      if (!assignedManagerId) return 'Self-Managed';
-                      const found = availableManagers.find((m) => m.id === assignedManagerId);
-                      return found?.role || 'Property Manager';
-                    })()}
+                    {assignedManagerId ? 'Delegated Manager' : 'Self-Managed'}
                   </Text>
                 </View>
 
-                {/* Metric 4: Photos */}
                 <View style={styles.reviewStatTile}>
-                  <Text style={styles.reviewStatLabel}>ATTACHED MEDIA</Text>
+                  <Text style={styles.reviewStatLabel}>LEASE POLICY</Text>
                   <Text style={styles.reviewStatValue} numberOfLines={1}>
-                    {galleryImages.length} Photos
+                    {propRules.minLeaseMonths}M Min
                   </Text>
                   <Text style={styles.reviewStatSub} numberOfLines={1}>
-                    {Object.keys(amenityPhotos).filter((k) => amenities.includes(k)).length} Amenities
+                    {propRules.noticePeriodDays}d Notice • {propRules.petsAllowed ? 'Pets OK' : 'No Pets'}
                   </Text>
                 </View>
-              </View>
-
-              {/* 3. POLICIES & TERMS CHIPS */}
-              <View style={styles.reviewSectionBox}>
-                <Text style={styles.reviewSectionTitle}>POLICIES & TERMS</Text>
-                <View style={styles.reviewPillsWrap}>
-                  <View style={styles.policyPill}>
-                    <Text style={styles.policyPillText}>
-                      {petsAllowed ? '🐾 Pets OK' : '🚫 No Pets'}
-                    </Text>
-                  </View>
-                  <View style={styles.policyPill}>
-                    <Text style={styles.policyPillText}>
-                      🔒 {minLeaseMonths}M Lock-in
-                    </Text>
-                  </View>
-                  <View style={styles.policyPill}>
-                    <Text style={styles.policyPillText}>
-                      📅 {noticePeriodDays}d Notice
-                    </Text>
-                  </View>
-                  {smokingAllowed !== undefined && (
-                    <View style={styles.policyPill}>
-                      <Text style={styles.policyPillText}>
-                        {smokingAllowed ? '🚬 Smoking OK' : '🚭 No Smoking'}
-                      </Text>
-                    </View>
-                  )}
-                  {sublettingAllowed !== undefined && (
-                    <View style={styles.policyPill}>
-                      <Text style={styles.policyPillText}>
-                        {sublettingAllowed ? '🔄 Subletting OK' : '⛔ No Subletting'}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              </View>
-
-              {/* 4. ACTIVE AMENITIES CHIPS */}
-              <View style={[styles.reviewSectionBox, { marginBottom: 4 }]}>
-                <Text style={styles.reviewSectionTitle}>
-                  AMENITIES ({amenities.length})
-                </Text>
-                {amenities.length === 0 ? (
-                  <Text style={styles.reviewEmptyText}>No amenities selected</Text>
-                ) : (
-                  <View style={styles.reviewPillsWrap}>
-                    {amenities.slice(0, 6).map((am) => (
-                      <View key={am} style={styles.amenityReviewPill}>
-                        <Text style={styles.amenityReviewPillText} numberOfLines={1}>
-                          {am}
-                        </Text>
-                      </View>
-                    ))}
-                    {amenities.length > 6 && (
-                      <View style={[styles.amenityReviewPill, styles.amenityReviewPillMore]}>
-                        <Text style={styles.amenityReviewPillMoreText}>
-                          +{amenities.length - 6} more
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                )}
               </View>
             </View>
 
             <View style={styles.btnRow}>
-              <TouchableOpacity
-                style={styles.backStepBtn}
-                onPress={() => setStep(3)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.backStepText}>Back</Text>
+              <TouchableOpacity style={styles.backStepBtn} onPress={() => setStep(3)} activeOpacity={0.8}>
+                <Text style={styles.backStepText}>← Back</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.saveBtn, { flex: 1 }]}
+                style={[styles.saveBtn, { flex: 1 }, isSubmitting && { opacity: 0.7 }]}
                 onPress={handleSaveAndPublish}
+                disabled={isSubmitting}
                 activeOpacity={0.85}
               >
-                <Text style={styles.saveBtnText}>✓ Save & Publish</Text>
+                {isSubmitting ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.saveBtnText}>
+                    {propStructure === 'single_unit'
+                      ? ' Create '
+                      : ` Create `}
+                  </Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
         )}
       </ScrollView>
 
-      {/* Plan Quota Limit Interception Modal */}
+      {/* Plan Quota Interception Modal */}
       <PlanLimitModal
         visible={limitModalType !== null}
         resourceType={limitModalType}
@@ -2700,9 +2325,7 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       justifyContent: 'space-between',
       paddingHorizontal: 16,
       paddingVertical: 12,
-      backgroundColor: colors.surface,
       borderBottomWidth: 1,
-      borderBottomColor: colors.line,
     },
     headerLeft: {
       flexDirection: 'row',
@@ -2712,7 +2335,7 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       width: 36,
       height: 36,
       borderRadius: 8,
-      backgroundColor: colors.surfaceSunken,
+      backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
       alignItems: 'center',
       justifyContent: 'center',
       marginRight: 10,
@@ -2721,19 +2344,18 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       width: 32,
       height: 32,
       borderRadius: 8,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.2)' : '#10B981',
+      backgroundColor: '#059669',
       alignItems: 'center',
       justifyContent: 'center',
       marginRight: 10,
     },
     headerTitle: {
-      fontSize: 16,
-      fontWeight: '700',
-      color: colors.navy,
+      fontSize: 15.5,
+      fontWeight: '800',
     },
     headerSub: {
       fontSize: 11,
-      color: colors.inkSoft,
+      fontWeight: '500',
     },
     stepBadge: {
       paddingHorizontal: 10,
@@ -2750,244 +2372,361 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     scroll: {
       flex: 1,
-      backgroundColor: colors.background,
     },
     content: {
       padding: 16,
       paddingBottom: 40,
     },
+    currentStageChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      backgroundColor: '#059669',
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+      borderRadius: 999,
+      shadowColor: '#059669',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.15,
+      shadowRadius: 4,
+      elevation: 2,
+    },
+    currentStageChipText: {
+      color: '#FFFFFF',
+      fontSize: 12.5,
+      fontWeight: '700',
+      letterSpacing: 0.2,
+    },
     quotaBanner: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      padding: 12,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
+      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#ECFDF5',
       borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#BBF7D0',
-      borderRadius: 10,
+      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+      borderRadius: 12,
+      padding: 12,
       marginBottom: 14,
     },
     quotaBannerTitle: {
-      fontSize: 13,
+      fontSize: 12.5,
       fontWeight: '700',
-      color: isDark ? '#34D399' : '#166534',
+      color: isDark ? '#6EE7B7' : '#065F46',
     },
     quotaBannerSub: {
       fontSize: 11,
-      color: isDark ? '#A7F3D0' : '#15803D',
+      color: isDark ? '#A7F3D0' : '#047857',
       marginTop: 2,
     },
     quotaBadge: {
+      backgroundColor: '#059669',
       paddingHorizontal: 8,
       paddingVertical: 3,
-      backgroundColor: '#10B981',
       borderRadius: 6,
     },
     quotaBadgeText: {
-      fontSize: 11,
-      fontWeight: '700',
       color: '#FFFFFF',
-    },
-    progressRow: {
-      flexDirection: 'row',
-      gap: 6,
-      marginBottom: 16,
-    },
-    progressSegment: {
-      flex: 1,
-      height: 4,
-      backgroundColor: colors.line,
-      borderRadius: 2,
-    },
-    progressSegmentActive: {
-      backgroundColor: colors.primary,
+      fontSize: 10.5,
+      fontWeight: '700',
     },
     stepsNavRow: {
       flexDirection: 'row',
       gap: 6,
-      marginBottom: 16,
+      marginBottom: 14,
     },
     stepTabPill: {
       flex: 1,
-      height: 38,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
+      paddingVertical: 8,
       paddingHorizontal: 4,
       borderRadius: 8,
-      backgroundColor: colors.surfaceSunken,
       borderWidth: 1,
-      borderColor: colors.line,
     },
     stepTabPillActive: {
-      backgroundColor: colors.primary,
-      borderColor: colors.primary,
+      backgroundColor: '#059669',
+      borderColor: '#059669',
     },
     stepTabPillCompleted: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+      backgroundColor: '#ECFDF5',
+      borderColor: '#A7F3D0',
     },
     stepTabPillText: {
-      fontSize: 11.5,
+      fontSize: 10.5,
       fontWeight: '600',
-      color: colors.inkSoft,
     },
     stepTabPillTextActive: {
       color: '#FFFFFF',
       fontWeight: '700',
     },
-    stepTabPillTextCompleted: {
-      color: isDark ? '#34D399' : '#059669',
-      fontWeight: '700',
-    },
     card: {
-      backgroundColor: colors.surface,
-      borderRadius: 14,
-      padding: 18,
+      borderRadius: 16,
       borderWidth: 1,
-      borderColor: colors.line,
+      padding: 16,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.04,
+      shadowRadius: 8,
+      elevation: 2,
     },
     cardTitle: {
-      fontSize: 17,
-      fontWeight: '700',
-      color: colors.navy,
-    },
-    cardSub: {
-      fontSize: 12,
-      color: colors.inkSoft,
-      marginTop: 2,
-      marginBottom: 16,
+      fontSize: 15,
+      fontWeight: '800',
+      marginBottom: 14,
     },
     inputLabel: {
-      fontSize: 12,
-      fontWeight: '600',
-      color: colors.ink,
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.navy,
       marginBottom: 6,
-      marginTop: 10,
+    },
+    subLabel: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.inkSoft,
+      marginBottom: 4,
+    },
+    hintText: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+      marginBottom: 8,
+      lineHeight: 16,
     },
     input: {
+      backgroundColor: colors.surfaceSunken,
       borderWidth: 1,
       borderColor: colors.line,
-      borderRadius: 8,
+      borderRadius: 10,
       paddingHorizontal: 12,
       paddingVertical: 10,
-      fontSize: 14,
-      color: colors.text,
-      backgroundColor: colors.surfaceSunken,
-    },
-    chipGrid: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: 8,
-    },
-    filterChip: {
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      borderRadius: 8,
-      backgroundColor: colors.surfaceSunken,
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    filterChipActive: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      borderColor: colors.primary,
-    },
-    filterChipText: {
-      fontSize: 12,
+      fontSize: 13.5,
       color: colors.ink,
-      fontWeight: '500',
+      marginBottom: 14,
     },
-    filterChipTextActive: {
-      color: isDark ? '#34D399' : '#059669',
-      fontWeight: '700',
+    inputError: {
+      borderColor: '#EF4444',
+      backgroundColor: isDark ? 'rgba(239, 68, 68, 0.1)' : '#FEF2F2',
+    },
+    errorText: {
+      color: '#EF4444',
+      fontSize: 11.5,
+      marginTop: -10,
+      marginBottom: 12,
+      fontWeight: '600',
     },
     dropdownTrigger: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
+      backgroundColor: colors.surfaceSunken,
       borderWidth: 1,
       borderColor: colors.line,
-      borderRadius: 8,
+      borderRadius: 10,
       paddingHorizontal: 12,
       paddingVertical: 10,
-      backgroundColor: colors.surfaceSunken,
     },
     dropdownTriggerActive: {
-      borderColor: colors.primary,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
+      borderColor: '#059669',
+      borderWidth: 1.5,
     },
     dropdownLeft: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 8,
       flex: 1,
     },
     dropdownBadge: {
-      minWidth: 28,
-      paddingHorizontal: 6,
-      paddingVertical: 3,
+      width: 24,
+      height: 24,
       borderRadius: 6,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.18)' : '#ECFDF5',
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.35)' : '#A7F3D0',
+      backgroundColor: isDark ? '#1E293B' : '#E2E8F0',
       alignItems: 'center',
       justifyContent: 'center',
+      marginRight: 8,
     },
     dropdownBadgeSymbol: {
-      fontSize: 13,
-      fontWeight: '700',
-      color: isDark ? '#34D399' : '#059669',
+      fontSize: 12,
+      fontWeight: '800',
+      color: '#059669',
     },
     dropdownText: {
-      fontSize: 13.5,
+      fontSize: 13,
       fontWeight: '600',
-      color: colors.text,
+      color: colors.ink,
+      flex: 1,
     },
     dropdownMenu: {
-      marginTop: 6,
-      marginBottom: 10,
       backgroundColor: colors.surface,
       borderWidth: 1,
       borderColor: colors.line,
-      borderRadius: 12,
+      borderRadius: 10,
+      marginTop: 4,
       overflow: 'hidden',
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: isDark ? 0.3 : 0.08,
-      shadowRadius: 10,
       elevation: 4,
+    },
+    dropdownGroupHeader: {
+      backgroundColor: colors.surfaceSunken,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+    },
+    dropdownGroupHeaderText: {
+      fontSize: 10,
+      fontWeight: '800',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
     },
     dropdownItem: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingVertical: 11,
-      paddingHorizontal: 14,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
       borderBottomWidth: 1,
-      borderBottomColor: colors.lineLight,
+      borderBottomColor: colors.line,
     },
     dropdownItemActive: {
       backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#F0FDF4',
     },
     dropdownItemText: {
       fontSize: 13,
+      fontWeight: '600',
       color: colors.ink,
-      fontWeight: '500',
     },
     dropdownItemTextActive: {
-      color: isDark ? '#34D399' : '#065F46',
+      color: '#059669',
       fontWeight: '700',
     },
-    divider: {
-      height: 1,
-      backgroundColor: colors.line,
-      marginVertical: 16,
+    dropdownItemSub: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 2,
     },
-    sectionHeader: {
+    structureBox: {
+      padding: 14,
+      borderRadius: 12,
+      borderWidth: 1,
+      marginBottom: 16,
+    },
+    structureBoxTitle: {
       fontSize: 13,
+      fontWeight: '800',
+      marginBottom: 2,
+    },
+    structureCardsRow: {
+      gap: 10,
+    },
+    structureCard: {
+      padding: 12,
+      borderRadius: 10,
+      borderWidth: 1,
+    },
+    structureCardActive: {
+      borderColor: '#C5A059',
+      borderWidth: 2,
+      backgroundColor: isDark ? 'rgba(197, 160, 89, 0.12)' : '#FAF8F5',
+    },
+    structureRadioRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 4,
+    },
+    radioCircle: {
+      width: 16,
+      height: 16,
+      borderRadius: 8,
+      borderWidth: 1.5,
+      borderColor: colors.inkSoft,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 8,
+    },
+    radioCircleActive: {
+      borderColor: '#C5A059',
+    },
+    radioDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: '#C5A059',
+    },
+    structureCardName: {
+      fontSize: 13,
+      fontWeight: '800',
+    },
+    structureCardDesc: {
+      fontSize: 11.5,
+      lineHeight: 16,
+      paddingLeft: 24,
+    },
+    placesSearchBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.surfaceSunken,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      paddingHorizontal: 10,
+      paddingVertical: 2,
+      marginBottom: 8,
+    },
+    placesSearchInput: {
+      flex: 1,
+      paddingVertical: 8,
+      paddingHorizontal: 8,
+      fontSize: 13,
+      color: colors.ink,
+    },
+    placesDropdownMenu: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      marginBottom: 8,
+      overflow: 'hidden',
+    },
+    placeItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    placeItemText: {
+      fontSize: 12.5,
       fontWeight: '700',
-      color: colors.navy,
-      marginBottom: 6,
+      color: colors.ink,
+    },
+    placeItemSub: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    confirmedLocationCard: {
+      backgroundColor: '#F0FDF4',
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+      borderRadius: 10,
+      padding: 10,
+      marginTop: 4,
+      marginBottom: 12,
+    },
+    confirmedLocationHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      marginBottom: 2,
+    },
+    confirmedLocationTitle: {
+      fontSize: 11,
+      fontWeight: '800',
+      color: '#059669',
+      textTransform: 'uppercase',
+    },
+    confirmedLocationText: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: '#065F46',
     },
     grid2: {
       flexDirection: 'row',
@@ -2997,63 +2736,88 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       flexDirection: 'row',
       gap: 8,
     },
-    rulesCard: {
-      backgroundColor: colors.surfaceSunken,
+    nextBtn: {
+      backgroundColor: '#059669',
+      paddingVertical: 12,
       borderRadius: 10,
-      padding: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    nextBtnText: {
+      color: '#FFFFFF',
+      fontSize: 14,
+      fontWeight: '800',
+    },
+    btnRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginTop: 18,
+    },
+    backStepBtn: {
+      paddingVertical: 12,
+      paddingHorizontal: 16,
+      borderRadius: 10,
       borderWidth: 1,
       borderColor: colors.line,
+      backgroundColor: colors.surfaceSunken,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    backStepText: {
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    rulesCard: {
+      padding: 14,
+      borderRadius: 12,
+      borderWidth: 1,
       marginBottom: 14,
     },
     rulesHeader: {
-      fontSize: 13,
-      fontWeight: '700',
-      color: colors.navy,
+      fontSize: 13.5,
+      fontWeight: '800',
       marginBottom: 10,
+    },
+    rulesCheckboxList: {
+      gap: 8,
     },
     toggleRow: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingVertical: 10,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.lineLight,
+      paddingVertical: 6,
     },
     toggleLeft: {
       flexDirection: 'row',
       alignItems: 'center',
-      flex: 1,
-      paddingRight: 8,
+      gap: 8,
     },
     toggleIcon: {
-      fontSize: 18,
-      marginRight: 10,
+      fontSize: 15,
     },
     toggleTitle: {
       fontSize: 13,
       fontWeight: '600',
-      color: colors.ink,
-    },
-    toggleSub: {
-      fontSize: 11,
-      color: colors.inkSoft,
     },
     segmentedSmall: {
       flexDirection: 'row',
-      backgroundColor: colors.surfaceMuted,
-      borderRadius: 6,
-      padding: 2,
+      backgroundColor: colors.surface,
+      borderRadius: 8,
+      padding: 3,
+      gap: 4,
       borderWidth: 1,
       borderColor: colors.line,
     },
     smallSegBtn: {
       flex: 1,
-      alignItems: 'center',
       paddingVertical: 6,
-      borderRadius: 4,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 6,
     },
     smallSegBtnActive: {
-      backgroundColor: colors.primary,
+      backgroundColor: '#059669',
     },
     smallSegText: {
       fontSize: 11,
@@ -3062,178 +2826,127 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     smallSegTextActive: {
       color: '#FFFFFF',
+      fontWeight: '800',
     },
-    amenityChip: {
+    chipGrid: {
       flexDirection: 'row',
-      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: 6,
+      marginBottom: 12,
+    },
+    amenityBadge: {
       paddingHorizontal: 10,
       paddingVertical: 6,
       borderRadius: 8,
-      backgroundColor: colors.surfaceSunken,
       borderWidth: 1,
       borderColor: colors.line,
+      backgroundColor: colors.surfaceSunken,
     },
-    amenityChipActive: {
-      backgroundColor: colors.primary,
-      borderColor: colors.primary,
+    amenityBadgeActive: {
+      backgroundColor: '#ECFDF5',
+      borderColor: '#A7F3D0',
     },
-    amenityChipText: {
-      fontSize: 12,
-      color: colors.ink,
-    },
-    amenityChipTextActive: {
-      color: '#FFFFFF',
+    amenityBadgeText: {
+      fontSize: 11.5,
       fontWeight: '600',
+      color: colors.inkSoft,
     },
-    selectedAmenityPill: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
-      paddingHorizontal: 10,
-      paddingVertical: 5,
-      borderRadius: 8,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
-    },
-    selectedAmenityPillText: {
-      fontSize: 12,
-      color: isDark ? '#34D399' : '#059669',
-      fontWeight: '600',
+    amenityBadgeTextActive: {
+      color: '#065F46',
+      fontWeight: '700',
     },
     customAmenityRow: {
       flexDirection: 'row',
       gap: 8,
-      alignItems: 'center',
-      marginTop: 12,
+      marginBottom: 12,
     },
     customAmenityInput: {
       flex: 1,
+      backgroundColor: colors.surfaceSunken,
       borderWidth: 1,
       borderColor: colors.line,
       borderRadius: 8,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-      height: 42,
-      fontSize: 13,
-      color: colors.text,
-      backgroundColor: colors.surfaceSunken,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      fontSize: 12.5,
+      color: colors.ink,
     },
     addAmenityBtn: {
-      backgroundColor: colors.primary,
+      backgroundColor: '#059669',
       paddingHorizontal: 14,
-      height: 42,
-      justifyContent: 'center',
       borderRadius: 8,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     addAmenityBtnText: {
       color: '#FFFFFF',
       fontSize: 12,
-      fontWeight: '600',
-    },
-    amenityCounterBadge: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      paddingHorizontal: 8,
-      paddingVertical: 2,
-      borderRadius: 10,
-    },
-    amenityCounterText: {
-      fontSize: 11,
       fontWeight: '700',
-      color: isDark ? '#34D399' : '#059669',
     },
-    emptyAmenityBox: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-      padding: 12,
-      backgroundColor: colors.surfaceSunken,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    emptyAmenityText: {
-      fontSize: 12,
-      color: colors.inkSoft,
+    sectionHeader: {
+      fontSize: 13,
+      fontWeight: '800',
+      marginBottom: 4,
     },
     amenityPhotoGrid: {
       flexDirection: 'row',
       flexWrap: 'wrap',
       gap: 10,
-      marginTop: 4,
-      justifyContent: 'center',
-      alignItems: 'center',
+      marginTop: 8,
     },
     amenityPhotoCard: {
-      width: '100%',
-      maxWidth: 320,
-      alignSelf: 'center',
-      backgroundColor: colors.surfaceSunken,
+      width: '48%',
       borderWidth: 1,
-      borderColor: colors.line,
-      borderStyle: 'dashed',
       borderRadius: 10,
-      padding: 8,
+      padding: 10,
+      minHeight: 120,
       justifyContent: 'space-between',
-    },
-    amenityPhotoCardActive: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.08)' : '#F7FAF8',
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
-      borderStyle: 'solid',
     },
     amenityCardHeader: {
       flexDirection: 'row',
-      justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: 8,
+      justifyContent: 'space-between',
+      marginBottom: 6,
     },
     amenityCardName: {
       fontSize: 12,
       fontWeight: '700',
-      color: colors.navy,
       flex: 1,
       marginRight: 4,
     },
     photoAttachedBadge: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      paddingHorizontal: 6,
-      paddingVertical: 2,
+      backgroundColor: '#DCFCE7',
+      paddingHorizontal: 4,
+      paddingVertical: 1,
       borderRadius: 4,
     },
     photoAttachedBadgeText: {
       fontSize: 9.5,
       fontWeight: '700',
-      color: isDark ? '#34D399' : '#059669',
+      color: '#15803D',
     },
     amenityThumbContainer: {
-      position: 'relative',
       width: '100%',
-      height: 100,
+      height: 70,
       borderRadius: 6,
       overflow: 'hidden',
-      backgroundColor: colors.surfaceMuted,
+      position: 'relative',
     },
     amenityThumbImg: {
       width: '100%',
       height: '100%',
-      borderRadius: 6,
     },
     amenityActionRow: {
       position: 'absolute',
       bottom: 4,
       right: 4,
-      left: 4,
       flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
+      gap: 4,
     },
     amenityReplaceBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      backgroundColor: 'rgba(15, 23, 42, 0.75)',
+      backgroundColor: 'rgba(0,0,0,0.7)',
       paddingHorizontal: 6,
-      paddingVertical: 3,
+      paddingVertical: 2,
       borderRadius: 4,
     },
     amenityReplaceBtnText: {
@@ -3242,50 +2955,48 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       fontWeight: '600',
     },
     amenityRemoveBtn: {
-      backgroundColor: isDark ? 'rgba(30, 41, 59, 0.9)' : 'rgba(255, 255, 255, 0.9)',
-      padding: 4,
+      backgroundColor: 'rgba(255,255,255,0.9)',
+      padding: 3,
       borderRadius: 4,
     },
     amenityUploadPlaceholder: {
-      height: 100,
+      height: 65,
+      borderWidth: 1,
+      borderStyle: 'dashed',
+      borderColor: colors.line,
       borderRadius: 6,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.line,
+      gap: 4,
     },
     amenityPlaceholderText: {
-      fontSize: 10,
-      color: colors.inkSoft,
-      marginTop: 3,
-      marginBottom: 6,
+      fontSize: 11,
+      fontWeight: '700',
     },
-    amenityAttachBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+    singleAssetBanner: {
+      padding: 12,
+      borderRadius: 10,
       borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
-      paddingHorizontal: 8,
-      paddingVertical: 3,
+      marginBottom: 16,
+    },
+    brassBadge: {
+      backgroundColor: '#C5A059',
+      paddingHorizontal: 6,
+      paddingVertical: 2,
       borderRadius: 4,
     },
-    amenityAttachBtnText: {
-      fontSize: 10.5,
-      fontWeight: '700',
-      color: isDark ? '#34D399' : '#059669',
+    brassBadgeText: {
+      color: '#FFFFFF',
+      fontSize: 11,
+      fontWeight: '800',
     },
     metricsBox: {
       flexDirection: 'row',
-      justifyContent: 'space-between',
       alignItems: 'center',
-      backgroundColor: colors.surfaceSunken,
-      borderRadius: 10,
-      padding: 14,
+      justifyContent: 'space-between',
       borderWidth: 1,
-      borderColor: colors.line,
+      borderRadius: 10,
+      padding: 12,
       marginBottom: 12,
     },
     metricsLabel: {
@@ -3293,18 +3004,16 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       fontWeight: '700',
       color: colors.inkSoft,
       letterSpacing: 0.5,
+      marginBottom: 2,
     },
     metricsValue: {
-      fontSize: 18,
+      fontSize: 15,
       fontWeight: '800',
-      color: colors.navy,
-      marginTop: 2,
     },
     metricsRent: {
-      fontSize: 18,
+      fontSize: 15,
       fontWeight: '800',
-      color: colors.primary,
-      marginTop: 2,
+      color: '#059669',
     },
     modeTabs: {
       flexDirection: 'row',
@@ -3314,135 +3023,115 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     modeTab: {
       flex: 1,
       paddingVertical: 8,
-      alignItems: 'center',
-      backgroundColor: colors.surfaceSunken,
       borderRadius: 8,
       borderWidth: 1,
       borderColor: colors.line,
+      backgroundColor: colors.surfaceSunken,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     modeTabActive: {
-      backgroundColor: colors.primary,
-      borderColor: colors.primary,
+      backgroundColor: '#059669',
+      borderColor: '#059669',
     },
     modeTabText: {
-      fontSize: 12,
-      fontWeight: '600',
+      fontSize: 11.5,
+      fontWeight: '700',
       color: colors.inkSoft,
     },
     modeTabTextActive: {
       color: '#FFFFFF',
     },
     bulkBox: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#BBF7D0',
-      borderRadius: 10,
       padding: 14,
+      borderRadius: 12,
+      borderWidth: 1,
       marginBottom: 14,
     },
     bulkBoxTitle: {
       fontSize: 13,
-      fontWeight: '700',
-      color: isDark ? '#34D399' : '#166534',
+      fontWeight: '800',
+      marginBottom: 2,
     },
     bulkBoxSub: {
       fontSize: 11,
-      color: isDark ? '#A7F3D0' : '#15803D',
-      marginTop: 2,
+      color: colors.inkSoft,
       marginBottom: 12,
+      lineHeight: 16,
     },
     executeBulkBtn: {
-      backgroundColor: colors.primary,
+      backgroundColor: '#059669',
       paddingVertical: 10,
       borderRadius: 8,
       alignItems: 'center',
-      marginTop: 8,
+      justifyContent: 'center',
+      marginTop: 4,
     },
     executeBulkBtnText: {
       color: '#FFFFFF',
       fontSize: 13,
-      fontWeight: '700',
+      fontWeight: '800',
     },
     unitRowCard: {
-      backgroundColor: colors.surfaceSunken,
-      borderRadius: 8,
-      padding: 12,
       borderWidth: 1,
-      borderColor: colors.line,
-      marginBottom: 8,
+      borderRadius: 12,
+      padding: 12,
+      marginBottom: 10,
     },
-    unitRowHeader: {
+    unitRowTopBar: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
       marginBottom: 8,
     },
-    unitRowTopBar: {
+    unitPillEditable: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 8,
-      marginBottom: 8,
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      borderRadius: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+    },
+    unitPillPrefix: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: '#059669',
+      marginRight: 4,
+    },
+    unitPillInput: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: '#065F46',
+      minWidth: 40,
+      padding: 0,
+    },
+    deleteUnitBtn: {
+      padding: 4,
     },
     unitRowActionsBar: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
-      marginBottom: 8,
-    },
-    unitPill: {
-      paddingHorizontal: 8,
-      paddingVertical: 3,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      borderRadius: 6,
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
-    },
-    unitPillText: {
-      color: isDark ? '#34D399' : '#059669',
-      fontSize: 11,
-      fontWeight: '700',
-    },
-    unitPillEditable: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      borderRadius: 6,
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
-    },
-    unitPillPrefix: {
-      color: isDark ? '#34D399' : '#059669',
-      fontSize: 11,
-      fontWeight: '700',
-    },
-    unitPillInput: {
-      flex: 1,
-      color: isDark ? '#34D399' : '#065F46',
-      fontSize: 12,
-      fontWeight: '700',
-      padding: 0,
-      margin: 0,
+      marginBottom: 10,
     },
     unitPhotoAttachBtn: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 4,
-      paddingHorizontal: 8,
-      paddingVertical: 5,
-      borderRadius: 6,
-      backgroundColor: colors.surfaceSunken,
       borderWidth: 1,
-      borderColor: colors.line,
       borderStyle: 'dashed',
+      borderColor: '#059669',
+      borderRadius: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      backgroundColor: '#ECFDF5',
     },
     unitPhotoAttachText: {
       fontSize: 11,
-      fontWeight: '600',
-      color: isDark ? '#34D399' : '#059669',
+      fontWeight: '700',
+      color: '#059669',
     },
     unitPhotoThumbWrapper: {
       position: 'relative',
@@ -3451,15 +3140,13 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       width: 32,
       height: 32,
       borderRadius: 6,
-      borderWidth: 1,
-      borderColor: colors.line,
     },
     unitPhotoRemoveBtn: {
       position: 'absolute',
       top: -4,
       right: -4,
-      backgroundColor: '#DC2626',
-      borderRadius: 7,
+      backgroundColor: '#EF4444',
+      borderRadius: 8,
       width: 14,
       height: 14,
       alignItems: 'center',
@@ -3470,157 +3157,92 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingHorizontal: 10,
-      paddingVertical: 5,
+      backgroundColor: colors.surfaceSunken,
       borderRadius: 6,
-      backgroundColor: colors.surfaceSunken,
-      borderWidth: 1,
-      borderColor: colors.line,
-      borderStyle: 'dashed',
+      paddingHorizontal: 8,
+      paddingVertical: 5,
     },
-    drawerDropdownBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      backgroundColor: colors.surfaceSunken,
-      borderWidth: 1,
-      borderColor: colors.line,
-      borderRadius: 8,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-    },
-    drawerDropdownBtnActive: {
-      borderColor: colors.primary,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
-    },
-    drawerDropdownBtnText: {
-      fontSize: 12.5,
-      color: colors.text,
+    unitMetaText: {
+      fontSize: 11,
       fontWeight: '600',
     },
-    drawerDropdownList: {
-      marginTop: 4,
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.line,
-      borderRadius: 8,
-      overflow: 'hidden',
-    },
-    drawerDropdownOption: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 12,
-      paddingVertical: 9,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.lineLight,
-    },
-    drawerDropdownOptionActive: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#F0FDF4',
-    },
-    drawerDropdownOptionText: {
-      fontSize: 12,
-      color: colors.ink,
-    },
-    drawerDropdownOptionTextActive: {
-      color: isDark ? '#34D399' : '#059669',
-      fontWeight: '700',
-    },
     unitExpandedDrawer: {
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.line,
-      borderRadius: 8,
-      padding: 10,
-      marginTop: 4,
+      paddingTop: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
       marginBottom: 8,
     },
     drawerSubLabel: {
       fontSize: 10.5,
-      fontWeight: '600',
-      color: colors.inkSoft,
-      marginBottom: 4,
-    },
-    unitLayoutChip: {
-      paddingHorizontal: 9,
-      paddingVertical: 4,
-      borderRadius: 6,
-      backgroundColor: colors.surfaceSunken,
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    unitLayoutChipActive: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      borderColor: colors.primary,
-    },
-    unitLayoutChipText: {
-      fontSize: 11,
-      color: colors.ink,
-      fontWeight: '500',
-    },
-    unitLayoutChipTextActive: {
-      color: isDark ? '#34D399' : '#059669',
       fontWeight: '700',
-    },
-    unitMetaText: {
-      fontSize: 11,
       color: colors.inkSoft,
-      flex: 1,
-    },
-    deleteUnitBtn: {
-      padding: 4,
-    },
-    unitInputsGrid: {
-      flexDirection: 'row',
-      gap: 8,
-    },
-    subLabel: {
-      fontSize: 10,
-      fontWeight: '600',
-      color: colors.inkSoft,
-      marginBottom: 4,
-      height: 16,
+      marginBottom: 2,
     },
     smallInput: {
+      backgroundColor: colors.surfaceSunken,
       borderWidth: 1,
       borderColor: colors.line,
       borderRadius: 6,
       paddingHorizontal: 8,
-      paddingVertical: 6,
-      height: 38,
+      paddingVertical: 5,
       fontSize: 12,
-      backgroundColor: colors.surfaceSunken,
-      color: colors.text,
+      color: colors.ink,
+    },
+    unitInputsGrid: {
+      flexDirection: 'row',
+      gap: 6,
     },
     addIndividualBtn: {
-      paddingVertical: 10,
-      borderRadius: 8,
       borderWidth: 1,
-      borderColor: colors.line,
       borderStyle: 'dashed',
+      borderRadius: 10,
+      paddingVertical: 12,
       alignItems: 'center',
-      backgroundColor: colors.surfaceSunken,
-      marginBottom: 14,
+      justifyContent: 'center',
+      marginTop: 4,
     },
     addIndividualBtnText: {
-      fontSize: 12,
-      fontWeight: '600',
-      color: colors.primary,
+      fontSize: 13,
+      fontWeight: '800',
+    },
+    uploadPhotosBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#059669',
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 8,
+      gap: 4,
+    },
+    uploadPhotosBtnText: {
+      color: '#FFFFFF',
+      fontSize: 11.5,
+      fontWeight: '700',
+    },
+    galleryEmptyBox: {
+      height: 100,
+      borderWidth: 1.5,
+      borderStyle: 'dashed',
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 4,
+      marginBottom: 12,
+    },
+    galleryEmptyText: {
+      fontSize: 12.5,
+      fontWeight: '700',
     },
     galleryScroll: {
-      flexDirection: 'row',
-      marginVertical: 10,
+      marginBottom: 12,
     },
     galleryCard: {
-      width: 140,
-      height: 100,
+      width: 100,
+      height: 90,
       borderRadius: 8,
       overflow: 'hidden',
-      marginRight: 10,
+      marginRight: 8,
       position: 'relative',
-      backgroundColor: colors.surfaceSunken,
-      borderWidth: 1,
-      borderColor: colors.line,
     },
     galleryThumb: {
       width: '100%',
@@ -3628,44 +3250,119 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     coverStarBtn: {
       position: 'absolute',
-      bottom: 6,
-      left: 6,
+      bottom: 4,
+      left: 4,
+      backgroundColor: 'rgba(0,0,0,0.6)',
+      paddingHorizontal: 5,
+      paddingVertical: 2,
+      borderRadius: 4,
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: 'rgba(15, 23, 42, 0.8)',
-      paddingHorizontal: 6,
-      paddingVertical: 3,
-      borderRadius: 4,
-      gap: 4,
+      gap: 3,
     },
     coverStarBtnActive: {
-      backgroundColor: '#10B981',
+      backgroundColor: '#C5A059',
     },
     coverStarText: {
       color: '#FFFFFF',
-      fontSize: 10,
+      fontSize: 9.5,
+      fontWeight: '700',
+    },
+    galleryDeleteBtn: {
+      position: 'absolute',
+      top: 4,
+      right: 4,
+      backgroundColor: 'rgba(239, 68, 68, 0.85)',
+      borderRadius: 10,
+      width: 18,
+      height: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    reviewSectionBox: {
+      backgroundColor: colors.surfaceSunken,
+      borderRadius: 10,
+      padding: 12,
+    },
+    reviewSectionTitle: {
+      fontSize: 11,
+      fontWeight: '800',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+      marginBottom: 6,
+    },
+    amenityReviewCard: {
+      width: 80,
+      height: 65,
+      borderRadius: 6,
+      overflow: 'hidden',
+      marginRight: 6,
+      position: 'relative',
+    },
+    amenityReviewImg: {
+      width: '100%',
+      height: '100%',
+    },
+    amenityReviewLabelBox: {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      backgroundColor: 'rgba(0,0,0,0.6)',
+      paddingHorizontal: 4,
+      paddingVertical: 2,
+    },
+    amenityReviewLabelText: {
+      color: '#FFFFFF',
+      fontSize: 9,
       fontWeight: '600',
     },
-    hintText: {
-      fontSize: 11,
+    singleUnitReviewSpecs: {
+      gap: 4,
+    },
+    singleUnitReviewLine: {
+      fontSize: 12,
+      color: colors.ink,
+      lineHeight: 18,
+    },
+    unitReviewTile: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      padding: 6,
+      borderRadius: 8,
+      borderWidth: 1,
+      marginRight: 8,
+    },
+    unitReviewTileImg: {
+      width: 32,
+      height: 32,
+      borderRadius: 4,
+    },
+    unitReviewTilePlaceholder: {
+      width: 32,
+      height: 32,
+      borderRadius: 4,
+      backgroundColor: colors.surfaceSunken,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    unitReviewTileTitle: {
+      fontSize: 11.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    unitReviewTileSub: {
+      fontSize: 10.5,
       color: colors.inkSoft,
-      marginTop: 2,
     },
     reviewContainer: {
-      backgroundColor: colors.surface,
-      borderRadius: 14,
-      borderWidth: 1,
-      borderColor: colors.line,
-      padding: 12,
-      marginBottom: 16,
       gap: 10,
     },
     reviewHeroCard: {
       backgroundColor: colors.surfaceSunken,
-      borderRadius: 10,
+      borderRadius: 12,
       padding: 12,
-      borderWidth: 1,
-      borderColor: colors.line,
     },
     reviewHeroHeader: {
       flexDirection: 'row',
@@ -3676,33 +3373,28 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     reviewHeroIconWrap: {
       width: 36,
       height: 36,
-      borderRadius: 10,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.18)' : '#ECFDF5',
+      borderRadius: 8,
+      backgroundColor: '#DCFCE7',
       alignItems: 'center',
       justifyContent: 'center',
     },
     reviewPropName: {
-      fontSize: 15,
+      fontSize: 14,
       fontWeight: '800',
       color: colors.navy,
-      lineHeight: 20,
     },
     reviewPropTypeSub: {
       fontSize: 11,
       color: colors.inkSoft,
-      marginTop: 2,
-      fontWeight: '500',
+      marginTop: 1,
     },
     reviewLocationRow: {
       flexDirection: 'row',
       alignItems: 'flex-start',
-      paddingTop: 8,
-      borderTopWidth: 1,
-      borderTopColor: colors.line,
     },
     reviewLocationText: {
       fontSize: 11.5,
-      color: colors.ink,
+      color: colors.inkSoft,
       flex: 1,
       lineHeight: 16,
     },
@@ -3712,41 +3404,39 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
       gap: 8,
     },
     reviewStatTile: {
-      flex: 1,
-      minWidth: 125,
+      width: '48%',
       backgroundColor: colors.surfaceSunken,
       borderRadius: 10,
       padding: 10,
-      borderWidth: 1,
-      borderColor: colors.line,
     },
     reviewStatTileHighlighted: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
     },
     reviewStatLabel: {
-      fontSize: 9,
+      fontSize: 9.5,
       fontWeight: '700',
       color: colors.inkSoft,
       letterSpacing: 0.5,
-      marginBottom: 3,
+      marginBottom: 2,
     },
     reviewStatLabelHighlighted: {
-      fontSize: 9,
-      fontWeight: '700',
-      color: isDark ? '#34D399' : '#059669',
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: '#065F46',
       letterSpacing: 0.5,
-      marginBottom: 3,
+      marginBottom: 2,
     },
     reviewStatValue: {
-      fontSize: 13.5,
-      fontWeight: '700',
+      fontSize: 14,
+      fontWeight: '800',
       color: colors.navy,
     },
     reviewStatValueHighlighted: {
-      fontSize: 14.5,
+      fontSize: 15,
       fontWeight: '800',
-      color: isDark ? '#34D399' : '#059669',
+      color: '#059669',
     },
     reviewStatSub: {
       fontSize: 10,
@@ -3755,217 +3445,20 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     reviewStatSubHighlighted: {
       fontSize: 10,
-      color: isDark ? '#34D399' : '#059669',
+      color: '#047857',
       marginTop: 2,
       fontWeight: '600',
     },
-    reviewSectionBox: {
-      backgroundColor: colors.surfaceSunken,
-      borderRadius: 10,
-      padding: 10,
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    reviewSectionTitle: {
-      fontSize: 9.5,
-      fontWeight: '700',
-      color: colors.inkSoft,
-      letterSpacing: 0.5,
-      marginBottom: 6,
-    },
-    reviewPillsWrap: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: 6,
-    },
-    policyPill: {
-      backgroundColor: colors.surface,
-      borderRadius: 6,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    policyPillText: {
-      fontSize: 10.5,
-      fontWeight: '600',
-      color: colors.ink,
-    },
-    amenityReviewPill: {
-      backgroundColor: colors.surface,
-      borderRadius: 6,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    amenityReviewPillText: {
-      fontSize: 10.5,
-      fontWeight: '600',
-      color: colors.ink,
-    },
-    amenityReviewPillMore: {
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
-    },
-    amenityReviewPillMoreText: {
-      fontSize: 10.5,
-      fontWeight: '700',
-      color: isDark ? '#34D399' : '#059669',
-    },
-    reviewEmptyText: {
-      fontSize: 11,
-      color: colors.inkSoft,
-      fontStyle: 'italic',
-    },
-    summaryCard: {
-      backgroundColor: colors.surfaceSunken,
-      borderRadius: 10,
-      padding: 14,
-      borderWidth: 1,
-      borderColor: colors.line,
-      marginBottom: 16,
-    },
-    summaryRow: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      paddingVertical: 6,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.lineLight,
-    },
-    summaryKey: {
-      fontSize: 12,
-      color: colors.inkSoft,
-    },
-    summaryVal: {
-      fontSize: 12,
-      fontWeight: '600',
-      color: colors.navy,
-      maxWidth: '60%',
-      textAlign: 'right',
-    },
-    btnRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      marginTop: 16,
-    },
-    backStepBtn: {
-      height: 44,
-      paddingHorizontal: 20,
-      backgroundColor: colors.surfaceSunken,
-      borderRadius: 8,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderWidth: 1,
-      borderColor: colors.line,
-    },
-    backStepText: {
-      fontSize: 13.5,
-      fontWeight: '600',
-      color: colors.ink,
-    },
-    nextBtn: {
-      height: 44,
-      backgroundColor: colors.primary,
-      borderRadius: 8,
-      alignItems: 'center',
-      justifyContent: 'center',
-      paddingHorizontal: 16,
-    },
-    nextBtnText: {
-      color: '#FFFFFF',
-      fontSize: 14,
-      fontWeight: '600',
-    },
     saveBtn: {
-      height: 44,
-      backgroundColor: colors.primary,
-      borderRadius: 8,
+      backgroundColor: '#059669',
+      paddingVertical: 12,
+      borderRadius: 10,
       alignItems: 'center',
       justifyContent: 'center',
-      paddingHorizontal: 16,
     },
     saveBtnText: {
       color: '#FFFFFF',
       fontSize: 14,
-      fontWeight: '700',
-    },
-    placesSearchBox: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: colors.surfaceSunken,
-      borderWidth: 1,
-      borderColor: colors.line,
-      borderRadius: 8,
-      paddingHorizontal: 10,
-      height: 44,
-      marginTop: 6,
-    },
-    placesSearchInput: {
-      flex: 1,
-      fontSize: 13,
-      color: colors.text,
-      marginLeft: 8,
-    },
-    placesDropdownMenu: {
-      marginTop: 6,
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.line,
-      borderRadius: 8,
-      overflow: 'hidden',
-    },
-    placeItem: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      padding: 12,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.lineLight,
-    },
-    placeItemText: {
-      fontSize: 12.5,
-      fontWeight: '600',
-      color: colors.ink,
-    },
-    placeItemSub: {
-      fontSize: 11,
-      color: colors.inkSoft,
-      marginTop: 2,
-    },
-    confirmedLocationCard: {
-      marginTop: 10,
-      padding: 12,
-      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
-      borderWidth: 1,
-      borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#86EFAC',
-      borderRadius: 8,
-    },
-    confirmedLocationHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
-      marginBottom: 4,
-    },
-    confirmedLocationTitle: {
-      fontSize: 12,
-      fontWeight: '700',
-      color: isDark ? '#34D399' : '#166534',
-    },
-    confirmedLocationText: {
-      fontSize: 12.5,
-      fontWeight: '600',
-      color: isDark ? '#A7F3D0' : '#14532D',
-    },
-    confirmedLocationHint: {
-      fontSize: 11,
-      color: isDark ? '#6EE7B7' : '#15803D',
-      marginTop: 3,
-    },
-    fieldHelpText: {
-      fontSize: 11,
-      color: colors.inkSoft,
-      marginTop: 4,
-      lineHeight: 15,
+      fontWeight: '800',
     },
   });

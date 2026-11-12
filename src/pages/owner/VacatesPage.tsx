@@ -10,6 +10,7 @@ import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { Spinner, ButtonProcessing } from '../../components/common/Spinner';
 import { DEFAULT_CURRENCY, normalizeCurrencyCode, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 
 export const DEFAULT_INSPECTION_ITEMS: MoveOutAmenityCheck[] = [
   { room: 'Living Room', item: 'Paint, Walls & Ceilings', amenity: 'Paint, Walls & Ceilings', condition: 'good', deduction: 0, photos: [], notes: '' },
@@ -1200,7 +1201,7 @@ export const VacatesPage: React.FC = () => {
                     <th>Move-Out Date</th>
                     <th>Inspection Date</th>
                     <th>Refund Date</th>
-                    <th>Deposit Held</th>
+                    <th>{getTableCurrencyHeader('Deposit Held', viewCurrency)}</th>
                     <th>Status</th>
                     <th>Action</th>
                   </tr>
@@ -1224,13 +1225,7 @@ export const VacatesPage: React.FC = () => {
                         <td>{m.inspectionDate || 'Awaiting schedule'}</td>
                         <td>{m.refundDate || 'Awaiting inspection'}</td>
                         <td>
-                          {getCurrencySymbol(m.currency)}
-                          {(m.deposit ?? 0).toLocaleString()}
-                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(m.currency || DEFAULT_CURRENCY) && (
-                            <span style={{ fontSize: '11px', color: 'var(--ink-soft)', display: 'block' }}>
-                              ~{format(convert(m.deposit || 0, m.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)}
-                            </span>
-                          )}
+                          <CurrencyAmount amount={m.deposit ?? 0} currency={m.currency} />
                         </td>
                         <td>
                           {(() => {
@@ -1491,12 +1486,7 @@ export const VacatesPage: React.FC = () => {
                       <div>
                         <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Deposit Held</div>
                         <b style={{ color: 'var(--ledger)' }}>
-                          {getCurrencySymbol(m.currency)}{(m.deposit ?? 0).toLocaleString()}
-                          {viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(m.currency || DEFAULT_CURRENCY) && (
-                            <span style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 400, marginLeft: '4px' }}>
-                              (~{format(convert(m.deposit || 0, m.currency || DEFAULT_CURRENCY, viewCurrency), viewCurrency)})
-                            </span>
-                          )}
+                          <CurrencyAmount amount={m.deposit ?? 0} currency={m.currency} />
                         </b>
                       </div>
                       <div>
@@ -1614,9 +1604,6 @@ export const VacatesPage: React.FC = () => {
               <button type="button" className="modal-close" onClick={() => setSchedulingMoveOut(null)}>✕</button>
             </div>
             <div className="modal-body">
-              <p className="hint" style={{ marginBottom: '16px' }}>
-                Set the physical walkthrough inspection date for resident <b>{schedulingMoveOut.tenant}</b>.
-              </p>
               <div className="field">
                 <label>Walkthrough Inspection Date</label>
                 <input

@@ -3,7 +3,8 @@ import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { Ticket } from '../../types';
 import { ButtonProcessing } from '../../components/common/Spinner';
-import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
 import { generateTicketId } from '../../lib/idGenerators';
 
 
@@ -149,6 +150,8 @@ export const SupportTicketsPage: React.FC = () => {
       (user?.id && a.tenantId === user.id) ||
       (tenantEmail && a.tenantEmail?.toLowerCase() === tenantEmail)
   );
+  const { viewCurrency, convert } = useCurrency();
+
   const resolvedCurrency =
     getCurrencySymbol(
       myResidentTenancies[0]?.currency ||
@@ -157,6 +160,18 @@ export const SupportTicketsPage: React.FC = () => {
       currentProperty?.currency ||
       tenantRecord?.currency
     ) || DEFAULT_CURRENCY_SYMBOL;
+
+  const formatCostWithConversion = (amt: number, curr?: string) => {
+    const baseCode = normalizeCurrencyCode(curr || resolvedCurrency);
+    const baseSymbol = getCurrencySymbol(baseCode);
+    const baseFormatted = `${baseSymbol}${amt.toLocaleString()}`;
+    const isLocal = !viewCurrency || viewCurrency === 'LOCAL' || viewCurrency === 'DEFAULT' || normalizeCurrencyCode(viewCurrency) === baseCode;
+    if (isLocal) {
+      return baseFormatted;
+    }
+    const converted = Math.round(convert(amt, baseCode, viewCurrency));
+    return `${getCurrencySymbol(viewCurrency)}${converted.toLocaleString()}`;
+  };
 
   // New ticket modal
   const [isNewTicketOpen, setIsNewTicketOpen] = useState(false);
@@ -353,13 +368,12 @@ export const SupportTicketsPage: React.FC = () => {
     <div>
         <div>
           {!hasActiveTenancy && (
-            <div style={{ background: '#FAF9F5', border: '1px solid var(--line)', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', fontSize: '13px', color: 'var(--ink-soft)' }}>
-              ℹ️ <b>Tenancy Notice:</b> You do not currently have an active occupied unit. Past maintenance records remain viewable below. New maintenance tickets can be raised once an active lease is in effect.
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', fontSize: '13px', color: 'var(--ink-soft)' }}>
+              No active lease unit. Past tickets remain viewable below.
             </div>
           )}
 
-          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-            <div className="hint">{myTickets.length} tickets raised</div>
+          <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
             <button
               type="button"
               className={`btn ${hasActiveTenancy ? 'brass' : 'secondary'} btn-mobile-full`}
@@ -437,7 +451,7 @@ export const SupportTicketsPage: React.FC = () => {
                               <td>
                                 {x.payment?.amount ? (
                                   <span>
-                                    {resolvedCurrency}{x.payment.amount.toLocaleString()} ({x.payment.payer})
+                                    {formatCostWithConversion(x.payment.amount)} ({x.payment.payer})
                                   </span>
                                 ) : (
                                   <span style={{ color: 'var(--ink-soft)' }}>Included</span>
@@ -453,7 +467,7 @@ export const SupportTicketsPage: React.FC = () => {
                                       setIsPayingTaskOpen(x.id);
                                     }}
                                   >
-                                    Pay {resolvedCurrency}{x.payment.amount?.toLocaleString()}
+                                    Pay {formatCostWithConversion(x.payment.amount || 0)}
                                   </button>
                                 ) : x.status === 'resolved' ? (
                                   (x as any).rating ? (
@@ -527,7 +541,7 @@ export const SupportTicketsPage: React.FC = () => {
                         <div className="staff-card-meta-item">
                           <b>Fee:</b>{' '}
                           {x.payment?.amount ? (
-                            <span>{resolvedCurrency}{x.payment.amount.toLocaleString()} ({x.payment.payer})</span>
+                            <span>{formatCostWithConversion(x.payment.amount)} ({x.payment.payer})</span>
                           ) : (
                             <span style={{ color: 'var(--ink-soft)' }}>Included</span>
                           )}
@@ -544,7 +558,7 @@ export const SupportTicketsPage: React.FC = () => {
                               setIsPayingTaskOpen(x.id);
                             }}
                           >
-                            Pay {resolvedCurrency}{x.payment.amount?.toLocaleString()}
+                            Pay {formatCostWithConversion(x.payment.amount || 0)}
                           </button>
                         </div>
                       )}
@@ -682,7 +696,7 @@ export const SupportTicketsPage: React.FC = () => {
                 <label>Amount</label>
                 <input
                   type="text"
-                  value={`${resolvedCurrency}${payingTicket.payment?.amount?.toLocaleString()}`}
+                  value={formatCostWithConversion(payingTicket.payment?.amount || 0)}
                   disabled
                 />
               </div>

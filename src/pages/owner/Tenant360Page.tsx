@@ -16,6 +16,7 @@ import {
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
 import { useCurrency } from '../../context/CurrencyContext';
+import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, normalizeCurrencyCode, getCurrencySymbol, formatCurrencyAmount } from '../../lib/currencyService';
 
 
@@ -630,18 +631,16 @@ export const Tenant360Page: React.FC = () => {
                       <tr>
                         <th>Tenant</th>
                         <th>Units Rented</th>
-                        <th>Monthly Rent</th>
-                        <th>Deposit Held</th>
-                        <th>Next Due Date</th>
+                        <th>{getTableCurrencyHeader('Monthly Rent', viewCurrency)}</th>
+                        <th>{getTableCurrencyHeader('Deposit Held', viewCurrency)}</th>
                         <th>KYC Status</th>
-                        <th>Rating</th>
                         <th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {myTenants.length === 0 ? (
                         <tr>
-                          <td colSpan={8} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
+                          <td colSpan={6} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
                             <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
                               No active tenants
                             </div>
@@ -667,25 +666,13 @@ export const Tenant360Page: React.FC = () => {
                             <td>
                               <b>{(t.unitsRented || [t.unit || 'Unit']).join(', ')}</b>
                             </td>
-                            <td>{formatMoney(t.rent, t.currency)}</td>
-                            <td>{formatMoney(t.deposit, t.currency)}</td>
-                            <td>
-                              <span className="badge grey">1st of month</span>
-                            </td>
+                            <td><CurrencyAmount amount={t.rent} currency={t.currency} /></td>
+                            <td><CurrencyAmount amount={t.deposit} currency={t.currency} /></td>
                             <td>
                               {(t.kycDocuments || []).some((k) => k.verified) ? (
                                 <span className="badge green">✓ KYC Verified</span>
                               ) : (
                                 <span className="badge grey">Pending KYC</span>
-                              )}
-                            </td>
-                            <td>
-                              {t.rating && t.rating > 0 ? (
-                                <>
-                                  <span className="stars">{'★'.repeat(Math.min(5, Math.max(1, Math.round(t.rating))))}</span> {t.rating}
-                                </>
-                              ) : (
-                                <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Unrated</span>
                               )}
                             </td>
                             <td>
@@ -735,26 +722,18 @@ export const Tenant360Page: React.FC = () => {
                         )}
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', padding: '10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px' }}>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Units Rented</div>
                           <b style={{ color: 'var(--ink)' }}>{(t.unitsRented || [t.unit || 'Unit']).join(', ')}</b>
                         </div>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Monthly Rent</div>
-                          <b style={{ color: 'var(--ledger)' }}>{formatMoney(t.rent, t.currency)}</b>
+                          <b style={{ color: 'var(--ledger)' }}><CurrencyAmount amount={t.rent} currency={t.currency} /></b>
                         </div>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Deposit Held</div>
-                          <b>{formatMoney(t.deposit, t.currency)}</b>
-                        </div>
-                        <div>
-                          <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Rating</div>
-                          {t.rating && t.rating > 0 ? (
-                            <span style={{ color: 'var(--brass)' }}>★ {t.rating}</span>
-                          ) : (
-                            <span style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Unrated</span>
-                          )}
+                          <b><CurrencyAmount amount={t.deposit} currency={t.currency} /></b>
                         </div>
                       </div>
 
@@ -784,8 +763,8 @@ export const Tenant360Page: React.FC = () => {
                   <tr>
                     <th>Tenant Candidate</th>
                     <th>Property & Unit</th>
-                    <th>Offered Rent</th>
-                    <th>Security Deposit</th>
+                    <th>{getTableCurrencyHeader('Offered Rent', viewCurrency)}</th>
+                    <th>{getTableCurrencyHeader('Security Deposit', viewCurrency)}</th>
                     <th>Proposed Term</th>
                     <th>Sent Date</th>
                     <th>Status</th>
@@ -846,14 +825,12 @@ export const Tenant360Page: React.FC = () => {
                           </td>
                           <td>
                             <b>
-                              {getCurrencySymbol(r.currency || defaultOwnerCurrency)}
-                              {(r.rent ?? 0).toLocaleString()}
+                              <CurrencyAmount amount={r.rent ?? 0} currency={r.currency || defaultOwnerCurrency} />
                             </b>
                             /mo
                           </td>
                           <td>
-                            {getCurrencySymbol(r.currency || defaultOwnerCurrency)}
-                            {(r.deposit ?? 0).toLocaleString()}
+                            <CurrencyAmount amount={r.deposit ?? 0} currency={r.currency || defaultOwnerCurrency} />
                           </td>
                           <td style={{ fontSize: '12.5px' }}>
                             {r.leaseStart} to {r.leaseEnd}
@@ -941,8 +918,12 @@ export const Tenant360Page: React.FC = () => {
                       </div>
                       <div>
                         <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Offered Rent</div>
-                        <b style={{ color: 'var(--ledger)' }}>{getCurrencySymbol(r.currency || defaultOwnerCurrency)}{(r.rent ?? 0).toLocaleString()}/mo</b>
-                        <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Deposit: {getCurrencySymbol(r.currency || defaultOwnerCurrency)}{(r.deposit ?? 0).toLocaleString()}</div>
+                        <b style={{ color: 'var(--ledger)' }}>
+                          <CurrencyAmount amount={r.rent ?? 0} currency={r.currency || defaultOwnerCurrency} />/mo
+                        </b>
+                        <div style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>
+                          Deposit: <CurrencyAmount amount={r.deposit ?? 0} currency={r.currency || defaultOwnerCurrency} />
+                        </div>
                       </div>
                       <div style={{ gridColumn: '1 / -1' }}>
                         <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Proposed Term</div>
@@ -1020,11 +1001,11 @@ export const Tenant360Page: React.FC = () => {
               <div className="section-title">Rental Terms & Financials</div>
               <div className="kv">
                 <span className="k">Total Monthly Rent:</span>
-                <b>{formatMoney(selectedTenant.rent || 0, selectedTenant.currency)}</b>
+                <b><CurrencyAmount amount={selectedTenant.rent || 0} currency={selectedTenant.currency} /></b>
               </div>
               <div className="kv">
                 <span className="k">Total Security Deposit Held:</span>
-                <b>{formatMoney(selectedTenant.deposit || 0, selectedTenant.currency)}</b>
+                <b><CurrencyAmount amount={selectedTenant.deposit || 0} currency={selectedTenant.currency} /></b>
               </div>
               <div className="kv">
                 <span className="k">Next Rent Due Date:</span>

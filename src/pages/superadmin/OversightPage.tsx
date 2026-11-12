@@ -24,6 +24,7 @@ export const OversightPage: React.FC = () => {
   const [auditActorFilter, setAuditActorFilter] = useState('all');
   const [auditCategoryFilter, setAuditCategoryFilter] = useState('all');
   const [auditSearch, setAuditSearch] = useState('');
+  const [selectedAuditLog, setSelectedAuditLog] = useState<any | null>(null);
 
   // Support Helpdesk State
   const [supportStatusFilter, setSupportStatusFilter] = useState<'all' | 'open' | 'waiting_on_us' | 'resolved'>('all');
@@ -370,9 +371,9 @@ export const OversightPage: React.FC = () => {
                       <tr>
                         <th style={{ width: '160px' }}>Time</th>
                         <th style={{ width: '180px' }}>Actor</th>
-                        <th style={{ width: '120px' }}>Category</th>
-                        <th style={{ width: '180px' }}>Action</th>
-                        <th>Detail</th>
+                        <th style={{ width: '130px' }}>Category</th>
+                        <th>Event</th>
+                        <th style={{ width: '100px', textAlign: 'center' }}>Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -400,15 +401,15 @@ export const OversightPage: React.FC = () => {
                             <td>
                               <span className="badge grey" style={{ fontWeight: 600 }}>{log.action}</span>
                             </td>
-                            <td style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                {log.unit && (
-                                  <span style={{ fontSize: '11px', background: 'var(--surface-hover)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--line)', fontWeight: 600 }}>
-                                    Unit {log.unit}
-                                  </span>
-                                )}
-                                <span>{log.detail}</span>
-                              </div>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="btn secondary small"
+                                onClick={() => setSelectedAuditLog(log)}
+                                style={{ padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                              >
+                                <Eye size={13} /> View
+                              </button>
                             </td>
                           </tr>
                         ))
@@ -435,17 +436,19 @@ export const OversightPage: React.FC = () => {
                           {formatAuditTime(log.time, log.timestamp)}
                         </span>
                       </div>
-                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap' }}>
-                        {getAuditCategoryBadge(log.category)}
-                        <span className="badge grey">{log.action}</span>
-                        {log.unit && (
-                          <span style={{ fontSize: '11px', background: 'var(--surface-hover)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--line)', fontWeight: 600 }}>
-                            Unit {log.unit}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', lineHeight: 1.4 }}>
-                        {log.detail}
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          {getAuditCategoryBadge(log.category)}
+                          <span className="badge grey">{log.action}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          onClick={() => setSelectedAuditLog(log)}
+                          style={{ padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          <Eye size={13} /> View
+                        </button>
                       </div>
                     </div>
                   ))
@@ -795,7 +798,7 @@ export const OversightPage: React.FC = () => {
                 <label style={{ fontWeight: 600 }}>Administrative Response</label>
                 <textarea
                   rows={4}
-                  placeholder="Provide resolution details or advice for the property owner…"
+                  placeholder="Provide resolution details or advice for the property owner..."
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
                   style={{ width: '100%', fontSize: '13px', lineHeight: 1.5 }}
@@ -826,6 +829,89 @@ export const OversightPage: React.FC = () => {
                 onClick={() => handleSendReply('resolved')}
               >
                 Send &amp; Mark Resolved
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audit Event Detail Modal */}
+      {selectedAuditLog && (
+        <div className="modal-backdrop" onClick={() => setSelectedAuditLog(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '520px' }}>
+            <div className="modal-head">
+              <div>
+                {selectedAuditLog.id && (
+                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontFamily: 'monospace' }}>
+                    #{selectedAuditLog.id}
+                  </div>
+                )}
+                <h3 style={{ margin: 0, fontSize: '17px' }}>Audit Event Details</h3>
+              </div>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => setSelectedAuditLog(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Time</span>
+                <span style={{ fontWeight: 500, fontSize: '13px' }}>
+                  {formatAuditTime(selectedAuditLog.time, selectedAuditLog.timestamp)}
+                </span>
+              </div>
+              <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Actor</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontWeight: 600, fontSize: '13px' }}>{selectedAuditLog.actor}</span>
+                  {getActorRoleBadge(selectedAuditLog.actorRole)}
+                </div>
+              </div>
+              <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Category</span>
+                <div>{getAuditCategoryBadge(selectedAuditLog.category)}</div>
+              </div>
+              <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Event</span>
+                <span className="badge grey" style={{ fontWeight: 600 }}>{selectedAuditLog.action}</span>
+              </div>
+              {selectedAuditLog.unit && (
+                <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                  <span className="k" style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Unit</span>
+                  <span style={{ fontWeight: 600, fontSize: '13px' }}>Unit {selectedAuditLog.unit}</span>
+                </div>
+              )}
+
+              <div style={{ marginTop: '4px' }}>
+                <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '6px' }}>
+                  Detail
+                </div>
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    background: 'var(--surface-sunken)',
+                    border: '1px solid var(--line)',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    color: 'var(--ink)',
+                    lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {selectedAuditLog.detail || 'No additional detail recorded.'}
+                </div>
+              </div>
+            </div>
+            <div className="modal-foot" style={{ display: 'flex', justifyContent: 'flex-end', padding: '12px 20px', borderTop: '1px solid var(--line)' }}>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => setSelectedAuditLog(null)}
+              >
+                Close
               </button>
             </div>
           </div>

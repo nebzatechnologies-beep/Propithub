@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Unit, Property } from '../../types';
 import { useAppData } from '../../context/AppDataContext';
 import { convertCurrency, BASELINE_RATES_USD, normalizeCurrencyCode, getCurrencySymbol } from '../../lib/currencyService';
+import { CurrencyAmount } from '../common/CurrencyAmount';
 import { resolveDisplayLocation } from '../../lib/addressUtils';
 import { AddressDisplay } from '../common/AddressDisplay';
 import { ChevronLeft, ChevronRight, Star, MapPin } from 'lucide-react';
@@ -384,14 +385,9 @@ export const ListingCard: React.FC<ListingCardProps> = ({
         <div style={{ borderTop: '1px solid var(--border-color, #f1f5f9)', paddingTop: '10px', marginTop: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', flexWrap: 'wrap' }}>
             <span style={{ fontSize: '18px', fontWeight: 800, color: 'var(--heading-color, #0f172a)' }}>
-              {currSymbol}{unit.rent.toLocaleString()}
+              <CurrencyAmount amount={unit.rent} currency={currCode} />
             </span>
             <span style={{ fontSize: '12px', color: 'var(--slate, #64748b)' }}>/ month</span>
-            {usdAmount !== null && (
-              <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: 'auto' }}>
-                ≈ USD ${usdAmount.toLocaleString()}
-              </span>
-            )}
           </div>
         </div>
       </div>

@@ -157,7 +157,7 @@ export const HelpdeskPage: React.FC = () => {
             Platform Helpdesk
           </h2>
           <p style={{ margin: '4px 0 0', color: 'var(--ink-soft)', fontSize: '14px' }}>
-            Direct administrative support between property owners and Propithub platform admins.
+
           </p>
         </div>
 

@@ -3,6 +3,7 @@ import { Unit, Property } from '../../types';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { getCurrencySymbol, normalizeCurrencyCode, convertCurrency, BASELINE_RATES_USD } from '../../lib/currencyService';
+import { CurrencyAmount } from '../common/CurrencyAmount';
 import { resolveDisplayLocation, getCleanAddressText } from '../../lib/addressUtils';
 import { AddressDisplay } from '../common/AddressDisplay';
 import { ButtonProcessing } from '../common/Spinner';
@@ -102,6 +103,7 @@ export const ListingDetailsModal: React.FC<ListingDetailsModalProps> = ({
 
   const rawCurr = unit.currency || resolvedProp?.currency || '$';
   const currSymbol = getCurrencySymbol(rawCurr);
+  const currCode = normalizeCurrencyCode(rawCurr);
   const totalMoveIn = (unit.rent || 0) + (unit.deposit || 0);
 
   const displayLocation = resolveDisplayLocation(
@@ -136,10 +138,10 @@ export const ListingDetailsModal: React.FC<ListingDetailsModalProps> = ({
       await submitEnquiry({
         unitId: unit.id,
         unitNumber: unit.unitNumber,
-        propertyId: unit.propertyId || property?.id || '',
-        propertyName: property?.name || `Unit ${unit.unitNumber}`,
-        ownerId: unit.ownerId || property?.ownerId || '',
-        managerId: property?.assignedManagerId || undefined,
+        propertyId: unit.propertyId || resolvedProp?.id || property?.id || '',
+        propertyName: resolvedProp?.name || property?.name || `Unit ${unit.unitNumber}`,
+        ownerId: unit.ownerId || resolvedProp?.ownerId || property?.ownerId || '',
+        managerId: resolvedProp?.assignedManagerId || property?.assignedManagerId || undefined,
         prospectName: prospectName.trim(),
         prospectPhone: prospectPhone.trim(),
         prospectEmail: prospectEmail.trim() || user?.email || undefined,
@@ -375,15 +377,15 @@ export const ListingDetailsModal: React.FC<ListingDetailsModalProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--slate, #64748b)' }}>First Month's Rent:</span>
-                  <span style={{ fontWeight: 600 }}>{currSymbol}{unit.rent.toLocaleString()}</span>
+                  <span style={{ fontWeight: 600 }}><CurrencyAmount amount={unit.rent} currency={currCode} /></span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--slate, #64748b)' }}>Security Deposit:</span>
-                  <span style={{ fontWeight: 600 }}>{currSymbol}{(unit.deposit || 0).toLocaleString()}</span>
+                  <span style={{ fontWeight: 600 }}><CurrencyAmount amount={unit.deposit || 0} currency={currCode} /></span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--slate, #64748b)' }}>Move-in Platform Fee:</span>
-                  <span style={{ fontWeight: 600, color: '#10B981' }}>{currSymbol}0 (Waived)</span>
+                  <span style={{ fontWeight: 600, color: '#10B981' }}><CurrencyAmount amount={0} currency={currCode} /> (Waived)</span>
                 </div>
                 <div
                   style={{
@@ -397,7 +399,7 @@ export const ListingDetailsModal: React.FC<ListingDetailsModalProps> = ({
                 >
                   <span style={{ fontWeight: 700, color: 'var(--ink, #0f172a)' }}>Total Due at Move-in:</span>
                   <span style={{ fontSize: '17px', fontWeight: 800, color: '#10B981' }}>
-                    {currSymbol}{totalMoveIn.toLocaleString()}
+                    <CurrencyAmount amount={totalMoveIn} currency={currCode} />
                   </span>
                 </div>
               </div>

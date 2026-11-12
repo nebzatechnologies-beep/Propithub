@@ -12,13 +12,14 @@ import {
   ArrowRight,
   TrendingUp,
   ExternalLink,
+  Users,
 } from 'lucide-react';
 import { PaymentTransaction, Property, InAppNotification } from '../../types';
 import { getOwnerReminders } from '../../lib/reminders';
 import { DashboardReminderHub } from '../../components/dashboard/DashboardReminderHub';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { resolveUnitOccupancy, calculatePortfolioMetrics } from '../../lib/portfolioSelectors';
+import { resolveUnitOccupancy, calculatePortfolioMetrics, isDepositPayment } from '../../lib/portfolioSelectors';
 import { AddressDisplay } from '../../components/common/AddressDisplay';
 
 // Helper to normalize any currency code or symbol into canonical code and display symbol
@@ -53,6 +54,11 @@ export const OwnerDashboardPage: React.FC = () => {
     () => state.tickets.filter((t) => t.ownerId === ownerId),
     [state.tickets, ownerId]
   );
+  const myManagers = useMemo(() => {
+    return (state.propertyManagers || (state as any).managers || []).filter(
+      (m: any) => m.ownerId === ownerId
+    );
+  }, [state.propertyManagers, (state as any).managers, ownerId]);
 
   // 2. Filter states: property and display currency
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>('all');
@@ -200,10 +206,17 @@ export const OwnerDashboardPage: React.FC = () => {
   const isPlanExpired = !isOwnerPlanActive(ownerId);
   const isMultiCurrency = portfolioCurrencies.length > 1;
 
-  // Real paid payments & total rent collected (converted into effectiveCurrency)
+  // Real paid rent payments & total rent collected (strictly excluding security deposits held in trust and outflows)
   const realPaidPayments = useMemo(
-    () => filteredPayments.filter((p) => p.status === 'paid'),
-    [filteredPayments]
+    () =>
+      filteredPayments.filter(
+        (p) =>
+          p.status === 'paid' &&
+          p.direction !== 'outflow' &&
+          !isDepositPayment(p, state.invoices) &&
+          (p.type === 'rent' || !p.type || (p.type as string) === 'invoice')
+      ),
+    [filteredPayments, state.invoices]
   );
   const realCollectedAmount = useMemo(() => {
     return realPaidPayments.reduce((acc, p) => {
@@ -212,10 +225,11 @@ export const OwnerDashboardPage: React.FC = () => {
     }, 0);
   }, [realPaidPayments, effectiveCurrency, convert]);
 
-  // Real overdue & pending confirmation payments (converted into effectiveCurrency)
+  // Real overdue & pending confirmation payments (converted into effectiveCurrency, excluding deposits)
   const realOverduePayments = useMemo(
     () => filteredPayments.filter((p) => {
       if (p.status !== 'overdue') return false;
+      if (isDepositPayment(p, state.invoices)) return false;
       const isVacated = (state.moveouts || []).some((m) => {
         const matchesUnit = m.unit === p.unit || (m as any).unitId === p.unit;
         if (!matchesUnit) return false;
@@ -237,11 +251,11 @@ export const OwnerDashboardPage: React.FC = () => {
       if (isVacated) return false;
       return true;
     }),
-    [filteredPayments, state.moveouts, state.agreements, state.units]
+    [filteredPayments, state.moveouts, state.agreements, state.units, state.invoices]
   );
   const realPendingPayments = useMemo(
-    () => filteredPayments.filter((p) => p.status === 'pending_confirmation'),
-    [filteredPayments]
+    () => filteredPayments.filter((p) => p.status === 'pending_confirmation' && !isDepositPayment(p, state.invoices)),
+    [filteredPayments, state.invoices]
   );
   const realOverdueAmount = useMemo(() => {
     return realOverduePayments.reduce((acc, p) => {
@@ -465,8 +479,83 @@ export const OwnerDashboardPage: React.FC = () => {
               </button>
             )}
           </select>
+
+          {myManagers.length > 0 && (
+            <Link
+              to="/owner/team"
+              style={{
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '12px',
+                background: 'var(--surface-sunken)',
+                padding: '6px 12px',
+                borderRadius: '8px',
+                border: '1px solid var(--line)',
+                color: 'var(--ink)',
+              }}
+            >
+              <Users size={14} color="var(--brass)" />
+              <span>
+                Team: <b>{myManagers.length} {myManagers.length === 1 ? 'Manager' : 'Managers'}</b> ({myManagers.map((m: any) => m.name).join(', ')})
+              </span>
+            </Link>
+          )}
         </div>
       </div>
+
+      {/* ONBOARDED MANAGERS STATUS BANNER (When owner has managers with 0 properties) */}
+      {myProperties.length === 0 && myManagers.length > 0 && (
+        <div
+          style={{
+            background: 'var(--teal-light, #ECFDF5)',
+            border: '1px solid var(--teal-border, #A7F3D0)',
+            borderRadius: 'var(--radius)',
+            padding: '16px 20px',
+            marginBottom: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div
+              style={{
+                width: '38px',
+                height: '38px',
+                borderRadius: '50%',
+                background: '#10B981',
+                color: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <Users size={20} />
+            </div>
+            <div>
+              <b style={{ color: '#065F46', fontSize: '14px' }}>
+                {myManagers.length === 1 ? `${myManagers[0].name} is ready for delegation` : `${myManagers.length} property managers onboarded`}
+              </b>
+              <div style={{ fontSize: '12.5px', color: '#047857', marginTop: '2px' }}>
+                Your manager account is active. Create your first property to assign them management over leases, units, and maintenance tickets.
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <Link to="/owner/properties" className="btn brass small" style={{ textDecoration: 'none' }}>
+              + Create First Property
+            </Link>
+            <Link to="/owner/team" className="btn secondary small" style={{ textDecoration: 'none' }}>
+              Manage Team
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* PORTFOLIO AUTOMATED REMINDERS & ACTION HUB */}
       <DashboardReminderHub
@@ -484,16 +573,6 @@ export const OwnerDashboardPage: React.FC = () => {
           <div className="consist-kpi-value">
             {format(realCollectedAmount, effectiveCurrency, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
-          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '6px' }}>
-            {realPaidPayments.length} paid payment{realPaidPayments.length === 1 ? '' : 's'} recorded
-            {realPaidPayments.some((p) => getPaymentCurrency(p).code !== effectiveCurrency) && (
-              <span style={{ display: 'block', fontSize: '10.5px', color: isLive ? '#0D9488' : '#B45309', marginTop: '2px', fontWeight: 600 }}>
-                {isLive
-                  ? `✓ Converted to ${effectiveCurrency} at live rates`
-                  : `Converted to ${effectiveCurrency} using cached rates (live rates unavailable)`}
-              </span>
-            )}
-          </div>
         </div>
 
         {/* Card 2: Expected Monthly Rent Roll */}
@@ -502,37 +581,18 @@ export const OwnerDashboardPage: React.FC = () => {
           <div className="consist-kpi-value">
             {format(realMonthlyRentRoll, effectiveCurrency, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
-          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '6px' }}>
-            {realOverdueAmount > 0 ? (
-              <span style={{ color: '#DC2626', fontWeight: 600 }}>
-                {format(realOverdueAmount, effectiveCurrency)} overdue ({realOverduePayments.length})
-              </span>
-            ) : realPendingAmount > 0 ? (
-              <span style={{ color: '#D97706', fontWeight: 600 }}>
-                {format(realPendingAmount, effectiveCurrency)} pending confirmation
-              </span>
-            ) : (
-              <span>From {occupiedCount} active occupied unit{occupiedCount === 1 ? '' : 's'}</span>
-            )}
-          </div>
         </div>
 
         {/* Card 3: Portfolio Occupancy */}
         <div className="consist-kpi-card">
           <div className="consist-kpi-label">Portfolio Occupancy</div>
           <div className="consist-kpi-value">{occupancyRate}%</div>
-          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '6px' }}>
-            {occupiedCount} of {totalUnitsCount} units occupied
-          </div>
         </div>
 
         {/* Card 4: Maintenance Tickets */}
         <div className="consist-kpi-card">
           <div className="consist-kpi-label">Active Maintenance</div>
           <div className="consist-kpi-value">{activeTickets.length}</div>
-          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '6px' }}>
-            {resolvedTickets.length} issues resolved all-time
-          </div>
         </div>
       </div>
 
@@ -543,13 +603,17 @@ export const OwnerDashboardPage: React.FC = () => {
           <div className="consist-card-header">
             <div>
               <div className="consist-card-title">Rent Collection Inflow</div>
-              <div className="consist-card-subtitle">Actual monthly rent collected (converted to {effectiveCurrency === 'USD' ? '$' : effectiveCurrency})</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '12.5px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span style={{ width: '8px', height: '8px', background: 'var(--teal-primary)', borderRadius: '2px', display: 'inline-block' }} />
                 <span style={{ color: 'var(--ink-soft)' }}>Total Inflow:</span>
-                <b style={{ color: 'var(--ink)' }}>{format(realCollectedAmount, effectiveCurrency)}</b>
+                <b style={{ color: 'var(--ink)' }}>
+                  {format(
+                    monthlyRevenueData.months.reduce((sum, item) => sum + item.amount, 0),
+                    effectiveCurrency
+                  )}
+                </b>
               </div>
             </div>
           </div>
@@ -599,7 +663,6 @@ export const OwnerDashboardPage: React.FC = () => {
           <div className="consist-card-header">
             <div>
               <div className="consist-card-title">Unit Inventory Status</div>
-              <div className="consist-card-subtitle">Real breakdown of {totalUnitsCount} managed unit{totalUnitsCount === 1 ? '' : 's'}</div>
             </div>
           </div>
 

@@ -6,48 +6,96 @@ import {
   ScrollView,
   TouchableOpacity,
   SafeAreaView,
-  StatusBar,
   Alert,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
+import {
+  DEFAULT_CURRENCY_SYMBOL,
+  getCurrencySymbol,
+  normalizeCurrencyCode,
+} from '../lib/currencyService';
 import { MobileTicket } from '../types';
 
-export const StaffTaskPaymentsScreen: React.FC = () => {
+interface StaffTaskPaymentsScreenProps {
+  onProfilePress?: () => void;
+  onNotificationsPress?: () => void;
+}
+
+export const StaffTaskPaymentsScreen: React.FC<StaffTaskPaymentsScreenProps> = ({
+  onProfilePress,
+  onNotificationsPress,
+}) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const { state, updateTicket, sendStaffPaymentReminder } = useMobileAppData();
   const { user } = useMobileAuth();
-  const { format, viewCurrency } = useMobileCurrency();
+  const { format, convert, viewCurrency } = useMobileCurrency();
+  const activeCurrencyCode = viewCurrency || 'USD';
 
   const [remindedTickets, setRemindedTickets] = useState<Record<string, boolean>>({});
   const [settlingTicketId, setSettlingTicketId] = useState<string | null>(null);
+  const [remindingTicketId, setRemindingTicketId] = useState<string | null>(null);
 
-  // Match tickets by assignedStaffId (UID)
-  const myTickets = state.tickets.filter(
-    (t) =>
-      t.payment &&
-      t.payment.status !== 'none' &&
-      (t.assignedStaffId === user.id ||
-        (user.displayName && t.assignedStaffName?.toLowerCase().includes(user.displayName.toLowerCase())))
+  const currentStaff = useMemo(
+    () =>
+      state.staff.find((s) => s.id === user.id) ||
+      (user.email
+        ? state.staff.find((s) => s.email?.toLowerCase() === user.email?.toLowerCase())
+        : undefined) ||
+      (user.displayName
+        ? state.staff.find((s) => s.name.toLowerCase() === user.displayName?.toLowerCase())
+        : undefined),
+    [state.staff, user]
   );
 
-  const confirmedEarnings = myTickets
-    .filter((t) => t.payment?.status === 'confirmed')
-    .reduce((sum, t) => sum + (t.payment?.amount || 0), 0);
+  // Match tickets by assignedStaffId (UID) matching Web TaskPaymentsPage.tsx
+  const myTickets = useMemo(
+    () =>
+      state.tickets.filter(
+        (t) =>
+          t.payment &&
+          t.payment.status !== 'none' &&
+          (t.assignedStaffId === user.id ||
+            (currentStaff?.id && t.assignedStaffId === currentStaff.id))
+      ),
+    [state.tickets, user.id, currentStaff?.id]
+  );
 
-  const pendingConfirmAmount = myTickets
-    .filter((t) => t.payment?.status === 'pending_approval')
-    .reduce((sum, t) => sum + (t.payment?.amount || 0), 0);
+  const staffProperty = useMemo(
+    () =>
+      state.properties.find(
+        (p) =>
+          (currentStaff?.ownerId && p.ownerId === currentStaff.ownerId) ||
+          myTickets.some((t) => t.propertyId === p.id)
+      ),
+    [state.properties, currentStaff?.ownerId, myTickets]
+  );
+  const staffRawCurrency = staffProperty?.currency || (myTickets[0] as any)?.currency || 'USD';
+  const staffCurrency = getCurrencySymbol(staffRawCurrency) || DEFAULT_CURRENCY_SYMBOL;
 
-  const awaitingPaymentAmount = myTickets
-    .filter((t) => t.payment?.status === 'awaiting_payment')
-    .reduce((sum, t) => sum + (t.payment?.amount || 0), 0);
+  const unreadNotificationsCount = useMemo(
+    () => (state.notifications || []).filter((n) => !n.read).length,
+    [state.notifications]
+  );
+
+  const initials = useMemo(() => {
+    if (user.displayName) {
+      return user.displayName
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase();
+    }
+    return user.email ? user.email.slice(0, 2).toUpperCase() : 'ST';
+  }, [user.displayName, user.email]);
 
   const handleMarkPaymentCompleted = (ticketId: string) => {
     const target = state.tickets.find((t) => t.id === ticketId);
@@ -61,34 +109,75 @@ export const StaffTaskPaymentsScreen: React.FC = () => {
       },
     });
     setSettlingTicketId(null);
-    Alert.alert('Payment Settled ✓', `Task fee for ticket #${ticketId} marked as completed & settled.`);
+    Alert.alert(
+      'Payment Settled ✓',
+      `Task fee for ticket ${ticketId} marked as completed & settled.`
+    );
   };
 
   const handleSendPaymentReminder = (ticket: MobileTicket) => {
+    setRemindingTicketId(ticket.id);
     sendStaffPaymentReminder(ticket.id);
     setRemindedTickets((prev) => ({ ...prev, [ticket.id]: true }));
-    Alert.alert('Reminder Sent 📨', `Payment reminder sent to ${ticket.payment?.payer || 'payer'} for Ticket #${ticket.id}.`);
+    setRemindingTicketId(null);
+    Alert.alert(
+      'Reminder Sent',
+      `Payment reminder sent to ${ticket.payment?.payer || 'payer'} for Ticket ${ticket.id}.`
+    );
   };
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* StatusBar managed globally */}
       <ScreenStatusBar />
 
-      {/* Screen Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <View style={styles.logoBadge}>
-            <Feather name="credit-card" size={18} color="#FFFFFF" />
+      {/* Minimal Top App Bar (.topbar) */}
+      <View style={[styles.topbar, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
+        <View style={styles.topbarLeft}>
+          <View
+            style={[
+              styles.brandMark,
+              isDark && {
+                backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                borderColor: 'rgba(16, 185, 129, 0.3)',
+              },
+            ]}
+          >
+            <PropithubIcon size={18} />
           </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.navy }]}>Earnings</Text>
-          </View>
+          <Text style={[styles.topbarTitle, { color: colors.navy }]}>Task payments</Text>
         </View>
-        <View style={styles.earnedBadge}>
-          <Text style={styles.earnedBadgeText}>
-            {format(confirmedEarnings, viewCurrency)} Settled
-          </Text>
+
+        <View style={styles.topbarRight}>
+          <TouchableOpacity
+            style={[styles.iconBtn, { borderColor: colors.line, backgroundColor: colors.surface }]}
+            onPress={onNotificationsPress || onProfilePress}
+            activeOpacity={0.75}
+          >
+            <Feather name="bell" size={18} color={colors.navy} />
+            {unreadNotificationsCount > 0 && (
+              <View style={styles.bellBadge}>
+                <Text style={styles.bellBadgeText}>
+                  {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.avatarBtn,
+              {
+                backgroundColor: isDark ? '#0F2920' : '#E6F4EE',
+                borderColor: isDark ? '#065F46' : '#A7F3D0',
+              },
+            ]}
+            onPress={onProfilePress}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.avatarBtnText, { color: isDark ? '#34D399' : '#059669' }]}>
+              {initials}
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -97,174 +186,153 @@ export const StaffTaskPaymentsScreen: React.FC = () => {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Web Metric Cards Grid (3 Cards) */}
+        {/* Section Title (1-to-1 with Web TaskPaymentsPage.tsx) */}
         <TourTarget id="staff-earnings-grid">
-        <View style={styles.metricsContainer}>
-          {/* Card 1: Settled Fees */}
-          <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line, borderLeftColor: '#10B981' }]}>
-            <Text style={[styles.statNum, { color: '#047857' }]}>
-              {format(confirmedEarnings, viewCurrency)}
-            </Text>
-            <Text style={[styles.statLabel, { color: colors.navy }]}>Settled Fees</Text>
-            <Text style={[styles.statDelta, { color: colors.inkSoft }]}>Received & verified</Text>
-          </View>
-
-          {/* Card 2: Awaiting My Confirmation */}
-          <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line, borderLeftColor: '#F59E0B' }]}>
-            <Text style={[styles.statNum, { color: '#B45309' }]}>
-              {format(pendingConfirmAmount, viewCurrency)}
-            </Text>
-            <Text style={[styles.statLabel, { color: colors.navy }]}>Pending Confirmation</Text>
-            <Text style={[styles.statDelta, { color: colors.inkSoft }]}>Payer submitted payment</Text>
-          </View>
-
-          {/* Card 3: Awaiting Payment */}
-          <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line, borderLeftColor: '#64748B' }]}>
-            <Text style={[styles.statNum, { color: colors.navy }]}>
-              {format(awaitingPaymentAmount, viewCurrency)}
-            </Text>
-            <Text style={[styles.statLabel, { color: colors.navy }]}>Pending Payment</Text>
-            <Text style={[styles.statDelta, { color: colors.inkSoft }]}>Work completed, invoice open</Text>
-          </View>
-        </View>
-
+          <Text style={[styles.sectionTitle, { color: colors.navy }]}>
+            Task Payment Records ({myTickets.length})
+          </Text>
         </TourTarget>
 
-        {/* Section Heading: Task Payment Records */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={[styles.sectionHeading, { color: colors.navy }]}>
-            Payment Records ({myTickets.length})
-          </Text>
-        </View>
-
         {myTickets.length === 0 ? (
-          <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Ionicons name="receipt-outline" size={48} color={colors.inkSoft} />
-            <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Task Payments</Text>
+          <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
             <Text style={[styles.emptyText, { color: colors.inkSoft }]}>
-              Completed repair tickets with assigned fee charges will appear here.
+              No task payments recorded yet.
             </Text>
           </View>
         ) : (
           myTickets.map((t) => {
             const isConfirmed = t.payment?.status === 'confirmed';
             const isPendingApproval = t.payment?.status === 'pending_approval';
-            const isAwaiting = t.payment?.status === 'awaiting_payment';
             const isReminded = remindedTickets[t.id];
 
+            const unitCurr =
+              state.units.find((u) => u.unitNumber === t.unit || u.id === t.unit)?.currency ||
+              (t as any).currency ||
+              staffRawCurrency;
+            const ticketDisplayCurr = getCurrencySymbol(unitCurr) || staffCurrency;
+            const isDifferent =
+              normalizeCurrencyCode(unitCurr) !== normalizeCurrencyCode(activeCurrencyCode);
+            const convertedAmt = isDifferent
+              ? convert(t.payment?.amount || 0, unitCurr, activeCurrencyCode)
+              : null;
+
             return (
-              <View key={t.id} style={[styles.taskCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <View style={styles.cardHeaderRow}>
-                  <View style={styles.cardHeaderLeft}>
-                    <Text style={[styles.ticketIdText, { color: colors.navy }]}>#{t.id}</Text>
-                    <View style={[styles.payerBadge, { backgroundColor: isDark ? colors.card : '#F1F5F9' }]}>
+              <View
+                key={t.id}
+                style={[styles.feeCard, { backgroundColor: colors.surface, borderColor: colors.line }]}
+              >
+                {/* Header Row: Ticket ID + Payer Badge on left, Status Badge on right */}
+                <View style={styles.feeCardHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                    <Text style={[styles.feeTicketTitle, { color: colors.navy }]}>{t.id}</Text>
+                    <View
+                      style={[
+                        styles.payerBadge,
+                        { backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9' },
+                      ]}
+                    >
                       <Text style={[styles.payerBadgeText, { color: colors.inkSoft }]}>
-                        Payer: {t.payment?.payer || 'Owner'}
+                        Payer:{' '}
+                        {t.payment?.payer
+                          ? t.payment.payer.charAt(0).toUpperCase() + t.payment.payer.slice(1)
+                          : 'Owner'}
                       </Text>
                     </View>
                   </View>
 
                   <View
                     style={[
-                      styles.statusBadge,
-                      isConfirmed && styles.statusBadgeGreen,
-                      isPendingApproval && styles.statusBadgeBrass,
-                      isAwaiting && styles.statusBadgeAmber,
+                      styles.statusPill,
+                      { flexShrink: 0 },
+                      isConfirmed
+                        ? { backgroundColor: isDark ? '#0F2E1D' : '#E6F4EA' }
+                        : isPendingApproval
+                        ? { backgroundColor: isDark ? '#0F2920' : '#E6F4EE' }
+                        : { backgroundColor: isDark ? '#332510' : '#FEF3DC' },
                     ]}
                   >
                     <Text
                       style={[
-                        styles.statusBadgeText,
-                        isConfirmed && styles.statusBadgeTextGreen,
-                        isPendingApproval && styles.statusBadgeTextBrass,
-                        isAwaiting && styles.statusBadgeTextAmber,
+                        styles.statusPillText,
+                        isConfirmed
+                          ? { color: isDark ? '#6DD58C' : '#137333' }
+                          : isPendingApproval
+                          ? { color: isDark ? '#34D399' : '#059669' }
+                          : { color: isDark ? '#F5B955' : '#9A5B00' },
                       ]}
                     >
-                      {isConfirmed
-                        ? 'Settled'
-                        : isPendingApproval
-                        ? 'Action Needed'
-                        : 'Unpaid'}
+                      {isConfirmed ? 'Settled' : isPendingApproval ? 'Action Needed' : 'Unpaid'}
                     </Text>
                   </View>
                 </View>
 
-                {/* Amount & Method Row */}
-                <View style={[styles.amountRow, { borderColor: colors.line }]}>
-                  <View>
-                    <Text style={[styles.feeLabel, { color: colors.inkSoft }]}>TASK FEE</Text>
+                {/* Amount & Method Row (1-to-1 with Web Mobile Payment Cards) */}
+                <View style={styles.amountMethodRow}>
+                  <View style={{ flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap', gap: 6 }}>
                     <Text
                       style={[
-                        styles.feeAmount,
-                        { color: colors.navy },
-                        isConfirmed && { color: '#059669' },
+                        styles.amountText,
+                        { color: isConfirmed ? '#059669' : colors.navy },
                       ]}
                     >
-                      {format(t.payment?.amount || 0, viewCurrency)}
+                      {ticketDisplayCurr}
+                      {(t.payment?.amount || 0).toLocaleString()}
                     </Text>
+                    {convertedAmt !== null && (
+                      <Text style={[styles.convertedText, { color: colors.inkSoft }]}>
+                        ({format(convertedAmt, activeCurrencyCode)})
+                      </Text>
+                    )}
                   </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={[styles.methodLabel, { color: colors.inkSoft }]}>METHOD</Text>
-                    <Text style={[styles.methodValue, { color: colors.navy }]}>
+
+                  <Text style={[styles.methodText, { color: colors.inkSoft }]}>
+                    Method:{' '}
+                    <Text style={{ color: colors.navy, fontWeight: '700' }}>
                       {t.payment?.method || 'Standard'}
                     </Text>
-                  </View>
-                </View>
-
-                <View style={styles.ticketDetailRow}>
-                  <Text style={[styles.ticketIssueText, { color: colors.inkSoft }]} numberOfLines={1}>
-                    Unit {t.unit} • {t.issue}
                   </Text>
                 </View>
 
-                {/* Card Action Footer */}
-                <View style={[styles.cardFooter, { borderTopColor: colors.line }]}>
+                {/* Action Footer (1-to-1 with Web) */}
+                <View style={[styles.actionFooter, { borderTopColor: colors.line }]}>
                   {isConfirmed ? (
-                    <View style={styles.confirmedRow}>
-                      <Ionicons name="checkmark-circle" size={18} color="#10B981" />
-                      <Text style={styles.confirmedText}>Completed & Settled</Text>
+                    <View style={styles.settledInlineRow}>
+                      <Ionicons name="checkmark-circle-outline" size={16} color="#059669" />
+                      <Text style={styles.settledInlineText}>Completed & Settled</Text>
                     </View>
+                  ) : isPendingApproval ? (
+                    <TouchableOpacity
+                      style={styles.confirmBtn}
+                      onPress={() => handleMarkPaymentCompleted(t.id)}
+                      activeOpacity={0.85}
+                      disabled={settlingTicketId === t.id}
+                    >
+                      <Text style={styles.confirmBtnText}>
+                        {settlingTicketId === t.id ? 'Settling...' : '✓ Confirm receipt'}
+                      </Text>
+                    </TouchableOpacity>
                   ) : (
-                    <View style={styles.actionButtonsCol}>
-                      <TouchableOpacity
-                        style={styles.markCompletedBtn}
-                        onPress={() => handleMarkPaymentCompleted(t.id)}
-                        activeOpacity={0.85}
-                        disabled={settlingTicketId === t.id}
-                      >
-                        <Ionicons name="checkmark" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.markCompletedBtnText}>
-                          {settlingTicketId === t.id ? 'Settling...' : '✓ Mark as Completed & Settled'}
-                        </Text>
-                      </TouchableOpacity>
-
-                      {isAwaiting && (
-                        <TouchableOpacity
-                          style={[
-                            styles.reminderBtn,
-                            isReminded && styles.reminderBtnDisabled,
-                          ]}
-                          onPress={() => handleSendPaymentReminder(t)}
-                          activeOpacity={0.85}
-                          disabled={isReminded}
-                        >
-                          <Ionicons
-                            name="mail-outline"
-                            size={15}
-                            color={isReminded ? '#94A3B8' : '#B45309'}
-                            style={{ marginRight: 6 }}
-                          />
-                          <Text
-                            style={[
-                              styles.reminderBtnText,
-                              isReminded && styles.reminderBtnTextDisabled,
-                            ]}
-                          >
-                            {isReminded ? 'Reminder Sent' : 'Send Reminder'}
-                          </Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.remindBtn,
+                        {
+                          borderColor: colors.line,
+                          backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+                        },
+                        (isReminded || remindingTicketId === t.id) && { opacity: 0.55 },
+                      ]}
+                      onPress={() => handleSendPaymentReminder(t)}
+                      activeOpacity={0.8}
+                      disabled={isReminded || remindingTicketId === t.id}
+                    >
+                      <Text style={[styles.remindBtnText, { color: colors.navy }]}>
+                        {remindingTicketId === t.id
+                          ? 'Sending...'
+                          : isReminded
+                          ? 'Reminder sent'
+                          : 'Send Payment Reminder'}
+                      </Text>
+                    </TouchableOpacity>
                   )}
                 </View>
               </View>
@@ -278,297 +346,195 @@ export const StaffTaskPaymentsScreen: React.FC = () => {
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  statusBarRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 6,
-    backgroundColor: colors.surface,
-  },
-  statusTime: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  statusIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  logoBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  headerSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  earnedBadge: {
-    backgroundColor: '#ECFDF5',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-  },
-  earnedBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  metricsContainer: {
-    gap: 12,
-    marginBottom: 20,
-  },
-  statCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderLeftWidth: 4,
-  },
-  statNum: {
-    fontSize: 24,
-    fontWeight: '700',
-    letterSpacing: -0.5,
-  },
-  statLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.navy,
-    marginTop: 4,
-  },
-  statDelta: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  sectionHeaderRow: {
-    marginBottom: 12,
-  },
-  sectionHeading: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  emptyContainer: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginTop: 8,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.navy,
-    marginTop: 12,
-  },
-  emptyText: {
-    fontSize: 13,
-    color: colors.inkSoft,
-    textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 18,
-  },
-  taskCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 12,
-  },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  cardHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  ticketIdText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  payerBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  payerBadgeText: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    textTransform: 'capitalize',
-    fontWeight: '500',
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  statusBadgeGreen: {
-    backgroundColor: '#ECFDF5',
-  },
-  statusBadgeBrass: {
-    backgroundColor: '#FEF3C7',
-  },
-  statusBadgeAmber: {
-    backgroundColor: '#FFFBEB',
-  },
-  statusBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  statusBadgeTextGreen: {
-    color: '#059669',
-  },
-  statusBadgeTextBrass: {
-    color: '#D97706',
-  },
-  statusBadgeTextAmber: {
-    color: '#B45309',
-  },
-  amountRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-end',
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#F1F5F9',
-    marginVertical: 4,
-  },
-  feeLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkMuted,
-    letterSpacing: 0.5,
-  },
-  feeAmount: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  methodLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkMuted,
-    letterSpacing: 0.5,
-  },
-  methodValue: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  ticketDetailRow: {
-    paddingVertical: 8,
-  },
-  ticketIssueText: {
-    fontSize: 13,
-    color: colors.inkSoft,
-  },
-  cardFooter: {
-    marginTop: 6,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-  },
-  confirmedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  confirmedText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#059669',
-  },
-  actionButtonsCol: {
-    gap: 8,
-  },
-  markCompletedBtn: {
-    backgroundColor: '#10B981',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  markCompletedBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  reminderBtn: {
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  reminderBtnDisabled: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderColor: colors.line,
-  },
-  reminderBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#B45309',
-  },
-  reminderBtnTextDisabled: {
-    color: colors.inkMuted,
-  },
-});
-
-export const StaffEarningsScreen = StaffTaskPaymentsScreen;
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    topbar: {
+      height: 56,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      borderBottomWidth: 1,
+    },
+    topbarLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+    },
+    brandMark: {
+      width: 32,
+      height: 32,
+      borderRadius: 10,
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: 'rgba(16, 185, 129, 0.2)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    topbarTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    topbarRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    iconBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 10,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    bellBadge: {
+      position: 'absolute',
+      top: -3,
+      right: -3,
+      minWidth: 16,
+      height: 16,
+      borderRadius: 8,
+      backgroundColor: '#EF4444',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 3,
+    },
+    bellBadgeText: {
+      color: '#FFFFFF',
+      fontSize: 9.5,
+      fontWeight: '700',
+    },
+    avatarBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    avatarBtnText: {
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    scroll: {
+      flex: 1,
+    },
+    content: {
+      paddingHorizontal: 16,
+      paddingTop: 16,
+      paddingBottom: 36,
+      gap: 12,
+    },
+    sectionTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    emptyCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      padding: 28,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyText: {
+      fontSize: 13.5,
+    },
+    feeCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      padding: 14,
+      gap: 12,
+    },
+    feeCardHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 8,
+      flexWrap: 'wrap',
+    },
+    feeTicketTitle: {
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    payerBadge: {
+      paddingHorizontal: 7,
+      paddingVertical: 2.5,
+      borderRadius: 999,
+    },
+    payerBadgeText: {
+      fontSize: 10.5,
+      fontWeight: '600',
+    },
+    statusPill: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 999,
+    },
+    statusPillText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+    },
+    amountMethodRow: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+      gap: 6,
+    },
+    amountText: {
+      fontSize: 20,
+      fontWeight: '800',
+      letterSpacing: -0.3,
+    },
+    convertedText: {
+      fontSize: 13,
+      fontWeight: '500',
+    },
+    methodText: {
+      fontSize: 12.5,
+    },
+    actionFooter: {
+      paddingTop: 10,
+      borderTopWidth: 1,
+    },
+    settledInlineRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    settledInlineText: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: '#059669',
+    },
+    confirmBtn: {
+      minHeight: 40,
+      borderRadius: 10,
+      backgroundColor: '#059669',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 14,
+    },
+    confirmBtnText: {
+      color: '#FFFFFF',
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    remindBtn: {
+      minHeight: 40,
+      borderRadius: 10,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 14,
+    },
+    remindBtnText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+  });

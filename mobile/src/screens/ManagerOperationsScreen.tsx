@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   SafeAreaView,
-  StatusBar,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -16,8 +15,8 @@ import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { usePlanLimits } from '../hooks/usePlanLimits';
-import { getManagerReminders, DashboardReminder } from '../lib/reminders';
-import { MobileTicket } from '../types';
+import { getManagerReminders } from '../lib/reminders';
+import { resolveEffectiveUnitStatus } from '../lib/portfolioReconcile';
 
 interface ManagerOperationsScreenProps {
   onProfilePress?: () => void;
@@ -33,55 +32,77 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
   const { state, acknowledgeAnnouncement } = useMobileAppData();
   const { user } = useMobileAuth();
 
-  // Bulletin acknowledgment & smooth dismissal state
   const [justAckedIds, setJustAckedIds] = useState<Set<string>>(new Set());
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
 
-  const ownerId = user?.ownerId || '';
-  const ownerName = user?.ownerName || 'Portfolio Owner';
+  const managerRecord = (state.propertyManagers || []).find(
+    (m) =>
+      (user?.id && String(m.id) === user.id) ||
+      (user?.email && m.email?.toLowerCase().trim() === user.email.toLowerCase().trim())
+  );
+  const assignedPropertyId =
+    (user as any)?.propertyId ||
+    (user as any)?.assignedPropertyId ||
+    managerRecord?.propertyId ||
+    '';
+  const effectiveOwnerId =
+    user?.ownerId && user.ownerId !== user.id
+      ? user.ownerId
+      : managerRecord?.ownerId || '';
+  const assignedProps = [
+    ...(user?.assignedProperties || []),
+    ...(managerRecord?.assignedProperties || []),
+    ...(assignedPropertyId ? [assignedPropertyId] : []),
+  ];
+  const ownerId = effectiveOwnerId;
   const { isTrial, daysLeft } = usePlanLimits(ownerId);
 
-  // 1. Scoped Properties & Units (exact match to Web ManagerDashboardPage)
+  // Scoped Properties & Units
   const myProperties = useMemo(() => {
-    if (!ownerId && !user?.assignedProperties?.length) return [];
-    const props = state.properties.filter((p) => {
-      if (ownerId && p.ownerId === ownerId) return true;
-      if (user?.assignedProperties?.includes(p.id)) return true;
+    return (state.properties || []).filter((p) => {
+      if (p.assignedManagerId === user?.id || (p as any).managerId === user?.id) return true;
+      if (assignedProps.includes(p.id)) return true;
+      if (assignedPropertyId && p.id === assignedPropertyId) return true;
+      if (effectiveOwnerId && p.ownerId === effectiveOwnerId) {
+        if (assignedProps.length === 0 && !assignedPropertyId) return true;
+        if (assignedProps.includes(p.id)) return true;
+      }
       return false;
     });
-    const explicitlyAssigned = props.filter(
-      (p) => p.assignedManagerId === user?.id || user?.assignedProperties?.includes(p.id)
-    );
-    return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
-  }, [state.properties, ownerId, user?.id, user?.assignedProperties]);
+  }, [state.properties, effectiveOwnerId, assignedPropertyId, assignedProps, user?.id]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
 
   const myUnits = useMemo(() => {
-    return state.units.filter((u) => u.propertyId && myPropertyIds.has(u.propertyId));
-  }, [state.units, myPropertyIds]);
+    return state.units.filter((u) => {
+      if (u.propertyId && myPropertyIds.has(u.propertyId)) return true;
+      if (ownerId && u.ownerId === ownerId) return true;
+      return false;
+    });
+  }, [state.units, myPropertyIds, ownerId]);
+
+  const occupiedCount = useMemo(() => {
+    return myUnits.filter(
+      (u) => resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts) === 'occupied'
+    ).length;
+  }, [myUnits, state.agreements, state.tenancyRequests, state.moveOuts]);
 
   const myTickets = useMemo(() => {
-    return state.tickets.filter((t) => t.propertyId && myPropertyIds.has(t.propertyId));
-  }, [state.tickets, myPropertyIds]);
+    return state.tickets.filter((t) => {
+      if (t.propertyId && myPropertyIds.has(t.propertyId)) return true;
+      if (ownerId && t.ownerId === ownerId) return true;
+      return false;
+    });
+  }, [state.tickets, myPropertyIds, ownerId]);
 
   const myStaff = useMemo(() => {
     if (!ownerId) return [];
     return state.staff.filter((s) => s.ownerId === ownerId);
   }, [state.staff, ownerId]);
 
-  const myAgreements = useMemo(() => {
-    return state.agreements.filter((a) => a.propertyId && myPropertyIds.has(a.propertyId));
-  }, [state.agreements, myPropertyIds]);
-  const activeAgreements = myAgreements.filter((a) => a.status === 'active');
-
-  // 2. Operational Metrics
   const activeTickets = myTickets.filter((t) => t.status !== 'resolved');
-  const highPriorityTickets = activeTickets.filter(
-    (t) => t.priority === 'High' || t.priority === 'Emergency'
-  );
 
-  // 3. Manager Reminders (Action Center using getManagerReminders)
+  // Manager Reminders
   const managerReminders = useMemo(() => {
     return getManagerReminders(state, user);
   }, [state, user]);
@@ -96,7 +117,7 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
     return set;
   }, [ownerId, user?.ownerId, myProperties]);
 
-  // 4. Targeted Manager Bulletins with strict landlord isolation, property scoping, and acknowledgment filtering
+  // Targeted Manager Bulletins
   const managerBulletins = useMemo(() => {
     return (state.announcements || [])
       .filter((a) => {
@@ -106,30 +127,42 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
         const targetRoles = a.targetRoles || (a as any).targetScope?.targetRoles || [];
         if (targetRoles.length > 0 && !targetRoles.includes('manager')) return false;
 
-        const isSystem = a.ownerId === 'system' || a.ownerId === 'superadmin' || ((a as any).category as string) === 'system';
-        // Strict landlord isolation: Block if manager has no owner association or if announcement belongs to another landlord
+        const isSystem =
+          a.ownerId === 'system' ||
+          a.ownerId === 'superadmin' ||
+          ((a as any).category as string) === 'system';
         if (!isSystem && (managerOwnerIds.size === 0 || !managerOwnerIds.has(a.ownerId))) {
           return false;
         }
 
-        // Specific people targeting
         const targetScope = (a as any).targetScope;
-        if (targetScope?.mode === 'specific_people' || (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)) {
+        if (
+          targetScope?.mode === 'specific_people' ||
+          (targetScope?.targetUserIds && targetScope.targetUserIds.length > 0)
+        ) {
           const targets = targetScope.targetUserIds || [];
           if (!targets.includes(user.id)) return false;
         }
 
-        // Property-level scoping
-        if (targetScope && !targetScope.allProperties && targetScope.propertyIds && targetScope.propertyIds.length > 0) {
-          if (myPropertyIds.size > 0 && !targetScope.propertyIds.some((pId: string) => myPropertyIds.has(pId))) {
+        if (
+          targetScope &&
+          !targetScope.allProperties &&
+          targetScope.propertyIds &&
+          targetScope.propertyIds.length > 0
+        ) {
+          if (
+            myPropertyIds.size > 0 &&
+            !targetScope.propertyIds.some((pId: string) => myPropertyIds.has(pId))
+          ) {
             return false;
           }
         }
 
-        // Acknowledgment check: hide if already acknowledged (unless in 1.2s grace window)
         const isAckedByArr = (a.acknowledgedBy || []).includes(user.id);
         const isAckedByObj = ((a as any).acknowledgments || []).some(
-          (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+          (ack: any) =>
+            ack.tenantId === user.id ||
+            (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
         );
         const hasAcked = isAckedByArr || isAckedByObj;
         if (hasAcked && !justAckedIds.has(a.id)) {
@@ -145,7 +178,7 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
       });
   }, [state.announcements, user, managerOwnerIds, myPropertyIds, dismissedNoticeIds, justAckedIds]);
 
-  const handleAcknowledgeBulletin = (id: string, requireAck?: boolean) => {
+  const handleAcknowledgeBulletin = (id: string) => {
     acknowledgeAnnouncement(id, user.id);
     setJustAckedIds((prev) => new Set(prev).add(id));
     setTimeout(() => {
@@ -154,297 +187,232 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* StatusBar managed globally */}
+    <SafeAreaView style={styles.safeArea}>
       <ScreenStatusBar />
 
-      {/* Header */}
       <Header
-        title="Propithub"
+        title="Overview"
         onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
 
       <ScrollView
-        style={[styles.scroll, { backgroundColor: colors.background }]}
+        style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Organization Free Trial Info Banner */}
         {isTrial && daysLeft > 0 && (
-          <View style={[styles.orgTrialBanner, isDark && { backgroundColor: '#78350F' }]}>
-            <Feather name="info" size={15} color={isDark ? '#FDE68A' : '#B45309'} style={{ marginRight: 8 }} />
-            <Text style={[styles.orgTrialBannerText, isDark && { color: '#FDE68A' }]}>
-              Organization on Free Trial ({daysLeft} days remaining).
+          <View style={styles.trialBanner}>
+            <Feather name="info" size={13} color={isDark ? '#FDE68A' : '#B45309'} />
+            <Text style={styles.trialBannerText}>
+              Organization Free Trial · {daysLeft}d remaining
             </Text>
           </View>
         )}
 
-        {/* 2. Operations Action Center & Reminders (Web Title & Layout) */}
-        {managerReminders.length > 0 && (
-          <View style={styles.actionCenterSection}>
-            <View style={styles.sectionHeaderRow}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Feather name="zap" size={16} color="#B45309" />
-                <Text style={[styles.sectionHeading, { color: colors.navy }]}>Action Center</Text>
-              </View>
-              <View style={[styles.actionCountBadge, isDark && { backgroundColor: '#1E293B' }]}>
-                <Text style={[styles.actionCountText, { color: colors.inkSoft }]}>{managerReminders.length} Actions</Text>
-              </View>
-            </View>
-
-            <ScrollView
-              style={managerReminders.length > 2 ? { maxHeight: 220 } : undefined}
-              nestedScrollEnabled={true}
-              showsVerticalScrollIndicator={managerReminders.length > 2}
-            >
-              {managerReminders.map((rem) => {
-              const isUrgent = rem.severity === 'urgent';
-              return (
-                <View
-                  key={rem.id}
-                  style={[
-                    styles.reminderCard,
-                    { backgroundColor: colors.surface, borderColor: colors.line },
-                    isUrgent && { borderLeftColor: '#DC2626' },
-                  ]}
-                >
-                  <View style={styles.reminderCardTop}>
-                    <View style={{ flex: 1 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                        <View
-                          style={[
-                            styles.severityPill,
-                            isUrgent ? styles.severityPillUrgent : styles.severityPillWarning,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.severityPillText,
-                              isUrgent ? { color: '#DC2626' } : { color: '#B45309' },
-                            ]}
-                          >
-                            {isUrgent ? 'CRITICAL' : 'ACTION'}
-                          </Text>
-                        </View>
-                      </View>
-                      <Text style={[styles.reminderTitle, { color: colors.navy }]}>{rem.title}</Text>
-                      <Text style={[styles.reminderDesc, { color: colors.inkSoft }]}>{rem.description}</Text>
-                    </View>
-                  </View>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.reminderActionBtn,
-                      isUrgent && { backgroundColor: '#DC2626' },
-                    ]}
-                    onPress={() => {
-                      const target = rem.actionScreen === 'manager_maintenance' ? 'manager_repair_dispatch' : rem.actionScreen;
-                      onNavigate?.(target);
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.reminderActionBtnText}>{rem.actionLabel}</Text>
-                    <Feather name="arrow-right" size={13} color="#FFFFFF" style={{ marginLeft: 4 }} />
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* 3. Operations & Portfolio Bulletins */}
-        {managerBulletins.length > 0 && (
-          <View style={styles.bulletinSection}>
-            <View style={styles.sectionHeaderRow}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Ionicons name="megaphone-outline" size={16} color="#059669" />
-                <Text style={[styles.sectionHeading, { color: colors.navy }]}>
-                  Operations & Portfolio Bulletins ({managerBulletins.length})
-                </Text>
-              </View>
-            </View>
-
-            <ScrollView
-              style={{ maxHeight: 155 }}
-              nestedScrollEnabled
-              showsVerticalScrollIndicator={true}
-            >
-              {managerBulletins.map((b) => {
-                const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
-                const isAckedByObj = ((b as any).acknowledgments || []).some(
-                  (ack: any) => ack.tenantId === user.id || (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
-                );
-                const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(b.id);
-                const requireAck = Boolean(b.requireAck || b.requireAcknowledgment || (b as any).requiresAcknowledgment);
-
-                return (
-                  <View key={b.id} style={[styles.bulletinCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    <View style={styles.bulletinCardTop}>
-                      <View style={styles.bulletinBadge}>
-                        <Text style={styles.bulletinBadgeText}>{b.category.toUpperCase()}</Text>
-                      </View>
-                      {b.isPinned && (
-                        <View style={styles.pinnedBadge}>
-                          <Ionicons name="pin" size={10} color="#92400E" style={{ marginRight: 2 }} />
-                          <Text style={styles.pinnedBadgeText}>Pinned</Text>
-                        </View>
-                      )}
-                      <Text style={[styles.bulletinDate, { color: colors.inkSoft }]}>
-                        {new Date(b.createdAt).toLocaleDateString([], {
-                          month: 'short',
-                          day: 'numeric',
-                        })}
-                      </Text>
-                    </View>
-                    <Text style={[styles.bulletinTitle, { color: colors.navy }]}>{b.title}</Text>
-                    <Text style={[styles.bulletinBody, { color: colors.inkSoft }]} numberOfLines={3}>
-                      {b.body}
-                    </Text>
-
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.line }}>
-                      <Text style={[styles.bulletinAuthor, { color: colors.inkSoft, flex: 1, marginRight: 8 }]} numberOfLines={1}>
-                        Notice from {b.propertyName || 'Property Management'}
-                      </Text>
-
-                      {hasAcked ? (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: isDark ? 'rgba(5,150,105,0.2)' : '#DCFCE7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }}>
-                          <Ionicons name="checkmark-circle" size={13} color="#15803D" />
-                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#15803D' }}>
-                            {requireAck ? 'Acknowledged' : 'Marked as read'}
-                          </Text>
-                        </View>
-                      ) : (
-                        <TouchableOpacity
-                          style={{
-                            backgroundColor: requireAck ? '#C59A45' : '#059669',
-                            paddingHorizontal: 12,
-                            paddingVertical: 5,
-                            borderRadius: 20,
-                          }}
-                          onPress={() => handleAcknowledgeBulletin(b.id, requireAck)}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF' }}>
-                            {requireAck ? 'Read & Acknowledge' : 'Mark as Read'}
-                          </Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  </View>
-                );
-              })}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* 4. Hero Operations Card & Clean 3-Column Metrics Strip (Single-Text KPI Rule) */}
-        <TourTarget id="manager-overview-hero">
-        <View style={[styles.heroCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-          <Text style={[styles.heroLabel, { color: colors.inkSoft }]}>Managed Units</Text>
-          <Text style={[styles.heroAmount, { color: colors.navy }]}>{myUnits.length} Units</Text>
-        </View>
-
-        <View style={[styles.statsStripCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+        {/* Minimal 4-Column KPI Row (Simulator & Web Parity) */}
+        <TourTarget id="manager-overview-hero" style={styles.kpiRow}>
           <TouchableOpacity
-            style={styles.statColumn}
-            onPress={() => onNavigate?.('manager_repair_dispatch')}
-            activeOpacity={0.75}
+            style={styles.kpiTile}
+            onPress={() => onNavigate?.('manager_properties')}
+            activeOpacity={0.8}
           >
-            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Open Repairs</Text>
+            <Text style={styles.kpiLabel}>UNITS</Text>
+            <Text style={styles.kpiValue}>{myUnits.length}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.kpiTile}
+            onPress={() => onNavigate?.('manager_properties')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.kpiLabel}>OCCUPIED</Text>
+            <Text style={[styles.kpiValue, { color: '#10B981' }]}>{occupiedCount}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.kpiTile}
+            onPress={() => onNavigate?.('manager_repair_dispatch')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.kpiLabel}>REPAIRS</Text>
             <Text
               style={[
-                styles.statColValue,
-                { color: activeTickets.length > 0 ? '#EA580C' : '#059669' },
+                styles.kpiValue,
+                { color: activeTickets.length > 0 ? '#EA580C' : colors.navy },
               ]}
             >
               {activeTickets.length}
             </Text>
           </TouchableOpacity>
-
-          <View style={[styles.statDivider, { backgroundColor: colors.line }]} />
-
           <TouchableOpacity
-            style={styles.statColumn}
-            onPress={() => onNavigate?.('manager_properties')}
-            activeOpacity={0.75}
-          >
-            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Buildings</Text>
-            <Text style={[styles.statColValue, { color: colors.navy }]}>{myProperties.length}</Text>
-          </TouchableOpacity>
-
-          <View style={[styles.statDivider, { backgroundColor: colors.line }]} />
-
-          <TouchableOpacity
-            style={styles.statColumn}
+            style={styles.kpiTile}
             onPress={() => onNavigate?.('manager_repair_dispatch')}
-            activeOpacity={0.75}
+            activeOpacity={0.8}
           >
-            <Text style={[styles.statColLabel, { color: colors.inkSoft }]}>Support Team</Text>
-            <Text style={[styles.statColValue, { color: colors.navy }]}>{myStaff.length}</Text>
+            <Text style={styles.kpiLabel}>TEAM</Text>
+            <Text style={styles.kpiValue}>{myStaff.length}</Text>
           </TouchableOpacity>
-        </View>
-
         </TourTarget>
 
-        {/* 5. Priority Maintenance Tickets (Exact match to Web Section) */}
-        <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-          <View style={styles.sectionCardHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.sectionCardTitle, { color: colors.navy }]}>Priority Maintenance Tickets</Text>
-            </View>
+        {/* Action Center Reminders (Compact .need style) */}
+        {managerReminders.length > 0 && (
+          <View style={styles.sectionWrap}>
+            <Text style={styles.sectionTitle}>Action Center ({managerReminders.length})</Text>
+            {managerReminders.map((rem) => {
+              const isUrgent = rem.severity === 'urgent';
+              return (
+                <View
+                  key={rem.id}
+                  style={[styles.needCard, isUrgent && { borderLeftColor: '#EF4444' }]}
+                >
+                  <View style={{ flex: 1, marginRight: 10 }}>
+                    <Text style={styles.needTitle}>{rem.title}</Text>
+                    <Text style={styles.needSub} numberOfLines={2}>
+                      {rem.description}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[styles.needBtn, isUrgent && { backgroundColor: '#EF4444' }]}
+                    onPress={() => {
+                      const target =
+                        rem.actionScreen === 'manager_maintenance'
+                          ? 'manager_repair_dispatch'
+                          : rem.actionScreen;
+                      onNavigate?.(target);
+                    }}
+                  >
+                    <Text style={styles.needBtnText}>{rem.actionLabel}</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* Operations Bulletins */}
+        {managerBulletins.length > 0 && (
+          <View style={styles.sectionWrap}>
+            <Text style={styles.sectionTitle}>Bulletins ({managerBulletins.length})</Text>
+            {managerBulletins.map((b) => {
+              const isAckedByArr = (b.acknowledgedBy || []).includes(user.id);
+              const isAckedByObj = ((b as any).acknowledgments || []).some(
+                (ack: any) =>
+                  ack.tenantId === user.id ||
+                  (user.email && ack.tenantEmail?.toLowerCase() === user.email.toLowerCase())
+              );
+              const hasAcked = isAckedByArr || isAckedByObj || justAckedIds.has(b.id);
+              const requireAck = Boolean(
+                b.requireAck || b.requireAcknowledgment || (b as any).requiresAcknowledgment
+              );
+
+              return (
+                <View key={b.id} style={[styles.needCard, { borderLeftColor: '#10B981' }]}>
+                  <View style={{ flex: 1, marginRight: 10 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      {b.isPinned && <Ionicons name="pin" size={11} color="#D97706" />}
+                      <Text style={styles.needTitle} numberOfLines={1}>
+                        {b.title}
+                      </Text>
+                    </View>
+                    <Text style={styles.needSub} numberOfLines={2}>
+                      {b.body}
+                    </Text>
+                  </View>
+
+                  {hasAcked ? (
+                    <View style={styles.ackedPill}>
+                      <Ionicons name="checkmark-circle" size={12} color="#10B981" />
+                      <Text style={styles.ackedPillText}>Done</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.needBtn}
+                      onPress={() => handleAcknowledgeBulletin(b.id)}
+                    >
+                      <Text style={styles.needBtnText}>
+                        {requireAck ? 'Acknowledge' : 'Read'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* Priority Maintenance Tickets */}
+        <View style={styles.sectionWrap}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Open Repairs ({activeTickets.length})</Text>
             <TouchableOpacity
               style={styles.viewAllBtn}
               onPress={() => onNavigate?.('manager_repair_dispatch')}
-              activeOpacity={0.7}
             >
-              <Text style={styles.viewAllBtnText}>View All ({activeTickets.length})</Text>
-              <Feather name="arrow-right" size={12} color="#059669" />
+              <Text style={styles.viewAllText}>View all</Text>
+              <Feather name="arrow-right" size={12} color="#10B981" />
             </TouchableOpacity>
           </View>
 
           {activeTickets.length === 0 ? (
-            <View style={styles.emptyTicketsBox}>
-              <Ionicons name="checkmark-circle-outline" size={36} color="#10B981" />
-              <Text style={[styles.emptyTicketsTitle, { color: colors.navy }]}>All work orders are currently resolved!</Text>
-              <Text style={[styles.emptyTicketsSub, { color: colors.inkSoft }]}>
-                New resident requests will appear here automatically.
-              </Text>
+            <View style={styles.emptyCard}>
+              <Ionicons name="checkmark-circle-outline" size={28} color="#10B981" />
+              <Text style={styles.emptyText}>No open repair tickets</Text>
             </View>
           ) : (
             activeTickets.slice(0, 5).map((t) => {
               const isHigh = t.priority === 'High' || t.priority === 'Emergency';
               return (
-                <View key={t.id} style={[styles.ticketRow, { borderBottomColor: colors.line }]}>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                      <Text style={styles.ticketIdText}>#{t.id}</Text>
-                      <View style={[styles.priorityBadge, isHigh && styles.priorityBadgeHigh]}>
-                        <Text style={[styles.priorityBadgeText, isHigh && styles.priorityBadgeTextHigh]}>
-                          {t.priority}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={[styles.ticketIssueText, { color: colors.navy }]}>{t.issue}</Text>
-                    <Text style={[styles.ticketSubText, { color: colors.inkSoft }]}>
-                      Unit {t.unit} • {t.tenant || 'Resident'} • {t.category || 'General'}
+                <TouchableOpacity
+                  key={t.id}
+                  style={styles.ticketCard}
+                  onPress={() => onNavigate?.('manager_repair_dispatch')}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.ticketTopRow}>
+                    <Text style={styles.ticketIdText}>
+                      #{t.id} · Unit {t.unit}
                     </Text>
+                    <View
+                      style={[
+                        styles.priorityPill,
+                        isHigh ? styles.priorityPillHigh : styles.priorityPillNormal,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.priorityPillText,
+                          { color: isHigh ? '#DC2626' : colors.inkSoft },
+                        ]}
+                      >
+                        {t.priority}
+                      </Text>
+                    </View>
                   </View>
 
-                  <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
-                    <Text style={[styles.assignedToLabel, { color: colors.inkSoft }]}>Assigned To</Text>
-                    <Text style={[styles.assignedToText, { color: colors.navy }]} numberOfLines={1}>
-                      {t.assignedStaffName || 'Unassigned'}
-                    </Text>
+                  <Text style={styles.ticketIssueText} numberOfLines={1}>
+                    {t.issue}
+                  </Text>
+
+                  <View style={styles.ticketGrid}>
+                    <View style={styles.ticketCol}>
+                      <Text style={styles.gridLabel}>RESIDENT</Text>
+                      <Text style={styles.gridValue} numberOfLines={1}>
+                        {t.tenant || 'Resident'}
+                      </Text>
+                    </View>
+                    <View style={styles.ticketCol}>
+                      <Text style={styles.gridLabel}>ASSIGNED TO</Text>
+                      <Text style={styles.gridValue} numberOfLines={1}>
+                        {t.assignedStaffName || (t as any).assignedTo || 'Unassigned'}
+                      </Text>
+                    </View>
                   </View>
-                </View>
+                </TouchableOpacity>
               );
             })
           )}
         </View>
 
-        <View style={{ height: 40 }} />
+        <View style={{ height: 32 }} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -452,414 +420,212 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.surface,
-  },
-  scroll: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-  },
-  content: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 24,
-  },
-
-  actionCenterSection: {
-    marginBottom: 16,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  sectionHeading: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  actionCountBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  actionCountText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  reminderCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderLeftWidth: 4,
-    borderLeftColor: '#F59E0B',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
-  },
-  reminderCardTop: {
-    marginBottom: 10,
-  },
-  severityPill: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 4,
-  },
-  severityPillUrgent: {
-    backgroundColor: '#FEE2E2',
-  },
-  severityPillWarning: {
-    backgroundColor: '#FEF3C7',
-  },
-  severityPillText: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  reminderTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    marginBottom: 2,
-  },
-  reminderDesc: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    lineHeight: 16,
-  },
-  reminderActionBtn: {
-    backgroundColor: '#10B981',
-    borderRadius: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 7,
-  },
-  reminderActionBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  bulletinSection: {
-    marginBottom: 16,
-  },
-  bulletinCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderLeftWidth: 4,
-    borderLeftColor: '#059669',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 6,
-  },
-  bulletinCardTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-  bulletinBadge: {
-    backgroundColor: '#EFF6FF',
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-  },
-  bulletinBadgeText: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    color: '#2563EB',
-  },
-  pinnedBadge: {
-    backgroundColor: '#FEF3C7',
-    borderRadius: 4,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  pinnedBadgeText: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  bulletinDate: {
-    fontSize: 11,
-    color: colors.inkMuted,
-    marginLeft: 'auto',
-  },
-  bulletinTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    marginBottom: 3,
-  },
-  bulletinBody: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    lineHeight: 16,
-    marginBottom: 4,
-  },
-  bulletinAuthor: {
-    fontSize: 10.5,
-    color: colors.inkMuted,
-    fontWeight: '500',
-  },
-  // Hero Operations Card
-  heroCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.8)',
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.03,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  heroTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  heroLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: -0.1,
-  },
-  heroPillBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-  },
-  heroPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  heroAmount: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: colors.navy,
-    letterSpacing: -0.6,
-    marginBottom: 4,
-  },
-  heroSubText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: colors.inkSoft,
-  },
-  // Clean 3-Column Metrics Strip
-  statsStripCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.8)',
-    borderRadius: 18,
-    paddingVertical: 14,
-    paddingHorizontal: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  statColumn: {
-    flex: 1,
-    alignItems: 'center',
-    paddingHorizontal: 4,
-  },
-  statColLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    marginBottom: 3,
-    letterSpacing: -0.1,
-  },
-  statColValue: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: colors.navy,
-    letterSpacing: -0.3,
-    marginBottom: 2,
-  },
-  statColSub: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: colors.inkMuted,
-  },
-  statDivider: {
-    width: 1,
-    height: 32,
-    backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
-  },
-  sectionCard: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 16,
-  },
-  sectionCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionCardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  sectionCardSubtitle: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  viewAllBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 6,
-    backgroundColor: '#F0FDF4',
-  },
-  viewAllBtnText: {
-    fontSize: 11.5,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  emptyTicketsBox: {
-    paddingVertical: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyTicketsTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 8,
-    marginBottom: 2,
-  },
-  emptyTicketsSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    textAlign: 'center',
-  },
-  ticketRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  ticketIdText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#059669',
-  },
-  priorityBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 4,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-  },
-  priorityBadgeHigh: {
-    backgroundColor: '#FEE2E2',
-  },
-  priorityBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  priorityBadgeTextHigh: {
-    color: '#DC2626',
-  },
-  ticketIssueText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  ticketSubText: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  assignedToLabel: {
-    fontSize: 10,
-    color: colors.inkMuted,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  assignedToText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.navy,
-    maxWidth: 100,
-    marginTop: 2,
-  },
-  buildingRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  buildingName: {
-    fontSize: 13.5,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  buildingSub: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  buildingOccBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  buildingOccBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  orgTrialBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 14,
-  },
-  orgTrialBannerText: {
-    fontSize: 12.5,
-    fontWeight: '600',
-    color: '#92400E',
-    flex: 1,
-  },
-});
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    scroll: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    content: {
+      paddingHorizontal: 14,
+      paddingTop: 10,
+      paddingBottom: 24,
+    },
+    trialBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      backgroundColor: isDark ? 'rgba(245, 158, 11, 0.14)' : '#FFFBEB',
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(245, 158, 11, 0.3)' : '#FDE68A',
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      marginBottom: 10,
+    },
+    trialBannerText: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: isDark ? '#FDE68A' : '#B45309',
+    },
+    kpiRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 14,
+    },
+    kpiTile: {
+      flex: 1,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      paddingVertical: 9,
+      paddingHorizontal: 10,
+    },
+    kpiLabel: {
+      fontSize: 9.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.4,
+    },
+    kpiValue: {
+      fontSize: 17,
+      fontWeight: '800',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    sectionWrap: {
+      marginBottom: 14,
+    },
+    sectionHeaderRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    sectionTitle: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
+      marginBottom: 6,
+    },
+    viewAllBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    viewAllText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#10B981',
+    },
+    needCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderLeftWidth: 3.5,
+      borderLeftColor: '#F59E0B',
+      borderRadius: 10,
+      padding: 11,
+      marginBottom: 8,
+    },
+    needTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    needSub: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    needBtn: {
+      backgroundColor: '#10B981',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 7,
+    },
+    needBtnText: {
+      color: '#FFFFFF',
+      fontSize: 11,
+      fontWeight: '700',
+    },
+    ackedPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    },
+    ackedPillText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: '#10B981',
+    },
+    emptyCard: {
+      paddingVertical: 30,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+      gap: 6,
+    },
+    emptyText: {
+      fontSize: 12.5,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    ticketCard: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 12,
+      padding: 12,
+      marginBottom: 8,
+    },
+    ticketTopRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    ticketIdText: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: '#10B981',
+    },
+    priorityPill: {
+      paddingHorizontal: 7,
+      paddingVertical: 2,
+      borderRadius: 999,
+    },
+    priorityPillHigh: {
+      backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    },
+    priorityPillNormal: {
+      backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+    },
+    priorityPillText: {
+      fontSize: 10,
+      fontWeight: '700',
+    },
+    ticketIssueText: {
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 4,
+    },
+    ticketGrid: {
+      flexDirection: 'row',
+      marginTop: 8,
+      paddingTop: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      gap: 10,
+    },
+    ticketCol: {
+      flex: 1,
+    },
+    gridLabel: {
+      fontSize: 9.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.3,
+    },
+    gridValue: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.navy,
+      marginTop: 2,
+    },
+  });

@@ -48,6 +48,17 @@ const MobileTourContext = createContext<MobileTourContextType | null>(null);
 
 const STORAGE_PREFIX = 'propithub_mobile_tour_completed_';
 
+const areRectsEqual = (r1: TourTargetRect | null, r2: TourTargetRect | null): boolean => {
+  if (!r1 && !r2) return true;
+  if (!r1 || !r2) return false;
+  return (
+    Math.abs(r1.top - r2.top) < 1 &&
+    Math.abs(r1.left - r2.left) < 1 &&
+    Math.abs(r1.width - r2.width) < 1 &&
+    Math.abs(r1.height - r2.height) < 1
+  );
+};
+
 export const MobileTourProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, role, isAuthenticated, isLoading, updateUserProfile } = useMobileAuth();
   const [isActive, setIsActive] = useState<boolean>(false);
@@ -65,9 +76,27 @@ export const MobileTourProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const steps = useMemo(() => MOBILE_TOUR_STEPS[role] || [], [role]);
   const currentStep = steps[currentStepIndex] || null;
 
+  const tourActiveStateRef = useRef({ isActive, isMinimized, currentStep });
+  useEffect(() => {
+    tourActiveStateRef.current = { isActive, isMinimized, currentStep };
+  }, [isActive, isMinimized, currentStep]);
+
+  const isMeasuringRef = useRef<boolean>(false);
+  const measureTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const targetDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const clearRetryTimers = useCallback(() => {
     retryTimersRef.current.forEach((t) => clearTimeout(t));
     retryTimersRef.current = [];
+    if (targetDebounceTimerRef.current) {
+      clearTimeout(targetDebounceTimerRef.current);
+      targetDebounceTimerRef.current = null;
+    }
+    if (measureTimeoutRef.current) {
+      clearTimeout(measureTimeoutRef.current);
+      measureTimeoutRef.current = null;
+    }
+    isMeasuringRef.current = false;
   }, []);
 
   const registerOverlayRoot = useCallback((ref: React.RefObject<View>) => {
@@ -83,7 +112,24 @@ export const MobileTourProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return;
       }
 
+      // If a native bridge measurement is already in flight, drop concurrent spam
+      if (isMeasuringRef.current) {
+        return;
+      }
+
+      isMeasuringRef.current = true;
+      if (measureTimeoutRef.current) clearTimeout(measureTimeoutRef.current);
+      measureTimeoutRef.current = setTimeout(() => {
+        isMeasuringRef.current = false;
+      }, 500);
+
       const finalize = (left: number, top: number, width: number, height: number) => {
+        isMeasuringRef.current = false;
+        if (measureTimeoutRef.current) {
+          clearTimeout(measureTimeoutRef.current);
+          measureTimeoutRef.current = null;
+        }
+
         if (
           typeof left === 'number' &&
           typeof top === 'number' &&
@@ -140,9 +186,9 @@ export const MobileTourProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           return;
         }
 
-        onMeasured(null);
+        finalize(NaN, NaN, 0, 0);
       } catch {
-        onMeasured(null);
+        finalize(NaN, NaN, 0, 0);
       }
     },
     []
@@ -157,20 +203,16 @@ export const MobileTourProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const primaryRef = targetRefsMap.current.get(currentStep.targetId);
     measureRef(primaryRef, (primaryRect) => {
       if (primaryRect) {
-        setTargetRect(primaryRect);
+        setTargetRect((prev) => (areRectsEqual(prev, primaryRect) ? prev : primaryRect));
         return;
       }
       if (currentStep.fallbackTargetId) {
         const fallbackRef = targetRefsMap.current.get(currentStep.fallbackTargetId);
         measureRef(fallbackRef, (fallbackRect) => {
-          if (fallbackRect) {
-            setTargetRect(fallbackRect);
-          } else {
-            setTargetRect(null);
-          }
+          setTargetRect((prev) => (areRectsEqual(prev, fallbackRect) ? prev : fallbackRect));
         });
       } else {
-        setTargetRect(null);
+        setTargetRect((prev) => (prev === null ? prev : null));
       }
     });
   }, [isActive, isMinimized, currentStep, measureRef]);
@@ -178,8 +220,7 @@ export const MobileTourProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Schedule multi-pass measurements after step/screen transitions
   const scheduleMeasurements = useCallback(() => {
     clearRetryTimers();
-    refreshTargetRect();
-    const delays = [60, 160, 320, 550, 850];
+    const delays = [120, 360, 750];
     delays.forEach((ms) => {
       const timer = setTimeout(() => {
         refreshTargetRect();
@@ -191,16 +232,23 @@ export const MobileTourProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const registerTarget = useCallback(
     (id: string, ref: React.RefObject<View>) => {
       targetRefsMap.current.set(id, ref);
+      const state = tourActiveStateRef.current;
       if (
-        isActive &&
-        !isMinimized &&
-        currentStep &&
-        (currentStep.targetId === id || currentStep.fallbackTargetId === id)
+        state.isActive &&
+        !state.isMinimized &&
+        state.currentStep &&
+        (state.currentStep.targetId === id || state.currentStep.fallbackTargetId === id)
       ) {
-        setTimeout(() => refreshTargetRect(), 40);
+        if (targetDebounceTimerRef.current) {
+          clearTimeout(targetDebounceTimerRef.current);
+        }
+        targetDebounceTimerRef.current = setTimeout(() => {
+          targetDebounceTimerRef.current = null;
+          refreshTargetRect();
+        }, 100);
       }
     },
-    [isActive, isMinimized, currentStep, refreshTargetRect]
+    [refreshTargetRect]
   );
 
   const unregisterTarget = useCallback((id: string) => {
@@ -434,14 +482,16 @@ export const TourTarget: React.FC<{
 }> = ({ id, style, children }) => {
   const viewRef = useRef<View>(null);
   const context = useContext(MobileTourContext);
+  const registerTarget = context?.registerTarget;
+  const unregisterTarget = context?.unregisterTarget;
 
   useEffect(() => {
-    if (!context) return;
-    context.registerTarget(id, viewRef);
+    if (!registerTarget) return;
+    registerTarget(id, viewRef);
     return () => {
-      context.unregisterTarget(id);
+      unregisterTarget?.(id);
     };
-  }, [id, context]);
+  }, [id, registerTarget, unregisterTarget]);
 
   return (
     <View

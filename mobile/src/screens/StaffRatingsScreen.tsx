@@ -5,61 +5,142 @@ import {
   StyleSheet,
   ScrollView,
   SafeAreaView,
-  StatusBar,
+  TouchableOpacity,
 } from 'react-native';
-import { Ionicons, Feather } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
-
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 
-export const StaffRatingsScreen: React.FC = () => {
+interface StaffRatingsScreenProps {
+  onProfilePress?: () => void;
+  onNotificationsPress?: () => void;
+}
+
+export const StaffRatingsScreen: React.FC<StaffRatingsScreenProps> = ({
+  onProfilePress,
+  onNotificationsPress,
+}) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const { state } = useMobileAppData();
   const { user } = useMobileAuth();
 
-  const currentStaff =
-    state.staff.find((s) => s.id === user.id) ||
-    state.staff.find((s) => s.email?.toLowerCase() === user.email?.toLowerCase()) ||
-    state.staff.find((s) => s.name.toLowerCase() === user.displayName?.toLowerCase());
-
-  // Filter resolved tickets assigned to this staff member
-  const resolvedTickets = state.tickets.filter(
-    (t) =>
-      t.status === 'resolved' &&
-      (t.assignedStaffId === user.id ||
-        (user.displayName && t.assignedStaffName?.toLowerCase().includes(user.displayName.toLowerCase())))
+  const currentStaff = useMemo(
+    () =>
+      state.staff.find((s) => s.id === user.id) ||
+      (user.email
+        ? state.staff.find((s) => s.email?.toLowerCase() === user.email?.toLowerCase())
+        : undefined) ||
+      (user.displayName
+        ? state.staff.find((s) => s.name.toLowerCase() === user.displayName?.toLowerCase())
+        : undefined),
+    [state.staff, user]
   );
 
-  const ratedTickets = resolvedTickets.filter((t) => t.rating && t.rating > 0);
-  const averageScore =
-    ratedTickets.length > 0
-      ? (ratedTickets.reduce((acc, t) => acc + (t.rating || 5), 0) / ratedTickets.length).toFixed(1)
-      : currentStaff?.rating
-      ? currentStaff.rating.toFixed(1)
-      : '5.0';
-  const numericAvg = parseFloat(averageScore) || 5.0;
+  // Filter resolved tickets assigned to this staff member
+  const resolvedTickets = useMemo(
+    () =>
+      state.tickets.filter(
+        (t) =>
+          t.status === 'resolved' &&
+          (t.assignedStaffId === user.id ||
+            (currentStaff?.id && t.assignedStaffId === currentStaff.id) ||
+            (user.displayName &&
+              t.assignedStaffName?.toLowerCase().includes(user.displayName.toLowerCase())))
+      ),
+    [state.tickets, user, currentStaff?.id]
+  );
+
+  const ratedTickets = useMemo(
+    () => resolvedTickets.filter((t) => t.rating && t.rating > 0),
+    [resolvedTickets]
+  );
+
+  const averageScore = useMemo(() => {
+    if (ratedTickets.length > 0) {
+      return (
+        ratedTickets.reduce((acc, t) => acc + (t.rating || 5), 0) / ratedTickets.length
+      ).toFixed(1);
+    }
+    if (currentStaff?.rating) {
+      return currentStaff.rating.toFixed(1);
+    }
+    return resolvedTickets.length > 0 ? '5.0' : '—';
+  }, [ratedTickets, currentStaff, resolvedTickets.length]);
+
+  const unreadNotificationsCount = useMemo(
+    () => (state.notifications || []).filter((n) => !n.read).length,
+    [state.notifications]
+  );
+
+  const initials = useMemo(() => {
+    if (user.displayName) {
+      return user.displayName
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase();
+    }
+    return user.email ? user.email.slice(0, 2).toUpperCase() : 'ST';
+  }, [user.displayName, user.email]);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* StatusBar managed globally */}
       <ScreenStatusBar />
 
-      {/* Screen Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <View style={styles.logoBadge}>
-            <Feather name="home" size={18} color="#FFFFFF" />
+      {/* Minimal Top App Bar (.topbar) */}
+      <View style={[styles.topbar, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
+        <View style={styles.topbarLeft}>
+          <View
+            style={[
+              styles.brandMark,
+              isDark && {
+                backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                borderColor: 'rgba(16, 185, 129, 0.3)',
+              },
+            ]}
+          >
+            <PropithubIcon size={18} />
           </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.navy }]}>Ratings</Text>
-          </View>
+          <Text style={[styles.topbarTitle, { color: colors.navy }]}>Ratings</Text>
         </View>
-        <View style={styles.staffBadge}>
-          <Text style={styles.staffBadgeText}>ACTIVE STAFF</Text>
+
+        <View style={styles.topbarRight}>
+          <TouchableOpacity
+            style={[styles.iconBtn, { borderColor: colors.line, backgroundColor: colors.surface }]}
+            onPress={onNotificationsPress || onProfilePress}
+            activeOpacity={0.75}
+          >
+            <Feather name="bell" size={18} color={colors.navy} />
+            {unreadNotificationsCount > 0 && (
+              <View style={styles.bellBadge}>
+                <Text style={styles.bellBadgeText}>
+                  {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.avatarBtn,
+              {
+                backgroundColor: isDark ? '#0F2920' : '#E6F4EE',
+                borderColor: isDark ? '#065F46' : '#A7F3D0',
+              },
+            ]}
+            onPress={onProfilePress}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.avatarBtnText, { color: isDark ? '#34D399' : '#059669' }]}>
+              {initials}
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -68,100 +149,71 @@ export const StaffRatingsScreen: React.FC = () => {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Metric & Rating Hero Card */}
+        {/* 2-Column KPI Row (.stats2 from Propithub Role Simulator.html) */}
         <TourTarget id="staff-ratings-hero">
-        <View style={[styles.heroCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-          <Text style={[styles.scoreText, { color: colors.navy }]}>{averageScore}</Text>
-          <View style={styles.starsRow}>
-            {[1, 2, 3, 4, 5].map((star) => (
-              <Ionicons
-                key={star}
-                name={star <= Math.round(numericAvg) ? 'star' : 'star-outline'}
-                size={22}
-                color="#F59E0B"
-                style={{ marginHorizontal: 2 }}
-              />
-            ))}
-          </View>
+          <View style={styles.stats2Row}>
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+              <Text style={[styles.statLabel, { color: colors.inkSoft }]}>Average</Text>
+              <Text style={[styles.statBigValue, { color: colors.navy }]}>
+                {averageScore === '—' ? '—' : `${averageScore} / 5`}
+              </Text>
+            </View>
 
-          <Text style={[styles.reviewSub, { color: colors.inkSoft }]}>
-            Based on <Text style={{ fontWeight: '700' }}>{ratedTickets.length}</Text> verified resident reviews (
-            {resolvedTickets.length} completed work orders)
-          </Text>
-
-          {/* Dynamic Badges Row */}
-          <View style={styles.badgesRow}>
-            {numericAvg >= 4.5 && (
-              <View style={styles.topRatedBadge}>
-                <Ionicons name="checkmark" size={13} color="#047857" style={{ marginRight: 4 }} />
-                <Text style={styles.topRatedBadgeText}>Top Rated Technician</Text>
-              </View>
-            )}
-            {ratedTickets.length > 0 && (
-              <View style={styles.residentApprovedBadge}>
-                <Ionicons name="star" size={12} color="#92400E" style={{ marginRight: 4 }} />
-                <Text style={styles.residentApprovedBadgeText}>Resident Approved</Text>
-              </View>
-            )}
-            <View style={[styles.certifiedBadge, { backgroundColor: isDark ? colors.card : '#F1F5F9', borderColor: colors.line }]}>
-              <Ionicons name="shield-checkmark" size={12} color={colors.inkSoft} style={{ marginRight: 4 }} />
-              <Text style={[styles.certifiedBadgeText, { color: colors.inkSoft }]}>Owner Certified Staff</Text>
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+              <Text style={[styles.statLabel, { color: colors.inkSoft }]}>Ratings</Text>
+              <Text style={[styles.statBigValue, { color: colors.navy }]}>
+                {resolvedTickets.length}
+              </Text>
             </View>
           </View>
-        </View>
-
         </TourTarget>
 
-        {/* Section: Completed Jobs & Feedback */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={[styles.sectionHeading, { color: colors.navy }]} numberOfLines={1}>
-            Completed Jobs ({resolvedTickets.length})
-          </Text>
-        </View>
-
+        {/* Minimal Rating List Cards (.tblw tr style from Propithub Role Simulator.html) */}
         {resolvedTickets.length === 0 ? (
-          <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Ionicons name="chatbubble-ellipses-outline" size={44} color={colors.inkSoft} />
-            <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Completed Jobs Yet</Text>
+          <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
             <Text style={[styles.emptyText, { color: colors.inkSoft }]}>
-              Resolved repair tickets will appear here alongside verified tenant feedback and ratings.
+              No ratings yet.
             </Text>
           </View>
         ) : (
           resolvedTickets.map((t) => {
-            const ticketRating = t.rating || 5;
+            const starsCount = Math.min(5, Math.max(1, Math.round(t.rating || 5)));
+            const starsStr = '★'.repeat(starsCount) + '☆'.repeat(5 - starsCount);
 
             return (
-              <View key={t.id} style={[styles.feedbackCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <View style={styles.feedbackHeaderRow}>
-                  <View style={{ flex: 1, marginRight: 8 }}>
-                    <View style={styles.feedbackTenantRow}>
-                      <Text style={[styles.tenantNameText, { color: colors.navy }]}>{t.tenant || 'Resident'}</Text>
-                      <View style={[styles.unitBadge, { backgroundColor: isDark ? colors.card : '#F1F5F9' }]}>
-                        <Text style={[styles.unitBadgeText, { color: colors.inkSoft }]}>Unit {t.unit}</Text>
-                      </View>
-                    </View>
-                    <Text style={[styles.ticketRefText, { color: colors.inkSoft }]}>Ticket #{t.id}</Text>
+              <View
+                key={t.id}
+                style={[styles.ratingCard, { backgroundColor: colors.surface, borderColor: colors.line }]}
+              >
+                {/* Header Row: Ticket + Unit on left, Stars on right */}
+                <View style={[styles.ratingCardHeader, { borderBottomColor: colors.line }]}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={[styles.ticketIdText, { color: colors.navy }]}>
+                      #{t.id} · Unit {t.unit}
+                    </Text>
+                    <Text style={[styles.ticketIssueSub, { color: colors.inkSoft }]} numberOfLines={1}>
+                      {t.issue}
+                    </Text>
                   </View>
 
-                  <View style={styles.ticketStarsRow}>
-                    {[1, 2, 3, 4, 5].map((s) => (
-                      <Ionicons
-                        key={s}
-                        name={s <= ticketRating ? 'star' : 'star-outline'}
-                        size={14}
-                        color="#F59E0B"
-                        style={{ marginLeft: 1 }}
-                      />
-                    ))}
-                  </View>
+                  <Text style={styles.starsText}>{starsStr}</Text>
                 </View>
 
-                {/* Resolution Notes / Feedback Bubble */}
-                <View style={[styles.notesBox, { backgroundColor: isDark ? colors.card : '#F8FAFC', borderColor: colors.line }]}>
-                  <Text style={[styles.notesText, { color: colors.navy }]}>
-                    {t.residentFeedback || t.completionNotes || `Work completed: ${t.issue}`}
-                  </Text>
+                {/* 2-Column Grid Cells (RATED BY | COMMENT) */}
+                <View style={styles.gridRow}>
+                  <View style={styles.gridCell}>
+                    <Text style={[styles.cellLabel, { color: colors.inkSoft }]}>RATED BY</Text>
+                    <Text style={[styles.cellValue, { color: colors.navy }]}>
+                      {t.tenant || 'Resident'}
+                    </Text>
+                  </View>
+
+                  <View style={[styles.gridCell, { flex: 1.4 }]}>
+                    <Text style={[styles.cellLabel, { color: colors.inkSoft }]}>COMMENT</Text>
+                    <Text style={[styles.cellValueSoft, { color: colors.inkSoft }]}>
+                      {t.residentFeedback || t.completionNotes || 'Completed'}
+                    </Text>
+                  </View>
                 </View>
               </View>
             );
@@ -174,243 +226,166 @@ export const StaffRatingsScreen: React.FC = () => {
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  statusBarRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 6,
-    backgroundColor: colors.surface,
-  },
-  statusTime: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  statusIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  logoBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  headerSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  staffBadge: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-  },
-  staffBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#1D4ED8',
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  heroCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 24,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 20,
-  },
-  scoreText: {
-    fontSize: 48,
-    fontWeight: '800',
-    color: colors.navy,
-    letterSpacing: -1,
-  },
-  starsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 8,
-  },
-  reviewSub: {
-    fontSize: 13,
-    color: colors.inkSoft,
-    textAlign: 'center',
-    marginTop: 2,
-  },
-  badgesRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    justifyContent: 'center',
-    marginTop: 16,
-  },
-  topRatedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 16,
-  },
-  topRatedBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#047857',
-  },
-  residentApprovedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 16,
-  },
-  residentApprovedBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  certifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 16,
-  },
-  certifiedBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  sectionHeaderRow: {
-    marginBottom: 12,
-  },
-  sectionHeading: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  emptyContainer: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginTop: 8,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.navy,
-    marginTop: 12,
-  },
-  emptyText: {
-    fontSize: 13,
-    color: colors.inkSoft,
-    textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 18,
-  },
-  feedbackCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 12,
-  },
-  feedbackHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 10,
-  },
-  feedbackTenantRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  tenantNameText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  unitBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  unitBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  ticketRefText: {
-    fontSize: 11,
-    color: colors.inkMuted,
-    marginTop: 2,
-  },
-  ticketStarsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  notesBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  notesText: {
-    fontSize: 13,
-    color: colors.navy,
-    lineHeight: 19,
-  },
-});
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    topbar: {
+      height: 56,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      borderBottomWidth: 1,
+    },
+    topbarLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+    },
+    brandMark: {
+      width: 32,
+      height: 32,
+      borderRadius: 10,
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: 'rgba(16, 185, 129, 0.2)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    topbarTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    topbarRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    iconBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 10,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    bellBadge: {
+      position: 'absolute',
+      top: -3,
+      right: -3,
+      minWidth: 16,
+      height: 16,
+      borderRadius: 8,
+      backgroundColor: '#EF4444',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 3,
+    },
+    bellBadgeText: {
+      color: '#FFFFFF',
+      fontSize: 9.5,
+      fontWeight: '700',
+    },
+    avatarBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    avatarBtnText: {
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    scroll: {
+      flex: 1,
+    },
+    content: {
+      paddingHorizontal: 16,
+      paddingTop: 16,
+      paddingBottom: 36,
+      gap: 12,
+    },
+    stats2Row: {
+      flexDirection: 'row',
+      gap: 10,
+    },
+    statCard: {
+      flex: 1,
+      borderRadius: 14,
+      borderWidth: 1,
+      padding: 14,
+    },
+    statLabel: {
+      fontSize: 12.5,
+      fontWeight: '600',
+    },
+    statBigValue: {
+      fontSize: 22,
+      fontWeight: '800',
+      letterSpacing: -0.5,
+      marginTop: 4,
+    },
+    emptyCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      padding: 28,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyText: {
+      fontSize: 13.5,
+      textAlign: 'center',
+    },
+    ratingCard: {
+      borderRadius: 14,
+      borderWidth: 1,
+      padding: 15,
+      gap: 12,
+    },
+    ratingCardHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      paddingBottom: 10,
+      borderBottomWidth: 1,
+    },
+    ticketIdText: {
+      fontSize: 15,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    ticketIssueSub: {
+      fontSize: 12.5,
+      marginTop: 2,
+    },
+    starsText: {
+      fontSize: 15,
+      color: '#D97706',
+      letterSpacing: 1,
+    },
+    gridRow: {
+      flexDirection: 'row',
+      gap: 12,
+    },
+    gridCell: {
+      flex: 1,
+      gap: 2,
+    },
+    cellLabel: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      letterSpacing: 0.4,
+    },
+    cellValue: {
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    cellValueSoft: {
+      fontSize: 13.5,
+      lineHeight: 19,
+    },
+  });

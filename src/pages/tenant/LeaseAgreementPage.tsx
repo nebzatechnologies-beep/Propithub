@@ -29,11 +29,13 @@ import {
   HandCoins,
 } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
-import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
+import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
+import { useCurrency } from '../../context/CurrencyContext';
 
 export const LeaseAgreementPage: React.FC = () => {
   const { state, updateState, uploadSignedAgreement, saveMoveout, showToast, requestLeaseRenewal, respondToLeaseRenewal, submitTenantSignedRenewal, confirmCashClaim, rejectCashClaim, updateAgreementAutopay } = useAppData();
   const { user } = useAuth();
+  const { viewCurrency, convert, format } = useCurrency();
   const navigate = useNavigate();
   const tenantName = user?.displayName || 'Resident';
 
@@ -196,7 +198,7 @@ export const LeaseAgreementPage: React.FC = () => {
     ]));
     fallbackUnits.forEach((u) => {
       const cleanU = (u || '').replace(/^(unit|apt|#)\s*/i, '').trim().toLowerCase();
-      const existing = list.some((t) => 
+      const existing = list.some((t) =>
         (!tenantRecord?.propertyId || !t.propertyId || t.propertyId === tenantRecord.propertyId) &&
         (t.unit || '').replace(/^(unit|apt|#)\s*/i, '').trim().toLowerCase() === cleanU
       );
@@ -317,6 +319,18 @@ export const LeaseAgreementPage: React.FC = () => {
       tenantRecord?.currency
     ) || DEFAULT_CURRENCY_SYMBOL;
 
+  const formatWithConversion = (amount: number, fromCurrency?: string) => {
+    const baseCode = normalizeCurrencyCode(fromCurrency || myAgreement?.currency || currentUnit?.currency || tenantRecord?.currency || 'INR');
+    const baseSymbol = getCurrencySymbol(baseCode);
+    const baseFormatted = `${baseSymbol}${amount.toLocaleString('en-IN')}`;
+    const isLocal = !viewCurrency || viewCurrency === 'LOCAL' || viewCurrency === 'DEFAULT' || normalizeCurrencyCode(viewCurrency) === baseCode;
+    if (isLocal) {
+      return baseFormatted;
+    }
+    const converted = Math.round(convert(amount, baseCode, viewCurrency));
+    return `${getCurrencySymbol(viewCurrency)}${converted.toLocaleString()}`;
+  };
+
   // Strict tenant-scoped renewal resolution: must match unit AND belong to THIS resident
   const normalizeUnit = (u?: string) => (u || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
 
@@ -425,12 +439,14 @@ export const LeaseAgreementPage: React.FC = () => {
     ? state.invoices.find((i) => i.id === effectiveAgreement.depositInvoiceId)
     : state.invoices.find((i) => i.leaseAgreementId === effectiveAgreement?.id && i.invoiceType === 'deposit');
   const isDepositSettled = effectiveAgreement?.depositStatus === 'paid' || matchingDepInv?.status === 'paid';
+  const isOwnerApproved = Boolean(effectiveAgreement?.approvedAt || effectiveAgreement?.approvedBy);
   const isPendingApproval =
-    effectiveAgreement?.status === 'pending_approval' ||
-    (effectiveAgreement as any)?.status === 'awaiting_owner_signature' ||
-    Boolean(effectiveAgreement?.signedDocumentUrl && (effectiveAgreement?.status === 'awaiting_tenant_upload' || effectiveAgreement?.status === 'awaiting_tenant_signature'));
+    !isOwnerApproved &&
+    (effectiveAgreement?.status === 'pending_approval' ||
+      (effectiveAgreement as any)?.status === 'awaiting_owner_signature' ||
+      Boolean(effectiveAgreement?.signedDocumentUrl && (effectiveAgreement?.status === 'awaiting_tenant_upload' || effectiveAgreement?.status === 'awaiting_tenant_signature')));
   const isPendingDeposit = !isDepositSettled && (effectiveAgreement?.status === 'pending_deposit' || (effectiveAgreement as any)?.status === 'signed');
-  const isActiveLease = effectiveAgreement?.status === 'active' && !isPendingApproval && !isPendingDeposit && !isTerminatedLease && !isMoveOutCompleted;
+  const isActiveLease = (effectiveAgreement?.status === 'active' || (isOwnerApproved && isDepositSettled)) && !isPendingApproval && !isPendingDeposit && !isTerminatedLease && !isMoveOutCompleted;
   const isAwaitingUpload =
     !isPendingApproval &&
     !isActiveLease &&
@@ -824,43 +840,89 @@ export const LeaseAgreementPage: React.FC = () => {
     <div>
       {/* Tenancy Execution Lifecycle Status Banners */}
       {pendingInvitation ? (
-        <div style={{ background: 'var(--surface)', border: '2px solid var(--amber)', borderRadius: 'var(--radius)', padding: '16px 20px', marginBottom: '18px', boxShadow: 'var(--shadow-sm)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--amber)', fontWeight: 700, fontSize: '15px' }}>
-                <Clock size={18} /> Tenancy Invitation Awaiting Your Response
-              </div>
-              <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px', lineHeight: 1.5, maxWidth: '100%' }}>
-                Your landlord <b style={{ color: 'var(--ink)' }}>{pendingInvitation.ownerName}</b> has invited you to lease <b style={{ color: 'var(--ink)' }}>Unit {pendingInvitation.unitNumber}</b> ({pendingInvitation.propertyName}).
-                Please review and accept this tenancy invitation on your Dashboard first before proceeding to physical ink signing and security deposit settlement.
-              </p>
-            </div>
-            <Link to="/tenant/dashboard" className="btn brass small" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              Review Invitation on Dashboard &rarr;
-            </Link>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '10px', padding: '14px 18px', marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
+            <span style={{ fontSize: '13.5px', color: 'var(--ink)' }}>
+              <b>Lease offer:</b> Unit {pendingInvitation.unitNumber} · {pendingInvitation.propertyName} (from {pendingInvitation.ownerName})
+            </span>
           </div>
+          <Link to="/tenant/dashboard" className="btn brass small" style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}>
+            Review offer
+          </Link>
         </div>
       ) : !effectiveAgreement ? (
-        <div style={{ background: '#F8F9FA', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px 18px', marginBottom: '18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <FileText size={20} color="var(--ink-soft)" />
-          <div>
-            <b style={{ color: 'var(--ink)' }}>No Lease Agreement Pending</b>
-            <p style={{ fontSize: '12.5px', color: 'var(--ink-soft)', margin: 0 }}>
-              Your landlord will draft and dispatch your tenancy agreement here. Once dispatched, you will download and physically sign it.
-            </p>
-          </div>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '10px', padding: '14px 18px', marginBottom: '18px', fontSize: '13.5px', color: 'var(--ink-soft)' }}>
+          No active lease agreement yet.
         </div>
       ) : isPendingApproval ? (
-        <div style={{ background: 'var(--surface)', border: '2px solid var(--amber)', borderRadius: 'var(--radius)', padding: '16px 20px', marginBottom: '18px', boxShadow: 'var(--shadow-sm)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '10px', padding: '14px 18px', marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#D97706', display: 'inline-block' }} />
+            <span style={{ fontSize: '13.5px', color: 'var(--ink)' }}>
+              <b>Waiting on landlord approval:</b> Unit {(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')} signed copy uploaded.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="btn secondary small"
+            onClick={() => {
+              setSelectedAgreement(myAgreement);
+              setIsViewAgOpen(true);
+            }}
+            style={{ borderRadius: '8px', fontSize: '12.5px' }}
+          >
+            View copy
+          </button>
+        </div>
+      ) : isAwaitingUpload ? (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '10px', padding: '16px 20px', marginBottom: '18px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--amber)', fontWeight: 700, fontSize: '15px' }}>
-                <Clock size={18} /> Step 2: Awaiting Landlord Approval
-              </div>
-              <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px', lineHeight: 1.5, maxWidth: '100%' }}>
-                Your ink-signed lease agreement for <b style={{ color: 'var(--ink)' }}>Unit {(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')}{resolvedPropertyName ? ` • ${resolvedPropertyName}` : ''}</b> was received. Your landlord is currently reviewing the document. Once approved, your security deposit invoice will be unlocked for payment.
-              </p>
+              {myAgreement?.rejectionReason ? (
+                <>
+                  <div style={{ fontWeight: 700, fontSize: '14px', color: '#DC2626', marginBottom: '4px' }}>
+                    Signed document rejected: {myAgreement.rejectionReason}
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#D97706', display: 'inline-block' }} />
+                  <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--ink)' }}>
+                    Sign and upload lease for Unit {(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')}
+                  </span>
+                </div>
+              )}
             </div>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={handleDownloadDraft}
+                style={{ borderRadius: '8px', fontSize: '12.5px' }}
+              >
+                Download PDF
+              </button>
+              <button
+                type="button"
+                className="btn brass small"
+                onClick={() => setIsUploadSignedOpen(true)}
+                style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}
+              >
+                {myAgreement?.rejectionReason ? 'Re-upload ' : 'Upload '}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : isPendingDeposit ? (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '10px', padding: '14px 18px', marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
+            <span style={{ fontSize: '13.5px', color: 'var(--ink)' }}>
+              <b>Security deposit due:</b> {formatWithConversion(myAgreement.deposit || tenantRecord?.deposit || 0, myAgreement.currency || agreementCurrency)} for Unit {(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <button
               type="button"
               className="btn secondary small"
@@ -868,110 +930,26 @@ export const LeaseAgreementPage: React.FC = () => {
                 setSelectedAgreement(myAgreement);
                 setIsViewAgOpen(true);
               }}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              style={{ borderRadius: '8px', fontSize: '12.5px' }}
             >
-              <Eye size={13} /> View Uploaded Signed Copy
+              View lease
+            </button>
+            <button
+              type="button"
+              className="btn brass small"
+              onClick={() => navigate('/tenant/payments?tab=deposit')}
+              style={{ borderRadius: '8px', fontSize: '12.5px', fontWeight: 600 }}
+            >
+              Pay deposit
             </button>
           </div>
         </div>
-      ) : isAwaitingUpload ? (
-        <div style={{ background: 'var(--surface)', border: myAgreement?.rejectionReason ? '2px solid #DC2626' : '2px solid var(--amber)', borderRadius: 'var(--radius)', padding: '16px 20px', marginBottom: '18px', boxShadow: 'var(--shadow-sm)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap' }}>
-            <div style={{ width: '100%' }}>
-              {myAgreement?.rejectionReason ? (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#DC2626', fontWeight: 700, fontSize: '15px' }}>
-                    <AlertTriangle size={18} /> Signed Document Rejected by Landlord
-                  </div>
-                  <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', padding: '10px 14px', margin: '10px 0', fontSize: '13px', color: '#991B1B' }}>
-                    <b>Feedback / Reason:</b> {myAgreement.rejectionReason}
-                  </div>
-                  <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px', lineHeight: 1.5 }}>
-                    Please review the feedback above, re-sign or rectify the document, and upload your corrected signed copy below to resubmit for landlord approval.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--amber)', fontWeight: 700, fontSize: '15px' }}>
-                    <Clock size={18} /> Step 1: Physical Signature Required
-                  </div>
-                  <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px', lineHeight: 1.5, maxWidth: '100%' }}>
-                    Your landlord has prepared your tenancy agreement for <b style={{ color: 'var(--ink)' }}>Unit {(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')}{resolvedPropertyName ? ` • ${resolvedPropertyName}` : ''}</b>.
-                    Download the official agreement PDF, sign physically in ink offline, and upload the scanned document to trigger your security deposit invoice.
-                  </p>
-                </>
-              )}
-              <div style={{ display: 'flex', gap: '10px', marginTop: '14px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className="btn secondary btn-mobile-full"
-                  onClick={handleDownloadDraft}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <Download size={15} /> 1. Download Formal Agreement (PDF)
-                </button>
-                <button
-                  type="button"
-                  className="btn brass btn-mobile-full"
-                  onClick={() => setIsUploadSignedOpen(true)}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <Upload size={15} /> {myAgreement?.rejectionReason ? '2. Re-upload Corrected Signed Copy' : '2. Upload Signed Copy'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : isPendingDeposit ? (
-        <div style={{ background: 'var(--surface)', border: '2px solid var(--teal-primary)', borderRadius: 'var(--radius)', padding: '16px 20px', marginBottom: '18px', boxShadow: 'var(--shadow-sm)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--teal-primary)', fontWeight: 700, fontSize: '15px' }}>
-                <CreditCard size={18} /> Step 3: Agreement Approved! Settle Move-in Security Deposit
-              </div>
-              <p style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px' }}>
-                Landlord approved your signed lease for <b style={{ color: 'var(--ink)' }}>Unit {(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')}{resolvedPropertyName ? ` • ${resolvedPropertyName}` : ''}</b>! Please settle your refundable security deposit of <b style={{ color: 'var(--ink)' }}>{getCurrencySymbol(myAgreement.currency || agreementCurrency)}{(myAgreement.deposit || tenantRecord?.deposit || 0).toLocaleString('en-IN')}</b> (Invoice #{myAgreement.depositInvoiceId || 'DEP'}) to complete lease activation.
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="btn secondary small btn-mobile-full"
-                onClick={() => {
-                  setSelectedAgreement(myAgreement);
-                  setIsViewAgOpen(true);
-                }}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-              >
-                <Eye size={13} /> View Signed Copy
-              </button>
-              <button
-                type="button"
-                className="btn secondary btn-mobile-full"
-                onClick={() => navigate('/tenant/payments?tab=deposit')}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-              >
-                <HandCoins size={15} /> Settle Offline / Cash Handover
-              </button>
-              <button
-                type="button"
-                className="btn brass btn-mobile-full"
-                onClick={() => navigate('/tenant/payments?tab=deposit')}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-              >
-                <CreditCard size={15} /> Pay Security Deposit →
-              </button>
-            </div>
-          </div>
-        </div>
       ) : myAgreement && isActiveLease ? (
-        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px 18px', marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', boxShadow: 'var(--shadow-sm)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--teal-light)', color: 'var(--teal-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <CheckCircle2 size={16} />
-            </div>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '10px', padding: '14px 18px', marginBottom: '18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
             <span style={{ fontSize: '13.5px', color: 'var(--ink)' }}>
-              <b>Lease Agreement Active & Fully Executed.</b> Unit <b>{(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')}{resolvedPropertyName ? ` • ${resolvedPropertyName}` : ''}</b> is officially registered.
+              <b>Active lease:</b> Unit {(activeUnit || myAgreement.unit || '').replace(/^unit\s*/i, '')}{resolvedPropertyName ? ` · ${resolvedPropertyName}` : ''}
             </span>
           </div>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -979,9 +957,9 @@ export const LeaseAgreementPage: React.FC = () => {
               type="button"
               className="btn secondary small btn-mobile-full"
               onClick={() => handleDownloadDraft(myAgreement)}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', borderRadius: '8px' }}
             >
-              <Download size={13} /> Official PDF
+              <Download size={13} /> PDF
             </button>
             <button
               type="button"
@@ -990,8 +968,9 @@ export const LeaseAgreementPage: React.FC = () => {
                 setSelectedAgreement(myAgreement);
                 setIsViewAgOpen(true);
               }}
+              style={{ borderRadius: '8px' }}
             >
-              View Details
+              View lease
             </button>
           </div>
         </div>
@@ -1014,23 +993,6 @@ export const LeaseAgreementPage: React.FC = () => {
 
       {subTab === 'owner' ? (
         <div>
-          {/* Tenancy Offer Notice if pending acceptance */}
-          {pendingInvitation && (
-            <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: '8px', padding: '14px 18px', marginBottom: '18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <Clock size={18} color="#B45309" />
-                <div>
-                  <b style={{ color: '#92400E', fontSize: '13.5px' }}>New Tenancy Invitation Pending Your Acceptance</b>
-                  <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#B45309' }}>
-                    Landlord <b>{pendingInvitation.ownerName}</b> invited you to Unit <b>{pendingInvitation.unitNumber}</b> ({pendingInvitation.propertyName}). Review and accept terms on your Dashboard.
-                  </p>
-                </div>
-              </div>
-              <Link to="/tenant/dashboard" className="btn brass small" style={{ fontSize: '12px', padding: '6px 14px' }}>
-                Review on Dashboard &rarr;
-              </Link>
-            </div>
-          )}
 
           {/* Unified Tenancy Records & Lease Agreements Table */}
           {(() => {
@@ -1063,18 +1025,20 @@ export const LeaseAgreementPage: React.FC = () => {
               const resolvedOwnerName = ag.ownerName || tenantRecord?.owner || 'Property Owner';
 
               // Check if there is an unaccepted/pending tenancy invitation for this agreement/unit
-              const hasPendingInviteForAg = (state.tenancyRequests || []).some(
+              // Only consider an invitation pending if the agreement has not already been signed or activated!
+              const hasPendingInviteForAg = !ag.signedDocumentUrl && ag.status !== 'active' && (state.tenancyRequests || []).some(
                 (r) =>
                   r.status === 'pending' &&
                   (normUnit(r.unitNumber) === cleanAgUnit || r.unitId === ag.unit) &&
                   (r.tenantId === ag.tenantId || (r.tenantEmail && ag.tenantEmail && r.tenantEmail.toLowerCase() === ag.tenantEmail.toLowerCase()))
               );
 
+              const isAgOwnerApproved = Boolean(ag.approvedAt || ag.approvedBy);
               const isAgTerminated = ag.status === 'terminated' || (ag.status as string) === 'cancelled';
-              const isAgPendingApproval = !isAgTerminated && (ag.status === 'pending_approval' || (ag as any).status === 'awaiting_owner_signature');
+              const isAgPendingApproval = !isAgTerminated && !isAgOwnerApproved && (ag.status === 'pending_approval' || (ag as any).status === 'awaiting_owner_signature');
               const isAgPendingDeposit = !isAgTerminated && !hasPendingInviteForAg && (ag.status === 'pending_deposit' || (ag.status === 'active' && ag.depositStatus === 'unpaid'));
               const isAgAwaitingSign = !isAgTerminated && (ag.status === 'awaiting_tenant_signature' || ag.status === 'awaiting_tenant_upload' || (!ag.signedDocumentUrl && !isAgTerminated && !isAgPendingApproval && !isAgPendingDeposit && !hasPendingInviteForAg));
-              const isAgActive = !isAgTerminated && !hasPendingInviteForAg && ag.status === 'active' && ag.depositStatus === 'paid';
+              const isAgActive = !isAgTerminated && !hasPendingInviteForAg && (ag.status === 'active' || (isAgOwnerApproved && ag.depositStatus === 'paid'));
 
               let statusCategory: 'active' | 'pending' | 'concluded' = 'pending';
               let statusColor = '#B45309';
@@ -1125,8 +1089,8 @@ export const LeaseAgreementPage: React.FC = () => {
                 property: agProp,
                 owner: ag.ownerName || resolvedOwnerName,
                 period: `${ag.start || 'Start'} → ${ag.end || 'End'}`,
-                rentDisplay: `${getCurrencySymbol(ag.currency || agreementCurrency)}${(ag.rent || 0).toLocaleString('en-IN')}/mo`,
-                depositDisplay: `Dep: ${getCurrencySymbol(ag.currency || agreementCurrency)}${(ag.deposit || 0).toLocaleString('en-IN')}`,
+                rentDisplay: `${formatWithConversion(ag.rent || 0, ag.currency || agreementCurrency)}/mo`,
+                depositDisplay: `Dep: ${formatWithConversion(ag.deposit || 0, ag.currency || agreementCurrency)}`,
                 statusCategory,
                 statusBadgeText,
                 statusBg,
@@ -1176,9 +1140,6 @@ export const LeaseAgreementPage: React.FC = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '14px' }}>
                     <div>
                       <h4 style={{ margin: 0, fontSize: '15.5px', fontWeight: 700 }}>Tenancy Records &amp; Lease Agreements</h4>
-                      <p style={{ margin: '3px 0 0', fontSize: '12px', color: 'var(--ink-soft)' }}>
-                        All current agreements, pending executions, and past rental history records
-                      </p>
                     </div>
 
                     {/* Filter Pills */}
@@ -1412,9 +1373,6 @@ export const LeaseAgreementPage: React.FC = () => {
             <div className="panel-head" style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>Active Residences &amp; Lease Renewals</h3>
-                <p className="hint" style={{ margin: '4px 0 0', fontSize: '13px' }}>
-                  Review terms, request lease renewals, or schedule move-out notices for each of your rented properties.
-                </p>
               </div>
               <span className="badge brass" style={{ fontWeight: 600 }}>
                 {displayAgreements.length} Active {displayAgreements.length === 1 ? 'Residence' : 'Residences'}
@@ -1547,10 +1505,10 @@ export const LeaseAgreementPage: React.FC = () => {
                             {/* Rent & Deposit */}
                             <td style={{ padding: '12px 16px' }}>
                               <div style={{ fontWeight: 600, color: 'var(--ink)' }}>
-                                {getCurrencySymbol(ag.currency || agreementCurrency)}{(ag.rent || tenantRecord.rent || 0).toLocaleString('en-IN')}<span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--ink-soft)' }}>/mo</span>
+                                {formatWithConversion(ag.rent || tenantRecord.rent || 0, ag.currency || agreementCurrency)}<span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--ink-soft)' }}>/mo</span>
                               </div>
                               <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                                Deposit: {getCurrencySymbol(ag.currency || agreementCurrency)}{(ag.deposit || tenantRecord.deposit || 0).toLocaleString('en-IN')}
+                                Deposit: {formatWithConversion(ag.deposit || tenantRecord.deposit || 0, ag.currency || agreementCurrency)}
                               </div>
                             </td>
 
@@ -1566,7 +1524,7 @@ export const LeaseAgreementPage: React.FC = () => {
                                     ✨ Offer: +{matchingRenewal.percentageIncrease || 0}% Increment
                                   </span>
                                   <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
-                                    Proposed: <b>{getCurrencySymbol(matchingRenewal.currency || ag.currency || agreementCurrency)}{(matchingRenewal.proposedRent || 0).toLocaleString('en-IN')}/mo</b>
+                                    Proposed: <b>{formatWithConversion(matchingRenewal.proposedRent || 0, matchingRenewal.currency || ag.currency || agreementCurrency)}/mo</b>
                                   </span>
                                 </div>
                               ) : matchingRenewal?.status === 'renewal_requested' ? (
@@ -1747,9 +1705,6 @@ export const LeaseAgreementPage: React.FC = () => {
               <div className="panel-head" style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                 <div>
                   <h4 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>Move-Out &amp; Vacate Requests</h4>
-                  <p className="hint" style={{ margin: '4px 0 0', fontSize: '12.5px' }}>
-                    Track walkthroughs, inspection schedules, and security deposit return statuses.
-                  </p>
                 </div>
                 <span className="hint" style={{ fontSize: '12px' }}>{myMoveOuts.length} request{myMoveOuts.length > 1 ? 's' : ''}</span>
               </div>
@@ -1787,12 +1742,21 @@ export const LeaseAgreementPage: React.FC = () => {
                           refund_scheduled: '#E0F2FE',
                           refund_completed: '#DCFCE7',
                         };
-                        const matchClaim = (state.cashClaims || []).find(
-                          (c) =>
-                            (c.status === 'pending_confirmation' || (c as any).status === 'pending') &&
-                            c.claimedByRole === 'owner' &&
-                            (c.moveOutId === mo.id || c.unit === mo.unit)
-                        );
+                        const isRefundStage =
+                          mo.status === 'refund_scheduled' ||
+                          mo.status === 'awaiting_tenant_approval' ||
+                          mo.status === 'settlement_pending' ||
+                          (mo as any).status === 'awaiting_tenant_cash_confirmation';
+                        const matchClaim = isRefundStage
+                          ? (state.cashClaims || []).find(
+                            (c) =>
+                              (c.status === 'pending_confirmation' || (c as any).status === 'pending') &&
+                              c.claimedByRole === 'owner' &&
+                              (c.moveOutId === mo.id ||
+                                (c.settlementId && mo.id.includes(c.settlementId)) ||
+                                (!c.moveOutId && !c.settlementId && c.unit === mo.unit && (!c.tenantId || c.tenantId === (mo.tenantId || user?.id))))
+                          )
+                          : null;
                         return (
                           <tr key={mo.id} style={{ borderBottom: '1px solid var(--line)', background: idx % 2 === 0 ? '#ffffff' : 'var(--surface-sunken, #fbfaf8)' }}>
                             <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--brass)' }}>#{mo.id.slice(-6).toUpperCase()}</td>
@@ -1933,7 +1897,7 @@ export const LeaseAgreementPage: React.FC = () => {
                 </div>
                 <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
                   <span className="k" style={{ color: 'var(--ink-soft)' }}>Monthly rent</span>
-                  <span style={{ fontWeight: 600 }}>{agToView?.currency || agreementCurrency}{(agToView?.rent || tenantRecord.rent || 0).toLocaleString('en-IN')}</span>
+                  <span style={{ fontWeight: 600 }}>{formatWithConversion(agToView?.rent || tenantRecord.rent || 0, agToView?.currency || agreementCurrency)}</span>
                 </div>
                 <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
                   <span className="k" style={{ color: 'var(--ink-soft)' }}>Rent Due Day</span>
@@ -1941,7 +1905,7 @@ export const LeaseAgreementPage: React.FC = () => {
                 </div>
                 <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
                   <span className="k" style={{ color: 'var(--ink-soft)' }}>Security Deposit</span>
-                  <span style={{ fontWeight: 600 }}>{agToView?.currency || agreementCurrency}{(agToView?.deposit || tenantRecord.deposit || 0).toLocaleString('en-IN')}</span>
+                  <span style={{ fontWeight: 600 }}>{formatWithConversion(agToView?.deposit || tenantRecord.deposit || 0, agToView?.currency || agreementCurrency)}</span>
                 </div>
                 <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
                   <span className="k" style={{ color: 'var(--ink-soft)' }}>Deposit Status</span>
@@ -2035,7 +1999,7 @@ export const LeaseAgreementPage: React.FC = () => {
                           }}
                           style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px' }}
                         >
-                          <Upload size={12} /> Upload Signed Copy
+                          <Upload size={12} /> Upload
                         </button>
                       )}
                     </div>
@@ -2338,11 +2302,11 @@ export const LeaseAgreementPage: React.FC = () => {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', background: 'var(--surface-sunken)', padding: '16px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                   <div>
                     <span style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: '2px' }}>Current Monthly Rent</span>
-                    <b style={{ fontSize: '16px', color: 'var(--ink)' }}>{getCurrencySymbol(renewal.currency || ag.currency || agreementCurrency)}{(renewal.currentRent || ag.rent || tenantRecord.rent).toLocaleString('en-IN')}/mo</b>
+                    <b style={{ fontSize: '16px', color: 'var(--ink)' }}>{formatWithConversion(renewal.currentRent || ag.rent || tenantRecord.rent, renewal.currency || ag.currency || agreementCurrency)}/mo</b>
                   </div>
                   <div>
                     <span style={{ fontSize: '11px', color: 'var(--ink-soft)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: '2px' }}>Proposed Renewal Rent</span>
-                    <b style={{ fontSize: '18px', color: 'var(--brass)' }}>{getCurrencySymbol(renewal.currency || ag.currency || agreementCurrency)}{(renewal.proposedRent || 0).toLocaleString('en-IN')}/mo</b>
+                    <b style={{ fontSize: '18px', color: 'var(--brass)' }}>{formatWithConversion(renewal.proposedRent || 0, renewal.currency || ag.currency || agreementCurrency)}/mo</b>
                     <span style={{ fontSize: '11px', color: '#059669', display: 'block', fontWeight: 600 }}>
                       +{getCurrencySymbol(renewal.currency || ag.currency || agreementCurrency)}{(renewal.rentIncreaseAmount || 0).toLocaleString('en-IN')}/mo (+{renewal.percentageIncrease}%)
                     </span>
@@ -2357,7 +2321,7 @@ export const LeaseAgreementPage: React.FC = () => {
                 </div>
 
                 <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', background: 'var(--surface-sunken)', padding: '10px 14px', borderRadius: '6px' }}>
-                  ℹ️ <b>Effective Date Notice:</b> The new rent of {getCurrencySymbol(renewal.currency || ag.currency || agreementCurrency)}{(renewal.proposedRent || 0).toLocaleString('en-IN')}/mo strictly takes effect on <b>{renewal.newLeaseStart}</b>, after your current lease term concludes on <b>{renewal.leaseEnd || ag.end || tenantRecord.leaseEnd}</b>. Your current monthly billing remains unchanged until then.
+                  ℹ️ <b>Effective Date Notice:</b> The new rent of {formatWithConversion(renewal.proposedRent || 0, renewal.currency || ag.currency || agreementCurrency)}/mo strictly takes effect on <b>{renewal.newLeaseStart}</b>, after your current lease term concludes on <b>{renewal.leaseEnd || ag.end || tenantRecord.leaseEnd}</b>. Your current monthly billing remains unchanged until then.
                   {renewal.ownerNotes && (
                     <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px dashed #CBD5E1', color: 'var(--ink)' }}>
                       <b>Landlord Note:</b> "{renewal.ownerNotes}"
@@ -2690,52 +2654,69 @@ export const LeaseAgreementPage: React.FC = () => {
 
               {/* Cash Handover Confirmation Needed Banner inside Move-Out Details Modal */}
               {(() => {
+                // Must strictly be at the refund stage (Step 4 / 5)
+                const isRefundStage =
+                  selectedMoveOut.status === 'refund_scheduled' ||
+                  selectedMoveOut.status === 'awaiting_tenant_approval' ||
+                  selectedMoveOut.status === 'settlement_pending' ||
+                  (selectedMoveOut as any).status === 'awaiting_tenant_cash_confirmation';
+                if (!isRefundStage) return null;
+
                 const matchClaim = (state.cashClaims || []).find(
                   (c) =>
                     (c.status === 'pending_confirmation' || (c as any).status === 'pending') &&
                     c.claimedByRole === 'owner' &&
-                    (c.moveOutId === selectedMoveOut.id || c.unit === selectedMoveOut.unit)
+                    (c.moveOutId === selectedMoveOut.id ||
+                      (c.settlementId && selectedMoveOut.id.includes(c.settlementId)) ||
+                      (!c.moveOutId && !c.settlementId && c.unit === selectedMoveOut.unit && (!c.tenantId || c.tenantId === (selectedMoveOut.tenantId || user?.id))))
                 );
                 if (!matchClaim) return null;
                 return (
                   <div
+                    className="panel"
                     style={{
-                      background: '#FFFBEB',
-                      border: '1.5px solid #F59E0B',
-                      borderRadius: 'var(--radius)',
-                      padding: '16px 18px',
-                      boxShadow: '0 2px 8px rgba(245, 158, 11, 0.12)',
+                      background: 'var(--surface)',
+                      border: '1px solid rgba(245, 158, 11, 0.3)',
+                      borderLeft: '4px solid #F59E0B',
+                      borderRadius: '10px',
+                      padding: '12px 18px',
+                      boxShadow: 'var(--shadow-xs, 0 1px 2px rgba(0,0,0,0.04))',
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px', marginBottom: '6px' }}>
-                      <span style={{ background: '#FEF3C7', color: '#B45309', padding: '3px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 700 }}>
-                        ⚡ CASH REFUND HANDOVER CONFIRMATION NEEDED
+                      <span
+                        className="badge amber"
+                        style={{ fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.4px', padding: '2px 8px' }}
+                      >
+                        ⚡ Cash Refund Handover Confirmation Needed
                       </span>
-                      <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>Claim #{matchClaim.id}</span>
+                      <span className="badge grey" style={{ fontSize: '10.5px', fontFamily: 'monospace', padding: '2px 6px' }}>
+                        Claim #{matchClaim.id}
+                      </span>
                     </div>
-                    <h4 style={{ margin: '4px 0 6px', fontSize: '15px', color: 'var(--ink)' }}>
-                      {matchClaim.claimedByName} reported handing you {matchClaim.currency} {matchClaim.amount.toLocaleString('en-IN')} in Cash
-                    </h4>
-                    <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', lineHeight: 1.5, marginBottom: '14px' }}>
+                    <div style={{ margin: '3px 0 4px', fontSize: '14px', fontWeight: 700, color: 'var(--ink)' }}>
+                      <b>{matchClaim.claimedByName}</b> reported handing you {matchClaim.currency} {matchClaim.amount.toLocaleString('en-IN')} in Cash
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--ink-soft)', lineHeight: 1.5, marginBottom: '12px' }}>
                       <b>Date:</b> {matchClaim.handoverDate} • <b>Unit:</b> {matchClaim.unit} • <b>Location:</b> {matchClaim.handoverLocation || 'On-Site Inspection'}
-                      {matchClaim.notes && <span style={{ display: 'block', marginTop: '2px', fontStyle: 'italic' }}>"{matchClaim.notes}"</span>}
+                      {matchClaim.notes && <span style={{ marginLeft: '6px', fontStyle: 'italic' }}>"{matchClaim.notes}"</span>}
                     </div>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                       <button
                         type="button"
-                        className="btn btn-mobile-full"
-                        style={{ background: '#16A34A', color: '#fff', border: 'none', padding: '8px 16px', fontSize: '12.5px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                        className="btn brass btn-mobile-full"
+                        style={{ padding: '7px 16px', fontSize: '12.5px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '6px', borderRadius: '7px' }}
                         onClick={async () => {
                           await confirmCashClaim(matchClaim.id);
                           setSelectedMoveOut(null);
                         }}
                       >
-                        <CheckCircle2 size={16} /> Confirm I Received Cash
+                        <CheckCircle2 size={15} /> Confirm I Received Cash
                       </button>
                       <button
                         type="button"
                         className="btn secondary btn-mobile-full"
-                        style={{ borderColor: '#DC2626', color: '#DC2626', padding: '8px 14px', fontSize: '12.5px', fontWeight: 600 }}
+                        style={{ borderColor: 'rgba(220, 38, 38, 0.4)', color: '#DC2626', padding: '7px 14px', fontSize: '12.5px', fontWeight: 600, borderRadius: '7px' }}
                         onClick={async () => {
                           const reason = window.prompt('Please enter the reason for declining this cash refund (e.g. Cash not received, or discrepancy):');
                           if (reason && reason.trim()) {
@@ -2816,22 +2797,18 @@ export const LeaseAgreementPage: React.FC = () => {
                 <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px', background: 'var(--surface)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--ink-soft)', fontSize: '12px', marginBottom: '6px' }}><Calendar size={14} /> Agreed Move-Out Date</div>
                   <div style={{ fontSize: '15px', fontWeight: 600 }}>{selectedMoveOut.moveOutDate || 'Not specified'}</div>
-                  <div className="hint" style={{ fontSize: '11px', marginTop: '4px' }}>Target vacating timeline</div>
                 </div>
                 <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px', background: selectedMoveOut.inspectionDate ? 'rgba(184,134,11,0.05)' : '#ffffff' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: selectedMoveOut.inspectionDate ? 'var(--brass)' : 'var(--ink-soft)', fontSize: '12px', marginBottom: '6px' }}><Clock size={14} /> Walkthrough Inspection</div>
                   <div style={{ fontSize: '15px', fontWeight: 600, color: selectedMoveOut.inspectionDate ? 'var(--brass)' : 'var(--ink)' }}>{selectedMoveOut.inspectionDate || 'Awaiting schedule'}</div>
-                  <div className="hint" style={{ fontSize: '11px', marginTop: '4px' }}>{selectedMoveOut.inspectionDate ? 'Landlord walkthrough date' : 'Will be scheduled by landlord'}</div>
                 </div>
                 <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px', background: 'var(--surface)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--ink-soft)', fontSize: '12px', marginBottom: '6px' }}><CreditCard size={14} /> Estimated Deposit Refund</div>
                   <div style={{ fontSize: '15px', fontWeight: 600 }}>{selectedMoveOut.refundDate || 'Pending inspection'}</div>
-                  <div className="hint" style={{ fontSize: '11px', marginTop: '4px' }}>Target disbursement date</div>
                 </div>
                 <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '14px', background: 'var(--surface)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--ink-soft)', fontSize: '12px', marginBottom: '6px' }}><ShieldCheck size={14} /> Security Deposit Held</div>
                   <div style={{ fontSize: '15px', fontWeight: 600 }}>{selectedMoveOut.currency || DEFAULT_CURRENCY_SYMBOL}{(selectedMoveOut.deposit || 0).toLocaleString('en-IN')}</div>
-                  <div className="hint" style={{ fontSize: '11px', marginTop: '4px' }}>Subject to inspection report</div>
                 </div>
               </div>
 

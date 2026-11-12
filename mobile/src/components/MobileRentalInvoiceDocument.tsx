@@ -43,18 +43,28 @@ export const MobileRentalInvoiceDocument: React.FC<MobileRentalInvoiceDocumentPr
     ? (ownerSettings?.depositTemplate || ownerSettings?.invoiceTemplate)
     : ownerSettings?.invoiceTemplate;
 
-  const issuerName = (invoice as any).issuerName || effectiveTemplate?.issuerName || (invoice.propertyName ? `${invoice.propertyName} Management` : 'Property Management');
-  const issuerTaxNo = (invoice as any).issuerTaxNo || effectiveTemplate?.issuerTaxNo || '';
-  const issuerAddress = (invoice as any).issuerAddress || effectiveTemplate?.issuerAddress || '';
-  const issuerPhone = (invoice as any).issuerPhone || effectiveTemplate?.issuerPhone || '';
-  const issuerEmail = (invoice as any).issuerEmail || effectiveTemplate?.issuerEmail || '';
+  const issuerName = effectiveTemplate?.issuerName || (invoice as any).issuerName || (invoice.propertyName ? `${invoice.propertyName} Management` : 'Property Management');
+  const issuerTaxNo = effectiveTemplate?.issuerTaxNo || (invoice as any).issuerTaxNo || '';
+  const issuerAddress = effectiveTemplate?.issuerAddress || (invoice as any).issuerAddress || '';
+  const issuerPhone = effectiveTemplate?.issuerPhone || (invoice as any).issuerPhone || '';
+  const issuerEmail = effectiveTemplate?.issuerEmail || (invoice as any).issuerEmail || '';
 
-  const tenantName = invoice.tenant || 'Resident';
-  const unitNumber = invoice.unit || 'Unit N/A';
-  const propertyName = invoice.propertyName || 'Property Premises';
-  const tenantTaxNo = (invoice as any).tenantTaxNo || '';
-  const tenantPhone = (invoice as any).tenantPhone || '';
-  const tenantEmail = invoice.tenantEmail || '';
+  const matchingTenant = (state.tenants || []).find((t) => {
+    if (invoice.tenantId && (t.id === invoice.tenantId || (t as any).userId === invoice.tenantId)) return true;
+    if (invoice.tenantEmail && t.email && t.email.toLowerCase() === invoice.tenantEmail.toLowerCase()) return true;
+    if (invoice.tenant && t.name && t.name.toLowerCase() === invoice.tenant.toLowerCase()) {
+      if (invoice.unit && (t.unit === invoice.unit || (t as any).unitNumber === invoice.unit)) return true;
+    }
+    if (invoice.unit && (t.unit === invoice.unit || (t as any).unitNumber === invoice.unit)) return true;
+    return false;
+  });
+
+  const tenantName = invoice.tenant || matchingTenant?.name || 'Resident';
+  const unitNumber = invoice.unit || matchingTenant?.unit || 'Unit N/A';
+  const propertyName = invoice.propertyName || matchingTenant?.propertyName || 'Property Premises';
+  const tenantTaxNo = (invoice as any).tenantTaxNo || (matchingTenant as any)?.taxId || (matchingTenant as any)?.panNo || '';
+  const tenantPhone = (invoice as any).tenantPhone || matchingTenant?.phone || '';
+  const tenantEmail = invoice.tenantEmail || matchingTenant?.email || '';
 
   const issueDate = invoice.issueDate ? invoice.issueDate.split('T')[0] : (invoice.due || 'N/A');
   const dueDate = invoice.due || 'N/A';
@@ -139,7 +149,7 @@ export const MobileRentalInvoiceDocument: React.FC<MobileRentalInvoiceDocumentPr
   const isPending = status === 'pending_confirmation';
   const isOverdue = status === 'overdue';
 
-  const documentTitle = (invoice as any).documentTitle || effectiveTemplate?.documentTitle || (isDeposit ? 'SECURITY DEPOSIT VOUCHER' : 'TAX INVOICE');
+  const documentTitle = (invoice as any).documentTitle || effectiveTemplate?.documentTitle || (isDeposit ? 'DEPOSIT RECEIPT' : 'INVOICE');
 
   const handleDownload = () => {
     downloadDocument({
@@ -180,12 +190,10 @@ export const MobileRentalInvoiceDocument: React.FC<MobileRentalInvoiceDocumentPr
                 <View style={{ flex: 1, marginRight: 10 }}>
                   <Text style={styles.propertyName}>{propertyName.toUpperCase()}</Text>
                   <Text style={styles.issuerName}>{issuerName}</Text>
-                  {(issuerAddress || issuerPhone || issuerEmail) ? (
-                    <Text style={styles.issuerAddress}>
-                      {issuerAddress ? `${issuerAddress}\n` : ''}
-                      {[issuerPhone ? `Phone: ${issuerPhone}` : '', issuerEmail ? `Email: ${issuerEmail}` : ''].filter(Boolean).join(' • ')}
-                    </Text>
-                  ) : null}
+                  {issuerAddress ? <Text style={styles.issuerAddress}>{issuerAddress}</Text> : null}
+                  {issuerEmail ? <Text style={styles.issuerAddress}>{issuerEmail}</Text> : null}
+                  {issuerPhone ? <Text style={styles.issuerAddress}>{issuerPhone}</Text> : null}
+                  {issuerTaxNo ? <Text style={[styles.issuerTax, { color: '#059669' }]}>{issuerTaxNo}</Text> : null}
                 </View>
 
                 <View style={styles.docTitleBox}>
@@ -397,10 +405,12 @@ export const MobileRentalInvoiceDocument: React.FC<MobileRentalInvoiceDocumentPr
               </View>
 
               {/* Terms & Conditions */}
-              {termsAndConditions ? (
+              {((invoice as any).includeTerms !== false && effectiveTemplate?.includeTerms !== false && termsAndConditions) ? (
                 <View style={styles.termsBox}>
-                  <Text style={styles.sectionHeader}>TERMS & CONDITIONS</Text>
-                  <Text style={styles.termsText}>{termsAndConditions}</Text>
+                  <Text style={styles.sectionHeader}>{isDeposit ? 'DEPOSIT TERMS & CONDITIONS' : 'TERMS & CONDITIONS'}</Text>
+                  {termsAndConditions.split('\n').filter(Boolean).map((clause, idx) => (
+                    <Text key={idx} style={[styles.termsText, { marginBottom: 3 }]}>{clause.trim()}</Text>
+                  ))}
                   {notes ? (
                     <View style={styles.notesBox}>
                       <Text style={styles.notesText}>

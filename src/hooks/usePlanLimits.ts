@@ -142,9 +142,11 @@ export function usePlanLimits(explicitOwnerId?: string) {
     (!latestPaidInvoice.periodEnd || new Date(latestPaidInvoice.periodEnd).getTime() > Date.now())
   );
 
-  const hasActivePaidSubscription =
-    (ownerSettings?.planStatus === 'active' && (!ownerSettings?.subscriptionEndsAt || new Date(ownerSettings.subscriptionEndsAt).getTime() > Date.now())) ||
-    isPaidInvoiceUnexpired;
+  const hasActivePaidSubscription = Boolean(
+    hasPaidInvoice &&
+    isPaidInvoiceUnexpired &&
+    (ownerSettings?.planStatus === 'active' || !ownerSettings?.subscriptionEndsAt || new Date(ownerSettings.subscriptionEndsAt).getTime() > Date.now())
+  );
 
   const cachedTrialDays = loadCachedTrialDays();
   const dynamicTrialDays = typeof state.defaultTrialDays === 'number'
@@ -153,7 +155,7 @@ export function usePlanLimits(explicitOwnerId?: string) {
 
   const isTrial = !hasActivePaidSubscription &&
     dynamicTrialDays > 0 &&
-    (ownerSettings?.planStatus === 'trialing' || (!ownerSettings?.planStatus && !hasPaidInvoice));
+    (ownerSettings?.planStatus === 'trialing' || !hasPaidInvoice);
 
   const trialEnds = isTrial && ownerSettings?.trialEndsAt ? new Date(ownerSettings.trialEndsAt) : null;
   const daysLeft = isTrial && trialEnds
@@ -277,6 +279,19 @@ export function usePlanLimits(explicitOwnerId?: string) {
     ? Math.max(0, Math.ceil((new Date(purgeScheduledAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
     : null;
 
+  const maxPopularBoostDays = currentPlan?.popularBoostDays ?? (
+    currentPlan?.id === 'growth' ? 7 :
+    currentPlan?.id === 'enterprise' ? 30 :
+    (currentPlan?.id === 'free_trial' || currentPlan?.isTrialOnly) ? 3 : 0
+  );
+
+  const popularBoostDaysUsed = (state.units || [])
+    .filter((u) => u.ownerId === resolvedOwnerId && u.popularUntil && new Date(u.popularUntil).getTime() > Date.now())
+    .reduce((sum, u) => sum + (Number(u.popularDaysApplied) || 0), 0);
+
+  const popularBoostDaysRemaining = Math.max(0, maxPopularBoostDays - popularBoostDaysUsed);
+  const canBoostListing = maxPopularBoostDays > 0 && popularBoostDaysRemaining > 0;
+
   return {
     ownerId: resolvedOwnerId,
     ownerSettings,
@@ -290,6 +305,12 @@ export function usePlanLimits(explicitOwnerId?: string) {
     purgeDaysLeft,
     currentPlan,
     currentPlanName,
+    popularBoost: {
+      allowance: maxPopularBoostDays,
+      used: popularBoostDaysUsed,
+      remaining: popularBoostDaysRemaining,
+      canBoost: canBoostListing,
+    },
     usage: {
       properties: { used: propertiesUsed, max: maxProperties, isFull: isPropertiesFull },
       units: { used: unitsUsed, max: maxUnits, isFull: isUnitsFull },

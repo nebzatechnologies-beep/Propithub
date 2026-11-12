@@ -15,16 +15,17 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Linking,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAppData } from '../context/MobileAppDataContext';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../lib/firebase';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
-import { MobileAgreement, MobileAgreementTemplate, MobileTenancyRequest, MobileRenewalItem, MobileTenantUploadedIdItem, MobileTenantRecord, MobileRequiredIdItem, MobileInvoice } from '../types';
+import { MobileAgreement, MobileAgreementTemplate, MobileTenancyRequest, MobileRenewalItem, MobileTenantUploadedIdItem, MobileTenantRecord, MobileRequiredIdItem, MobileInvoice, MobilePropertyEnquiry } from '../types';
 import { DocumentViewerModal } from '../components/DocumentViewerModal';
 import { downloadDocument, DocumentDownloadItem } from '../lib/documentService';
 import { uploadOrCompressDocument } from '../lib/imageUploader';
@@ -60,6 +61,7 @@ interface LeasingHubScreenProps {
   onProfilePress?: () => void;
   onNewAgreementPress?: () => void;
   onInitiateNoticePress?: (unitId: string) => void;
+  onNavigate?: (screenKey: string) => void;
   /** Render only the modals (used by Tenants screen to reuse the onboarding wizard). */
   modalOnly?: boolean;
   /** Increment to open the 3-step Onboard / New Lease wizard. */
@@ -70,6 +72,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   onProfilePress,
   onNewAgreementPress,
   onInitiateNoticePress,
+  onNavigate,
   modalOnly = false,
   openOnboardSignal = 0,
 }) => {
@@ -90,6 +93,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     rejectSignedAgreement,
     offerLeaseRenewal,
     approveLeaseRenewal,
+    updateEnquiryStatus,
     planUsage,
   } = useMobileAppData();
   const { user } = useMobileAuth();
@@ -101,7 +105,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const windowHeight = Dimensions.get('window').height;
 
   // Primary Subtab (1-to-1 Web Parity)
-  const [activeTab, setActiveTab] = useState<'agreements' | 'renewals' | 'applications' | 'library' | 'drafts'>('agreements');
+  const [activeTab, setActiveTab] = useState<'agreements' | 'renewals' | 'applications' | 'library' | 'drafts' | 'enquiries'>('agreements');
 
   // Filter states
   const [agreementFilter, setAgreementFilter] = useState<
@@ -144,17 +148,42 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const [terminateReason, setTerminateReason] = useState('Tenant relocating for work');
   const [vacateDate, setVacateDate] = useState('2026-11-30');
 
-  const ownerId = user?.id || '';
+  const isManager = user?.role === 'manager';
+  const effectiveOwnerId = isManager
+    ? (user?.ownerId || '')
+    : (user?.id || '');
+  const ownerId = effectiveOwnerId || user?.id || '';
+
   const myProperties = useMemo(() => {
+    const allProps = state.properties || [];
+    if (isManager) {
+      const assignedProps = user?.assignedProperties || [];
+      const managerRecord = (state.propertyManagers || []).find(
+        (m) => (user?.id && m.id === user.id) || (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
+      );
+      const singleAssignedId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
+
+      return allProps.filter((p) => {
+        if (singleAssignedId && p.id === singleAssignedId) return true;
+        if (assignedProps.includes(p.id)) return true;
+        if (p.assignedManagerId === user?.id || (p as any).managerId === user?.id) return true;
+        if (effectiveOwnerId && p.ownerId === effectiveOwnerId) return true;
+        return false;
+      });
+    }
     if (!ownerId) return [];
-    return (state.properties || []).filter((p) => p.ownerId === ownerId);
-  }, [state.properties, ownerId]);
+    return allProps.filter((p) => p.ownerId === ownerId);
+  }, [state.properties, isManager, ownerId, effectiveOwnerId, user?.assignedProperties, user?.id, user?.email, state.propertyManagers]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
 
   const myUnits = useMemo(() => {
-    if (!ownerId) return [];
-    return (state.units || []).filter((u) => u.ownerId === ownerId || (u.propertyId && myPropertyIds.has(u.propertyId)));
+    if (!ownerId && myPropertyIds.size === 0) return [];
+    return (state.units || []).filter(
+      (u) =>
+        (u.propertyId && myPropertyIds.has(u.propertyId)) ||
+        (ownerId && u.ownerId === ownerId)
+    );
   }, [state.units, ownerId, myPropertyIds]);
 
   const vacantUnits = useMemo(() => {
@@ -218,6 +247,59 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     if (!ownerId) return [];
     return (state.tenancyRequests || []).filter((r) => r.ownerId === ownerId || (r.propertyId && myPropertyIds.has(r.propertyId)));
   }, [state.tenancyRequests, ownerId, myPropertyIds]);
+
+  // Scoped Prospective Tenant Enquiries (1-to-1 Web Parity)
+  const myEnquiries = useMemo(() => {
+    if (!ownerId) return [];
+    return (state.enquiries || []).filter(
+      (e) => (e.ownerId && e.ownerId === ownerId) || (e.propertyId && myPropertyIds.has(e.propertyId))
+    );
+  }, [state.enquiries, ownerId, myPropertyIds]);
+  const hasNewEnquiries = myEnquiries.some((e) => e.status === 'new');
+
+  const handleUpdateEnquiryStatus = async (
+    id: string,
+    status: 'new' | 'reviewed' | 'onboarded' | 'contacted' | 'archived'
+  ) => {
+    if (updateEnquiryStatus) {
+      await updateEnquiryStatus(id, status);
+    } else if (isFirebaseConfigured) {
+      await setDoc(doc(db, 'enquiries', id), { status, updatedAt: new Date().toISOString() }, { merge: true }).catch(console.warn);
+    }
+    showToast(`Enquiry marked as ${status} ✓`, 'success');
+  };
+
+  const handleOnboardProspect = (enq: MobilePropertyEnquiry) => {
+    setOnboardEnquiryId(enq.id);
+    setActiveDraftId(null);
+    setWizardStep(1);
+    setUploadTenantName(enq.prospectName || '');
+    setUploadTenantEmail(enq.prospectEmail || '');
+    setUploadTenantPhone(enq.prospectPhone || '');
+    setUploadTenantPassword('Welcome@123');
+    setSelectedTenantObj(null);
+    setIsNewTenantMode(true);
+    setShowTenantDetailsEdit(false);
+    setTenantSearchQuery(enq.prospectName || '');
+    setShowTenantDropdown(false);
+    const moveIn = enq.moveInDate || enq.preferredMoveInDate || getNextMonthFirstDateString();
+    setUploadStartDate(moveIn);
+    setUploadEndDate(getOneYearLaterDateString(moveIn));
+    setUploadRequireIds(false);
+    setUploadIdList([{ id: 'req_1', name: 'Government Photo ID' }]);
+    setUploadOfflineTenantIds({});
+
+    const targetUnit = myUnits.find((u) => u.id === enq.unitId || u.unitNumber === enq.unitNumber);
+    if (targetUnit) {
+      handleSelectUnitForUpload(targetUnit.id);
+    } else if (enq.propertyId) {
+      setUploadPropertyId(enq.propertyId);
+      setUploadUnit(enq.unitNumber || '');
+    }
+
+    setShowUploadAgreementModal(true);
+    handleUpdateEnquiryStatus(enq.id, 'contacted');
+  };
 
   // Agreement Library State (Mobile Parity)
   const myTemplates: MobileAgreementTemplate[] = useMemo(() => {
@@ -350,6 +432,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
   // 6. Web Parity: "+ Upload agreement" Modal State
   const [showUploadAgreementModal, setShowUploadAgreementModal] = useState(false);
+  const [onboardEnquiryId, setOnboardEnquiryId] = useState<string | null>(null);
   const [uploadTenantName, setUploadTenantName] = useState('');
   const [uploadTenantEmail, setUploadTenantEmail] = useState('');
   const [uploadTenantPhone, setUploadTenantPhone] = useState('');
@@ -365,8 +448,10 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const [uploadExecutionMode, setUploadExecutionMode] = useState<'already_executed_offline' | 'digital_dispatch'>('digital_dispatch');
   const [offlineDepositCollected, setOfflineDepositCollected] = useState<boolean>(true);
   const [offlineDepositRef, setOfflineDepositRef] = useState<string>('Cash / Bank Wire Settled');
-  const [uploadFileName, setUploadFileName] = useState('Rental_Agreement_Signed.pdf');
+  const [uploadFileName, setUploadFileName] = useState('');
   const [uploadFileData, setUploadFileData] = useState<string>('');
+  const [showDurationDropdown, setShowDurationDropdown] = useState(false);
+  const [selectedDurationLabel, setSelectedDurationLabel] = useState('1 Year (12 Months)');
   const [uploadAgreementSource, setUploadAgreementSource] = useState<'upload' | 'library'>('upload');
   const [uploadSelectedTemplateId, setUploadSelectedTemplateId] = useState<string>('');
   const [uploadRequireIds, setUploadRequireIds] = useState<boolean>(false);
@@ -387,6 +472,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const [uploadTenantPassword, setUploadTenantPassword] = useState('Welcome@123');
   const [liveFirestoreUsers, setLiveFirestoreUsers] = useState<SearchCandidate[]>([]);
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+  const [isSubmittingAgreement, setIsSubmittingAgreement] = useState(false);
 
   // Live Query from Firestore (Web Parity):
   // When modal is open, query all users and tenants from Firestore so any user registered on Propithub
@@ -602,8 +688,18 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         if (draft.start) setUploadStartDate(draft.start);
         if (draft.end) setUploadEndDate(draft.end);
         if (draft.executionMode) setUploadExecutionMode(draft.executionMode);
-        if (draft.initialAgreementName) setUploadFileName(draft.initialAgreementName);
-        if (draft.initialAgreementUrl) setUploadFileData(draft.initialAgreementUrl);
+        if (draft.initialAgreementName) {
+          setUploadFileName(draft.initialAgreementName);
+        } else {
+          setUploadFileName('');
+        }
+        if (draft.initialAgreementUrl) {
+          setUploadFileData(draft.initialAgreementUrl);
+        } else {
+          setUploadFileData('');
+        }
+        setShowDurationDropdown(false);
+        setSelectedDurationLabel('1 Year (12 Months)');
         if (draft.requireTenantId) setUploadRequireIds(true);
         if (draft.requiredIdList && draft.requiredIdList.length > 0) {
           setUploadIdList(draft.requiredIdList);
@@ -630,6 +726,11 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     setUploadRequireIds(false);
     setUploadIdList([{ id: 'req_1', name: 'Government Photo ID' }]);
     setUploadOfflineTenantIds({});
+    setUploadFileName('');
+    setUploadFileData('');
+    setUploadSelectedTemplateId('');
+    setSelectedDurationLabel('1 Year (12 Months)');
+    setShowDurationDropdown(false);
     const firstVacant = vacantUnits[0];
     if (firstVacant) {
       handleSelectUnitForUpload(firstVacant.id);
@@ -999,7 +1100,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   };
 
   // Web Parity: "+ Upload agreement" Handler
-  const handleDirectUploadAgreement = () => {
+  const handleDirectUploadAgreement = async () => {
     if (!uploadTenantName.trim() || !uploadUnit.trim() || !uploadRent.trim()) {
       showAlert({
         type: 'warning',
@@ -1021,56 +1122,252 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       ? uploadIdList.filter((item) => item.name.trim().length > 0)
       : [];
 
-    if (!isOfflineMode) {
-      // Digital Dispatch Workflow (Web Parity):
-      // Dispatches an official MobileTenancyRequest with attached agreement & ID requirements.
-      const targetTenantId = selectedTenantObj?.id || `usr_${Date.now()}`;
-      const newReq: MobileTenancyRequest = {
-        id: `req_${Date.now()}`,
-        ownerId: prop?.ownerId || user?.id || '',
-        ownerName: user?.displayName || 'Property Owner',
-        ownerEmail: user?.email || '',
-        tenantId: targetTenantId,
-        tenantName: uploadTenantName.trim(),
-        tenantEmail: uploadTenantEmail.trim().toLowerCase() || `${uploadTenantName.trim().toLowerCase().replace(/\s+/g, '')}@tenant.com`,
-        tenantPhone: uploadTenantPhone.trim(),
+    const cleanTenantName = uploadTenantName.trim();
+    const cleanEmail = uploadTenantEmail.trim().toLowerCase();
+    const cleanPhone = uploadTenantPhone.trim();
+    const tempPassword = uploadTenantPassword.trim() || 'Tenant@123';
+
+    setIsSubmittingAgreement(true);
+
+    try {
+      let resolvedTenantId = selectedTenantObj?.id;
+
+      // Check existing accounts
+      const existingUser = (state.users || []).find((u) => u.email?.trim().toLowerCase() === cleanEmail);
+      const existingTenant = (state.tenants || []).find((t) => t.email?.trim().toLowerCase() === cleanEmail);
+
+      if (existingUser?.id) {
+        resolvedTenantId = existingUser.id;
+      } else if (existingTenant?.id) {
+        resolvedTenantId = existingTenant.id;
+      }
+
+      // Provision account in Firebase Auth + Firestore if new or needed
+      if ((isNewTenantMode || !resolvedTenantId || (!existingUser && !existingTenant)) && cleanEmail) {
+        try {
+          const provisionedUid = await saveTenant(
+            {
+              id: resolvedTenantId || `usr_${Date.now()}`,
+              name: cleanTenantName,
+              email: cleanEmail,
+              phone: cleanPhone,
+              unit: uploadUnit.trim(),
+              ownerId: prop?.ownerId || user?.id || ownerId,
+              propertyId: prop?.id || '',
+              propertyName: prop?.name || 'Property',
+              rent: rentNum,
+              deposit: depNum,
+              currency: prop?.currency || viewCurrency,
+              leaseStart: uploadStartDate,
+              leaseEnd: uploadEndDate,
+              status: isOfflineMode ? 'active' : 'invited',
+              rating: 5,
+              kycStatus: isOfflineMode ? 'verified' : 'pending',
+            },
+            tempPassword
+          );
+          if (provisionedUid) {
+            resolvedTenantId = provisionedUid;
+          }
+        } catch (provErr) {
+          console.warn('[LeasingHub] User account provisioning error:', provErr);
+        }
+      }
+
+      if (!resolvedTenantId) {
+        resolvedTenantId = selectedTenantObj?.id || `usr_${Date.now()}`;
+      }
+
+      if (!isOfflineMode) {
+        // Digital Dispatch Workflow (Web Parity):
+        // Dispatches an official MobileTenancyRequest with attached agreement & ID requirements.
+        const newReq: MobileTenancyRequest = {
+          id: `req_${Date.now()}`,
+          ownerId: prop?.ownerId || user?.id || '',
+          ownerName: user?.displayName || 'Property Owner',
+          ownerEmail: user?.email || '',
+          tenantId: resolvedTenantId,
+          tenantName: cleanTenantName,
+          tenantEmail: cleanEmail || `${cleanTenantName.toLowerCase().replace(/\s+/g, '')}@tenant.com`,
+          tenantPhone: cleanPhone,
+          propertyId: prop?.id || '',
+          propertyName: prop?.name || 'Property',
+          unitId: unitObj?.id || uploadUnit.trim(),
+          unit: uploadUnit.trim(),
+          unitNumber: unitObj?.unitNumber || uploadUnit.trim(),
+          rent: rentNum,
+          deposit: depNum,
+          currency: prop?.currency || viewCurrency,
+          leaseStart: uploadStartDate,
+          leaseEnd: uploadEndDate,
+          message: `Welcome to your new home at ${prop?.name || 'Property'}! Please review the attached lease agreement for Unit ${uploadUnit.trim()}, accept, sign physically, and upload your signed copy to finalize your move-in.`,
+          agreementFileName: uploadFileName || 'Lease_Agreement.pdf',
+          agreementFileData: uploadFileData || undefined,
+          agreementFileUrl: uploadFileData || undefined,
+          requireTenantId: uploadRequireIds && validIdList.length > 0,
+          requiredIdList: uploadRequireIds && validIdList.length > 0 ? validIdList : undefined,
+          requiredIdTypes: uploadRequireIds && validIdList.length > 0 ? validIdList.map((i) => i.name.trim()) : undefined,
+          requiredIdType: uploadRequireIds && validIdList.length > 0 ? validIdList[0].name.trim() : undefined,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        };
+
+        sendTenancyRequest(newReq);
+        if (unitObj) {
+          saveUnit({
+            ...unitObj,
+            status: 'reserved',
+            tenant: cleanTenantName,
+            currentTenantId: resolvedTenantId,
+            rent: rentNum,
+            deposit: depNum,
+          });
+        }
+
+        if (activeDraftId) {
+          deleteAgreement(activeDraftId);
+          setActiveDraftId(null);
+        }
+
+        if (onboardEnquiryId) {
+          handleUpdateEnquiryStatus(onboardEnquiryId, 'onboarded');
+          setOnboardEnquiryId(null);
+        }
+
+        setShowUploadAgreementModal(false);
+        setUploadTenantName('');
+        setUploadTenantEmail('');
+        setUploadTenantPhone('');
+        setUploadUnitId('');
+        setUploadRequireIds(false);
+        setUploadOfflineTenantIds({});
+        setUploadFileName('');
+        setUploadFileData('');
+        setUploadSelectedTemplateId('');
+        setShowDurationDropdown(false);
+        setSelectedDurationLabel('1 Year (12 Months)');
+
+        showAlert({
+          type: 'success',
+          title: 'Tenancy Offer Dispatched',
+          message: `Tenancy invitation dispatched to ${cleanTenantName} for Unit ${uploadUnit.trim()}. An account was provisioned so the resident can log in immediately.`,
+          details: [
+            { label: 'Resident', value: cleanTenantName, icon: 'user' },
+            { label: 'Unit', value: `Unit ${uploadUnit.trim()}`, icon: 'home' },
+            { label: 'Account Email', value: cleanEmail || 'Not specified', icon: 'mail' },
+            { label: 'Login Password', value: tempPassword, icon: 'key' },
+            { label: 'Monthly Rent', value: `${format(Number(uploadRent) || 0, viewCurrency)}/mo`, icon: 'dollar-sign' },
+            { label: 'Status', value: 'Unit Reserved • Account Ready', icon: 'shield' },
+          ],
+          primaryButtonText: 'Done',
+        });
+        return;
+      }
+
+      const offlineUploadedIds: MobileTenantUploadedIdItem[] = Object.entries(uploadOfflineTenantIds).map(([id, info]) => {
+        const match = validIdList.find((item) => item.id === id);
+        return {
+          id: `u_${id}`,
+          name: match?.name || 'ID Verification Document',
+          fileUrl: info.fileUrl,
+          fileName: info.fileName,
+          uploadedAt: new Date().toISOString(),
+        };
+      });
+
+      const newAg: MobileAgreement = {
+        id: newAgId,
+        ownerId: prop?.ownerId || user.id || '',
+        ownerName: user.displayName || 'Property Owner',
         propertyId: prop?.id || '',
         propertyName: prop?.name || 'Property',
-        unitId: unitObj?.id || uploadUnit.trim(),
         unit: uploadUnit.trim(),
-        unitNumber: unitObj?.unitNumber || uploadUnit.trim(),
+        tenant: cleanTenantName,
+        tenantId: resolvedTenantId,
+        tenantEmail: cleanEmail || undefined,
+        tenantPhone: cleanPhone || undefined,
+        start: uploadStartDate,
+        end: uploadEndDate,
         rent: rentNum,
         deposit: depNum,
         currency: prop?.currency || viewCurrency,
-        leaseStart: uploadStartDate,
-        leaseEnd: uploadEndDate,
-        message: `Welcome to your new home at ${prop?.name || 'Property'}! Please review the attached lease agreement for Unit ${uploadUnit.trim()}, accept, sign physically, and upload your signed copy to finalize your move-in.`,
-        agreementFileName: uploadFileName || 'Lease_Agreement.pdf',
-        agreementFileData: uploadFileData || undefined,
-        agreementFileUrl: uploadFileData || undefined,
+        dueDay: dueDayNum,
+        escalationPercent: 8,
+        lockInMonths: 11,
+        noticePeriodDays: 30,
+        status: 'active',
+        executionMode: uploadExecutionMode,
+        initialAgreementName: uploadFileName,
+        initialAgreementUrl: uploadFileData || undefined,
+        signedDocumentName: uploadFileName,
+        signedDocumentUrl: uploadFileData || undefined,
+        depositStatus: offlineDepositCollected ? 'paid' : 'unpaid',
+        autoRenew: uploadAutoRenew === 'On',
         requireTenantId: uploadRequireIds && validIdList.length > 0,
         requiredIdList: uploadRequireIds && validIdList.length > 0 ? validIdList : undefined,
         requiredIdTypes: uploadRequireIds && validIdList.length > 0 ? validIdList.map((i) => i.name.trim()) : undefined,
         requiredIdType: uploadRequireIds && validIdList.length > 0 ? validIdList[0].name.trim() : undefined,
-        status: 'pending',
+        tenantUploadedIds: offlineUploadedIds.length > 0 ? offlineUploadedIds : undefined,
+        tenantUploadedIdUrl: offlineUploadedIds.length > 0 ? offlineUploadedIds[0].fileUrl : undefined,
+        tenantUploadedIdName: offlineUploadedIds.length > 0 ? offlineUploadedIds[0].fileName : undefined,
+        tenantUploadedIdAt: offlineUploadedIds.length > 0 ? new Date().toISOString() : undefined,
         createdAt: new Date().toISOString(),
       };
 
-      sendTenancyRequest(newReq);
+      addAgreement(newAg);
       if (unitObj) {
         saveUnit({
           ...unitObj,
-          status: 'reserved',
-          tenant: uploadTenantName.trim(),
-          currentTenantId: targetTenantId,
+          status: 'occupied',
+          tenant: cleanTenantName,
+          currentTenantId: resolvedTenantId,
           rent: rentNum,
           deposit: depNum,
         });
       }
 
+      // Auto-generate first-month rent invoice (Web Parity)
+      const invId = `INV-${Math.floor(1000 + Math.random() * 9000)}`;
+      const newInvoice: MobileInvoice = {
+        id: invId,
+        ownerId: prop?.ownerId || user?.id || ownerId,
+        propertyId: prop?.id || '',
+        propertyName: prop?.name || 'Property',
+        unitId: unitObj?.id || uploadUnit.trim(),
+        unit: uploadUnit.trim(),
+        tenant: cleanTenantName,
+        tenantId: resolvedTenantId,
+        amount: rentNum,
+        tax: 0,
+        total: rentNum,
+        currency: prop?.currency || viewCurrency,
+        due: uploadStartDate,
+        issueDate: new Date().toISOString().split('T')[0],
+        status: 'sent',
+        type: 'rent',
+        items: [
+          {
+            description: `First Month Rent for Unit ${uploadUnit.trim()}`,
+            amount: rentNum,
+            quantity: 1,
+          },
+        ],
+        createdAt: new Date().toISOString(),
+      };
+      try {
+        saveInvoice(newInvoice);
+      } catch (e) {
+        console.warn('Invoice generation warning:', e);
+      }
+
       if (activeDraftId) {
         deleteAgreement(activeDraftId);
         setActiveDraftId(null);
+      }
+
+      if (onboardEnquiryId) {
+        handleUpdateEnquiryStatus(onboardEnquiryId, 'onboarded');
+        setOnboardEnquiryId(null);
       }
 
       setShowUploadAgreementModal(false);
@@ -1080,162 +1377,36 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       setUploadUnitId('');
       setUploadRequireIds(false);
       setUploadOfflineTenantIds({});
+      setUploadFileName('');
+      setUploadFileData('');
+      setUploadSelectedTemplateId('');
+      setShowDurationDropdown(false);
+      setSelectedDurationLabel('1 Year (12 Months)');
 
       showAlert({
         type: 'success',
-        title: 'Tenancy Offer Dispatched',
-        message: `Tenancy invitation with attached lease agreement dispatched to ${uploadTenantName.trim()} for Unit ${uploadUnit.trim()}.`,
+        title: 'Agreement Saved & Resident Onboarded',
+        message: `Executed offline agreement #${newAgId} successfully archived. Unit ${uploadUnit} is now marked Occupied and resident account has been provisioned.`,
         details: [
-          { label: 'Resident', value: uploadTenantName.trim(), icon: 'user' },
-          { label: 'Unit', value: `Unit ${uploadUnit.trim()}`, icon: 'home' },
-          { label: 'Monthly Rent', value: `${format(Number(uploadRent) || 0, viewCurrency)}/mo`, icon: 'dollar-sign' },
-          { label: 'Status', value: 'Unit Reserved Pending Acceptance', icon: 'shield' },
+          { label: 'Agreement ID', value: `#${newAgId}`, icon: 'file-text' },
+          { label: 'Resident', value: cleanTenantName, icon: 'user' },
+          { label: 'Unit', value: `Unit ${uploadUnit}`, icon: 'home' },
+          { label: 'Account Email', value: cleanEmail || 'Not specified', icon: 'mail' },
+          { label: 'Login Password', value: tempPassword, icon: 'key' },
+          { label: 'Status', value: 'Occupied & Active', icon: 'check-circle' },
         ],
         primaryButtonText: 'Done',
       });
-      return;
-    }
-
-    const offlineUploadedIds: MobileTenantUploadedIdItem[] = Object.entries(uploadOfflineTenantIds).map(([id, info]) => {
-      const match = validIdList.find((item) => item.id === id);
-      return {
-        id: `u_${id}`,
-        name: match?.name || 'ID Verification Document',
-        fileUrl: info.fileUrl,
-        fileName: info.fileName,
-        uploadedAt: new Date().toISOString(),
-      };
-    });
-
-    const newAg: MobileAgreement = {
-      id: newAgId,
-      ownerId: prop?.ownerId || user.id || '',
-      ownerName: user.displayName || 'Property Owner',
-      propertyId: prop?.id || '',
-      propertyName: prop?.name || 'Property',
-      unit: uploadUnit.trim(),
-      tenant: uploadTenantName.trim(),
-      tenantId: selectedTenantObj?.id || `TEN-${Date.now().toString().slice(-4)}`,
-      tenantEmail: uploadTenantEmail.trim() || undefined,
-      tenantPhone: uploadTenantPhone.trim() || undefined,
-      start: uploadStartDate,
-      end: uploadEndDate,
-      rent: rentNum,
-      deposit: depNum,
-      currency: prop?.currency || viewCurrency,
-      dueDay: dueDayNum,
-      escalationPercent: 8,
-      lockInMonths: 11,
-      noticePeriodDays: 30,
-      status: 'active',
-      executionMode: uploadExecutionMode,
-      initialAgreementName: uploadFileName,
-      initialAgreementUrl: uploadFileData || undefined,
-      signedDocumentName: uploadFileName,
-      signedDocumentUrl: uploadFileData || undefined,
-      depositStatus: offlineDepositCollected ? 'paid' : 'unpaid',
-      autoRenew: uploadAutoRenew === 'On',
-      requireTenantId: uploadRequireIds && validIdList.length > 0,
-      requiredIdList: uploadRequireIds && validIdList.length > 0 ? validIdList : undefined,
-      requiredIdTypes: uploadRequireIds && validIdList.length > 0 ? validIdList.map((i) => i.name.trim()) : undefined,
-      requiredIdType: uploadRequireIds && validIdList.length > 0 ? validIdList[0].name.trim() : undefined,
-      tenantUploadedIds: offlineUploadedIds.length > 0 ? offlineUploadedIds : undefined,
-      tenantUploadedIdUrl: offlineUploadedIds.length > 0 ? offlineUploadedIds[0].fileUrl : undefined,
-      tenantUploadedIdName: offlineUploadedIds.length > 0 ? offlineUploadedIds[0].fileName : undefined,
-      tenantUploadedIdAt: offlineUploadedIds.length > 0 ? new Date().toISOString() : undefined,
-      createdAt: new Date().toISOString(),
-    };
-
-    addAgreement(newAg);
-    if (unitObj) {
-      saveUnit({
-        ...unitObj,
-        status: 'occupied',
-        tenant: uploadTenantName.trim(),
-        currentTenantId: newAg.tenantId,
-        rent: rentNum,
-        deposit: depNum,
+    } catch (err: any) {
+      console.error('[LeasingHub] Error executing agreement:', err);
+      showAlert({
+        type: 'warning',
+        title: 'Onboarding Error',
+        message: err?.message || 'Failed to complete resident onboarding. Please try again.',
       });
+    } finally {
+      setIsSubmittingAgreement(false);
     }
-
-    // Persist resident in state.tenants & Firestore directory
-    saveTenant({
-      id: newAg.tenantId,
-      name: uploadTenantName.trim(),
-      email: uploadTenantEmail.trim() || '',
-      phone: uploadTenantPhone.trim() || '',
-      unit: uploadUnit.trim(),
-      ownerId: prop?.ownerId || user?.id || ownerId,
-      propertyId: prop?.id || '',
-      propertyName: prop?.name || 'Property',
-      rent: rentNum,
-      deposit: depNum,
-      currency: prop?.currency || viewCurrency,
-      leaseStart: uploadStartDate,
-      leaseEnd: uploadEndDate,
-      rating: 5,
-      kycStatus: 'verified',
-      status: 'active',
-    });
-
-    // Auto-generate first-month rent invoice (Web Parity)
-    const invId = `INV-${Math.floor(1000 + Math.random() * 9000)}`;
-    const newInvoice: MobileInvoice = {
-      id: invId,
-      ownerId: prop?.ownerId || user?.id || ownerId,
-      propertyId: prop?.id || '',
-      propertyName: prop?.name || 'Property',
-      unitId: unitObj?.id || uploadUnit.trim(),
-      unit: uploadUnit.trim(),
-      tenant: uploadTenantName.trim(),
-      tenantId: newAg.tenantId,
-      amount: rentNum,
-      tax: 0,
-      total: rentNum,
-      currency: prop?.currency || viewCurrency,
-      due: uploadStartDate,
-      issueDate: new Date().toISOString().split('T')[0],
-      status: 'sent',
-      type: 'rent',
-      items: [
-        {
-          description: `First Month Rent for Unit ${uploadUnit.trim()}`,
-          amount: rentNum,
-          quantity: 1,
-        },
-      ],
-      createdAt: new Date().toISOString(),
-    };
-    try {
-      saveInvoice(newInvoice);
-    } catch (e) {
-      console.warn('Invoice generation warning:', e);
-    }
-
-    if (activeDraftId) {
-      deleteAgreement(activeDraftId);
-      setActiveDraftId(null);
-    }
-
-    setShowUploadAgreementModal(false);
-    setUploadTenantName('');
-    setUploadTenantEmail('');
-    setUploadTenantPhone('');
-    setUploadUnitId('');
-    setUploadRequireIds(false);
-    setUploadOfflineTenantIds({});
-
-    showAlert({
-      type: 'success',
-      title: 'Agreement Saved',
-      message: `Executed offline agreement #${newAgId} successfully archived. Unit ${uploadUnit} is now marked Occupied.`,
-      details: [
-        { label: 'Agreement ID', value: `#${newAgId}`, icon: 'file-text' },
-        { label: 'Unit', value: `Unit ${uploadUnit}`, icon: 'home' },
-        { label: 'Status', value: 'Occupied', icon: 'check-circle' },
-      ],
-      primaryButtonText: 'Done',
-    });
   };
 
   const handleConfirmTerminate = () => {
@@ -1269,1098 +1440,1343 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       pointerEvents={modalOnly ? 'box-none' : 'auto'}
     >
       {!modalOnly && (<>
-      {/* StatusBar managed globally */}
-      <ScreenStatusBar />
+        {/* StatusBar managed globally */}
+        <ScreenStatusBar />
 
-      {/* Header */}
-      <Header
-        title="Leasing Hub"
-        onNotificationPress={() => { }}
-        onProfilePress={onProfilePress}
-      />
+        {/* Header */}
+        <Header
+          title="Leasing"
+          onNotificationPress={() => onNavigate?.('notifications_center')}
+          onProfilePress={onProfilePress}
+        />
 
-      <View style={[styles.mainContainer, { backgroundColor: colors.background }]}>
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.content}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Subtab Pill Chips */}
-          <TourTarget id="leasing-subtabs">
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.tabContainer}
-              contentContainerStyle={{ gap: 8, paddingRight: 4 }}
-            >
-              {/* Leases */}
-              <TouchableOpacity
-                style={[styles.tabButton, activeTab === 'agreements' && styles.tabButtonActive]}
-                onPress={() => setActiveTab('agreements')}
-                activeOpacity={0.8}
+        <View style={[styles.mainContainer, { backgroundColor: colors.background }]}>
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.content}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Subtab Pill Chips */}
+            <TourTarget id="leasing-subtabs">
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.tabContainer}
+                contentContainerStyle={{ gap: 8, paddingRight: 4 }}
               >
-                <Text style={[styles.tabText, activeTab === 'agreements' && styles.tabTextActive]}>
-                  Leases
-                </Text>
-              </TouchableOpacity>
-
-              {/* Renewals */}
-              <TouchableOpacity
-                style={[styles.tabButton, activeTab === 'renewals' && styles.tabButtonActive]}
-                onPress={() => setActiveTab('renewals')}
-                activeOpacity={0.8}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                  <Text style={[styles.tabText, activeTab === 'renewals' && styles.tabTextActive]}>
-                    Renewals
-                  </Text>
-                  {myRenewals.length > 0 && (
-                    <View
-                      style={{
-                        backgroundColor: activeTab === 'renewals' ? 'rgba(255,255,255,0.3)' : colors.inkSoft,
-                        borderRadius: 10,
-                        paddingHorizontal: 5,
-                        paddingVertical: 1,
-                      }}
-                    >
-                      <Text style={{ fontSize: 10, fontWeight: '700', color: '#FFFFFF' }}>
-                        {myRenewals.length}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              </TouchableOpacity>
-
-              {/* Lease Templates */}
-              <TouchableOpacity
-                style={[styles.tabButton, activeTab === 'library' && styles.tabButtonActive]}
-                onPress={() => setActiveTab('library')}
-                activeOpacity={0.8}
-              >
-                <Text style={[styles.tabText, activeTab === 'library' && styles.tabTextActive]}>
-                  Lease Templates ({myTemplates.length})
-                </Text>
-              </TouchableOpacity>
-
-              {/* Drafts */}
-              <TouchableOpacity
-                style={[styles.tabButton, activeTab === 'drafts' && styles.tabButtonActive]}
-                onPress={() => setActiveTab('drafts')}
-                activeOpacity={0.8}
-              >
-                <Text style={[styles.tabText, activeTab === 'drafts' && styles.tabTextActive]}>
-                  Drafts ({myDrafts.length})
-                </Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </TourTarget>
-
-          {/* Tenant Limit Warning Banner (Web Parity) */}
-          {isTenantLimitReached && (
-            <View style={styles.limitWarningBanner}>
-              <Feather name="alert-triangle" size={16} color="#D97706" style={{ marginTop: 2, marginRight: 8 }} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.limitWarningTitle}>
-                  Tenant limit reached ({state.tenants.length}/{maxTenants} on {currentPlanName} tier)
-                </Text>
-                <Text style={styles.limitWarningSub}>
-                  Upgrade your plan to add more tenancies and automated agreements.
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {/* Search Box */}
-          <View style={[styles.searchBox, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Feather name="search" size={16} color={colors.inkSoft} />
-            <TextInput
-              style={[styles.searchInput, { color: colors.navy }]}
-              value={search}
-              onChangeText={setSearch}
-              placeholder={
-                activeTab === 'library'
-                  ? 'Search agreement title or property...'
-                  : activeTab === 'applications'
-                    ? 'Search applicant or unit...'
-                    : activeTab === 'renewals'
-                      ? 'Search renewal or unit...'
-                      : activeTab === 'drafts'
-                        ? 'Search draft resident or unit...'
-                        : 'Search tenant or unit...'
-              }
-              placeholderTextColor={colors.inkSoft}
-              autoCapitalize="none"
-            />
-            {search.length > 0 && (
-              <TouchableOpacity onPress={() => setSearch('')}>
-                <Ionicons name="close-circle" size={16} color={colors.inkSoft} />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* SubTab 1: Agreements Header & Filter Chips (1-to-1 Web Parity) */}
-          {activeTab === 'agreements' && (
-            <View>
-              {/* Web Parity Panel Head: Hint on left, "+ Upload" brass button on right */}
-              <TourTarget id="leasing-issue-btn" style={styles.metaRow}>
-                <Text style={styles.metaHint} numberOfLines={1}>
-                  {displayedAgreements.length} leases on file
-                </Text>
+                {/* Leases */}
                 <TouchableOpacity
-                  style={styles.headerUploadBtn}
-                  onPress={() => handleOpenDraftModal()}
-                  activeOpacity={0.85}
+                  style={[styles.tabButton, activeTab === 'agreements' && styles.tabButtonActive]}
+                  onPress={() => setActiveTab('agreements')}
+                  activeOpacity={0.8}
                 >
-                  <Text style={styles.headerUploadBtnText}>+ New Lease</Text>
+                  <Text style={[styles.tabText, activeTab === 'agreements' && styles.tabTextActive]}>
+                    Leases
+                  </Text>
                 </TouchableOpacity>
-              </TourTarget>
 
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterChipScroll}>
-                {[
-                  { key: 'all', label: 'All' },
-                  { key: 'active', label: 'Active' },
-                  { key: 'pending_approval', label: 'Pending' },
-                  { key: 'pending_deposit', label: 'Deposit Due' },
-                  { key: 'awaiting_signature', label: 'Signing' },
-                ].map((item) => {
-                  const isSelected = agreementFilter === item.key;
+                {/* Renewals */}
+                <TouchableOpacity
+                  style={[styles.tabButton, activeTab === 'renewals' && styles.tabButtonActive]}
+                  onPress={() => setActiveTab('renewals')}
+                  activeOpacity={0.8}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <Text style={[styles.tabText, activeTab === 'renewals' && styles.tabTextActive]}>
+                      Renewals
+                    </Text>
+                    {myRenewals.length > 0 && (
+                      <View
+                        style={{
+                          backgroundColor: activeTab === 'renewals' ? 'rgba(255,255,255,0.3)' : colors.inkSoft,
+                          borderRadius: 10,
+                          paddingHorizontal: 5,
+                          paddingVertical: 1,
+                        }}
+                      >
+                        <Text style={{ fontSize: 10, fontWeight: '700', color: '#FFFFFF' }}>
+                          {myRenewals.length}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </TouchableOpacity>
+
+                {/* Lease Templates */}
+                <TouchableOpacity
+                  style={[styles.tabButton, activeTab === 'library' && styles.tabButtonActive]}
+                  onPress={() => setActiveTab('library')}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.tabText, activeTab === 'library' && styles.tabTextActive]}>
+                    Lease Templates ({myTemplates.length})
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Drafts */}
+                <TouchableOpacity
+                  style={[styles.tabButton, activeTab === 'drafts' && styles.tabButtonActive]}
+                  onPress={() => setActiveTab('drafts')}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.tabText, activeTab === 'drafts' && styles.tabTextActive]}>
+                    Drafts ({myDrafts.length})
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Enquiries (Web 1-to-1 Parity) */}
+                <TouchableOpacity
+                  style={[styles.tabButton, activeTab === 'enquiries' && styles.tabButtonActive]}
+                  onPress={() => setActiveTab('enquiries')}
+                  activeOpacity={0.8}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <Text style={[styles.tabText, activeTab === 'enquiries' && styles.tabTextActive]}>
+                      Enquiries
+                    </Text>
+                    {myEnquiries.length > 0 && (
+                      <View
+                        style={{
+                          backgroundColor: activeTab === 'enquiries' ? 'rgba(255,255,255,0.3)' : '#059669',
+                          borderRadius: 10,
+                          paddingHorizontal: 5,
+                          paddingVertical: 1,
+                        }}
+                      >
+                        <Text style={{ fontSize: 10, fontWeight: '700', color: '#FFFFFF' }}>
+                          {myEnquiries.length}
+                        </Text>
+                      </View>
+                    )}
+                    {hasNewEnquiries && (
+                      <View
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: 4,
+                          backgroundColor: '#10B981',
+                          marginLeft: 1,
+                        }}
+                      />
+                    )}
+                  </View>
+                </TouchableOpacity>
+              </ScrollView>
+            </TourTarget>
+
+            {/* Tenant Limit Warning Banner (Web Parity) */}
+            {isTenantLimitReached && (
+              <View style={styles.limitWarningBanner}>
+                <Feather name="alert-triangle" size={16} color="#D97706" style={{ marginTop: 2, marginRight: 8 }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.limitWarningTitle}>
+                    Tenant limit reached ({state.tenants.length}/{maxTenants} on {currentPlanName} tier)
+                  </Text>
+                  <Text style={styles.limitWarningSub}>
+                    Upgrade your plan to add more tenancies and automated agreements.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Search Box */}
+            <View style={[styles.searchBox, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+              <Feather name="search" size={16} color={colors.inkSoft} />
+              <TextInput
+                style={[styles.searchInput, { color: colors.navy }]}
+                value={search}
+                onChangeText={setSearch}
+                placeholder={
+                  activeTab === 'library'
+                    ? 'Search agreement title or property...'
+                    : activeTab === 'applications'
+                      ? 'Search applicant or unit...'
+                      : activeTab === 'renewals'
+                        ? 'Search renewal or unit...'
+                        : activeTab === 'drafts'
+                          ? 'Search draft resident or unit...'
+                          : 'Search tenant or unit...'
+                }
+                placeholderTextColor={colors.inkSoft}
+                autoCapitalize="none"
+              />
+              {search.length > 0 && (
+                <TouchableOpacity onPress={() => setSearch('')}>
+                  <Ionicons name="close-circle" size={16} color={colors.inkSoft} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* SubTab 1: Agreements Header & Filter Chips (1-to-1 Web Parity) */}
+            {activeTab === 'agreements' && (
+              <View>
+                {/* Web Parity Panel Head: Hint on left, "+ Upload" brass button on right */}
+                <TourTarget id="leasing-issue-btn" style={styles.metaRow}>
+                  <Text style={styles.metaHint} numberOfLines={1}>
+                    {displayedAgreements.length} leases on file
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.headerUploadBtn}
+                    onPress={() => handleOpenDraftModal()}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.headerUploadBtnText}>+ New Lease</Text>
+                  </TouchableOpacity>
+                </TourTarget>
+
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterChipScroll}>
+                  {[
+                    { key: 'all', label: 'All' },
+                    { key: 'active', label: 'Active' },
+                    { key: 'pending_approval', label: 'Pending' },
+                    { key: 'pending_deposit', label: 'Deposit Due' },
+                    { key: 'awaiting_signature', label: 'Signing' },
+                  ].map((item) => {
+                    const isSelected = agreementFilter === item.key;
+                    return (
+                      <TouchableOpacity
+                        key={item.key}
+                        style={[styles.filterChip, { backgroundColor: colors.surface, borderColor: colors.line }, isSelected && styles.filterChipActive]}
+                        onPress={() => setAgreementFilter(item.key as any)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.filterText, { color: colors.inkSoft }, isSelected && styles.filterTextActive]}>
+                          {item.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
+
+            {/* SubTab 3: Applications Filter Chips */}
+            {activeTab === 'applications' && (
+              <View style={styles.filterRow}>
+                {(['all', 'pending', 'accepted', 'declined'] as const).map((item) => {
+                  const isSelected = appFilter === item;
+                  const label =
+                    item === 'all'
+                      ? 'All'
+                      : item === 'pending'
+                        ? 'Pending'
+                        : item === 'accepted'
+                          ? 'Approved'
+                          : 'Declined';
+
                   return (
                     <TouchableOpacity
-                      key={item.key}
+                      key={item}
                       style={[styles.filterChip, { backgroundColor: colors.surface, borderColor: colors.line }, isSelected && styles.filterChipActive]}
-                      onPress={() => setAgreementFilter(item.key as any)}
+                      onPress={() => setAppFilter(item)}
                       activeOpacity={0.7}
                     >
                       <Text style={[styles.filterText, { color: colors.inkSoft }, isSelected && styles.filterTextActive]}>
-                        {item.label}
+                        {label}
                       </Text>
                     </TouchableOpacity>
                   );
                 })}
-              </ScrollView>
-            </View>
-          )}
-
-          {/* SubTab 3: Applications Filter Chips */}
-          {activeTab === 'applications' && (
-            <View style={styles.filterRow}>
-              {(['all', 'pending', 'accepted', 'declined'] as const).map((item) => {
-                const isSelected = appFilter === item;
-                const label =
-                  item === 'all'
-                    ? 'All'
-                    : item === 'pending'
-                      ? 'Pending'
-                      : item === 'accepted'
-                        ? 'Approved'
-                        : 'Declined';
-
-                return (
-                  <TouchableOpacity
-                    key={item}
-                    style={[styles.filterChip, { backgroundColor: colors.surface, borderColor: colors.line }, isSelected && styles.filterChipActive]}
-                    onPress={() => setAppFilter(item)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.filterText, { color: colors.inkSoft }, isSelected && styles.filterTextActive]}>
-                      {label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-
-          {/* ==================================================== */}
-          {/* SUBTAB 1: AGREEMENTS & DOCUMENTS                     */}
-          {/* ==================================================== */}
-          {activeTab === 'agreements' && (
-            displayedAgreements.length === 0 ? (
-              <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <Feather name="file-text" size={32} color={colors.inkSoft} />
-                <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Agreements Found</Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                  No legal tenancy agreements match your active filter. Use "Create Lease" to record a lease agreement.
-                </Text>
               </View>
-            ) : (
-              displayedAgreements.map((ag) => {
-                const isActive = ag.status === 'active';
-                const isPendingApproval = ag.status === 'pending_approval' || (ag as any).status === 'awaiting_owner_signature';
-                const isPendingDeposit = ag.status === 'pending_deposit';
-                const isAwaitingTenant =
-                  ag.status === 'awaiting_tenant_signature' || ag.status === 'awaiting_tenant_upload';
+            )}
 
-                return (
-                  <View key={ag.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    {/* Header */}
-                    <View style={styles.cardHeader}>
-                      <View style={{ flex: 1, marginRight: 8 }}>
-                        <Text style={[styles.unitName, { color: colors.navy }]} numberOfLines={1}>
-                          {ag.propertyName?.trim() ? `${ag.propertyName.trim()} • Unit ${ag.unit}` : `Unit ${ag.unit}`}
-                        </Text>
-                        <Text style={styles.agreementCode}>AGREEMENT #{ag.id}</Text>
-                      </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <View
-                          style={[
-                            styles.statusBadge,
-                            isActive && styles.activeBadge,
-                            isPendingApproval && { backgroundColor: '#FEF3C7' },
-                            isPendingDeposit && { backgroundColor: '#EFF6FF' },
-                            isAwaitingTenant && styles.pendingBadge,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.statusBadgeText,
-                              isActive && styles.activeBadgeText,
-                              isPendingApproval && { color: '#D97706', fontWeight: '700' },
-                              isPendingDeposit && { color: '#2563EB', fontWeight: '700' },
-                              isAwaitingTenant && styles.pendingBadgeText,
-                            ]}
-                          >
-                            {isActive
-                              ? 'ACTIVE'
-                              : isPendingApproval
-                                ? 'PENDING APPROVAL'
-                                : isPendingDeposit
-                                  ? 'DEPOSIT PENDING'
-                                  : isAwaitingTenant
-                                    ? 'AWAITING RESIDENT'
-                                    : ag.status.replace(/_/g, ' ').toUpperCase()}
-                          </Text>
-                        </View>
-                        {isAwaitingTenant && (
-                          <Text style={styles.stepBadgeSubtext}>
-                            Step 2: Ink Sign
-                          </Text>
-                        )}
-                      </View>
-                    </View>
-
-                    {/* Resident & Term Info Grid */}
-                    <View style={styles.agreementGrid}>
-                      <View style={styles.agGridRow}>
-                        <View style={styles.agGridCol}>
-                          <Text style={styles.agGridLabel}>RESIDENT</Text>
-                          <Text style={styles.agGridValBold} numberOfLines={1}>{ag.tenant}</Text>
-                          {(ag.tenantEmail || ag.tenantPhone) && (
-                            <Text style={styles.agGridSub} numberOfLines={1}>{ag.tenantPhone || ag.tenantEmail}</Text>
-                          )}
-                        </View>
-                        <View style={styles.agGridCol}>
-                          <Text style={styles.agGridLabel}>MONTHLY RENT</Text>
-                          <Text style={[styles.agGridValBold, { color: '#059669' }]}>
-                            {format(ag.rent, ag.currency || viewCurrency)}/mo
-                          </Text>
-                          <Text style={styles.agGridSub}>Due on Day {ag.dueDay || 1}</Text>
-                        </View>
-                      </View>
-
-                      <View style={[styles.agGridRow, { marginTop: 8 }]}>
-                        <View style={styles.agGridCol}>
-                          <Text style={styles.agGridLabel}>CONTRACT PERIOD</Text>
-                          <Text style={styles.agGridVal} numberOfLines={1}>
-                            {ag.start} → {ag.end}
-                          </Text>
-                        </View>
-                        <View style={styles.agGridCol}>
-                          <Text style={styles.agGridLabel}>SECURITY DEPOSIT</Text>
-                          <Text style={styles.agGridVal}>
-                            {format(ag.deposit || 0, ag.currency || viewCurrency)}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-
-                    {/* Document Repository Strip */}
-                    <View style={styles.docRepositoryStrip}>
-                      <View style={styles.docBadge}>
-                        <Feather name="file-text" size={13} color="#D97706" style={{ marginRight: 6 }} />
-                        <Text style={styles.docBadgeText} numberOfLines={1} ellipsizeMode="middle">
-                          {ag.initialAgreementName || 'Executed_Agreement.pdf'}
-                        </Text>
-                        <Feather name="external-link" size={12} color="#D97706" style={{ marginLeft: 4 }} />
-                      </View>
-                      {ag.signedDocumentName || ag.signedDocumentUrl ? (
-                        <TouchableOpacity
-                          style={styles.docBadgeSigned}
-                          onPress={() => setInspectingSignedAgreement(ag)}
-                          activeOpacity={0.8}
-                        >
-                          <Feather name="check-circle" size={13} color="#059669" style={{ marginRight: 6 }} />
-                          <Text style={styles.docBadgeSignedText} numberOfLines={1} ellipsizeMode="middle">
-                            {ag.signedDocumentName || 'Resident Signed Copy ✓'}
-                          </Text>
-                          <Feather name="external-link" size={12} color="#059669" style={{ marginLeft: 4 }} />
-                        </TouchableOpacity>
-                      ) : null}
-                    </View>
-
-                    {/* Pending Approval Callout Strip */}
-                    {isPendingApproval && (
-                      <View style={styles.approvalRequiredBox}>
-                        <View style={styles.approvalRequiredHeader}>
-                          <Feather name="file-text" size={14} color="#D97706" />
-                          <Text style={styles.approvalRequiredTitle}>Resident Uploaded Signed Lease</Text>
-                        </View>
-                        <Text style={styles.approvalRequiredFile}>
-                          File: {ag.signedDocumentName || 'Executed_Tenancy_Lease.pdf'}
-                        </Text>
-                        <TouchableOpacity
-                          style={styles.approveLeaseBtn}
-                          onPress={() => setInspectingSignedAgreement(ag)}
-                          activeOpacity={0.85}
-                        >
-                          <Feather name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                          <Text style={styles.approveLeaseBtnText}>Review</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-
-                    {/* Deposit Pending Callout Strip */}
-                    {isPendingDeposit && (
-                      <View style={styles.depositPendingBox}>
-                        <Feather name="clock" size={14} color="#2563EB" />
-                        <View style={{ flex: 1, marginLeft: 8 }}>
-                          <Text style={styles.depositPendingTitle}>Awaiting Move-In Security Deposit</Text>
-                          <Text style={styles.depositPendingSub}>
-                            Invoice #{ag.depositInvoiceId || `INV-DEP-${ag.id}`} • {format(ag.deposit || 0, ag.currency || viewCurrency)} • Automatically activates once paid.
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-
-                    {/* Action Buttons Row */}
-                    <View style={styles.cardActionsRow}>
-                      <TouchableOpacity
-                        style={styles.detailsActionBtn}
-                        onPress={() => setViewingAgreement(ag)}
-                        activeOpacity={0.8}
-                      >
-                        <Feather name="eye" size={13} color="#475569" />
-                        <Text style={styles.detailsActionText}>View</Text>
-                      </TouchableOpacity>
-
-                      {isActive && (
-                        <TouchableOpacity
-                          style={styles.renewalActionBtn}
-                          onPress={() => openRenewalModal(ag.unit, ag.tenant, ag.rent, ag.end, ag.currency, ag.propertyId)}
-                          activeOpacity={0.8}
-                        >
-                          <Feather name="calendar" size={13} color="#2563EB" />
-                          <Text style={styles.renewalActionText}>Renew</Text>
-                        </TouchableOpacity>
-                      )}
-
-                      <TouchableOpacity
-                        style={styles.noticeActionBtn}
-                        onPress={() => {
-                          setSelectedTerminateAg(ag);
-                          setShowTerminateModal(true);
-                        }}
-                        activeOpacity={0.8}
-                      >
-                        <Feather name="log-out" size={13} color="#DC2626" />
-                        <Text style={styles.noticeActionText}>Send Notice</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                );
-              })
-            )
-          )}
-
-          {/* ==================================================== */}
-          {/* SUBTAB 2: LEASE RENEWALS (Web 1-to-1 Parity)         */}
-          {/* ==================================================== */}
-          {activeTab === 'renewals' && (
-            <View>
-              {/* Web Banner Notice */}
-              <View style={styles.renewalNoticeBanner}>
-                <Feather name="info" size={15} color="#2563EB" style={{ marginRight: 8, marginTop: 1 }} />
-                <Text style={styles.renewalNoticeText}>
-                  Propithub flags leases 60 and 30 days before expiry automatically. Offer early renewal terms with dynamic rent escalation.
-                </Text>
-              </View>
-
-              {myRenewals.length === 0 ? (
+            {/* ==================================================== */}
+            {/* SUBTAB 1: AGREEMENTS & DOCUMENTS                     */}
+            {/* ==================================================== */}
+            {activeTab === 'agreements' && (
+              displayedAgreements.length === 0 ? (
                 <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Feather name="calendar" size={32} color={colors.inkSoft} />
-                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Renewals Due</Text>
+                  <Feather name="file-text" size={32} color={colors.inkSoft} />
+                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Agreements Found</Text>
                   <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    No active lease renewals on record. Expiring tenancies will automatically appear here.
+                    No legal tenancy agreements match your active filter. Use "Create Lease" to record a lease agreement.
                   </Text>
                 </View>
               ) : (
-                myRenewals.map((r) => {
-                  const isAccepted = r.status === 'accepted' || r.status === 'auto_renew_set';
-                  const isSignedByTenant = r.status === 'signed_by_tenant';
-                  const isRenewalOffered = r.status === 'renewal_offered';
-                  const isDeclined = r.status === 'rejected';
-                  const isRequested = r.status === 'renewal_requested';
+                displayedAgreements.map((ag) => {
+                  const isActive = ag.status === 'active';
+                  const isPendingApproval = ag.status === 'pending_approval' || (ag as any).status === 'awaiting_owner_signature';
+                  const isPendingDeposit = ag.status === 'pending_deposit';
+                  const isAwaitingTenant =
+                    ag.status === 'awaiting_tenant_signature' || ag.status === 'awaiting_tenant_upload';
 
                   return (
-                    <View key={r.id || `${r.propertyId || ''}_${r.unit}`} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <View key={ag.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                      {/* Header */}
+                      <View style={styles.cardHeader}>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text style={[styles.unitName, { color: colors.navy }]} numberOfLines={1}>
+                            {ag.propertyName?.trim() ? `${ag.propertyName.trim()} • Unit ${ag.unit}` : `Unit ${ag.unit}`}
+                          </Text>
+                          <Text style={styles.agreementCode}>AGREEMENT #{ag.id}</Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <View
+                            style={[
+                              styles.statusBadge,
+                              isActive && styles.activeBadge,
+                              isPendingApproval && { backgroundColor: '#FEF3C7' },
+                              isPendingDeposit && { backgroundColor: '#EFF6FF' },
+                              isAwaitingTenant && styles.pendingBadge,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.statusBadgeText,
+                                isActive && styles.activeBadgeText,
+                                isPendingApproval && { color: '#D97706', fontWeight: '700' },
+                                isPendingDeposit && { color: '#2563EB', fontWeight: '700' },
+                                isAwaitingTenant && styles.pendingBadgeText,
+                              ]}
+                            >
+                              {isActive
+                                ? 'ACTIVE'
+                                : isPendingApproval
+                                  ? 'PENDING APPROVAL'
+                                  : isPendingDeposit
+                                    ? 'DEPOSIT PENDING'
+                                    : isAwaitingTenant
+                                      ? 'AWAITING RESIDENT'
+                                      : ag.status.replace(/_/g, ' ').toUpperCase()}
+                            </Text>
+                          </View>
+                          {isAwaitingTenant && (
+                            <Text style={styles.stepBadgeSubtext}>
+                              Step 2: Ink Sign
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+
+                      {/* Resident & Term Info Grid */}
+                      <View style={styles.agreementGrid}>
+                        <View style={styles.agGridRow}>
+                          <View style={styles.agGridCol}>
+                            <Text style={styles.agGridLabel}>RESIDENT</Text>
+                            <Text style={styles.agGridValBold} numberOfLines={1}>{ag.tenant}</Text>
+                            {(ag.tenantEmail || ag.tenantPhone) && (
+                              <Text style={styles.agGridSub} numberOfLines={1}>{ag.tenantPhone || ag.tenantEmail}</Text>
+                            )}
+                          </View>
+                          <View style={styles.agGridCol}>
+                            <Text style={styles.agGridLabel}>MONTHLY RENT</Text>
+                            <Text style={[styles.agGridValBold, { color: '#059669' }]}>
+                              {format(ag.rent, ag.currency || viewCurrency)}/mo
+                            </Text>
+                            <Text style={styles.agGridSub}>Due on Day {ag.dueDay || 1}</Text>
+                          </View>
+                        </View>
+
+                        <View style={[styles.agGridRow, { marginTop: 8 }]}>
+                          <View style={styles.agGridCol}>
+                            <Text style={styles.agGridLabel}>CONTRACT PERIOD</Text>
+                            <Text style={styles.agGridVal} numberOfLines={1}>
+                              {ag.start} → {ag.end}
+                            </Text>
+                          </View>
+                          <View style={styles.agGridCol}>
+                            <Text style={styles.agGridLabel}>SECURITY DEPOSIT</Text>
+                            <Text style={styles.agGridVal}>
+                              {format(ag.deposit || 0, ag.currency || viewCurrency)}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+
+                      {/* Document Repository Strip */}
+                      <View style={styles.docRepositoryStrip}>
+                        <View style={styles.docBadge}>
+                          <Feather name="file-text" size={13} color="#D97706" style={{ marginRight: 6 }} />
+                          <Text style={styles.docBadgeText} numberOfLines={1} ellipsizeMode="middle">
+                            {ag.initialAgreementName || 'Executed_Agreement.pdf'}
+                          </Text>
+                          <Feather name="external-link" size={12} color="#D97706" style={{ marginLeft: 4 }} />
+                        </View>
+                        {ag.signedDocumentName || ag.signedDocumentUrl ? (
+                          <TouchableOpacity
+                            style={styles.docBadgeSigned}
+                            onPress={() => setInspectingSignedAgreement(ag)}
+                            activeOpacity={0.8}
+                          >
+                            <Feather name="check-circle" size={13} color="#059669" style={{ marginRight: 6 }} />
+                            <Text style={styles.docBadgeSignedText} numberOfLines={1} ellipsizeMode="middle">
+                              {ag.signedDocumentName || 'Resident Signed Copy ✓'}
+                            </Text>
+                            <Feather name="external-link" size={12} color="#059669" style={{ marginLeft: 4 }} />
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+
+                      {/* Pending Approval Callout Strip */}
+                      {isPendingApproval && (
+                        <View style={styles.approvalRequiredBox}>
+                          <View style={styles.approvalRequiredHeader}>
+                            <Feather name="file-text" size={14} color="#D97706" />
+                            <Text style={styles.approvalRequiredTitle}>Resident Uploaded Signed Lease</Text>
+                          </View>
+                          <Text style={styles.approvalRequiredFile}>
+                            File: {ag.signedDocumentName || 'Executed_Tenancy_Lease.pdf'}
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.approveLeaseBtn}
+                            onPress={() => setInspectingSignedAgreement(ag)}
+                            activeOpacity={0.85}
+                          >
+                            <Feather name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                            <Text style={styles.approveLeaseBtnText}>Review</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+
+                      {/* Deposit Pending Callout Strip */}
+                      {isPendingDeposit && (
+                        <View style={styles.depositPendingBox}>
+                          <Feather name="clock" size={14} color="#2563EB" />
+                          <View style={{ flex: 1, marginLeft: 8 }}>
+                            <Text style={styles.depositPendingTitle}>Awaiting Move-In Security Deposit</Text>
+                            <Text style={styles.depositPendingSub}>
+                              Invoice #{ag.depositInvoiceId || `INV-DEP-${ag.id}`} • {format(ag.deposit || 0, ag.currency || viewCurrency)} • Automatically activates once paid.
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+
+                      {/* Action Buttons Row */}
+                      <View style={styles.cardActionsRow}>
+                        <TouchableOpacity
+                          style={styles.detailsActionBtn}
+                          onPress={() => setViewingAgreement(ag)}
+                          activeOpacity={0.8}
+                        >
+                          <Feather name="eye" size={13} color="#475569" />
+                          <Text style={styles.detailsActionText}>View</Text>
+                        </TouchableOpacity>
+
+                        {isActive && (
+                          <TouchableOpacity
+                            style={styles.renewalActionBtn}
+                            onPress={() => openRenewalModal(ag.unit, ag.tenant, ag.rent, ag.end, ag.currency, ag.propertyId)}
+                            activeOpacity={0.8}
+                          >
+                            <Feather name="calendar" size={13} color="#2563EB" />
+                            <Text style={styles.renewalActionText}>Renew</Text>
+                          </TouchableOpacity>
+                        )}
+
+                        <TouchableOpacity
+                          style={styles.noticeActionBtn}
+                          onPress={() => {
+                            setSelectedTerminateAg(ag);
+                            setShowTerminateModal(true);
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <Feather name="log-out" size={13} color="#DC2626" />
+                          <Text style={styles.noticeActionText}>Send Notice</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })
+              )
+            )}
+
+            {/* ==================================================== */}
+            {/* SUBTAB 2: LEASE RENEWALS (Web 1-to-1 Parity)         */}
+            {/* ==================================================== */}
+            {activeTab === 'renewals' && (
+              <View>
+                {/* Web Banner Notice */}
+                <View style={styles.renewalNoticeBanner}>
+                  <Feather name="info" size={15} color="#2563EB" style={{ marginRight: 8, marginTop: 1 }} />
+                  <Text style={styles.renewalNoticeText}>
+                    Propithub flags leases 60 and 30 days before expiry automatically. Offer early renewal terms with dynamic rent escalation.
+                  </Text>
+                </View>
+
+                {myRenewals.length === 0 ? (
+                  <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <Feather name="calendar" size={32} color={colors.inkSoft} />
+                    <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Renewals Due</Text>
+                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
+                      No active lease renewals on record. Expiring tenancies will automatically appear here.
+                    </Text>
+                  </View>
+                ) : (
+                  myRenewals.map((r) => {
+                    const isAccepted = r.status === 'accepted' || r.status === 'auto_renew_set';
+                    const isSignedByTenant = r.status === 'signed_by_tenant';
+                    const isRenewalOffered = r.status === 'renewal_offered';
+                    const isDeclined = r.status === 'rejected';
+                    const isRequested = r.status === 'renewal_requested';
+
+                    return (
+                      <View key={r.id || `${r.propertyId || ''}_${r.unit}`} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                        <View style={styles.cardHeader}>
+                          <View>
+                            <Text style={[styles.unitNameBold, { color: colors.navy }]}>Unit {r.unit}</Text>
+                            <Text style={[styles.tenantSub, { color: colors.inkSoft }]}>{r.tenant}</Text>
+                          </View>
+                          <View
+                            style={[
+                              styles.statusBadge,
+                              isAccepted && styles.activeBadge,
+                              isSignedByTenant && { backgroundColor: '#FEF3C7' },
+                              isRenewalOffered && { backgroundColor: '#EFF6FF' },
+                              isDeclined && { backgroundColor: '#FEE2E2' },
+                              isRequested && { backgroundColor: '#FEF3C7' },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.statusBadgeText,
+                                isAccepted && styles.activeBadgeText,
+                                isSignedByTenant && { color: '#D97706', fontWeight: '700' },
+                                isRenewalOffered && { color: '#2563EB', fontWeight: '700' },
+                                isDeclined && { color: '#DC2626' },
+                                isRequested && { color: '#D97706', fontWeight: '700' },
+                              ]}
+                            >
+                              {isAccepted
+                                ? 'LEASE RENEWED & ACTIVE'
+                                : isSignedByTenant
+                                  ? 'SIGNED BY RESIDENT — REVIEW'
+                                  : isRenewalOffered
+                                    ? `RENEWAL OFFERED (+${r.percentageIncrease || 8}%)`
+                                    : isDeclined
+                                      ? 'DECLINED BY RESIDENT'
+                                      : isRequested
+                                        ? 'RENEWAL REQUESTED'
+                                        : 'AWAITING DECISION'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* 2-Box Countdown Grid (Web Parity) */}
+                        <View style={styles.renewalTwoBoxGrid}>
+                          <View style={styles.renewalBox}>
+                            <Text style={styles.renewalBoxLabel}>Lease Ends</Text>
+                            <Text style={styles.renewalBoxVal}>{r.leaseEnd}</Text>
+                          </View>
+                          <View style={styles.renewalBox}>
+                            <Text style={styles.renewalBoxLabel}>Days Left</Text>
+                            <Text
+                              style={[
+                                styles.renewalBoxVal,
+                                { color: r.daysLeft <= 30 ? '#DC2626' : r.daysLeft <= 60 ? '#D97706' : '#059669' },
+                              ]}
+                            >
+                              {r.daysLeft} days
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* Proposed Rent Terms Strip */}
+                        {(isRenewalOffered || isAccepted || isSignedByTenant) && (
+                          <View style={styles.termsSnippetStrip}>
+                            <Text style={styles.termsSnippetText}>
+                              Current: {format(r.currentRent || 25000, r.currency || viewCurrency)}/mo → Proposed:{' '}
+                              <Text style={{ fontWeight: '700', color: '#059669' }}>
+                                {format(r.proposedRent || Math.round((r.currentRent || 25000) * 1.08), r.currency || viewCurrency)}/mo
+                              </Text>{' '}
+                              (+{r.percentageIncrease || 8}%)
+                            </Text>
+                          </View>
+                        )}
+
+                        {/* Action Buttons */}
+                        {isAccepted ? (
+                          <View style={styles.renewalActionRow}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                              <Feather name="check-circle" size={14} color="#059669" style={{ marginRight: 5 }} />
+                              <Text style={styles.activeRenewalText}>Active Renewal</Text>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.offerNextTermBtn}
+                              onPress={() =>
+                                openRenewalModal(
+                                  r.unit,
+                                  r.tenant,
+                                  r.proposedRent || r.currentRent || 25000,
+                                  r.newLeaseEnd || r.leaseEnd,
+                                  r.currency,
+                                  r.propertyId
+                                )
+                              }
+                              activeOpacity={0.8}
+                            >
+                              <Text style={styles.offerNextTermBtnText}>Offer Next Term</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ) : isSignedByTenant ? (
+                          <TouchableOpacity
+                            style={styles.reviewSignedRenewalBtn}
+                            onPress={() => setInspectingSignedRenewal(r)}
+                            activeOpacity={0.85}
+                          >
+                            <Feather name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                            <Text style={styles.reviewSignedRenewalBtnText}>Review</Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <TouchableOpacity
+                            style={styles.offerRenewalCTA}
+                            onPress={() =>
+                              openRenewalModal(
+                                r.unit,
+                                r.tenant,
+                                r.currentRent || 25000,
+                                r.leaseEnd,
+                                r.currency,
+                                r.propertyId
+                              )
+                            }
+                            activeOpacity={0.85}
+                          >
+                            <Feather name="send" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+                            <Text style={styles.offerRenewalCTAText}>
+                              {isRenewalOffered
+                                ? 'Update Offer'
+                                : isDeclined
+                                  ? 'Re-propose Offer'
+                                  : isRequested
+                                    ? 'Review & Offer'
+                                    : 'Offer Renewal'}
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+            )}
+
+            {/* ==================================================== */}
+            {/* SUBTAB 3: APPLICATIONS / TENANCY REQUESTS            */}
+            {/* ==================================================== */}
+            {activeTab === 'applications' && (
+              displayedApplications.length === 0 ? (
+                <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                  <Feather name="user-check" size={32} color={colors.inkSoft} />
+                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Prospective Applications</Text>
+                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
+                    No rental applications match the current status filter.
+                  </Text>
+                </View>
+              ) : (
+                displayedApplications.map((app) => {
+                  const isPending = app.status === 'pending';
+                  const isAccepted = app.status === 'accepted';
+                  const isDeclined = app.status === 'declined';
+
+                  return (
+                    <View key={app.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                       <View style={styles.cardHeader}>
                         <View>
-                          <Text style={[styles.unitNameBold, { color: colors.navy }]}>Unit {r.unit}</Text>
-                          <Text style={[styles.tenantSub, { color: colors.inkSoft }]}>{r.tenant}</Text>
+                          <Text style={styles.agreementCode}>APPLICATION #{app.id}</Text>
+                          <Text style={[styles.applicantNameTitle, { color: colors.navy }]}>{app.tenantName}</Text>
                         </View>
                         <View
                           style={[
                             styles.statusBadge,
                             isAccepted && styles.activeBadge,
-                            isSignedByTenant && { backgroundColor: '#FEF3C7' },
-                            isRenewalOffered && { backgroundColor: '#EFF6FF' },
+                            isPending && styles.pendingBadge,
                             isDeclined && { backgroundColor: '#FEE2E2' },
-                            isRequested && { backgroundColor: '#FEF3C7' },
                           ]}
                         >
                           <Text
                             style={[
                               styles.statusBadgeText,
                               isAccepted && styles.activeBadgeText,
-                              isSignedByTenant && { color: '#D97706', fontWeight: '700' },
-                              isRenewalOffered && { color: '#2563EB', fontWeight: '700' },
+                              isPending && styles.pendingBadgeText,
                               isDeclined && { color: '#DC2626' },
-                              isRequested && { color: '#D97706', fontWeight: '700' },
                             ]}
                           >
-                            {isAccepted
-                              ? 'LEASE RENEWED & ACTIVE'
-                              : isSignedByTenant
-                                ? 'SIGNED BY RESIDENT — REVIEW'
-                                : isRenewalOffered
-                                  ? `RENEWAL OFFERED (+${r.percentageIncrease || 8}%)`
-                                  : isDeclined
-                                    ? 'DECLINED BY RESIDENT'
-                                    : isRequested
-                                      ? 'RENEWAL REQUESTED'
-                                      : 'AWAITING DECISION'}
+                            {app.status === 'accepted' ? 'APPROVED' : app.status.toUpperCase()}
                           </Text>
                         </View>
                       </View>
 
-                      {/* 2-Box Countdown Grid (Web Parity) */}
-                      <View style={styles.renewalTwoBoxGrid}>
-                        <View style={styles.renewalBox}>
-                          <Text style={styles.renewalBoxLabel}>Lease Ends</Text>
-                          <Text style={styles.renewalBoxVal}>{r.leaseEnd}</Text>
+                      {/* Trust & Screening Badges Strip */}
+                      <View style={styles.screeningBadgesRow}>
+                        <View style={styles.trustScoreBadge}>
+                          <Feather name="shield" size={12} color="#059669" style={{ marginRight: 4 }} />
+                          <Text style={styles.trustScoreText}>Credit Score: 780 (Excellent)</Text>
                         </View>
-                        <View style={styles.renewalBox}>
-                          <Text style={styles.renewalBoxLabel}>Days Left</Text>
-                          <Text
-                            style={[
-                              styles.renewalBoxVal,
-                              { color: r.daysLeft <= 30 ? '#DC2626' : r.daysLeft <= 60 ? '#D97706' : '#059669' },
-                            ]}
-                          >
-                            {r.daysLeft} days
-                          </Text>
+                        <View style={styles.kycVerifiedBadge}>
+                          <Feather name="check" size={11} color="#2563EB" style={{ marginRight: 3 }} />
+                          <Text style={styles.kycVerifiedText}>ID & Income Verified</Text>
                         </View>
                       </View>
 
-                      {/* Proposed Rent Terms Strip */}
-                      {(isRenewalOffered || isAccepted || isSignedByTenant) && (
-                        <View style={styles.termsSnippetStrip}>
-                          <Text style={styles.termsSnippetText}>
-                            Current: {format(r.currentRent || 25000, r.currency || viewCurrency)}/mo → Proposed:{' '}
-                            <Text style={{ fontWeight: '700', color: '#059669' }}>
-                              {format(r.proposedRent || Math.round((r.currentRent || 25000) * 1.08), r.currency || viewCurrency)}/mo
-                            </Text>{' '}
-                            (+{r.percentageIncrease || 8}%)
+                      {/* Applicant Profile Grid */}
+                      <View style={styles.applicantGrid}>
+                        <View style={styles.applicantGridCol}>
+                          <Text style={styles.appGridLabel}>Requested Unit</Text>
+                          <Text style={styles.appGridVal}>{app.propertyName} • Unit {app.unit}</Text>
+                        </View>
+                        <View style={styles.applicantGridCol}>
+                          <Text style={styles.appGridLabel}>Proposed Monthly Rent</Text>
+                          <Text style={[styles.appGridVal, { color: '#059669' }]}>
+                            {format(app.rent, app.currency || viewCurrency)}/mo
                           </Text>
                         </View>
-                      )}
+                        <View style={styles.applicantGridCol}>
+                          <Text style={styles.appGridLabel}>Target Move-In Date</Text>
+                          <Text style={styles.appGridVal}>{app.leaseStart}</Text>
+                        </View>
+                        <View style={styles.applicantGridCol}>
+                          <Text style={styles.appGridLabel}>Applicant Contact</Text>
+                          <Text style={styles.appGridVal}>{app.tenantPhone} • {app.tenantEmail}</Text>
+                        </View>
+                      </View>
+
+                      {/* Applicant Note */}
+                      <View style={styles.appNoteBox}>
+                        <Text style={styles.appNoteLabel}>APPLICANT STATEMENT & EMPLOYMENT:</Text>
+                        <Text style={styles.appNoteText}>{app.message}</Text>
+                      </View>
 
                       {/* Action Buttons */}
-                      {isAccepted ? (
-                        <View style={styles.renewalActionRow}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <Feather name="check-circle" size={14} color="#059669" style={{ marginRight: 5 }} />
-                            <Text style={styles.activeRenewalText}>Active Renewal</Text>
-                          </View>
+                      {isPending ? (
+                        <View style={styles.appActionRow}>
                           <TouchableOpacity
-                            style={styles.offerNextTermBtn}
-                            onPress={() =>
-                              openRenewalModal(
-                                r.unit,
-                                r.tenant,
-                                r.proposedRent || r.currentRent || 25000,
-                                r.newLeaseEnd || r.leaseEnd,
-                                r.currency,
-                                r.propertyId
-                              )
-                            }
+                            style={styles.declineAppBtn}
+                            onPress={() => handleDeclineApplication(app)}
                             activeOpacity={0.8}
                           >
-                            <Text style={styles.offerNextTermBtnText}>Offer Next Term</Text>
+                            <Feather name="x" size={14} color="#DC2626" style={{ marginRight: 4 }} />
+                            <Text style={styles.declineAppBtnText}>Decline</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={styles.approveAppBtn}
+                            onPress={() => handleApproveApplication(app)}
+                            activeOpacity={0.85}
+                          >
+                            <Feather name="check" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
+                            <Text style={styles.approveAppBtnText}>Approve</Text>
                           </TouchableOpacity>
                         </View>
-                      ) : isSignedByTenant ? (
-                        <TouchableOpacity
-                          style={styles.reviewSignedRenewalBtn}
-                          onPress={() => setInspectingSignedRenewal(r)}
-                          activeOpacity={0.85}
-                        >
-                          <Feather name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                          <Text style={styles.reviewSignedRenewalBtnText}>Review</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <TouchableOpacity
-                          style={styles.offerRenewalCTA}
-                          onPress={() =>
-                            openRenewalModal(
-                              r.unit,
-                              r.tenant,
-                              r.currentRent || 25000,
-                              r.leaseEnd,
-                              r.currency,
-                              r.propertyId
-                            )
-                          }
-                          activeOpacity={0.85}
-                        >
-                          <Feather name="send" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
-                          <Text style={styles.offerRenewalCTAText}>
-                            {isRenewalOffered
-                              ? 'Update Offer'
-                              : isDeclined
-                                ? 'Re-propose Offer'
-                                : isRequested
-                                  ? 'Review & Offer'
-                                  : 'Offer Renewal'}
+                      ) : isAccepted ? (
+                        <View style={styles.appSettledRow}>
+                          <Feather name="check-circle" size={15} color="#059669" style={{ marginRight: 6 }} />
+                          <Text style={styles.appSettledText}>
+                            Lease dispatched. Awaiting resident signature.
                           </Text>
-                        </TouchableOpacity>
+                        </View>
+                      ) : (
+                        <View style={[styles.appSettledRow, { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' }]}>
+                          <Feather name="x-circle" size={15} color="#DC2626" style={{ marginRight: 6 }} />
+                          <Text style={[styles.appSettledText, { color: '#B91C1C' }]}>
+                            Application archived as declined.
+                          </Text>
+                        </View>
                       )}
                     </View>
                   );
                 })
-              )}
-            </View>
-          )}
+              )
+            )}
 
-          {/* ==================================================== */}
-          {/* SUBTAB 3: APPLICATIONS / TENANCY REQUESTS            */}
-          {/* ==================================================== */}
-          {activeTab === 'applications' && (
-            displayedApplications.length === 0 ? (
-              <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                <Feather name="user-check" size={32} color={colors.inkSoft} />
-                <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Prospective Applications</Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                  No rental applications match the current status filter.
-                </Text>
-              </View>
-            ) : (
-              displayedApplications.map((app) => {
-                const isPending = app.status === 'pending';
-                const isAccepted = app.status === 'accepted';
-                const isDeclined = app.status === 'declined';
-
-                return (
-                  <View key={app.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                    <View style={styles.cardHeader}>
-                      <View>
-                        <Text style={styles.agreementCode}>APPLICATION #{app.id}</Text>
-                        <Text style={[styles.applicantNameTitle, { color: colors.navy }]}>{app.tenantName}</Text>
-                      </View>
-                      <View
-                        style={[
-                          styles.statusBadge,
-                          isAccepted && styles.activeBadge,
-                          isPending && styles.pendingBadge,
-                          isDeclined && { backgroundColor: '#FEE2E2' },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.statusBadgeText,
-                            isAccepted && styles.activeBadgeText,
-                            isPending && styles.pendingBadgeText,
-                            isDeclined && { color: '#DC2626' },
-                          ]}
-                        >
-                          {app.status === 'accepted' ? 'APPROVED' : app.status.toUpperCase()}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Trust & Screening Badges Strip */}
-                    <View style={styles.screeningBadgesRow}>
-                      <View style={styles.trustScoreBadge}>
-                        <Feather name="shield" size={12} color="#059669" style={{ marginRight: 4 }} />
-                        <Text style={styles.trustScoreText}>Credit Score: 780 (Excellent)</Text>
-                      </View>
-                      <View style={styles.kycVerifiedBadge}>
-                        <Feather name="check" size={11} color="#2563EB" style={{ marginRight: 3 }} />
-                        <Text style={styles.kycVerifiedText}>ID & Income Verified</Text>
-                      </View>
-                    </View>
-
-                    {/* Applicant Profile Grid */}
-                    <View style={styles.applicantGrid}>
-                      <View style={styles.applicantGridCol}>
-                        <Text style={styles.appGridLabel}>Requested Unit</Text>
-                        <Text style={styles.appGridVal}>{app.propertyName} • Unit {app.unit}</Text>
-                      </View>
-                      <View style={styles.applicantGridCol}>
-                        <Text style={styles.appGridLabel}>Proposed Monthly Rent</Text>
-                        <Text style={[styles.appGridVal, { color: '#059669' }]}>
-                          {format(app.rent, app.currency || viewCurrency)}/mo
-                        </Text>
-                      </View>
-                      <View style={styles.applicantGridCol}>
-                        <Text style={styles.appGridLabel}>Target Move-In Date</Text>
-                        <Text style={styles.appGridVal}>{app.leaseStart}</Text>
-                      </View>
-                      <View style={styles.applicantGridCol}>
-                        <Text style={styles.appGridLabel}>Applicant Contact</Text>
-                        <Text style={styles.appGridVal}>{app.tenantPhone} • {app.tenantEmail}</Text>
-                      </View>
-                    </View>
-
-                    {/* Applicant Note */}
-                    <View style={styles.appNoteBox}>
-                      <Text style={styles.appNoteLabel}>APPLICANT STATEMENT & EMPLOYMENT:</Text>
-                      <Text style={styles.appNoteText}>{app.message}</Text>
-                    </View>
-
-                    {/* Action Buttons */}
-                    {isPending ? (
-                      <View style={styles.appActionRow}>
-                        <TouchableOpacity
-                          style={styles.declineAppBtn}
-                          onPress={() => handleDeclineApplication(app)}
-                          activeOpacity={0.8}
-                        >
-                          <Feather name="x" size={14} color="#DC2626" style={{ marginRight: 4 }} />
-                          <Text style={styles.declineAppBtnText}>Decline</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={styles.approveAppBtn}
-                          onPress={() => handleApproveApplication(app)}
-                          activeOpacity={0.85}
-                        >
-                          <Feather name="check" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
-                          <Text style={styles.approveAppBtnText}>Approve</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : isAccepted ? (
-                      <View style={styles.appSettledRow}>
-                        <Feather name="check-circle" size={15} color="#059669" style={{ marginRight: 6 }} />
-                        <Text style={styles.appSettledText}>
-                          Lease dispatched. Awaiting resident signature.
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={[styles.appSettledRow, { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' }]}>
-                        <Feather name="x-circle" size={15} color="#DC2626" style={{ marginRight: 6 }} />
-                        <Text style={[styles.appSettledText, { color: '#B91C1C' }]}>
-                          Application archived as declined.
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                );
-              })
-            )
-          )}
-
-          {/* ==================================================== */}
-          {/* SUBTAB 4: AGREEMENT LIBRARY                          */}
-          {/* ==================================================== */}
-          {activeTab === 'library' && (
-            <View>
-              {/* Panel Header */}
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  marginBottom: 12,
-                  paddingHorizontal: 2,
-                }}
-              >
-                <View style={{ flex: 1, marginRight: 10 }}>
-                  <Text style={{ fontSize: 14, fontWeight: '700', color: colors.navy }}>
-                    Agreement Library ({filteredTemplates.length})
-                  </Text>
-                  <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }} numberOfLines={1}>
-                    Reusable legal templates & contracts
-                  </Text>
-                </View>
-
-                <TouchableOpacity
+            {/* ==================================================== */}
+            {/* SUBTAB 4: AGREEMENT LIBRARY                          */}
+            {/* ==================================================== */}
+            {activeTab === 'library' && (
+              <View>
+                {/* Panel Header */}
+                <View
                   style={{
                     flexDirection: 'row',
                     alignItems: 'center',
-                    gap: 6,
-                    backgroundColor: isDark ? '#059669' : '#10B981',
-                    paddingHorizontal: 12,
-                    paddingVertical: 7,
-                    borderRadius: 8,
-                    shadowColor: '#059669',
-                    shadowOffset: { width: 0, height: 2 },
-                    shadowOpacity: 0.15,
-                    shadowRadius: 3,
-                    elevation: 2,
+                    justifyContent: 'space-between',
+                    marginBottom: 12,
+                    paddingHorizontal: 2,
                   }}
-                  onPress={() => {
-                    setTemplateTitle('');
-                    setTemplatePropertyId('all');
-                    setTemplateFileName('');
-                    setTemplateFileData(null);
-                    setTemplateFileSize(null);
-                    setShowUploadTemplateModal(true);
-                  }}
-                  activeOpacity={0.85}
                 >
-                  <Feather name="upload" size={14} color="#FFFFFF" />
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#FFFFFF' }}>+ Upload Doc</Text>
-                </TouchableOpacity>
-              </View>
+                  <View style={{ flex: 1, marginRight: 10 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: colors.navy }}>
+                      Agreement Library ({filteredTemplates.length})
+                    </Text>
+                    <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }} numberOfLines={1}>
+                      Reusable legal templates & contracts
+                    </Text>
+                  </View>
 
-              {/* Templates List */}
-              {filteredTemplates.length === 0 ? (
-                <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Feather name="folder" size={34} color={colors.inkSoft} />
-                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Agreements Found</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    No agreements or templates match your search. Upload standalone agreements to access and dispatch them anytime.
-                  </Text>
                   <TouchableOpacity
                     style={{
-                      marginTop: 14,
-                      backgroundColor: '#10B981',
-                      paddingHorizontal: 16,
-                      paddingVertical: 8,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                      backgroundColor: isDark ? '#059669' : '#10B981',
+                      paddingHorizontal: 12,
+                      paddingVertical: 7,
                       borderRadius: 8,
+                      shadowColor: '#059669',
+                      shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.15,
+                      shadowRadius: 3,
+                      elevation: 2,
                     }}
-                    onPress={() => setShowUploadTemplateModal(true)}
+                    onPress={() => {
+                      setTemplateTitle('');
+                      setTemplatePropertyId('all');
+                      setTemplateFileName('');
+                      setTemplateFileData(null);
+                      setTemplateFileSize(null);
+                      setShowUploadTemplateModal(true);
+                    }}
+                    activeOpacity={0.85}
                   >
-                    <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12 }}>+ Upload Document</Text>
+                    <Feather name="upload" size={14} color="#FFFFFF" />
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#FFFFFF' }}>+ Upload Doc</Text>
                   </TouchableOpacity>
                 </View>
-              ) : (
-                filteredTemplates.map((tmpl) => {
-                  const isAdmin = (user?.role as any) === 'superadmin' || (user?.role as any) === 'admin';
-                  const isOwner = tmpl.ownerId === ownerId;
-                  const canDelete = isAdmin || isOwner;
 
-                  return (
-                    <View
-                      key={tmpl.id}
-                      style={[
-                        styles.card,
-                        {
-                          backgroundColor: colors.surface,
-                          borderColor: colors.line,
-                          padding: 12,
-                          marginBottom: 10,
-                        },
-                      ]}
+                {/* Templates List */}
+                {filteredTemplates.length === 0 ? (
+                  <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <Feather name="folder" size={34} color={colors.inkSoft} />
+                    <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Agreements Found</Text>
+                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
+                      No agreements or templates match your search. Upload standalone agreements to access and dispatch them anytime.
+                    </Text>
+                    <TouchableOpacity
+                      style={{
+                        marginTop: 14,
+                        backgroundColor: '#10B981',
+                        paddingHorizontal: 16,
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                      }}
+                      onPress={() => setShowUploadTemplateModal(true)}
                     >
-                      {/* Top Header Row */}
-                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                        <View
-                          style={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: 8,
-                            backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            marginRight: 10,
-                          }}
-                        >
-                          <Feather name="file-text" size={18} color={isDark ? '#34D399' : '#059669'} />
-                        </View>
+                      <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12 }}>+ Upload Document</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  filteredTemplates.map((tmpl) => {
+                    const isAdmin = (user?.role as any) === 'superadmin' || (user?.role as any) === 'admin';
+                    const isOwner = tmpl.ownerId === ownerId;
+                    const canDelete = isAdmin || isOwner;
 
-                        <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
-                          <Text
-                            style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy }}
-                            numberOfLines={1}
-                            ellipsizeMode="tail"
-                          >
-                            {tmpl.title}
-                          </Text>
-                          <Text
-                            style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }}
-                            numberOfLines={1}
-                            ellipsizeMode="middle"
-                          >
-                            {tmpl.fileName || 'Rental_Agreement.pdf'} • {tmpl.fileSizeKb || 450} KB
-                          </Text>
-                        </View>
-
-                        <View
-                          style={{
-                            backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-                            paddingHorizontal: 8,
-                            paddingVertical: 3,
-                            borderRadius: 6,
-                            alignSelf: 'flex-start',
-                            maxWidth: 110,
-                          }}
-                        >
-                          <Text
-                            style={{ fontSize: 10, fontWeight: '600', color: colors.inkSoft }}
-                            numberOfLines={1}
-                          >
-                            {tmpl.propertyName || 'All Properties'}
-                          </Text>
-                        </View>
-                      </View>
-
-                      {/* Divider */}
-                      <View style={{ height: 1, backgroundColor: colors.line, marginVertical: 10 }} />
-
-                      {/* Bottom Info & Action Bar */}
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1, marginRight: 6 }}>
-                          <Feather name="calendar" size={12} color={colors.inkSoft} />
-                          <Text style={{ fontSize: 10.5, color: colors.inkSoft }} numberOfLines={1}>
-                            {tmpl.uploadedAt ? tmpl.uploadedAt.split('T')[0] : 'Active'}
-                          </Text>
-                        </View>
-
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          {/* Preview / View */}
-                          <TouchableOpacity
+                    return (
+                      <View
+                        key={tmpl.id}
+                        style={[
+                          styles.card,
+                          {
+                            backgroundColor: colors.surface,
+                            borderColor: colors.line,
+                            padding: 12,
+                            marginBottom: 10,
+                          },
+                        ]}
+                      >
+                        {/* Top Header Row */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <View
                             style={{
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 4,
-                              backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-                              borderWidth: 1,
-                              borderColor: colors.line,
-                              paddingHorizontal: 9,
-                              paddingVertical: 5,
-                              borderRadius: 6,
-                            }}
-                            onPress={() => {
-                              setPreviewDoc({
-                                fileName: tmpl.fileName || `${tmpl.title}.pdf`,
-                                fileUrl: tmpl.fileData,
-                                title: tmpl.title,
-                                docType: 'agreement_template',
-                              });
-                            }}
-                            activeOpacity={0.7}
-                          >
-                            <Feather name="eye" size={12} color={colors.navy} />
-                            <Text style={{ fontSize: 11, fontWeight: '600', color: colors.navy }}>View</Text>
-                          </TouchableOpacity>
-
-                          {/* Download */}
-                          <TouchableOpacity
-                            style={{
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 4,
+                              width: 38,
+                              height: 38,
+                              borderRadius: 8,
                               backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
-                              borderWidth: 1,
-                              borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
-                              paddingHorizontal: 9,
-                              paddingVertical: 5,
-                              borderRadius: 6,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              marginRight: 10,
                             }}
-                            onPress={async () => {
-                              showToast('Starting document download...', 'info');
-                              const ok = await downloadDocument({
-                                fileName: tmpl.fileName || `${tmpl.title}.pdf`,
-                                fileUrl: tmpl.fileData,
-                                title: tmpl.title,
-                                docType: 'agreement_template',
-                              });
-                              if (ok) {
-                                showToast('Saved to device', 'success');
-                              }
-                            }}
-                            activeOpacity={0.7}
                           >
-                            <Feather name="download" size={12} color="#059669" />
-                            <Text style={{ fontSize: 11, fontWeight: '700', color: '#059669' }}>Save</Text>
-                          </TouchableOpacity>
+                            <Feather name="file-text" size={18} color={isDark ? '#34D399' : '#059669'} />
+                          </View>
 
-                          {/* Delete (Owner or Admin) */}
-                          {canDelete && (
+                          <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
+                            <Text
+                              style={{ fontSize: 13.5, fontWeight: '700', color: colors.navy }}
+                              numberOfLines={1}
+                              ellipsizeMode="tail"
+                            >
+                              {tmpl.title}
+                            </Text>
+                            <Text
+                              style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }}
+                              numberOfLines={1}
+                              ellipsizeMode="middle"
+                            >
+                              {tmpl.fileName || 'Rental_Agreement.pdf'} • {tmpl.fileSizeKb || 450} KB
+                            </Text>
+                          </View>
+
+                          <View
+                            style={{
+                              backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+                              paddingHorizontal: 8,
+                              paddingVertical: 3,
+                              borderRadius: 6,
+                              alignSelf: 'flex-start',
+                              maxWidth: 110,
+                            }}
+                          >
+                            <Text
+                              style={{ fontSize: 10, fontWeight: '600', color: colors.inkSoft }}
+                              numberOfLines={1}
+                            >
+                              {tmpl.propertyName || 'All Properties'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* Divider */}
+                        <View style={{ height: 1, backgroundColor: colors.line, marginVertical: 10 }} />
+
+                        {/* Bottom Info & Action Bar */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1, marginRight: 6 }}>
+                            <Feather name="calendar" size={12} color={colors.inkSoft} />
+                            <Text style={{ fontSize: 10.5, color: colors.inkSoft }} numberOfLines={1}>
+                              {tmpl.uploadedAt ? tmpl.uploadedAt.split('T')[0] : 'Active'}
+                            </Text>
+                          </View>
+
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            {/* Preview / View */}
                             <TouchableOpacity
                               style={{
-                                width: 28,
-                                height: 28,
+                                flexDirection: 'row',
                                 alignItems: 'center',
-                                justifyContent: 'center',
-                                borderRadius: 6,
-                                backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2',
+                                gap: 4,
+                                backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
                                 borderWidth: 1,
-                                borderColor: isDark ? 'rgba(239, 68, 68, 0.3)' : '#FECACA',
+                                borderColor: colors.line,
+                                paddingHorizontal: 9,
+                                paddingVertical: 5,
+                                borderRadius: 6,
                               }}
-                              onPress={() => handleDeleteTemplate(tmpl)}
+                              onPress={() => {
+                                setPreviewDoc({
+                                  fileName: tmpl.fileName || `${tmpl.title}.pdf`,
+                                  fileUrl: tmpl.fileData,
+                                  title: tmpl.title,
+                                  docType: 'agreement_template',
+                                });
+                              }}
                               activeOpacity={0.7}
                             >
-                              <Feather name="trash-2" size={13} color="#DC2626" />
+                              <Feather name="eye" size={12} color={colors.navy} />
+                              <Text style={{ fontSize: 11, fontWeight: '600', color: colors.navy }}>View</Text>
                             </TouchableOpacity>
-                          )}
+
+                            {/* Download */}
+                            <TouchableOpacity
+                              style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 4,
+                                backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+                                borderWidth: 1,
+                                borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+                                paddingHorizontal: 9,
+                                paddingVertical: 5,
+                                borderRadius: 6,
+                              }}
+                              onPress={async () => {
+                                showToast('Starting document download...', 'info');
+                                const ok = await downloadDocument({
+                                  fileName: tmpl.fileName || `${tmpl.title}.pdf`,
+                                  fileUrl: tmpl.fileData,
+                                  title: tmpl.title,
+                                  docType: 'agreement_template',
+                                });
+                                if (ok) {
+                                  showToast('Saved to device', 'success');
+                                }
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <Feather name="download" size={12} color="#059669" />
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: '#059669' }}>Save</Text>
+                            </TouchableOpacity>
+
+                            {/* Delete (Owner or Admin) */}
+                            {canDelete && (
+                              <TouchableOpacity
+                                style={{
+                                  width: 28,
+                                  height: 28,
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  borderRadius: 6,
+                                  backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2',
+                                  borderWidth: 1,
+                                  borderColor: isDark ? 'rgba(239, 68, 68, 0.3)' : '#FECACA',
+                                }}
+                                onPress={() => handleDeleteTemplate(tmpl)}
+                                activeOpacity={0.7}
+                              >
+                                <Feather name="trash-2" size={13} color="#DC2626" />
+                              </TouchableOpacity>
+                            )}
+                          </View>
                         </View>
                       </View>
-                    </View>
-                  );
-                })
-              )}
-            </View>
-          )}
-
-          {/* ==================================================== */}
-          {/* SUBTAB 5: DRAFTS (Web 1-to-1 Parity)                  */}
-          {/* ==================================================== */}
-          {activeTab === 'drafts' && (
-            <View>
-              {/* Header Strip with + New Draft */}
-              <View style={styles.metaRow}>
-                <Text style={styles.metaHint} numberOfLines={1}>
-                  Drafts ({displayedDrafts.length})
-                </Text>
-                <TouchableOpacity
-                  style={[styles.headerUploadBtn, { backgroundColor: colors.primary }]}
-                  onPress={() => handleOpenDraftModal()}
-                  activeOpacity={0.85}
-                >
-                  <Feather name="plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
-                  <Text style={styles.headerUploadBtnText}>New Draft</Text>
-                </TouchableOpacity>
+                    );
+                  })
+                )}
               </View>
+            )}
 
-              {displayedDrafts.length === 0 ? (
-                <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Feather name="bookmark" size={32} color={colors.primary} style={{ opacity: 0.8 }} />
-                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Draft Leases</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    You have no in-progress drafts. Create a draft ahead of time for any unit and assign it to an applicant when ready.
+            {/* ==================================================== */}
+            {/* SUBTAB 5: DRAFTS (Web 1-to-1 Parity)                  */}
+            {/* ==================================================== */}
+            {activeTab === 'drafts' && (
+              <View>
+                {/* Header Strip with + New Draft */}
+                <View style={styles.metaRow}>
+                  <Text style={styles.metaHint} numberOfLines={1}>
+                    Drafts ({displayedDrafts.length})
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.headerUploadBtn, { backgroundColor: colors.primary }]}
+                    onPress={() => handleOpenDraftModal()}
+                    activeOpacity={0.85}
+                  >
+                    <Feather name="plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
+                    <Text style={styles.headerUploadBtnText}>New Draft</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {displayedDrafts.length === 0 ? (
+                  <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <Feather name="bookmark" size={32} color={colors.primary} style={{ opacity: 0.8 }} />
+                    <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Draft Leases</Text>
+                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
+                      You have no in-progress drafts. Create a draft ahead of time for any unit and assign it to an applicant when ready.
+                    </Text>
+                  </View>
+                ) : (
+                  displayedDrafts.map((d) => {
+                    const hasTenant = Boolean(d.tenant && d.tenant !== 'Unassigned Resident' && d.tenant.trim());
+                    const hasUnit = Boolean(d.unit && d.unit !== 'Unassigned Unit' && d.unit !== 'Unassigned' && d.unit.trim());
+                    const propName = d.propertyName && d.propertyName !== 'Unassigned Property'
+                      ? d.propertyName
+                      : (myProperties.find((p) => p.id === d.propertyId)?.name || '');
+                    const cleanFileName = d.initialAgreementName && d.initialAgreementName !== 'Lease_Agreement.pdf' ? d.initialAgreementName.replace(/\.[^/.]+$/, '') : '';
+
+                    const agreementTitle = cleanFileName
+                      ? cleanFileName
+                      : hasTenant && hasUnit
+                        ? `Lease Agreement — ${d.tenant} (Unit ${d.unit})`
+                        : hasTenant
+                          ? `Lease Agreement — ${d.tenant}`
+                          : hasUnit
+                            ? `Lease Draft — Unit ${d.unit}${propName ? ` (${propName})` : ''}`
+                            : 'New Lease Draft';
+
+                    const shortDraftId = d.id.startsWith('agr_draft_')
+                      ? `DFT-${d.id.slice(-6)}`
+                      : d.id.length > 16
+                        ? `DFT-${d.id.slice(-6)}`
+                        : d.id;
+
+                    const hasDoc = Boolean(d.initialAgreementUrl || (d.initialAgreementName && d.initialAgreementName !== 'Lease_Agreement.pdf'));
+
+                    return (
+                      <View key={d.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                        {/* Card Header */}
+                        <View style={styles.cardHeader}>
+                          <View style={{ flex: 1, marginRight: 8 }}>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: colors.navy }}>{agreementTitle}</Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                              <View style={{ backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9', borderWidth: 1, borderColor: colors.line, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                <Text style={{ fontSize: 10, fontFamily: 'monospace', fontWeight: '700', color: colors.inkSoft }}>{shortDraftId}</Text>
+                              </View>
+                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>
+                                {d.executionMode === 'already_executed_offline' ? 'Paper Lease' : 'Digital Offer'}
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={{ backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FCD34D', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Feather name="bookmark" size={11} color="#92400E" />
+                            <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#92400E' }}>Step {d.draftStep || 1} of 3</Text>
+                          </View>
+                        </View>
+
+                        {/* Details Box */}
+                        <View style={{ backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC', borderRadius: 8, padding: 10, marginVertical: 8, gap: 6 }}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Unit & Property</Text>
+                              <Text style={{ fontSize: 12, fontWeight: '600', color: hasUnit ? colors.navy : colors.inkSoft, fontStyle: hasUnit ? 'normal' : 'italic' }}>
+                                {hasUnit ? `Unit ${d.unit} • ${propName || 'Property'}` : 'Pending Unit (Step 2)'}
+                              </Text>
+                            </View>
+                            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                              <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Target Resident</Text>
+                              <Text style={{ fontSize: 12, fontWeight: '600', color: hasTenant ? colors.navy : colors.inkSoft, fontStyle: hasTenant ? 'normal' : 'italic' }}>
+                                {hasTenant ? d.tenant : 'Pending Resident (Step 1)'}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 6 }}>
+                            <View>
+                              <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Rent & Term</Text>
+                              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.navy }}>
+                                {d.rent ? `${format(d.rent, d.currency || viewCurrency)}/mo` : 'Rent pending'}
+                              </Text>
+                            </View>
+                            <View style={{ alignItems: 'flex-end' }}>
+                              <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Attached Document</Text>
+                              <Text style={{ fontSize: 11, color: hasDoc ? '#059669' : colors.inkSoft, fontStyle: hasDoc ? 'normal' : 'italic' }}>
+                                {hasDoc ? (d.initialAgreementName || 'Attached PDF ✓') : 'Pending upload (Step 3)'}
+                              </Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {/* Action Buttons Row */}
+                        <View style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
+                          <TouchableOpacity
+                            style={{ flex: 1.4, backgroundColor: '#D97706', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                            onPress={() => handleOpenDraftModal(d.id, 1)}
+                            activeOpacity={0.8}
+                          >
+                            <Feather name="user-check" size={13} color="#FFFFFF" />
+                            <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#FFFFFF' }}>Assign & Issue</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={{ flex: 1, backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9', borderWidth: 1, borderColor: colors.line, borderRadius: 8, paddingVertical: 8, alignItems: 'center', justifyContent: 'center' }}
+                            onPress={() => handleOpenDraftModal(d.id, d.draftStep || 1)}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={{ fontSize: 11.5, fontWeight: '600', color: colors.navy }}>Edit</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={{ width: 36, height: 36, backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2', borderWidth: 1, borderColor: isDark ? 'rgba(239, 68, 68, 0.3)' : '#FECACA', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}
+                            onPress={() => handleDeleteDraft(d)}
+                            activeOpacity={0.7}
+                          >
+                            <Feather name="trash-2" size={14} color="#DC2626" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+            )}
+
+            {/* ==================================================== */}
+            {/* SUBTAB 6: ENQUIRIES (Web 1-to-1 Parity)               */}
+            {/* ==================================================== */}
+            {activeTab === 'enquiries' && (
+              <View>
+                {/* Header Strip */}
+                <View style={styles.metaRow}>
+                  <Text style={styles.metaHint} numberOfLines={1}>
+                    {myEnquiries.length} prospective tenant enquiry{myEnquiries.length === 1 ? '' : 'ies'} received
                   </Text>
                 </View>
-              ) : (
-                displayedDrafts.map((d) => {
-                  const hasTenant = Boolean(d.tenant && d.tenant !== 'Unassigned Resident' && d.tenant.trim());
-                  const hasUnit = Boolean(d.unit && d.unit !== 'Unassigned Unit' && d.unit !== 'Unassigned' && d.unit.trim());
-                  const propName = d.propertyName && d.propertyName !== 'Unassigned Property'
-                    ? d.propertyName
-                    : (myProperties.find((p) => p.id === d.propertyId)?.name || '');
-                  const cleanFileName = d.initialAgreementName && d.initialAgreementName !== 'Lease_Agreement.pdf' ? d.initialAgreementName.replace(/\.[^/.]+$/, '') : '';
 
-                  const agreementTitle = cleanFileName
-                    ? cleanFileName
-                    : hasTenant && hasUnit
-                    ? `Lease Agreement — ${d.tenant} (Unit ${d.unit})`
-                    : hasTenant
-                    ? `Lease Agreement — ${d.tenant}`
-                    : hasUnit
-                    ? `Lease Draft — Unit ${d.unit}${propName ? ` (${propName})` : ''}`
-                    : 'New Lease Draft';
+                {myEnquiries.length === 0 ? (
+                  <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                    <Feather name="users" size={32} color={colors.primary} style={{ opacity: 0.8 }} />
+                    <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Listing Enquiries Yet</Text>
+                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
+                      When prospective tenants discover your vacant units and submit viewing enquiries, they will appear here with direct contact actions.
+                    </Text>
+                  </View>
+                ) : (
+                  myEnquiries.map((enq) => {
+                    const isNew = enq.status === 'new';
+                    const isContacted = enq.status === 'contacted' || enq.status === 'reviewed';
+                    const isOnboarded = enq.status === 'onboarded';
+                    const unitObj = myUnits.find((u) => u.id === enq.unitId || u.unitNumber === enq.unitNumber);
+                    const propObj = myProperties.find((p) => p.id === enq.propertyId);
 
-                  const shortDraftId = d.id.startsWith('agr_draft_')
-                    ? `DFT-${d.id.slice(-6)}`
-                    : d.id.length > 16
-                    ? `DFT-${d.id.slice(-6)}`
-                    : d.id;
+                    return (
+                      <View
+                        key={enq.id}
+                        style={[
+                          styles.card,
+                          {
+                            backgroundColor: colors.surface,
+                            borderColor: isNew ? 'rgba(59, 130, 246, 0.4)' : colors.line,
+                          },
+                        ]}
+                      >
+                        <View style={styles.cardHeader}>
+                          <View style={{ flex: 1, marginRight: 8 }}>
+                            <Text style={[styles.unitName, { color: colors.navy }]}>{enq.prospectName}</Text>
+                            <Text style={{ fontSize: 12, color: colors.inkSoft, marginTop: 2 }}>
+                              Unit {enq.unitNumber || unitObj?.unitNumber || enq.unitId}
+                              {propObj?.name ? ` · ${propObj.name}` : enq.propertyName ? ` · ${enq.propertyName}` : ''}
+                            </Text>
+                          </View>
+                          <View
+                            style={[
+                              styles.statusBadge,
+                              {
+                                backgroundColor: isNew
+                                  ? 'rgba(59, 130, 246, 0.14)'
+                                  : isOnboarded
+                                    ? 'rgba(16, 185, 129, 0.14)'
+                                    : 'rgba(245, 158, 11, 0.14)',
+                              },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.statusBadgeText,
+                                {
+                                  color: isNew ? '#2563EB' : isOnboarded ? '#059669' : '#D97706',
+                                },
+                              ]}
+                            >
+                              {(enq.status || 'new').toUpperCase()}
+                            </Text>
+                          </View>
+                        </View>
 
-                  const hasDoc = Boolean(d.initialAgreementUrl || (d.initialAgreementName && d.initialAgreementName !== 'Lease_Agreement.pdf'));
-
-                  return (
-                    <View key={d.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                      {/* Card Header */}
-                      <View style={styles.cardHeader}>
-                        <View style={{ flex: 1, marginRight: 8 }}>
-                          <Text style={{ fontSize: 14, fontWeight: '700', color: colors.navy }}>{agreementTitle}</Text>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                            <View style={{ backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9', borderWidth: 1, borderColor: colors.line, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
-                              <Text style={{ fontSize: 10, fontFamily: 'monospace', fontWeight: '700', color: colors.inkSoft }}>{shortDraftId}</Text>
+                        {/* Contact & Date info */}
+                        <View style={{ gap: 6, marginVertical: 8 }}>
+                          {Boolean(enq.prospectPhone) && (
+                            <TouchableOpacity
+                              onPress={() => Linking.openURL(`tel:${enq.prospectPhone}`)}
+                              style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
+                            >
+                              <Feather name="phone" size={13} color={colors.primary} />
+                              <Text style={{ fontSize: 13, color: colors.primary, fontWeight: '600' }}>
+                                {enq.prospectPhone}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                          {Boolean(enq.prospectEmail) && (
+                            <TouchableOpacity
+                              onPress={() => Linking.openURL(`mailto:${enq.prospectEmail}`)}
+                              style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
+                            >
+                              <Feather name="mail" size={13} color={colors.inkSoft} />
+                              <Text style={{ fontSize: 13, color: colors.inkSoft }}>
+                                {enq.prospectEmail}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                          {Boolean(enq.moveInDate || enq.preferredMoveInDate) && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Feather name="calendar" size={13} color={colors.inkSoft} />
+                              <Text style={{ fontSize: 12, color: colors.inkSoft }}>
+                                Target Move-in: <Text style={{ fontWeight: '700', color: colors.navy }}>{enq.moveInDate || enq.preferredMoveInDate}</Text>
+                              </Text>
                             </View>
-                            <Text style={{ fontSize: 11, color: colors.inkSoft }}>
-                              {d.executionMode === 'already_executed_offline' ? 'Paper Lease' : 'Digital Offer'}
+                          )}
+                        </View>
+
+                        {/* Notes / Message */}
+                        {Boolean(enq.notes || enq.message) && (
+                          <View
+                            style={{
+                              backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F8FAFC',
+                              borderRadius: 8,
+                              padding: 10,
+                              marginVertical: 4,
+                              borderLeftWidth: 3,
+                              borderLeftColor: colors.primary,
+                            }}
+                          >
+                            <Text style={{ fontSize: 12, fontStyle: 'italic', color: colors.navy, lineHeight: 17 }}>
+                              &quot;{enq.notes || enq.message}&quot;
                             </Text>
                           </View>
-                        </View>
-                        <View style={{ backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FCD34D', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Feather name="bookmark" size={11} color="#92400E" />
-                          <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#92400E' }}>Step {d.draftStep || 1} of 3</Text>
+                        )}
+
+                        {/* Action buttons */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10, marginTop: 6, gap: 8 }}>
+                          <View style={{ flexDirection: 'row', gap: 6, flex: 1, flexWrap: 'wrap' }}>
+                            {Boolean(enq.prospectPhone) && (
+                              <TouchableOpacity
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  paddingVertical: 6,
+                                  paddingHorizontal: 10,
+                                  borderRadius: 8,
+                                  borderWidth: 1,
+                                  borderColor: colors.line,
+                                  backgroundColor: colors.surface,
+                                }}
+                                onPress={() => Linking.openURL(`tel:${enq.prospectPhone}`)}
+                              >
+                                <Feather name="phone" size={12} color={colors.primary} />
+                                <Text style={{ fontSize: 12, fontWeight: '600', color: colors.navy }}>Call</Text>
+                              </TouchableOpacity>
+                            )}
+                            {Boolean(enq.prospectEmail) && (
+                              <TouchableOpacity
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  paddingVertical: 6,
+                                  paddingHorizontal: 10,
+                                  borderRadius: 8,
+                                  borderWidth: 1,
+                                  borderColor: colors.line,
+                                  backgroundColor: colors.surface,
+                                }}
+                                onPress={() => Linking.openURL(`mailto:${enq.prospectEmail}`)}
+                              >
+                                <Feather name="mail" size={12} color={colors.inkSoft} />
+                                <Text style={{ fontSize: 12, fontWeight: '600', color: colors.navy }}>Email</Text>
+                              </TouchableOpacity>
+                            )}
+                            {isNew && (
+                              <TouchableOpacity
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  paddingVertical: 6,
+                                  paddingHorizontal: 10,
+                                  borderRadius: 8,
+                                  borderWidth: 1,
+                                  borderColor: colors.line,
+                                  backgroundColor: colors.surface,
+                                }}
+                                onPress={() => handleUpdateEnquiryStatus(enq.id, 'contacted')}
+                              >
+                                <Feather name="check" size={12} color="#059669" />
+                                <Text style={{ fontSize: 12, fontWeight: '600', color: '#059669' }}>Contacted</Text>
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                          <TouchableOpacity
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              backgroundColor: '#059669',
+                              borderRadius: 8,
+                              paddingHorizontal: 14,
+                              paddingVertical: 8,
+                            }}
+                            onPress={() => handleOnboardProspect(enq)}
+                          >
+                            <Feather name="user-check" size={12} color="#FFFFFF" style={{ marginRight: 4 }} />
+                            <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>Onboard</Text>
+                          </TouchableOpacity>
                         </View>
                       </View>
+                    );
+                  })
+                )}
+              </View>
+            )}
 
-                      {/* Details Box */}
-                      <View style={{ backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC', borderRadius: 8, padding: 10, marginVertical: 8, gap: 6 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Unit & Property</Text>
-                            <Text style={{ fontSize: 12, fontWeight: '600', color: hasUnit ? colors.navy : colors.inkSoft, fontStyle: hasUnit ? 'normal' : 'italic' }}>
-                              {hasUnit ? `Unit ${d.unit} • ${propName || 'Property'}` : 'Pending Unit (Step 2)'}
-                            </Text>
-                          </View>
-                          <View style={{ flex: 1, alignItems: 'flex-end' }}>
-                            <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Target Resident</Text>
-                            <Text style={{ fontSize: 12, fontWeight: '600', color: hasTenant ? colors.navy : colors.inkSoft, fontStyle: hasTenant ? 'normal' : 'italic' }}>
-                              {hasTenant ? d.tenant : 'Pending Resident (Step 1)'}
-                            </Text>
-                          </View>
-                        </View>
-
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 6 }}>
-                          <View>
-                            <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Rent & Term</Text>
-                            <Text style={{ fontSize: 12, fontWeight: '700', color: colors.navy }}>
-                              {d.rent ? `${format(d.rent, d.currency || viewCurrency)}/mo` : 'Rent pending'}
-                            </Text>
-                          </View>
-                          <View style={{ alignItems: 'flex-end' }}>
-                            <Text style={{ fontSize: 10.5, color: colors.inkSoft }}>Attached Document</Text>
-                            <Text style={{ fontSize: 11, color: hasDoc ? '#059669' : colors.inkSoft, fontStyle: hasDoc ? 'normal' : 'italic' }}>
-                              {hasDoc ? (d.initialAgreementName || 'Attached PDF ✓') : 'Pending upload (Step 3)'}
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-
-                      {/* Action Buttons Row */}
-                      <View style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
-                        <TouchableOpacity
-                          style={{ flex: 1.4, backgroundColor: '#D97706', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 }}
-                          onPress={() => handleOpenDraftModal(d.id, 1)}
-                          activeOpacity={0.8}
-                        >
-                          <Feather name="user-check" size={13} color="#FFFFFF" />
-                          <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#FFFFFF' }}>Assign & Issue</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={{ flex: 1, backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9', borderWidth: 1, borderColor: colors.line, borderRadius: 8, paddingVertical: 8, alignItems: 'center', justifyContent: 'center' }}
-                          onPress={() => handleOpenDraftModal(d.id, d.draftStep || 1)}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={{ fontSize: 11.5, fontWeight: '600', color: colors.navy }}>Edit</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={{ width: 36, height: 36, backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2', borderWidth: 1, borderColor: isDark ? 'rgba(239, 68, 68, 0.3)' : '#FECACA', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}
-                          onPress={() => handleDeleteDraft(d)}
-                          activeOpacity={0.7}
-                        >
-                          <Feather name="trash-2" size={14} color="#DC2626" />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-            </View>
-          )}
-
-          <View style={{ height: 120 }} />
-        </ScrollView>
-      </View>
+            <View style={{ height: 120 }} />
+          </ScrollView>
+        </View>
       </>)}
 
       {/* ==================================================== */}
@@ -2660,182 +3076,182 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               keyboardShouldPersistTaps="handled"
             >
               <View style={styles.approvalInspectionCard}>
-              <Feather name="check-circle" size={24} color="#059669" />
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.approvalInspectionFile}>
-                  {inspectingSignedAgreement?.signedDocumentName || 'Executed_Tenancy_Lease.pdf'}
-                </Text>
-                <Text style={styles.approvalInspectionSub}>
-                  Resident uploaded ink-signed agreement on file.
-                </Text>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <TouchableOpacity
-                  onPress={() =>
-                    setPreviewDoc({
-                      fileName: inspectingSignedAgreement?.signedDocumentName || 'Executed_Tenancy_Lease.pdf',
-                      fileUrl: inspectingSignedAgreement?.signedDocumentUrl,
-                      title: inspectingSignedAgreement?.signedDocumentName || 'Signed Tenancy Agreement',
-                      docType: 'Resident Ink-Signed Agreement',
-                      meta: {
-                        agreementId: inspectingSignedAgreement?.id,
-                        tenantName: inspectingSignedAgreement?.tenant,
-                        unit: inspectingSignedAgreement?.unit,
-                        propertyName: inspectingSignedAgreement?.propertyName,
-                        amount: inspectingSignedAgreement?.deposit ? format(inspectingSignedAgreement.deposit, inspectingSignedAgreement.currency || viewCurrency) : undefined,
-                        date: inspectingSignedAgreement?.signedUploadedAt || inspectingSignedAgreement?.start,
-                      },
-                    })
-                  }
-                  style={{ padding: 4 }}
-                  accessibilityLabel="View Document"
-                >
-                  <Feather name="eye" size={18} color="#2563EB" />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() =>
-                    downloadDocument({
-                      fileName: inspectingSignedAgreement?.signedDocumentName || 'Executed_Tenancy_Lease.pdf',
-                      fileUrl: inspectingSignedAgreement?.signedDocumentUrl,
-                      title: inspectingSignedAgreement?.signedDocumentName || 'Signed Tenancy Agreement',
-                      docType: 'Resident Ink-Signed Agreement',
-                      meta: {
-                        tenantName: inspectingSignedAgreement?.tenant,
-                        unit: inspectingSignedAgreement?.unit,
-                        propertyName: inspectingSignedAgreement?.propertyName,
-                        amount: inspectingSignedAgreement?.deposit ? format(inspectingSignedAgreement.deposit, inspectingSignedAgreement.currency || viewCurrency) : undefined,
-                        date: inspectingSignedAgreement?.signedUploadedAt || inspectingSignedAgreement?.start,
-                      },
-                    })
-                  }
-                  style={{ padding: 4 }}
-                  accessibilityLabel="Download Document"
-                >
-                  <Feather name="download" size={17} color="#2563EB" />
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Tenant Uploaded IDs (if any) */}
-            {inspectingSignedAgreement?.tenantUploadedIds && inspectingSignedAgreement.tenantUploadedIds.length > 0 && (
-              <View
-                style={{
-                  marginVertical: 10,
-                  padding: 12,
-                  backgroundColor: '#F0FDF4',
-                  borderWidth: 1,
-                  borderColor: '#A7F3D0',
-                  borderRadius: 10,
-                }}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-                  <Feather name="shield" size={15} color="#059669" style={{ marginRight: 6 }} />
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#065F46' }}>
-                    Resident Identity Documents ({inspectingSignedAgreement.tenantUploadedIds.length})
+                <Feather name="check-circle" size={24} color="#059669" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.approvalInspectionFile}>
+                    {inspectingSignedAgreement?.signedDocumentName || 'Executed_Tenancy_Lease.pdf'}
+                  </Text>
+                  <Text style={styles.approvalInspectionSub}>
+                    Resident uploaded ink-signed agreement on file.
                   </Text>
                 </View>
-                <View style={{ gap: 6 }}>
-                  {(inspectingSignedAgreement.tenantUploadedIds as MobileTenantUploadedIdItem[]).map((idDoc) => (
-                    <View
-                      key={idDoc.id}
-                      style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', padding: 8, borderRadius: 6, gap: 8 }}
-                    >
-                      <Feather name="check-circle" size={13} color="#059669" />
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#065F46' }}>{idDoc.name}</Text>
-                        <Text style={{ fontSize: 10.5, color: '#6B7280' }} numberOfLines={1}>{idDoc.fileName}</Text>
-                      </View>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                        <TouchableOpacity
-                          onPress={() =>
-                            setPreviewDoc({
-                              fileName: idDoc.fileName,
-                              fileUrl: idDoc.fileUrl,
-                              title: idDoc.name,
-                              docType: 'Government Identity Proof',
-                              meta: {
-                                tenantName: inspectingSignedAgreement.tenant,
-                                unit: inspectingSignedAgreement.unit,
-                                propertyName: inspectingSignedAgreement.propertyName,
-                                date: idDoc.uploadedAt,
-                              },
-                            })
-                          }
-                          style={{ padding: 4 }}
-                          accessibilityLabel="View Document"
-                        >
-                          <Feather name="eye" size={14} color="#2563EB" />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() =>
-                            downloadDocument({
-                              fileName: idDoc.fileName,
-                              fileUrl: idDoc.fileUrl,
-                              title: idDoc.name,
-                              docType: 'Government Identity Proof',
-                              meta: {
-                                tenantName: inspectingSignedAgreement.tenant,
-                                unit: inspectingSignedAgreement.unit,
-                                propertyName: inspectingSignedAgreement.propertyName,
-                                date: idDoc.uploadedAt,
-                              },
-                            })
-                          }
-                          style={{ padding: 4 }}
-                          accessibilityLabel="Download Document"
-                        >
-                          <Feather name="download" size={14} color="#2563EB" />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  ))}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setPreviewDoc({
+                        fileName: inspectingSignedAgreement?.signedDocumentName || 'Executed_Tenancy_Lease.pdf',
+                        fileUrl: inspectingSignedAgreement?.signedDocumentUrl,
+                        title: inspectingSignedAgreement?.signedDocumentName || 'Signed Tenancy Agreement',
+                        docType: 'Resident Ink-Signed Agreement',
+                        meta: {
+                          agreementId: inspectingSignedAgreement?.id,
+                          tenantName: inspectingSignedAgreement?.tenant,
+                          unit: inspectingSignedAgreement?.unit,
+                          propertyName: inspectingSignedAgreement?.propertyName,
+                          amount: inspectingSignedAgreement?.deposit ? format(inspectingSignedAgreement.deposit, inspectingSignedAgreement.currency || viewCurrency) : undefined,
+                          date: inspectingSignedAgreement?.signedUploadedAt || inspectingSignedAgreement?.start,
+                        },
+                      })
+                    }
+                    style={{ padding: 4 }}
+                    accessibilityLabel="View Document"
+                  >
+                    <Feather name="eye" size={18} color="#2563EB" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() =>
+                      downloadDocument({
+                        fileName: inspectingSignedAgreement?.signedDocumentName || 'Executed_Tenancy_Lease.pdf',
+                        fileUrl: inspectingSignedAgreement?.signedDocumentUrl,
+                        title: inspectingSignedAgreement?.signedDocumentName || 'Signed Tenancy Agreement',
+                        docType: 'Resident Ink-Signed Agreement',
+                        meta: {
+                          tenantName: inspectingSignedAgreement?.tenant,
+                          unit: inspectingSignedAgreement?.unit,
+                          propertyName: inspectingSignedAgreement?.propertyName,
+                          amount: inspectingSignedAgreement?.deposit ? format(inspectingSignedAgreement.deposit, inspectingSignedAgreement.currency || viewCurrency) : undefined,
+                          date: inspectingSignedAgreement?.signedUploadedAt || inspectingSignedAgreement?.start,
+                        },
+                      })
+                    }
+                    style={{ padding: 4 }}
+                    accessibilityLabel="Download Document"
+                  >
+                    <Feather name="download" size={17} color="#2563EB" />
+                  </TouchableOpacity>
                 </View>
               </View>
-            )}
 
-            <View style={styles.approvalDepositBox}>
-              <Text style={styles.approvalDepositLabel}>NEXT STEP: MOVE-IN DEPOSIT DISPATCH</Text>
-              <Text style={styles.approvalDepositText}>
-                Upon 1-click approval, invoice #{inspectingSignedAgreement?.depositInvoiceId || `INV-DEP-${inspectingSignedAgreement?.id}`} for{' '}
-                <Text style={{ fontWeight: '700', color: '#0F172A' }}>
-                  {format(inspectingSignedAgreement?.deposit || 0, inspectingSignedAgreement?.currency || viewCurrency)}
-                </Text>{' '}
-                will be automatically created and dispatched to resident.
-              </Text>
-            </View>
+              {/* Tenant Uploaded IDs (if any) */}
+              {inspectingSignedAgreement?.tenantUploadedIds && inspectingSignedAgreement.tenantUploadedIds.length > 0 && (
+                <View
+                  style={{
+                    marginVertical: 10,
+                    padding: 12,
+                    backgroundColor: '#F0FDF4',
+                    borderWidth: 1,
+                    borderColor: '#A7F3D0',
+                    borderRadius: 10,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                    <Feather name="shield" size={15} color="#059669" style={{ marginRight: 6 }} />
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#065F46' }}>
+                      Resident Identity Documents ({inspectingSignedAgreement.tenantUploadedIds.length})
+                    </Text>
+                  </View>
+                  <View style={{ gap: 6 }}>
+                    {(inspectingSignedAgreement.tenantUploadedIds as MobileTenantUploadedIdItem[]).map((idDoc) => (
+                      <View
+                        key={idDoc.id}
+                        style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', padding: 8, borderRadius: 6, gap: 8 }}
+                      >
+                        <Feather name="check-circle" size={13} color="#059669" />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#065F46' }}>{idDoc.name}</Text>
+                          <Text style={{ fontSize: 10.5, color: '#6B7280' }} numberOfLines={1}>{idDoc.fileName}</Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                          <TouchableOpacity
+                            onPress={() =>
+                              setPreviewDoc({
+                                fileName: idDoc.fileName,
+                                fileUrl: idDoc.fileUrl,
+                                title: idDoc.name,
+                                docType: 'Government Identity Proof',
+                                meta: {
+                                  tenantName: inspectingSignedAgreement.tenant,
+                                  unit: inspectingSignedAgreement.unit,
+                                  propertyName: inspectingSignedAgreement.propertyName,
+                                  date: idDoc.uploadedAt,
+                                },
+                              })
+                            }
+                            style={{ padding: 4 }}
+                            accessibilityLabel="View Document"
+                          >
+                            <Feather name="eye" size={14} color="#2563EB" />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={() =>
+                              downloadDocument({
+                                fileName: idDoc.fileName,
+                                fileUrl: idDoc.fileUrl,
+                                title: idDoc.name,
+                                docType: 'Government Identity Proof',
+                                meta: {
+                                  tenantName: inspectingSignedAgreement.tenant,
+                                  unit: inspectingSignedAgreement.unit,
+                                  propertyName: inspectingSignedAgreement.propertyName,
+                                  date: idDoc.uploadedAt,
+                                },
+                              })
+                            }
+                            style={{ padding: 4 }}
+                            accessibilityLabel="Download Document"
+                          >
+                            <Feather name="download" size={14} color="#2563EB" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
 
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  paddingVertical: 11,
-                  borderRadius: 10,
-                  borderWidth: 1.5,
-                  borderColor: '#EF4444',
-                  backgroundColor: '#FEF2F2',
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-                onPress={() => {
-                  setRejectReasonText('');
-                  setShowRejectModal(true);
-                }}
-                activeOpacity={0.85}
-              >
-                <Feather name="x-circle" size={14} color="#DC2626" style={{ marginRight: 5 }} />
-                <Text style={{ fontSize: 12, fontWeight: '700', color: '#DC2626' }}>Reject</Text>
-              </TouchableOpacity>
+              <View style={styles.approvalDepositBox}>
+                <Text style={styles.approvalDepositLabel}>NEXT STEP: MOVE-IN DEPOSIT DISPATCH</Text>
+                <Text style={styles.approvalDepositText}>
+                  Upon 1-click approval, invoice #{inspectingSignedAgreement?.depositInvoiceId || `INV-DEP-${inspectingSignedAgreement?.id}`} for{' '}
+                  <Text style={{ fontWeight: '700', color: '#0F172A' }}>
+                    {format(inspectingSignedAgreement?.deposit || 0, inspectingSignedAgreement?.currency || viewCurrency)}
+                  </Text>{' '}
+                  will be automatically created and dispatched to resident.
+                </Text>
+              </View>
 
-              <TouchableOpacity
-                style={[styles.approvePrimaryCTA, { flex: 2, marginTop: 0 }]}
-                onPress={() => inspectingSignedAgreement && handleApproveSignedLease(inspectingSignedAgreement)}
-                activeOpacity={0.85}
-              >
-                <Feather name="shield" size={15} color="#FFFFFF" style={{ marginRight: 5 }} />
-                <Text style={styles.approvePrimaryCTAText}>Approve</Text>
-              </TouchableOpacity>
-            </View>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    paddingVertical: 11,
+                    borderRadius: 10,
+                    borderWidth: 1.5,
+                    borderColor: '#EF4444',
+                    backgroundColor: '#FEF2F2',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  onPress={() => {
+                    setRejectReasonText('');
+                    setShowRejectModal(true);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="x-circle" size={14} color="#DC2626" style={{ marginRight: 5 }} />
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#DC2626' }}>Reject</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.approvePrimaryCTA, { flex: 2, marginTop: 0 }]}
+                  onPress={() => inspectingSignedAgreement && handleApproveSignedLease(inspectingSignedAgreement)}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="shield" size={15} color="#FFFFFF" style={{ marginRight: 5 }} />
+                  <Text style={styles.approvePrimaryCTAText}>Approve</Text>
+                </TouchableOpacity>
+              </View>
             </ScrollView>
           </View>
         </View>
@@ -2865,41 +3281,41 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               keyboardShouldPersistTaps="handled"
             >
               <Text style={{ fontSize: 13, color: '#475569', marginBottom: 10, lineHeight: 18 }}>
-              Please specify why the uploaded agreement is being rejected. The resident will receive this reason and will be prompted to re-upload.
-            </Text>
+                Please specify why the uploaded agreement is being rejected. The resident will receive this reason and will be prompted to re-upload.
+              </Text>
 
-            <Text style={styles.modalFieldLabel}>Reason for Rejection *</Text>
-            <TextInput
-              style={[styles.modalInput, { height: 80, textAlignVertical: 'top', paddingTop: 8 }]}
-              multiline
-              numberOfLines={3}
-              placeholder="e.g., Signature missing on page 2, unclear scan, or incomplete document."
-              placeholderTextColor="#94A3B8"
-              value={rejectReasonText}
-              onChangeText={setRejectReasonText}
-            />
+              <Text style={styles.modalFieldLabel}>Reason for Rejection *</Text>
+              <TextInput
+                style={[styles.modalInput, { height: 80, textAlignVertical: 'top', paddingTop: 8 }]}
+                multiline
+                numberOfLines={3}
+                placeholder="e.g., Signature missing on page 2, unclear scan, or incomplete document."
+                placeholderTextColor="#94A3B8"
+                value={rejectReasonText}
+                onChangeText={setRejectReasonText}
+              />
 
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-              <TouchableOpacity
-                style={[styles.modalCancelBtn, { flex: 1 }]}
-                onPress={() => setShowRejectModal(false)}
-              >
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.modalSubmitBtn,
-                  { flex: 1.5, backgroundColor: '#DC2626' },
-                  (!rejectReasonText.trim() || isRejecting) && { opacity: 0.6 }
-                ]}
-                disabled={!rejectReasonText.trim() || isRejecting}
-                onPress={handleRejectSignedLease}
-              >
-                <Text style={styles.modalSubmitBtnText}>
-                  {isRejecting ? 'Rejecting...' : 'Confirm Rejection'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                <TouchableOpacity
+                  style={[styles.modalCancelBtn, { flex: 1 }]}
+                  onPress={() => setShowRejectModal(false)}
+                >
+                  <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.modalSubmitBtn,
+                    { flex: 1.5, backgroundColor: '#DC2626' },
+                    (!rejectReasonText.trim() || isRejecting) && { opacity: 0.6 }
+                  ]}
+                  disabled={!rejectReasonText.trim() || isRejecting}
+                  onPress={handleRejectSignedLease}
+                >
+                  <Text style={styles.modalSubmitBtnText}>
+                    {isRejecting ? 'Rejecting...' : 'Confirm Rejection'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </ScrollView>
           </View>
         </View>
@@ -3061,80 +3477,80 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               keyboardShouldPersistTaps="handled"
             >
               <View style={styles.approvalInspectionCard}>
-              <Feather name="file-text" size={24} color="#D97706" />
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.approvalInspectionFile}>
-                  {inspectingSignedRenewal?.tenantSignedFileName || `Signed_Renewal_Unit_${inspectingSignedRenewal?.unit}.pdf`}
-                </Text>
-                <Text style={styles.approvalInspectionSub}>
-                  Uploaded by resident for landlord review and approval.
-                </Text>
+                <Feather name="file-text" size={24} color="#D97706" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.approvalInspectionFile}>
+                    {inspectingSignedRenewal?.tenantSignedFileName || `Signed_Renewal_Unit_${inspectingSignedRenewal?.unit}.pdf`}
+                  </Text>
+                  <Text style={styles.approvalInspectionSub}>
+                    Uploaded by resident for landlord review and approval.
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setPreviewDoc({
+                        fileName: inspectingSignedRenewal?.tenantSignedFileName || `Signed_Renewal_Unit_${inspectingSignedRenewal?.unit}.pdf`,
+                        fileUrl: inspectingSignedRenewal?.tenantSignedFileUrl,
+                        title: 'Signed Renewal Agreement',
+                        docType: 'Lease Renewal Agreement',
+                        meta: {
+                          tenantName: inspectingSignedRenewal?.tenant,
+                          unit: inspectingSignedRenewal?.unit,
+                          amount: inspectingSignedRenewal?.proposedRent ? format(inspectingSignedRenewal.proposedRent, inspectingSignedRenewal.currency || viewCurrency) : undefined,
+                          date: inspectingSignedRenewal?.newLeaseEnd,
+                        },
+                      })
+                    }
+                    style={{ padding: 4 }}
+                    accessibilityLabel="View Document"
+                  >
+                    <Feather name="eye" size={18} color="#2563EB" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() =>
+                      downloadDocument({
+                        fileName: inspectingSignedRenewal?.tenantSignedFileName || `Signed_Renewal_Unit_${inspectingSignedRenewal?.unit}.pdf`,
+                        fileUrl: inspectingSignedRenewal?.tenantSignedFileUrl,
+                        title: 'Signed Renewal Agreement',
+                        docType: 'Lease Renewal Agreement',
+                        meta: {
+                          tenantName: inspectingSignedRenewal?.tenant,
+                          unit: inspectingSignedRenewal?.unit,
+                          amount: inspectingSignedRenewal?.proposedRent ? format(inspectingSignedRenewal.proposedRent, inspectingSignedRenewal.currency || viewCurrency) : undefined,
+                          date: inspectingSignedRenewal?.newLeaseEnd,
+                        },
+                      })
+                    }
+                    style={{ padding: 4 }}
+                    accessibilityLabel="Download Document"
+                  >
+                    <Feather name="download" size={17} color="#2563EB" />
+                  </TouchableOpacity>
+                </View>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <TouchableOpacity
-                  onPress={() =>
-                    setPreviewDoc({
-                      fileName: inspectingSignedRenewal?.tenantSignedFileName || `Signed_Renewal_Unit_${inspectingSignedRenewal?.unit}.pdf`,
-                      fileUrl: inspectingSignedRenewal?.tenantSignedFileUrl,
-                      title: 'Signed Renewal Agreement',
-                      docType: 'Lease Renewal Agreement',
-                      meta: {
-                        tenantName: inspectingSignedRenewal?.tenant,
-                        unit: inspectingSignedRenewal?.unit,
-                        amount: inspectingSignedRenewal?.proposedRent ? format(inspectingSignedRenewal.proposedRent, inspectingSignedRenewal.currency || viewCurrency) : undefined,
-                        date: inspectingSignedRenewal?.newLeaseEnd,
-                      },
-                    })
-                  }
-                  style={{ padding: 4 }}
-                  accessibilityLabel="View Document"
-                >
-                  <Feather name="eye" size={18} color="#2563EB" />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() =>
-                    downloadDocument({
-                      fileName: inspectingSignedRenewal?.tenantSignedFileName || `Signed_Renewal_Unit_${inspectingSignedRenewal?.unit}.pdf`,
-                      fileUrl: inspectingSignedRenewal?.tenantSignedFileUrl,
-                      title: 'Signed Renewal Agreement',
-                      docType: 'Lease Renewal Agreement',
-                      meta: {
-                        tenantName: inspectingSignedRenewal?.tenant,
-                        unit: inspectingSignedRenewal?.unit,
-                        amount: inspectingSignedRenewal?.proposedRent ? format(inspectingSignedRenewal.proposedRent, inspectingSignedRenewal.currency || viewCurrency) : undefined,
-                        date: inspectingSignedRenewal?.newLeaseEnd,
-                      },
-                    })
-                  }
-                  style={{ padding: 4 }}
-                  accessibilityLabel="Download Document"
-                >
-                  <Feather name="download" size={17} color="#2563EB" />
-                </TouchableOpacity>
-              </View>
-            </View>
 
-            <View style={styles.calcPreviewBox}>
-              <View style={styles.calcRow}>
-                <Text style={styles.calcLabel}>Agreed Renewal Rent:</Text>
-                <Text style={[styles.calcVal, { color: '#059669', fontWeight: '700' }]}>
-                  {format(inspectingSignedRenewal?.proposedRent || 0, inspectingSignedRenewal?.currency || viewCurrency)}/mo
-                </Text>
+              <View style={styles.calcPreviewBox}>
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>Agreed Renewal Rent:</Text>
+                  <Text style={[styles.calcVal, { color: '#059669', fontWeight: '700' }]}>
+                    {format(inspectingSignedRenewal?.proposedRent || 0, inspectingSignedRenewal?.currency || viewCurrency)}/mo
+                  </Text>
+                </View>
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>Extended Through:</Text>
+                  <Text style={styles.calcVal}>{inspectingSignedRenewal?.newLeaseEnd || inspectingSignedRenewal?.leaseEnd}</Text>
+                </View>
               </View>
-              <View style={styles.calcRow}>
-                <Text style={styles.calcLabel}>Extended Through:</Text>
-                <Text style={styles.calcVal}>{inspectingSignedRenewal?.newLeaseEnd || inspectingSignedRenewal?.leaseEnd}</Text>
-              </View>
-            </View>
 
-            <TouchableOpacity
-              style={styles.approvePrimaryCTA}
-              onPress={() => inspectingSignedRenewal && handleConfirmApproveRenewal(inspectingSignedRenewal)}
-              activeOpacity={0.85}
-            >
-              <Feather name="check" size={15} color="#FFFFFF" style={{ marginRight: 5 }} />
-              <Text style={styles.approvePrimaryCTAText}>Approve</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.approvePrimaryCTA}
+                onPress={() => inspectingSignedRenewal && handleConfirmApproveRenewal(inspectingSignedRenewal)}
+                activeOpacity={0.85}
+              >
+                <Feather name="check" size={15} color="#FFFFFF" style={{ marginRight: 5 }} />
+                <Text style={styles.approvePrimaryCTAText}>Approve</Text>
+              </TouchableOpacity>
             </ScrollView>
           </View>
         </View>
@@ -3348,13 +3764,29 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                           alignItems: 'center',
                         }}
                         onPress={() => {
-                          if (!uploadTenantName.trim()) {
-                            showToast('Please enter tenant name.');
+                          const cleanName = uploadTenantName.trim();
+                          if (!cleanName) {
+                            showToast('Please enter resident full name.');
                             return;
                           }
+                          const cleanEmail = uploadTenantEmail.trim().toLowerCase();
+                          if (!cleanEmail || !cleanEmail.includes('@')) {
+                            showToast('Please enter a valid email address.');
+                            return;
+                          }
+                          const pass = uploadTenantPassword.trim() || 'Tenant@123';
+                          setUploadTenantPassword(pass);
                           setIsNewTenantMode(true);
+                          setSelectedTenantObj({
+                            id: selectedTenantObj?.id || `usr_${Date.now()}`,
+                            name: cleanName,
+                            email: cleanEmail,
+                            phone: uploadTenantPhone.trim(),
+                            source: 'platform',
+                          });
                           setShowTenantDetailsEdit(false);
                           setShowTenantDropdown(false);
+                          showToast('Resident details saved.');
                         }}
                       >
                         <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '700' }}>Save Resident Details</Text>
@@ -3403,10 +3835,10 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                                 backgroundColor: isNewTenantMode
                                   ? '#FEF3C7'
                                   : selectedTenantObj?.source === 'platform'
-                                  ? '#DBEAFE'
-                                  : selectedTenantObj?.source === 'unit'
-                                  ? '#F3E8FF'
-                                  : '#DCFCE7',
+                                    ? '#DBEAFE'
+                                    : selectedTenantObj?.source === 'unit'
+                                      ? '#F3E8FF'
+                                      : '#DCFCE7',
                               }}
                             >
                               <Text
@@ -3416,19 +3848,19 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                                   color: isNewTenantMode
                                     ? '#92400E'
                                     : selectedTenantObj?.source === 'platform'
-                                    ? '#1D4ED8'
-                                    : selectedTenantObj?.source === 'unit'
-                                    ? '#7E22CE'
-                                    : '#15803D',
+                                      ? '#1D4ED8'
+                                      : selectedTenantObj?.source === 'unit'
+                                        ? '#7E22CE'
+                                        : '#15803D',
                                 }}
                               >
                                 {isNewTenantMode
                                   ? 'New Resident'
                                   : selectedTenantObj?.source === 'platform'
-                                  ? 'Propithub User'
-                                  : selectedTenantObj?.source === 'unit'
-                                  ? 'Unit Occupant'
-                                  : 'My Tenant'}
+                                    ? 'Propithub User'
+                                    : selectedTenantObj?.source === 'unit'
+                                      ? 'Unit Occupant'
+                                      : 'My Tenant'}
                               </Text>
                             </View>
                           </View>
@@ -3542,17 +3974,12 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                               if (match.email) setUploadTenantEmail(match.email);
                               if (match.phone) setUploadTenantPhone(match.phone);
                               setIsNewTenantMode(false);
+                              setShowTenantDropdown(false);
                             } else {
-                              setSelectedTenantObj({
-                                id: `usr_${Date.now()}`,
-                                name: trimmed,
-                                email: uploadTenantEmail.trim(),
-                                phone: uploadTenantPhone.trim(),
-                                source: 'platform',
-                              });
                               setIsNewTenantMode(true);
+                              setShowTenantDropdown(false);
+                              setShowTenantDetailsEdit(true);
                             }
-                            setShowTenantDropdown(false);
                           }}
                         />
                         {uploadTenantName ? (
@@ -3580,14 +4007,8 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                               style={[styles.dropdownMenuItem, { backgroundColor: isDark ? colors.surfaceSunken : '#ECFDF5', borderBottomColor: '#A7F3D0' }]}
                               onPress={() => {
                                 setIsNewTenantMode(true);
-                                setSelectedTenantObj({
-                                  id: `usr_${Date.now()}`,
-                                  name: uploadTenantName.trim(),
-                                  email: uploadTenantEmail.trim(),
-                                  phone: uploadTenantPhone.trim(),
-                                  source: 'platform',
-                                });
                                 setShowTenantDropdown(false);
+                                setShowTenantDetailsEdit(true);
                               }}
                             >
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
@@ -3614,9 +4035,28 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                           {filteredTenantCandidates.length === 0 && !isLoadingCandidates ? (
                             <View style={{ padding: 14, alignItems: 'center' }}>
                               <Text style={{ fontSize: 12, color: colors.inkSoft }}>No matching users found.</Text>
-                              <Text style={{ fontSize: 11, color: '#059669', marginTop: 4, fontWeight: '600' }}>
-                                Tap "Use as New Resident" above or register below.
-                              </Text>
+                              <TouchableOpacity
+                                style={{
+                                  marginTop: 8,
+                                  paddingVertical: 7,
+                                  paddingHorizontal: 12,
+                                  backgroundColor: '#059669',
+                                  borderRadius: 6,
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                }}
+                                onPress={() => {
+                                  setIsNewTenantMode(true);
+                                  setShowTenantDropdown(false);
+                                  setShowTenantDetailsEdit(true);
+                                }}
+                              >
+                                <Feather name="user-plus" size={13} color="#FFFFFF" />
+                                <Text style={{ fontSize: 12, color: '#FFFFFF', fontWeight: '700' }}>
+                                  + Register "{uploadTenantName.trim() || 'New Resident'}"
+                                </Text>
+                              </TouchableOpacity>
                             </View>
                           ) : null}
 
@@ -3846,29 +4286,76 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                       marginTop: 12,
                     }}
                   >
-                    {/* Header row: label + quick duration pills */}
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                      <Text style={{ fontSize: 13, fontWeight: '600', color: colors.navy }}>Lease Duration & Timeline</Text>
-                      <View style={{ flexDirection: 'row', gap: 6 }}>
-                        {[{ label: '6 Months', months: 6 }, { label: '1 Year', months: 12 }, { label: '2 Years', months: 24 }].map((opt) => (
-                          <TouchableOpacity
-                            key={opt.months}
-                            style={[
-                              styles.durationPill,
-                              { flex: 0, paddingHorizontal: 10, paddingVertical: 5 },
-                            ]}
-                            onPress={() => {
-                              const startObj = new Date(uploadStartDate || new Date().toISOString().split('T')[0]);
-                              const endObj = new Date(startObj);
-                              endObj.setMonth(endObj.getMonth() + opt.months);
-                              endObj.setDate(endObj.getDate() - 1);
-                              setUploadEndDate(endObj.toISOString().split('T')[0]);
-                            }}
-                          >
-                            <Text style={[styles.durationPillText, { fontSize: 11 }]}>{opt.label}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
+                    {/* Lease Duration Dropdown */}
+                    <View style={{ marginBottom: 12 }}>
+                      <Text style={{ fontSize: 12.5, fontWeight: '600', color: colors.navy, marginBottom: 6 }}>
+                        Lease Duration
+                      </Text>
+                      <TouchableOpacity
+                        style={[
+                          styles.dropdownTrigger,
+                          {
+                            marginBottom: 0,
+                            paddingVertical: 10,
+                            paddingHorizontal: 12,
+                            backgroundColor: isDark ? colors.surface : '#FFFFFF',
+                            borderColor: showDurationDropdown ? '#10B981' : colors.line,
+                          },
+                        ]}
+                        onPress={() => {
+                          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                          setShowDurationDropdown(!showDurationDropdown);
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                          <Feather name="calendar" size={14} color="#059669" />
+                          <Text style={[styles.dropdownValueText, { fontSize: 13, color: colors.navy, fontWeight: '600' }]}>
+                            {selectedDurationLabel}
+                          </Text>
+                        </View>
+                        <Feather name={showDurationDropdown ? 'chevron-up' : 'chevron-down'} size={15} color={colors.inkSoft} />
+                      </TouchableOpacity>
+
+                      {showDurationDropdown && (
+                        <View style={[styles.dropdownMenuBox, { marginTop: 4, marginBottom: 0 }]}>
+                          {[
+                            { label: '3 Months (Quarterly)', months: 3 },
+                            { label: '6 Months (Half-Year)', months: 6 },
+                            { label: '11 Months (Standard Residential)', months: 11 },
+                            { label: '1 Year (12 Months)', months: 12 },
+                            { label: '2 Years (24 Months)', months: 24 },
+                            { label: '3 Years (36 Months)', months: 36 },
+                          ].map((opt) => {
+                            const isSelected = selectedDurationLabel === opt.label;
+                            return (
+                              <TouchableOpacity
+                                key={opt.months}
+                                style={[styles.dropdownMenuItem, isSelected && styles.dropdownMenuItemActive]}
+                                onPress={() => {
+                                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                                  setSelectedDurationLabel(opt.label);
+                                  setShowDurationDropdown(false);
+                                  const startBase = uploadStartDate && !isNaN(Date.parse(uploadStartDate))
+                                    ? new Date(uploadStartDate)
+                                    : new Date();
+                                  const endObj = new Date(startBase);
+                                  endObj.setMonth(endObj.getMonth() + opt.months);
+                                  endObj.setDate(endObj.getDate() - 1);
+                                  setUploadEndDate(endObj.toISOString().split('T')[0]);
+                                }}
+                              >
+                                <View style={{ flex: 1 }}>
+                                  <Text style={[styles.dropdownMenuText, isSelected && { fontWeight: '700', color: '#059669' }]}>
+                                    {opt.label}
+                                  </Text>
+                                </View>
+                                {isSelected && <Feather name="check" size={15} color="#059669" />}
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      )}
                     </View>
 
                     {/* Date pickers side by side */}
@@ -3878,7 +4365,23 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                         <TextInput
                           style={[styles.modalInput, { backgroundColor: isDark ? colors.surface : '#FFFFFF' }]}
                           value={uploadStartDate}
-                          onChangeText={setUploadStartDate}
+                          onChangeText={(val) => {
+                            setUploadStartDate(val);
+                            const matched = [
+                              { label: '3 Months (Quarterly)', months: 3 },
+                              { label: '6 Months (Half-Year)', months: 6 },
+                              { label: '11 Months (Standard Residential)', months: 11 },
+                              { label: '1 Year (12 Months)', months: 12 },
+                              { label: '2 Years (24 Months)', months: 24 },
+                              { label: '3 Years (36 Months)', months: 36 },
+                            ].find((o) => o.label === selectedDurationLabel);
+                            if (matched && val && !isNaN(Date.parse(val))) {
+                              const endObj = new Date(val);
+                              endObj.setMonth(endObj.getMonth() + matched.months);
+                              endObj.setDate(endObj.getDate() - 1);
+                              setUploadEndDate(endObj.toISOString().split('T')[0]);
+                            }
+                          }}
                           placeholder="YYYY-MM-DD"
                           placeholderTextColor={colors.inkSoft}
                         />
@@ -3888,7 +4391,10 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                         <TextInput
                           style={[styles.modalInput, { backgroundColor: isDark ? colors.surface : '#FFFFFF' }]}
                           value={uploadEndDate}
-                          onChangeText={setUploadEndDate}
+                          onChangeText={(val) => {
+                            setUploadEndDate(val);
+                            setSelectedDurationLabel('Custom');
+                          }}
                           placeholder="YYYY-MM-DD"
                           placeholderTextColor={colors.inkSoft}
                         />
@@ -3903,409 +4409,466 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 <View>
                   {/* Select Signing Method label */}
                   <Text style={[styles.modalFieldLabel, { fontSize: 13, fontWeight: '600', color: colors.navy, marginTop: 4 }]}>Select Signing Method *</Text>
-              <View style={{ gap: 8, marginBottom: 12 }}>
-                {/* Radio Card 1: Dispatch for Signing */}
-                <TouchableOpacity
-                  style={[
-                    styles.workflowCard,
-                    uploadExecutionMode === 'digital_dispatch' && styles.workflowCardActive,
-                  ]}
-                  onPress={() => setUploadExecutionMode('digital_dispatch')}
-                  activeOpacity={0.8}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Ionicons
-                      name={uploadExecutionMode === 'digital_dispatch' ? 'radio-button-on' : 'radio-button-off'}
-                      size={18}
-                      color={uploadExecutionMode === 'digital_dispatch' ? '#10B981' : '#94A3B8'}
-                    />
-                    <Text style={[styles.workflowCardTitle, uploadExecutionMode === 'digital_dispatch' && { color: '#0F172A' }]}>
-                      Dispatch Tenancy Offer
-                    </Text>
-                  </View>
-                  <Text style={styles.workflowCardDesc}>
-                    Unit becomes <Text style={{ fontWeight: '700' }}>Reserved</Text>. Resident reviews & accepts invitation on dashboard, downloads agreement, signs in ink offline, and uploads signed copy.
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Radio Card 2: Already Executed Offline */}
-                <TouchableOpacity
-                  style={[
-                    styles.workflowCard,
-                    uploadExecutionMode === 'already_executed_offline' && styles.workflowCardActive,
-                  ]}
-                  onPress={() => setUploadExecutionMode('already_executed_offline')}
-                  activeOpacity={0.8}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Ionicons
-                      name={uploadExecutionMode === 'already_executed_offline' ? 'radio-button-on' : 'radio-button-off'}
-                      size={18}
-                      color={uploadExecutionMode === 'already_executed_offline' ? '#10B981' : '#94A3B8'}
-                    />
-                    <Text style={[styles.workflowCardTitle, uploadExecutionMode === 'already_executed_offline' && { color: '#0F172A' }]}>
-                      Already Executed Offline
-                    </Text>
-                  </View>
-                  <Text style={styles.workflowCardDesc}>
-                    Unit is marked <Text style={{ fontWeight: '700' }}>Occupied</Text> immediately. Physical agreement has already been executed in ink in person.
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Offline Deposit Checkbox (Web Parity) */}
-              {uploadExecutionMode === 'already_executed_offline' && (
-                <View style={styles.offlineDepositBox}>
-                  <TouchableOpacity
-                    style={{ flexDirection: 'row', alignItems: 'center' }}
-                    onPress={() => setOfflineDepositCollected(!offlineDepositCollected)}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons
-                      name={offlineDepositCollected ? 'checkbox' : 'square-outline'}
-                      size={18}
-                      color="#059669"
-                    />
-                    <Text style={styles.offlineDepositLabel}>
-                      Security Deposit ({format(parseFloat(uploadDeposit) || 0, uploadCurrency || viewCurrency)}) already collected in full offline
-                    </Text>
-                  </TouchableOpacity>
-
-                  {offlineDepositCollected && (
-                    <View style={{ marginTop: 8 }}>
-                      <Text style={{ fontSize: 11, color: '#64748B', marginBottom: 4 }}>Payment Reference / Receipt Note</Text>
-                      <TextInput
-                        style={[styles.modalInput, { backgroundColor: '#FFFFFF', marginBottom: 0 }]}
-                        value={offlineDepositRef}
-                        onChangeText={setOfflineDepositRef}
-                        placeholder="e.g. Bank Wire / UPI Ref / Cash Settled"
-                        placeholderTextColor="#94A3B8"
-                      />
-                    </View>
-                  )}
-                </View>
-              )}
-
-              {/* Document File Attachment Header with Segmented Toggle */}
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
-                <Text style={[styles.modalFieldLabel, { marginBottom: 0 }]}>
-                  Agreement Document File
-                </Text>
-
-                <View style={{ flexDirection: 'row', backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9', borderRadius: 8, padding: 2, borderWidth: 1, borderColor: colors.line }}>
-                  <TouchableOpacity
-                    style={{
-                      paddingHorizontal: 8,
-                      paddingVertical: 4,
-                      borderRadius: 6,
-                      backgroundColor: uploadAgreementSource === 'upload' ? '#10B981' : 'transparent',
-                    }}
-                    onPress={() => setUploadAgreementSource('upload')}
-                  >
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: uploadAgreementSource === 'upload' ? '#FFFFFF' : colors.inkSoft }}>
-                      📁 Upload File
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={{
-                      paddingHorizontal: 8,
-                      paddingVertical: 4,
-                      borderRadius: 6,
-                      backgroundColor: uploadAgreementSource === 'library' ? '#10B981' : 'transparent',
-                    }}
-                    onPress={() => setUploadAgreementSource('library')}
-                  >
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: uploadAgreementSource === 'library' ? '#FFFFFF' : colors.inkSoft }}>
-                      📄 Select from Library ({myTemplates.length})
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {uploadAgreementSource === 'upload' ? (
-                <TouchableOpacity
-                  style={styles.documentFileCard}
-                  onPress={async () => {
-                    try {
-                      const picked = await pickDocument({ type: ['application/pdf', 'image/*'] });
-                      if (picked) {
-                        setUploadFileName(picked.name);
-                        const rawData = picked.base64 || picked.uri;
-                        try {
-                          const safeUrl = await uploadOrCompressDocument(
-                            rawData,
-                            `agreements/drafts/${Date.now()}_${picked.name}`
-                          );
-                          setUploadFileData(safeUrl);
-                        } catch {
-                          setUploadFileData(rawData);
-                        }
-                        showToast(`${picked.name} attached`, 'success');
-                      }
-                    } catch (err: any) {
-                      showToast(err?.message || 'Could not attach document.', 'error');
-                    }
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, marginRight: 8 }}>
-                    <Feather name="file-text" size={18} color="#059669" />
-                    <View style={{ marginLeft: 8, flex: 1 }}>
-                      <Text style={[styles.documentFileName, { color: colors.navy }]} numberOfLines={1} ellipsizeMode="middle">
-                        {uploadFileName}
-                      </Text>
-                      <Text style={styles.documentFileSize}>Tap to choose or replace file</Text>
-                    </View>
-                  </View>
-                  <View style={styles.readyBadge}>
-                    <Text style={styles.readyBadgeText}>Browse</Text>
-                  </View>
-                </TouchableOpacity>
-              ) : (
-                <View style={{ marginBottom: 8 }}>
-                  {myTemplates.length === 0 ? (
-                    <View style={[styles.documentFileCard, { justifyContent: 'center', alignItems: 'center', paddingVertical: 14 }]}>
-                      <Text style={{ fontSize: 12, color: colors.inkSoft, textAlign: 'center' }}>
-                        No templates in library yet. Switch to "Upload File" above.
-                      </Text>
-                    </View>
-                  ) : (
-                    <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                      <View style={{ gap: 6 }}>
-                        {myTemplates.map((t) => {
-                          const isSelected = uploadSelectedTemplateId === t.id || (uploadFileData && uploadFileData === t.fileData);
-                          return (
-                            <TouchableOpacity
-                              key={t.id}
-                              style={[
-                                styles.documentFileCard,
-                                {
-                                  paddingVertical: 8,
-                                  paddingHorizontal: 10,
-                                  borderColor: isSelected ? '#10B981' : colors.line,
-                                  backgroundColor: isSelected ? (isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5') : (isDark ? colors.surfaceSunken : '#FFFFFF'),
-                                },
-                              ]}
-                              onPress={() => {
-                                setUploadSelectedTemplateId(t.id);
-                                setUploadFileName(t.fileName);
-                                setUploadFileData(t.fileData);
-                                showToast(`${t.title} selected from library`, 'success');
-                              }}
-                              activeOpacity={0.7}
-                            >
-                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, marginRight: 8 }}>
-                                <Feather
-                                  name={isSelected ? 'check-circle' : 'file-text'}
-                                  size={16}
-                                  color={isSelected ? '#059669' : colors.inkSoft}
-                                />
-                                <View style={{ marginLeft: 8, flex: 1 }}>
-                                  <Text
-                                    style={{
-                                      fontSize: 12.5,
-                                      fontWeight: isSelected ? '700' : '600',
-                                      color: isSelected ? '#065F46' : colors.navy,
-                                    }}
-                                    numberOfLines={1}
-                                    ellipsizeMode="tail"
-                                  >
-                                    {t.title}
-                                  </Text>
-                                  <Text style={{ fontSize: 10.5, color: colors.inkSoft, marginTop: 1 }} numberOfLines={1}>
-                                    {t.fileName} • {t.fileSizeKb || 450} KB
-                                  </Text>
-                                </View>
-                              </View>
-                              <View
-                                style={[
-                                  styles.readyBadge,
-                                  isSelected && { backgroundColor: '#10B981' },
-                                ]}
-                              >
-                                <Text style={[styles.readyBadgeText, isSelected && { color: '#FFFFFF' }]}>
-                                  {isSelected ? 'Selected ✓' : 'Select'}
-                                </Text>
-                              </View>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    </ScrollView>
-                  )}
-                </View>
-              )}
-
-              {/* Identity Verification Requirements (Web Parity) */}
-              <View
-                style={{
-                  marginTop: 14,
-                  padding: 12,
-                  backgroundColor: uploadRequireIds ? '#FFFFFF' : '#F8FAFC',
-                  borderWidth: 1.5,
-                  borderColor: uploadRequireIds ? '#10B981' : '#E2E8F0',
-                  borderRadius: 10,
-                  marginBottom: 14,
-                }}
-              >
-                <TouchableOpacity
-                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
-                  onPress={() => setUploadRequireIds(!uploadRequireIds)}
-                  activeOpacity={0.8}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 8 }}>
-                    <Ionicons
-                      name={uploadRequireIds ? 'checkbox' : 'square-outline'}
-                      size={20}
-                      color={uploadRequireIds ? '#10B981' : '#64748B'}
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }}>
-                        Request Resident ID Verification Documents
-                      </Text>
-                      <Text style={{ fontSize: 11, color: '#64748B', marginTop: 1 }}>
-                        {uploadRequireIds
-                          ? 'Resident must provide these ID documents for verification.'
-                          : 'Require resident identity verification (Aadhaar, Voter ID, Passport, etc.)'}
-                      </Text>
-                    </View>
-                  </View>
-                  {uploadRequireIds && (
-                    <View style={{ backgroundColor: '#ECFDF5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}>
-                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#059669' }}>
-                        {uploadIdList.length} ID{uploadIdList.length === 1 ? '' : 's'} Required
-                      </Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-
-                {uploadRequireIds && (
-                  <View style={{ marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#64748B', marginBottom: 6, letterSpacing: 0.3 }}>
-                      QUICK ADD SUGGESTIONS
-                    </Text>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-                      {['Voter ID', 'Aadhaar Card', 'PAN Card', 'Passport', 'Driving License', 'Police Verification'].map((preset) => {
-                        const isAdded = uploadIdList.some((item) => item.name.toLowerCase() === preset.toLowerCase());
-                        return (
-                          <TouchableOpacity
-                            key={preset}
-                            style={{
-                              paddingHorizontal: 9,
-                              paddingVertical: 4,
-                              borderRadius: 6,
-                              backgroundColor: isAdded ? '#F1F5F9' : '#ECFDF5',
-                              borderWidth: 1,
-                              borderColor: isAdded ? '#E2E8F0' : '#A7F3D0',
-                              opacity: isAdded ? 0.6 : 1,
-                            }}
-                            disabled={isAdded}
-                            onPress={() => {
-                              setUploadIdList([...uploadIdList, { id: `id_${Date.now()}_${Math.random()}`, name: preset }]);
-                            }}
-                          >
-                            <Text style={{ fontSize: 11, fontWeight: '600', color: isAdded ? '#94A3B8' : '#059669' }}>
-                              {isAdded ? '✓ ' : '+ '}
-                              {preset}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#64748B', marginBottom: 6, letterSpacing: 0.3 }}>
-                      REQUIRED ID DOCUMENT LIST
-                    </Text>
-                    <View style={{ gap: 8 }}>
-                      {uploadIdList.map((item, idx) => (
-                        <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#64748B', width: 22 }}>
-                            #{idx + 1}
-                          </Text>
-                          <TextInput
-                            style={[styles.modalInput, { flex: 1, marginBottom: 0, paddingVertical: 6, fontSize: 12.5 }]}
-                            value={item.name}
-                            placeholder="e.g. Passport, Aadhaar, Driving License"
-                            placeholderTextColor="#94A3B8"
-                            onChangeText={(txt) => {
-                              const updated = [...uploadIdList];
-                              updated[idx].name = txt;
-                              setUploadIdList(updated);
-                            }}
-                          />
-                          {uploadExecutionMode === 'already_executed_offline' && (
-                            <TouchableOpacity
-                              style={{
-                                paddingHorizontal: 8,
-                                paddingVertical: 7,
-                                backgroundColor: uploadOfflineTenantIds[item.id] ? '#DCFCE7' : '#F1F5F9',
-                                borderRadius: 6,
-                                borderWidth: 1,
-                                borderColor: uploadOfflineTenantIds[item.id] ? '#86EFAC' : '#CBD5E1',
-                              }}
-                              onPress={async () => {
-                                try {
-                                  const picked = await pickDocument({ type: ['application/pdf', 'image/*'] });
-                                  if (picked) {
-                                    setUploadOfflineTenantIds((prev) => ({
-                                      ...prev,
-                                      [item.id]: {
-                                        fileName: picked.name,
-                                        fileUrl: picked.base64 || picked.uri,
-                                      },
-                                    }));
-                                    showToast(`${item.name} attached`, 'success');
-                                  }
-                                } catch (err: any) {
-                                  showToast(err?.message || 'Could not attach ID.', 'error');
-                                }
-                              }}
-                            >
-                              <Text style={{ fontSize: 10.5, fontWeight: '700', color: uploadOfflineTenantIds[item.id] ? '#15803D' : '#475569' }}>
-                                {uploadOfflineTenantIds[item.id] ? 'Attached ✓' : 'Upload File'}
-                              </Text>
-                            </TouchableOpacity>
-                          )}
-                          {uploadIdList.length > 1 && (
-                            <TouchableOpacity
-                              onPress={() => setUploadIdList(uploadIdList.filter((_, i) => i !== idx))}
-                              style={{ padding: 6 }}
-                            >
-                              <Feather name="trash-2" size={15} color="#EF4444" />
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      ))}
-                    </View>
-
+                  <View style={{ gap: 8, marginBottom: 12 }}>
+                    {/* Radio Card 1: Dispatch for Signing */}
                     <TouchableOpacity
-                      style={{
-                        marginTop: 10,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        alignSelf: 'flex-start',
-                        gap: 4,
-                        paddingHorizontal: 10,
-                        paddingVertical: 5,
-                        backgroundColor: '#FFFFFF',
-                        borderWidth: 1,
-                        borderColor: '#CBD5E1',
-                        borderRadius: 6,
-                      }}
-                      onPress={() => setUploadIdList([...uploadIdList, { id: `id_${Date.now()}_${Math.random()}`, name: '' }])}
+                      style={[
+                        styles.workflowCard,
+                        uploadExecutionMode === 'digital_dispatch' && styles.workflowCardActive,
+                      ]}
+                      onPress={() => setUploadExecutionMode('digital_dispatch')}
+                      activeOpacity={0.8}
                     >
-                      <Feather name="plus" size={13} color="#059669" />
-                      <Text style={{ fontSize: 11.5, fontWeight: '600', color: '#059669' }}>
-                        Add Custom ID Requirement
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Ionicons
+                          name={uploadExecutionMode === 'digital_dispatch' ? 'radio-button-on' : 'radio-button-off'}
+                          size={18}
+                          color={uploadExecutionMode === 'digital_dispatch' ? '#10B981' : '#94A3B8'}
+                        />
+                        <Text style={[styles.workflowCardTitle, uploadExecutionMode === 'digital_dispatch' && { color: '#0F172A' }]}>
+                          Dispatch Tenancy Offer
+                        </Text>
+                      </View>
+                      <Text style={styles.workflowCardDesc}>
+                        Unit becomes <Text style={{ fontWeight: '700' }}>Reserved</Text>. Resident reviews & accepts invitation on dashboard, downloads agreement, signs in ink offline, and uploads signed copy.
+                      </Text>
+                    </TouchableOpacity>
+
+                    {/* Radio Card 2: Already Executed Offline */}
+                    <TouchableOpacity
+                      style={[
+                        styles.workflowCard,
+                        uploadExecutionMode === 'already_executed_offline' && styles.workflowCardActive,
+                      ]}
+                      onPress={() => setUploadExecutionMode('already_executed_offline')}
+                      activeOpacity={0.8}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Ionicons
+                          name={uploadExecutionMode === 'already_executed_offline' ? 'radio-button-on' : 'radio-button-off'}
+                          size={18}
+                          color={uploadExecutionMode === 'already_executed_offline' ? '#10B981' : '#94A3B8'}
+                        />
+                        <Text style={[styles.workflowCardTitle, uploadExecutionMode === 'already_executed_offline' && { color: '#0F172A' }]}>
+                          Already Executed Offline
+                        </Text>
+                      </View>
+                      <Text style={styles.workflowCardDesc}>
+                        Unit is marked <Text style={{ fontWeight: '700' }}>Occupied</Text> immediately. Physical agreement has already been executed in ink in person.
                       </Text>
                     </TouchableOpacity>
                   </View>
-                )}
-              </View>
-            </View>
-          )}
-        </ScrollView>
+
+                  {/* Offline Deposit Checkbox (Web Parity) */}
+                  {uploadExecutionMode === 'already_executed_offline' && (
+                    <View style={styles.offlineDepositBox}>
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center' }}
+                        onPress={() => setOfflineDepositCollected(!offlineDepositCollected)}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons
+                          name={offlineDepositCollected ? 'checkbox' : 'square-outline'}
+                          size={18}
+                          color="#059669"
+                        />
+                        <Text style={styles.offlineDepositLabel}>
+                          Security Deposit ({format(parseFloat(uploadDeposit) || 0, uploadCurrency || viewCurrency)}) already collected in full offline
+                        </Text>
+                      </TouchableOpacity>
+
+                      {offlineDepositCollected && (
+                        <View style={{ marginTop: 8 }}>
+                          <Text style={{ fontSize: 11, color: '#64748B', marginBottom: 4 }}>Payment Reference / Receipt Note</Text>
+                          <TextInput
+                            style={[styles.modalInput, { backgroundColor: '#FFFFFF', marginBottom: 0 }]}
+                            value={offlineDepositRef}
+                            onChangeText={setOfflineDepositRef}
+                            placeholder="e.g. Bank Wire / UPI Ref / Cash Settled"
+                            placeholderTextColor="#94A3B8"
+                          />
+                        </View>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Document File Attachment Header with Segmented Toggle */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+                    <Text style={[styles.modalFieldLabel, { marginBottom: 0 }]}>
+                      Agreement Document File
+                    </Text>
+
+                    <View style={{ flexDirection: 'row', backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9', borderRadius: 8, padding: 2, borderWidth: 1, borderColor: colors.line }}>
+                      <TouchableOpacity
+                        style={{
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
+                          borderRadius: 6,
+                          backgroundColor: uploadAgreementSource === 'upload' ? '#10B981' : 'transparent',
+                        }}
+                        onPress={() => setUploadAgreementSource('upload')}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: uploadAgreementSource === 'upload' ? '#FFFFFF' : colors.inkSoft }}>
+                          📁 Upload File
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={{
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
+                          borderRadius: 6,
+                          backgroundColor: uploadAgreementSource === 'library' ? '#10B981' : 'transparent',
+                        }}
+                        onPress={() => setUploadAgreementSource('library')}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: uploadAgreementSource === 'library' ? '#FFFFFF' : colors.inkSoft }}>
+                          📄 Select from Library ({myTemplates.length})
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {uploadAgreementSource === 'upload' ? (
+                    <TouchableOpacity
+                      style={[
+                        styles.documentFileCard,
+                        !uploadFileName && {
+                          borderStyle: 'dashed',
+                          borderWidth: 1.5,
+                          borderColor: isDark ? colors.line : '#CBD5E1',
+                          backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+                          paddingVertical: 14,
+                        },
+                      ]}
+                      onPress={async () => {
+                        try {
+                          const picked = await pickDocument({ type: ['application/pdf', 'image/*'] });
+                          if (picked) {
+                            setUploadFileName(picked.name);
+                            const rawData = picked.base64 || picked.uri;
+                            try {
+                              const safeUrl = await uploadOrCompressDocument(
+                                rawData,
+                                `agreements/drafts/${Date.now()}_${picked.name}`
+                              );
+                              setUploadFileData(safeUrl);
+                            } catch {
+                              setUploadFileData(rawData);
+                            }
+                            showToast(`${picked.name} attached`, 'success');
+                          }
+                        } catch (err: any) {
+                          showToast(err?.message || 'Could not attach document.', 'error');
+                        }
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      {uploadFileName ? (
+                        <>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, marginRight: 8 }}>
+                            <Feather name="file-text" size={18} color="#059669" />
+                            <View style={{ marginLeft: 8, flex: 1 }}>
+                              <Text style={[styles.documentFileName, { color: colors.navy }]} numberOfLines={1} ellipsizeMode="middle">
+                                {uploadFileName}
+                              </Text>
+                              <Text style={styles.documentFileSize}>Tap to choose or replace file</Text>
+                            </View>
+                          </View>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <TouchableOpacity
+                              style={{
+                                padding: 6,
+                                borderRadius: 6,
+                                backgroundColor: isDark ? colors.surface : '#F1F5F9',
+                              }}
+                              onPress={(e) => {
+                                (e as any)?.stopPropagation?.();
+                                setUploadFileName('');
+                                setUploadFileData('');
+                                showToast('Attachment removed', 'info');
+                              }}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                              <Feather name="x" size={14} color={colors.inkSoft} />
+                            </TouchableOpacity>
+                            <View style={styles.readyBadge}>
+                              <Text style={styles.readyBadgeText}>Browse</Text>
+                            </View>
+                          </View>
+                        </>
+                      ) : (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 10 }}>
+                          <View
+                            style={{
+                              width: 36,
+                              height: 36,
+                              borderRadius: 18,
+                              backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            <Feather name="upload-cloud" size={18} color="#059669" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontSize: 13, fontWeight: '600', color: colors.navy }}>
+                              No agreement document attached
+                            </Text>
+                            <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }}>
+                              Tap to browse & attach agreement (PDF or Image)
+                            </Text>
+                          </View>
+                          <View style={[styles.readyBadge, { backgroundColor: isDark ? colors.surface : '#F1F5F9' }]}>
+                            <Text style={[styles.readyBadgeText, { color: colors.navy }]}>Browse</Text>
+                          </View>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={{ marginBottom: 8 }}>
+                      {myTemplates.length === 0 ? (
+                        <View style={[styles.documentFileCard, { justifyContent: 'center', alignItems: 'center', paddingVertical: 14 }]}>
+                          <Text style={{ fontSize: 12, color: colors.inkSoft, textAlign: 'center' }}>
+                            No templates in library yet. Switch to "Upload File" above.
+                          </Text>
+                        </View>
+                      ) : (
+                        <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                          <View style={{ gap: 6 }}>
+                            {myTemplates.map((t) => {
+                              const isSelected = uploadSelectedTemplateId === t.id || (uploadFileData && uploadFileData === t.fileData);
+                              return (
+                                <TouchableOpacity
+                                  key={t.id}
+                                  style={[
+                                    styles.documentFileCard,
+                                    {
+                                      paddingVertical: 8,
+                                      paddingHorizontal: 10,
+                                      borderColor: isSelected ? '#10B981' : colors.line,
+                                      backgroundColor: isSelected ? (isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5') : (isDark ? colors.surfaceSunken : '#FFFFFF'),
+                                    },
+                                  ]}
+                                  onPress={() => {
+                                    setUploadSelectedTemplateId(t.id);
+                                    setUploadFileName(t.fileName);
+                                    setUploadFileData(t.fileData);
+                                    showToast(`${t.title} selected from library`, 'success');
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, marginRight: 8 }}>
+                                    <Feather
+                                      name={isSelected ? 'check-circle' : 'file-text'}
+                                      size={16}
+                                      color={isSelected ? '#059669' : colors.inkSoft}
+                                    />
+                                    <View style={{ marginLeft: 8, flex: 1 }}>
+                                      <Text
+                                        style={{
+                                          fontSize: 12.5,
+                                          fontWeight: isSelected ? '700' : '600',
+                                          color: isSelected ? '#065F46' : colors.navy,
+                                        }}
+                                        numberOfLines={1}
+                                        ellipsizeMode="tail"
+                                      >
+                                        {t.title}
+                                      </Text>
+                                      <Text style={{ fontSize: 10.5, color: colors.inkSoft, marginTop: 1 }} numberOfLines={1}>
+                                        {t.fileName} • {t.fileSizeKb || 450} KB
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View
+                                    style={[
+                                      styles.readyBadge,
+                                      isSelected && { backgroundColor: '#10B981' },
+                                    ]}
+                                  >
+                                    <Text style={[styles.readyBadgeText, isSelected && { color: '#FFFFFF' }]}>
+                                      {isSelected ? 'Selected ✓' : 'Select'}
+                                    </Text>
+                                  </View>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        </ScrollView>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Identity Verification Requirements (Web Parity) */}
+                  <View
+                    style={{
+                      marginTop: 14,
+                      padding: 12,
+                      backgroundColor: uploadRequireIds ? '#FFFFFF' : '#F8FAFC',
+                      borderWidth: 1.5,
+                      borderColor: uploadRequireIds ? '#10B981' : '#E2E8F0',
+                      borderRadius: 10,
+                      marginBottom: 14,
+                    }}
+                  >
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
+                      onPress={() => setUploadRequireIds(!uploadRequireIds)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 8 }}>
+                        <Ionicons
+                          name={uploadRequireIds ? 'checkbox' : 'square-outline'}
+                          size={20}
+                          color={uploadRequireIds ? '#10B981' : '#64748B'}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }}>
+                            Request Resident ID Verification Documents
+                          </Text>
+                          <Text style={{ fontSize: 11, color: '#64748B', marginTop: 1 }}>
+                            {uploadRequireIds
+                              ? 'Resident must provide these ID documents for verification.'
+                              : 'Require resident identity verification (Aadhaar, Voter ID, Passport, etc.)'}
+                          </Text>
+                        </View>
+                      </View>
+                      {uploadRequireIds && (
+                        <View style={{ backgroundColor: '#ECFDF5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#059669' }}>
+                            {uploadIdList.length} ID{uploadIdList.length === 1 ? '' : 's'} Required
+                          </Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+
+                    {uploadRequireIds && (
+                      <View style={{ marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9' }}>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#64748B', marginBottom: 6, letterSpacing: 0.3 }}>
+                          QUICK ADD SUGGESTIONS
+                        </Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+                          {['Voter ID', 'Aadhaar Card', 'PAN Card', 'Passport', 'Driving License', 'Police Verification'].map((preset) => {
+                            const isAdded = uploadIdList.some((item) => item.name.toLowerCase() === preset.toLowerCase());
+                            return (
+                              <TouchableOpacity
+                                key={preset}
+                                style={{
+                                  paddingHorizontal: 9,
+                                  paddingVertical: 4,
+                                  borderRadius: 6,
+                                  backgroundColor: isAdded ? '#F1F5F9' : '#ECFDF5',
+                                  borderWidth: 1,
+                                  borderColor: isAdded ? '#E2E8F0' : '#A7F3D0',
+                                  opacity: isAdded ? 0.6 : 1,
+                                }}
+                                disabled={isAdded}
+                                onPress={() => {
+                                  setUploadIdList([...uploadIdList, { id: `id_${Date.now()}_${Math.random()}`, name: preset }]);
+                                }}
+                              >
+                                <Text style={{ fontSize: 11, fontWeight: '600', color: isAdded ? '#94A3B8' : '#059669' }}>
+                                  {isAdded ? '✓ ' : '+ '}
+                                  {preset}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#64748B', marginBottom: 6, letterSpacing: 0.3 }}>
+                          REQUIRED ID DOCUMENT LIST
+                        </Text>
+                        <View style={{ gap: 8 }}>
+                          {uploadIdList.map((item, idx) => (
+                            <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Text style={{ fontSize: 12, fontWeight: '700', color: '#64748B', width: 22 }}>
+                                #{idx + 1}
+                              </Text>
+                              <TextInput
+                                style={[styles.modalInput, { flex: 1, marginBottom: 0, paddingVertical: 6, fontSize: 12.5 }]}
+                                value={item.name}
+                                placeholder="e.g. Passport, Aadhaar, Driving License"
+                                placeholderTextColor="#94A3B8"
+                                onChangeText={(txt) => {
+                                  const updated = [...uploadIdList];
+                                  updated[idx].name = txt;
+                                  setUploadIdList(updated);
+                                }}
+                              />
+                              {uploadExecutionMode === 'already_executed_offline' && (
+                                <TouchableOpacity
+                                  style={{
+                                    paddingHorizontal: 8,
+                                    paddingVertical: 7,
+                                    backgroundColor: uploadOfflineTenantIds[item.id] ? '#DCFCE7' : '#F1F5F9',
+                                    borderRadius: 6,
+                                    borderWidth: 1,
+                                    borderColor: uploadOfflineTenantIds[item.id] ? '#86EFAC' : '#CBD5E1',
+                                  }}
+                                  onPress={async () => {
+                                    try {
+                                      const picked = await pickDocument({ type: ['application/pdf', 'image/*'] });
+                                      if (picked) {
+                                        setUploadOfflineTenantIds((prev) => ({
+                                          ...prev,
+                                          [item.id]: {
+                                            fileName: picked.name,
+                                            fileUrl: picked.base64 || picked.uri,
+                                          },
+                                        }));
+                                        showToast(`${item.name} attached`, 'success');
+                                      }
+                                    } catch (err: any) {
+                                      showToast(err?.message || 'Could not attach ID.', 'error');
+                                    }
+                                  }}
+                                >
+                                  <Text style={{ fontSize: 10.5, fontWeight: '700', color: uploadOfflineTenantIds[item.id] ? '#15803D' : '#475569' }}>
+                                    {uploadOfflineTenantIds[item.id] ? 'Attached ✓' : 'Upload File'}
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
+                              {uploadIdList.length > 1 && (
+                                <TouchableOpacity
+                                  onPress={() => setUploadIdList(uploadIdList.filter((_, i) => i !== idx))}
+                                  style={{ padding: 6 }}
+                                >
+                                  <Feather name="trash-2" size={15} color="#EF4444" />
+                                </TouchableOpacity>
+                              )}
+                            </View>
+                          ))}
+                        </View>
+
+                        <TouchableOpacity
+                          style={{
+                            marginTop: 10,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            alignSelf: 'flex-start',
+                            gap: 4,
+                            paddingHorizontal: 10,
+                            paddingVertical: 5,
+                            backgroundColor: '#FFFFFF',
+                            borderWidth: 1,
+                            borderColor: '#CBD5E1',
+                            borderRadius: 6,
+                          }}
+                          onPress={() => setUploadIdList([...uploadIdList, { id: `id_${Date.now()}_${Math.random()}`, name: '' }])}
+                        >
+                          <Feather name="plus" size={13} color="#059669" />
+                          <Text style={{ fontSize: 11.5, fontWeight: '600', color: '#059669' }}>
+                            Add Custom ID Requirement
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )}
+            </ScrollView>
 
             {/* Modal Footer — Redesigned 2-row layout */}
             <View style={[styles.wizardFooter, { borderTopColor: colors.line }]}>
@@ -4346,14 +4909,35 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
                 {/* Continue / Submit */}
                 <TouchableOpacity
-                  style={[styles.modalWebSubmitBtn, { flex: 2 }]}
+                  style={[styles.modalWebSubmitBtn, { flex: 2 }, isSubmittingAgreement && { opacity: 0.7 }]}
+                  disabled={isSubmittingAgreement}
                   onPress={() => {
                     if (wizardStep === 1) {
                       if (!uploadTenantName.trim()) {
                         showToast('Please enter or select a tenant name.');
                         return;
                       }
-                      if (isTenantLimitReached && (!selectedTenantObj || isNewTenantMode)) {
+                      if (isNewTenantMode || !selectedTenantObj) {
+                        const cleanEmail = uploadTenantEmail.trim().toLowerCase();
+                        if (!cleanEmail || !cleanEmail.includes('@')) {
+                          setShowTenantDetailsEdit(true);
+                          showToast('Please enter a valid email address for the resident.');
+                          return;
+                        }
+                        if (!uploadTenantPassword.trim()) {
+                          setUploadTenantPassword('Tenant@123');
+                        }
+                        if (!selectedTenantObj) {
+                          setSelectedTenantObj({
+                            id: `usr_${Date.now()}`,
+                            name: uploadTenantName.trim(),
+                            email: cleanEmail,
+                            phone: uploadTenantPhone.trim(),
+                            source: 'platform',
+                          });
+                        }
+                      }
+                      if (isTenantLimitReached && (!selectedTenantObj || isNewTenantMode) && user?.role !== 'manager') {
                         showAlert({
                           type: 'warning',
                           title: 'Tenant Quota Reached',
@@ -4387,7 +4971,16 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   }}
                   activeOpacity={0.85}
                 >
-                  {wizardStep < 3 ? (
+                  {isSubmittingAgreement ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text style={[styles.modalWebSubmitBtnText, { textAlign: 'center' }]}>
+                        {uploadExecutionMode === 'already_executed_offline'
+                          ? 'Adding Resident...'
+                          : 'Sending Invitation...'}
+                      </Text>
+                    </View>
+                  ) : wizardStep < 3 ? (
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                       <Text style={styles.modalWebSubmitBtnText}>Continue</Text>
                       <Feather name="arrow-right" size={14} color="#FFFFFF" />
@@ -4430,30 +5023,30 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               keyboardShouldPersistTaps="handled"
             >
               <Text style={styles.modalFieldLabel}>Target Move-Out Date</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={vacateDate}
-              onChangeText={setVacateDate}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor="#94A3B8"
-            />
+              <TextInput
+                style={styles.modalInput}
+                value={vacateDate}
+                onChangeText={setVacateDate}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor="#94A3B8"
+              />
 
-            <Text style={styles.modalFieldLabel}>Reason for Notice</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={terminateReason}
-              onChangeText={setTerminateReason}
-              placeholder="e.g. Relocating for employment"
-              placeholderTextColor="#94A3B8"
-            />
+              <Text style={styles.modalFieldLabel}>Reason for Notice</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={terminateReason}
+                onChangeText={setTerminateReason}
+                placeholder="e.g. Relocating for employment"
+                placeholderTextColor="#94A3B8"
+              />
 
-            <TouchableOpacity
-              style={[styles.modalSubmitBtn, { backgroundColor: '#DC2626' }]}
-              onPress={handleConfirmTerminate}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.modalSubmitBtnText}>Register Notice to Vacate</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSubmitBtn, { backgroundColor: '#DC2626' }]}
+                onPress={handleConfirmTerminate}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.modalSubmitBtnText}>Register Notice to Vacate</Text>
+              </TouchableOpacity>
             </ScrollView>
           </View>
         </View>
@@ -4664,1315 +5257,1315 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  mainContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 110,
-    flexGrow: 1,
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    marginBottom: 14,
-    paddingVertical: 2,
-  },
-  tabButton: {
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 20,
-    backgroundColor: isDark ? colors.surfaceMuted : '#E9EDF2',
-    borderWidth: 1,
-    borderColor: isDark ? colors.line : '#D1D9E0',
-  },
-  tabButtonActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  tabText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  tabTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  limitWarningBanner: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FCD34D',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
-  limitWarningTitle: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  limitWarningSub: {
-    fontSize: 11,
-    color: '#B45309',
-    marginTop: 2,
-  },
-  searchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    marginBottom: 10,
-  },
-  searchInput: {
-    flex: 1,
-    marginLeft: 8,
-    fontSize: 13,
-    color: colors.navy,
-    paddingVertical: 0,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  metaHint: {
-    fontSize: 12.5,
-    color: colors.inkSoft,
-    fontWeight: '500',
-    flex: 1,
-    marginRight: 8,
-  },
-  headerUploadBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#059669',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    flexShrink: 0,
-  },
-  headerUploadBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  filterChipScroll: {
-    marginBottom: 14,
-  },
-  filterRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-    flexWrap: 'wrap',
-  },
-  filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginRight: 6,
-  },
-  filterChipActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  filterText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  filterTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 14,
-    marginBottom: 12,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
-  agreementCode: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-  },
-  unitName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  unitNameBold: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  tenantSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-  },
-  activeBadge: {
-    backgroundColor: '#ECFDF5',
-  },
-  pendingBadge: {
-    backgroundColor: '#FEF3C7',
-  },
-  statusBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  activeBadgeText: {
-    color: '#059669',
-  },
-  pendingBadgeText: {
-    color: '#D97706',
-  },
-  stepBadgeSubtext: {
-    fontSize: 9.5,
-    color: '#D97706',
-    fontWeight: '700',
-    marginTop: 3,
-  },
-  agreementGrid: {
-    backgroundColor: colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    paddingVertical: 10,
-    marginVertical: 8,
-  },
-  agGridRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  agGridCol: {
-    flex: 1,
-  },
-  agGridLabel: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-    marginBottom: 2,
-  },
-  agGridValBold: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  agGridVal: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.ink,
-  },
-  agGridSub: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  docRepositoryStrip: {
-    flexDirection: 'column',
-    gap: 6,
-    marginVertical: 4,
-    width: '100%',
-  },
-  docBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    width: '100%',
-    maxWidth: '100%',
-  },
-  docBadgeText: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: '#B45309',
-    flex: 1,
-  },
-  docBadgeSigned: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    width: '100%',
-    maxWidth: '100%',
-  },
-  docBadgeSignedText: {
-    fontSize: 11.5,
-    fontWeight: '700',
-    color: '#065F46',
-    flex: 1,
-  },
-  approvalRequiredBox: {
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FCD34D',
-    borderRadius: 8,
-    padding: 10,
-    marginVertical: 8,
-  },
-  approvalRequiredHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  approvalRequiredTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#92400E',
-    marginLeft: 6,
-  },
-  approvalRequiredFile: {
-    fontSize: 11,
-    color: '#B45309',
-    marginBottom: 8,
-  },
-  approveLeaseBtn: {
-    backgroundColor: '#D97706',
-    borderRadius: 7,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  approveLeaseBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  depositPendingBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 8,
-    padding: 10,
-    marginVertical: 8,
-  },
-  depositPendingTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#1E40AF',
-  },
-  depositPendingSub: {
-    fontSize: 11,
-    color: '#3B82F6',
-    marginTop: 2,
-    lineHeight: 15,
-  },
-  cardActionsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-    paddingTop: 10,
-  },
-  detailsActionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingVertical: 8,
-    gap: 5,
-  },
-  detailsActionText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  renewalActionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 8,
-    paddingVertical: 8,
-    gap: 5,
-  },
-  renewalActionText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#2563EB',
-  },
-  noticeActionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 4,
-  },
-  noticeActionText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#DC2626',
-  },
-  // Renewals Subtab Styles
-  renewalNoticeBanner: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
-  renewalNoticeText: {
-    flex: 1,
-    fontSize: 11.5,
-    color: '#1E40AF',
-    lineHeight: 16,
-  },
-  renewalTwoBoxGrid: {
-    flexDirection: 'row',
-    gap: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
-    marginVertical: 8,
-  },
-  renewalBox: {
-    flex: 1,
-  },
-  renewalBoxLabel: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginBottom: 2,
-  },
-  renewalBoxVal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  termsSnippetStrip: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 6,
-    padding: 8,
-    marginBottom: 8,
-  },
-  termsSnippetText: {
-    fontSize: 11,
-    color: colors.inkSoft,
-  },
-  renewalActionRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 6,
-  },
-  activeRenewalText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  offerNextTermBtn: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  offerNextTermBtnText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  reviewSignedRenewalBtn: {
-    backgroundColor: '#D97706',
-    borderRadius: 8,
-    paddingVertical: 9,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 6,
-  },
-  reviewSignedRenewalBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  offerRenewalCTA: {
-    backgroundColor: '#10B981',
-    borderRadius: 8,
-    paddingVertical: 9,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 6,
-  },
-  offerRenewalCTAText: {
-    color: '#FFFFFF',
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  // Applications Subtab Styles
-  applicantNameTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 2,
-  },
-  screeningBadgesRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginVertical: 8,
-    flexWrap: 'wrap',
-  },
-  trustScoreBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  trustScoreText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: '#065F46',
-  },
-  kycVerifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  kycVerifiedText: {
-    fontSize: 10.5,
-    fontWeight: '600',
-    color: '#1D4ED8',
-  },
-  applicantGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    rowGap: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
-    marginVertical: 8,
-  },
-  applicantGridCol: {
-    width: '50%',
-  },
-  appGridLabel: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginBottom: 1,
-  },
-  appGridVal: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  appNoteBox: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 6,
-    padding: 8,
-    marginBottom: 10,
-  },
-  appNoteLabel: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    marginBottom: 2,
-  },
-  appNoteText: {
-    fontSize: 11,
-    color: colors.ink,
-    lineHeight: 15,
-  },
-  appActionRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  declineAppBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  declineAppBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#DC2626',
-  },
-  approveAppBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#059669',
-    borderRadius: 8,
-    paddingVertical: 8,
-  },
-  approveAppBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  appSettledRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 8,
-    padding: 8,
-    marginTop: 4,
-  },
-  appSettledText: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: '#065F46',
-  },
-  // Single Web-Parity Floating Action Button
-  singleFabContainer: {
-    position: 'absolute',
-    bottom: 20,
-    left: 20,
-    right: 20,
-    alignItems: 'center',
-  },
-  singleFabBtn: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#059669',
-    borderRadius: 14,
-    paddingVertical: 14,
-  },
-  singleFabBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  // Modals Styling
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    justifyContent: 'flex-end',
-  },
-  modalCard: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: 32,
-  },
-  modalTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 16,
-  },
-  modalTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  modalSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  modalFieldLabel: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: colors.inkSoft,
-    marginBottom: 6,
-    marginTop: 10,
-  },
-  modalInput: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 13,
-    color: colors.navy,
-  },
-  modalSubmitBtn: {
-    backgroundColor: '#10B981',
-    borderRadius: 10,
-    paddingVertical: 11,
-    alignItems: 'center',
-    marginTop: 14,
-  },
-  modalSubmitBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: -0.2,
-  },
-  modalCloseBtn: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
-    marginTop: 14,
-  },
-  modalCloseBtnText: {
-    color: colors.inkSoft,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  // Details Modal
-  detailsSection: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
-  detailsSectionTitle: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-    marginBottom: 8,
-  },
-  detailsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  detailsLabel: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  detailsVal: {
-    fontSize: 12,
-    color: colors.navy,
-    fontWeight: '600',
-  },
-  detailsDocBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    padding: 10,
-  },
-  detailsDocName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  detailsDocSub: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  // Approval Modal
-  approvalInspectionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
-  approvalInspectionFile: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  approvalInspectionSub: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  approvalDepositBox: {
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 14,
-  },
-  approvalDepositLabel: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    color: '#1E40AF',
-    marginBottom: 3,
-  },
-  approvalDepositText: {
-    fontSize: 11.5,
-    color: '#1E3A8A',
-    lineHeight: 16,
-  },
-  approvePrimaryCTA: {
-    backgroundColor: '#059669',
-    borderRadius: 10,
-    paddingVertical: 11,
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  approvePrimaryCTAText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: -0.2,
-  },
-  // Renewal Offer Modal
-  currentRentStrip: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 10,
-  },
-  currentRentLabel: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  currentRentVal: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  escalationPillsRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 10,
-  },
-  escalationPill: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 7,
-    borderRadius: 7,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
-  },
-  escalationPillActive: {
-    borderColor: '#059669',
-    backgroundColor: '#ECFDF5',
-  },
-  escalationPillText: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  escalationPillTextActive: {
-    color: '#059669',
-    fontWeight: '700',
-  },
-  calcPreviewBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 10,
-    gap: 4,
-  },
-  calcRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  calcLabel: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-  },
-  calcVal: {
-    fontSize: 11.5,
-    color: colors.navy,
-    fontWeight: '600',
-  },
-  durationPillsRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 10,
-  },
-  durationPill: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 7,
-    borderRadius: 7,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
-  },
-  durationPillActive: {
-    borderColor: '#2563EB',
-    backgroundColor: '#EFF6FF',
-  },
-  durationPillText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  durationPillTextActive: {
-    color: '#2563EB',
-    fontWeight: '700',
-  },
-  datesGrid: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 10,
-  },
-  dateCol: {
-    flex: 1,
-  },
-  dateLabel: {
-    fontSize: 10,
-    color: colors.inkSoft,
-    marginBottom: 2,
-  },
-  dateVal: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  // Upload modal Web Parity Styles
-  unitSelectChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginRight: 8,
-  },
-  unitSelectChipActive: {
-    backgroundColor: '#FFFBEB',
-    borderColor: '#D97706',
-  },
-  unitSelectChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  unitSelectChipTextActive: {
-    color: '#92400E',
-    fontWeight: '700',
-  },
-  autoRenewPill: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 7,
-    borderRadius: 7,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
-  },
-  autoRenewPillActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  autoRenewPillText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  autoRenewPillTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  workflowCard: {
-    padding: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    backgroundColor: colors.surface,
-  },
-  workflowCardActive: {
-    borderColor: '#10B981',
-    borderWidth: 1.5,
-    backgroundColor: colors.surface,
-  },
-  workflowCardTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-    marginLeft: 8,
-  },
-  workflowCardDesc: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-    marginTop: 6,
-    marginLeft: 26,
-    lineHeight: 16,
-  },
-  offlineDepositBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 10,
-  },
-  offlineDepositLabel: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: colors.navy,
-    marginLeft: 8,
-    flex: 1,
-  },
-  documentFileCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 4,
-  },
-  documentFileName: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  documentFileSize: {
-    fontSize: 10.5,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  readyBadge: {
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  readyBadgeText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  modalCancelBtn: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 10,
-    paddingVertical: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalCancelBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  modalWebSubmitBtn: {
-    backgroundColor: '#10B981',
-    borderRadius: 10,
-    paddingVertical: 11,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalWebSubmitBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  // Wizard stepper styles — Web Parity
-  wizardStepperBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    marginBottom: 0,
-  },
-  wizardStepNode: {
-    alignItems: 'center',
-    flexShrink: 0,
-  },
-  wizardStepCircle: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: isDark ? colors.surfaceSunken : '#CBD5E1',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  wizardStepCircleActive: {
-    backgroundColor: '#10B981',
-  },
-  wizardStepCirclePassed: {
-    backgroundColor: '#059669',
-  },
-  wizardStepCircleText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#64748B',
-  },
-  wizardStepLabel: {
-    fontSize: 10,
-    fontWeight: '500',
-    color: colors.inkSoft,
-    textAlign: 'center',
-  },
-  wizardStepLabelActive: {
-    color: '#10B981',
-    fontWeight: '700',
-  },
-  wizardStepLabelPassed: {
-    color: colors.ink,
-    fontWeight: '600',
-  },
-  wizardConnector: {
-    flex: 1,
-    height: 1.5,
-    backgroundColor: isDark ? colors.surfaceSunken : '#CBD5E1',
-    marginBottom: 18,
-    marginHorizontal: 4,
-  },
-  wizardConnectorPassed: {
-    backgroundColor: '#059669',
-  },
-  // Wizard footer
-  wizardFooter: {
-    flexDirection: 'column',
-    borderTopWidth: 1,
-    paddingTop: 14,
-    marginTop: 14,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    marginHorizontal: -20,
-    paddingHorizontal: 20,
-    paddingBottom: 8,
-  },
-  wizardFooterBackBtn: {
-    paddingVertical: 11,
-    paddingHorizontal: 12,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  wizardFooterBackBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  emptyContainer: {
-    padding: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-    marginTop: 10,
-  },
-  emptySub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    textAlign: 'center',
-    marginTop: 4,
-    maxWidth: 240,
-  },
-  dropdownTrigger: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 8,
-  },
-  dropdownValueText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  dropdownMenuBox: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 12,
-    marginTop: -4,
-    marginBottom: 12,
-    overflow: 'hidden',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  dropdownMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F8FAFC',
-  },
-  dropdownMenuItemActive: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-  },
-  dropdownMenuText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  selectedTenantBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    marginBottom: 10,
-  },
-  selectedTenantText: {
-    fontSize: 11.5,
-    color: '#065F46',
-    flex: 1,
-  },
-  // legacy - kept for reference but no longer used for the wizard
-  wizardStepIndicator: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 14,
-  },
-  wizardStepItem: {
-    flex: 1,
-    paddingVertical: 7,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 8,
-  },
-  wizardStepItemActive: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-  },
-  wizardStepItemPassed: {
-    backgroundColor: 'transparent',
-  },
-  wizardStepText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  wizardStepTextActive: {
-    color: '#059669',
-    fontWeight: '700',
-  },
-  wizardStepTextPassed: {
-    color: '#059669',
-    fontWeight: '600',
-  },
-  modalSaveDraftBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: isDark ? 'rgba(5, 150, 105, 0.12)' : '#ECFDF5',
-    borderWidth: 1,
-    borderColor: isDark ? 'rgba(5, 150, 105, 0.3)' : '#6EE7B7',
-    borderRadius: 10,
-    paddingVertical: 11,
-    paddingHorizontal: 12,
-  },
-  modalSaveDraftBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: isDark ? '#A7F3D0' : '#065F46',
-  },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    mainContainer: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    scroll: {
+      flex: 1,
+    },
+    content: {
+      padding: 16,
+      paddingBottom: 110,
+      flexGrow: 1,
+    },
+    tabContainer: {
+      flexDirection: 'row',
+      marginBottom: 14,
+      paddingVertical: 2,
+    },
+    tabButton: {
+      paddingVertical: 7,
+      paddingHorizontal: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 20,
+      backgroundColor: isDark ? colors.surfaceMuted : '#E9EDF2',
+      borderWidth: 1,
+      borderColor: isDark ? colors.line : '#D1D9E0',
+    },
+    tabButtonActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+    },
+    tabText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    tabTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    limitWarningBanner: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      backgroundColor: '#FEF3C7',
+      borderWidth: 1,
+      borderColor: '#FCD34D',
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 12,
+    },
+    limitWarningTitle: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: '#92400E',
+    },
+    limitWarningSub: {
+      fontSize: 11,
+      color: '#B45309',
+      marginTop: 2,
+    },
+    searchBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+      marginBottom: 10,
+    },
+    searchInput: {
+      flex: 1,
+      marginLeft: 8,
+      fontSize: 13,
+      color: colors.navy,
+      paddingVertical: 0,
+    },
+    metaRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    metaHint: {
+      fontSize: 12.5,
+      color: colors.inkSoft,
+      fontWeight: '500',
+      flex: 1,
+      marginRight: 8,
+    },
+    headerUploadBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#059669',
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      flexShrink: 0,
+    },
+    headerUploadBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    filterChipScroll: {
+      marginBottom: 14,
+    },
+    filterRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 14,
+      flexWrap: 'wrap',
+    },
+    filterChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 20,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      marginRight: 6,
+    },
+    filterChipActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    filterText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    filterTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    card: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: colors.line,
+      padding: 14,
+      marginBottom: 12,
+    },
+    cardHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 8,
+    },
+    agreementCode: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+    },
+    unitName: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    unitNameBold: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    tenantSub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    statusBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+    },
+    activeBadge: {
+      backgroundColor: '#ECFDF5',
+    },
+    pendingBadge: {
+      backgroundColor: '#FEF3C7',
+    },
+    statusBadgeText: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    activeBadgeText: {
+      color: '#059669',
+    },
+    pendingBadgeText: {
+      color: '#D97706',
+    },
+    stepBadgeSubtext: {
+      fontSize: 9.5,
+      color: '#D97706',
+      fontWeight: '700',
+      marginTop: 3,
+    },
+    agreementGrid: {
+      backgroundColor: colors.surface,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+      paddingVertical: 10,
+      marginVertical: 8,
+    },
+    agGridRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      gap: 12,
+    },
+    agGridCol: {
+      flex: 1,
+    },
+    agGridLabel: {
+      fontSize: 9.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+      marginBottom: 2,
+    },
+    agGridValBold: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    agGridVal: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.ink,
+    },
+    agGridSub: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    docRepositoryStrip: {
+      flexDirection: 'column',
+      gap: 6,
+      marginVertical: 4,
+      width: '100%',
+    },
+    docBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#FFFBEB',
+      borderWidth: 1,
+      borderColor: '#FDE68A',
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      width: '100%',
+      maxWidth: '100%',
+    },
+    docBadgeText: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: '#B45309',
+      flex: 1,
+    },
+    docBadgeSigned: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      width: '100%',
+      maxWidth: '100%',
+    },
+    docBadgeSignedText: {
+      fontSize: 11.5,
+      fontWeight: '700',
+      color: '#065F46',
+      flex: 1,
+    },
+    approvalRequiredBox: {
+      backgroundColor: '#FFFBEB',
+      borderWidth: 1,
+      borderColor: '#FCD34D',
+      borderRadius: 8,
+      padding: 10,
+      marginVertical: 8,
+    },
+    approvalRequiredHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 4,
+    },
+    approvalRequiredTitle: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#92400E',
+      marginLeft: 6,
+    },
+    approvalRequiredFile: {
+      fontSize: 11,
+      color: '#B45309',
+      marginBottom: 8,
+    },
+    approveLeaseBtn: {
+      backgroundColor: '#D97706',
+      borderRadius: 7,
+      paddingVertical: 8,
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    approveLeaseBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    depositPendingBox: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+      borderRadius: 8,
+      padding: 10,
+      marginVertical: 8,
+    },
+    depositPendingTitle: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#1E40AF',
+    },
+    depositPendingSub: {
+      fontSize: 11,
+      color: '#3B82F6',
+      marginTop: 2,
+      lineHeight: 15,
+    },
+    cardActionsRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginTop: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      paddingTop: 10,
+    },
+    detailsActionBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      paddingVertical: 8,
+      gap: 5,
+    },
+    detailsActionText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    renewalActionBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+      borderRadius: 8,
+      paddingVertical: 8,
+      gap: 5,
+    },
+    renewalActionText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: '#2563EB',
+    },
+    noticeActionBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#FEF2F2',
+      borderWidth: 1,
+      borderColor: '#FECACA',
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      gap: 4,
+    },
+    noticeActionText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: '#DC2626',
+    },
+    // Renewals Subtab Styles
+    renewalNoticeBanner: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 12,
+    },
+    renewalNoticeText: {
+      flex: 1,
+      fontSize: 11.5,
+      color: '#1E40AF',
+      lineHeight: 16,
+    },
+    renewalTwoBoxGrid: {
+      flexDirection: 'row',
+      gap: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 8,
+      padding: 10,
+      marginVertical: 8,
+    },
+    renewalBox: {
+      flex: 1,
+    },
+    renewalBoxLabel: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginBottom: 2,
+    },
+    renewalBoxVal: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    termsSnippetStrip: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 6,
+      padding: 8,
+      marginBottom: 8,
+    },
+    termsSnippetText: {
+      fontSize: 11,
+      color: colors.inkSoft,
+    },
+    renewalActionRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginTop: 6,
+    },
+    activeRenewalText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#059669',
+    },
+    offerNextTermBtn: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 6,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+    },
+    offerNextTermBtnText: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    reviewSignedRenewalBtn: {
+      backgroundColor: '#D97706',
+      borderRadius: 8,
+      paddingVertical: 9,
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginTop: 6,
+    },
+    reviewSignedRenewalBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    offerRenewalCTA: {
+      backgroundColor: '#10B981',
+      borderRadius: 8,
+      paddingVertical: 9,
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginTop: 6,
+    },
+    offerRenewalCTAText: {
+      color: '#FFFFFF',
+      fontSize: 12.5,
+      fontWeight: '700',
+    },
+    // Applications Subtab Styles
+    applicantNameTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 2,
+    },
+    screeningBadgesRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginVertical: 8,
+      flexWrap: 'wrap',
+    },
+    trustScoreBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      borderRadius: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+    },
+    trustScoreText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: '#065F46',
+    },
+    kycVerifiedBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+      borderRadius: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+    },
+    kycVerifiedText: {
+      fontSize: 10.5,
+      fontWeight: '600',
+      color: '#1D4ED8',
+    },
+    applicantGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      rowGap: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 8,
+      padding: 10,
+      marginVertical: 8,
+    },
+    applicantGridCol: {
+      width: '50%',
+    },
+    appGridLabel: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginBottom: 1,
+    },
+    appGridVal: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    appNoteBox: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 6,
+      padding: 8,
+      marginBottom: 10,
+    },
+    appNoteLabel: {
+      fontSize: 9,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      marginBottom: 2,
+    },
+    appNoteText: {
+      fontSize: 11,
+      color: colors.ink,
+      lineHeight: 15,
+    },
+    appActionRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginTop: 4,
+    },
+    declineAppBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#FEF2F2',
+      borderWidth: 1,
+      borderColor: '#FECACA',
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    declineAppBtnText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: '#DC2626',
+    },
+    approveAppBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#059669',
+      borderRadius: 8,
+      paddingVertical: 8,
+    },
+    approveAppBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    appSettledRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      borderRadius: 8,
+      padding: 8,
+      marginTop: 4,
+    },
+    appSettledText: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: '#065F46',
+    },
+    // Single Web-Parity Floating Action Button
+    singleFabContainer: {
+      position: 'absolute',
+      bottom: 20,
+      left: 20,
+      right: 20,
+      alignItems: 'center',
+    },
+    singleFabBtn: {
+      width: '100%',
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: '#059669',
+      borderRadius: 14,
+      paddingVertical: 14,
+    },
+    singleFabBtnText: {
+      color: '#FFFFFF',
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    // Modals Styling
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(15, 23, 42, 0.75)',
+      justifyContent: 'flex-end',
+    },
+    modalCard: {
+      backgroundColor: colors.surface,
+      borderTopLeftRadius: 20,
+      borderTopRightRadius: 20,
+      padding: 20,
+      paddingBottom: 32,
+    },
+    modalTop: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 16,
+    },
+    modalTitle: {
+      fontSize: 17,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    modalSub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    modalFieldLabel: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.inkSoft,
+      marginBottom: 6,
+      marginTop: 10,
+    },
+    modalInput: {
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+      fontSize: 13,
+      color: colors.navy,
+    },
+    modalSubmitBtn: {
+      backgroundColor: '#10B981',
+      borderRadius: 10,
+      paddingVertical: 11,
+      alignItems: 'center',
+      marginTop: 14,
+    },
+    modalSubmitBtnText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    modalCloseBtn: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 10,
+      paddingVertical: 10,
+      alignItems: 'center',
+      marginTop: 14,
+    },
+    modalCloseBtnText: {
+      color: colors.inkSoft,
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    // Details Modal
+    detailsSection: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 12,
+    },
+    detailsSectionTitle: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+      marginBottom: 8,
+    },
+    detailsRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginBottom: 6,
+    },
+    detailsLabel: {
+      fontSize: 12,
+      color: colors.inkSoft,
+    },
+    detailsVal: {
+      fontSize: 12,
+      color: colors.navy,
+      fontWeight: '600',
+    },
+    detailsDocBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      padding: 10,
+    },
+    detailsDocName: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    detailsDocSub: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    // Approval Modal
+    approvalInspectionCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 12,
+    },
+    approvalInspectionFile: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    approvalInspectionSub: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    approvalDepositBox: {
+      backgroundColor: '#EFF6FF',
+      borderWidth: 1,
+      borderColor: '#BFDBFE',
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 14,
+    },
+    approvalDepositLabel: {
+      fontSize: 9.5,
+      fontWeight: '700',
+      color: '#1E40AF',
+      marginBottom: 3,
+    },
+    approvalDepositText: {
+      fontSize: 11.5,
+      color: '#1E3A8A',
+      lineHeight: 16,
+    },
+    approvePrimaryCTA: {
+      backgroundColor: '#059669',
+      borderRadius: 10,
+      paddingVertical: 11,
+      paddingHorizontal: 10,
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    approvePrimaryCTAText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      fontWeight: '700',
+      letterSpacing: -0.2,
+    },
+    // Renewal Offer Modal
+    currentRentStrip: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 10,
+    },
+    currentRentLabel: {
+      fontSize: 12,
+      color: colors.inkSoft,
+    },
+    currentRentVal: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    escalationPillsRow: {
+      flexDirection: 'row',
+      gap: 6,
+      marginBottom: 10,
+    },
+    escalationPill: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 7,
+      borderRadius: 7,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    escalationPillActive: {
+      borderColor: '#059669',
+      backgroundColor: '#ECFDF5',
+    },
+    escalationPillText: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    escalationPillTextActive: {
+      color: '#059669',
+      fontWeight: '700',
+    },
+    calcPreviewBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 10,
+      gap: 4,
+    },
+    calcRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+    },
+    calcLabel: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+    },
+    calcVal: {
+      fontSize: 11.5,
+      color: colors.navy,
+      fontWeight: '600',
+    },
+    durationPillsRow: {
+      flexDirection: 'row',
+      gap: 6,
+      marginBottom: 10,
+    },
+    durationPill: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 7,
+      borderRadius: 7,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    durationPillActive: {
+      borderColor: '#2563EB',
+      backgroundColor: '#EFF6FF',
+    },
+    durationPillText: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    durationPillTextActive: {
+      color: '#2563EB',
+      fontWeight: '700',
+    },
+    datesGrid: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 10,
+    },
+    dateCol: {
+      flex: 1,
+    },
+    dateLabel: {
+      fontSize: 10,
+      color: colors.inkSoft,
+      marginBottom: 2,
+    },
+    dateVal: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    // Upload modal Web Parity Styles
+    unitSelectChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderWidth: 1,
+      borderColor: colors.line,
+      marginRight: 8,
+    },
+    unitSelectChipActive: {
+      backgroundColor: '#FFFBEB',
+      borderColor: '#D97706',
+    },
+    unitSelectChipText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    unitSelectChipTextActive: {
+      color: '#92400E',
+      fontWeight: '700',
+    },
+    autoRenewPill: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 7,
+      borderRadius: 7,
+      borderWidth: 1,
+      borderColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    autoRenewPillActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#10B981',
+    },
+    autoRenewPillText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    autoRenewPillTextActive: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+    },
+    workflowCard: {
+      padding: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      backgroundColor: colors.surface,
+    },
+    workflowCardActive: {
+      borderColor: '#10B981',
+      borderWidth: 1.5,
+      backgroundColor: colors.surface,
+    },
+    workflowCardTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+      marginLeft: 8,
+    },
+    workflowCardDesc: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+      marginTop: 6,
+      marginLeft: 26,
+      lineHeight: 16,
+    },
+    offlineDepositBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 10,
+    },
+    offlineDepositLabel: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: colors.navy,
+      marginLeft: 8,
+      flex: 1,
+    },
+    documentFileCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      padding: 10,
+      marginTop: 4,
+    },
+    documentFileName: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    documentFileSize: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    readyBadge: {
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      borderRadius: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+    },
+    readyBadgeText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: '#059669',
+    },
+    modalCancelBtn: {
+      flex: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 10,
+      paddingVertical: 11,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    modalCancelBtnText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    modalWebSubmitBtn: {
+      backgroundColor: '#10B981',
+      borderRadius: 10,
+      paddingVertical: 11,
+      paddingHorizontal: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    modalWebSubmitBtnText: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    // Wizard stepper styles — Web Parity
+    wizardStepperBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 14,
+      paddingHorizontal: 4,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+      marginBottom: 0,
+    },
+    wizardStepNode: {
+      alignItems: 'center',
+      flexShrink: 0,
+    },
+    wizardStepCircle: {
+      width: 26,
+      height: 26,
+      borderRadius: 13,
+      backgroundColor: isDark ? colors.surfaceSunken : '#CBD5E1',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: 4,
+    },
+    wizardStepCircleActive: {
+      backgroundColor: '#10B981',
+    },
+    wizardStepCirclePassed: {
+      backgroundColor: '#059669',
+    },
+    wizardStepCircleText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: '#64748B',
+    },
+    wizardStepLabel: {
+      fontSize: 10,
+      fontWeight: '500',
+      color: colors.inkSoft,
+      textAlign: 'center',
+    },
+    wizardStepLabelActive: {
+      color: '#10B981',
+      fontWeight: '700',
+    },
+    wizardStepLabelPassed: {
+      color: colors.ink,
+      fontWeight: '600',
+    },
+    wizardConnector: {
+      flex: 1,
+      height: 1.5,
+      backgroundColor: isDark ? colors.surfaceSunken : '#CBD5E1',
+      marginBottom: 18,
+      marginHorizontal: 4,
+    },
+    wizardConnectorPassed: {
+      backgroundColor: '#059669',
+    },
+    // Wizard footer
+    wizardFooter: {
+      flexDirection: 'column',
+      borderTopWidth: 1,
+      paddingTop: 14,
+      marginTop: 14,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      marginHorizontal: -20,
+      paddingHorizontal: 20,
+      paddingBottom: 8,
+    },
+    wizardFooterBackBtn: {
+      paddingVertical: 11,
+      paddingHorizontal: 12,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    wizardFooterBackBtnText: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    emptyContainer: {
+      padding: 36,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+      marginTop: 10,
+    },
+    emptySub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      textAlign: 'center',
+      marginTop: 4,
+      maxWidth: 240,
+    },
+    dropdownTrigger: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      marginBottom: 8,
+    },
+    dropdownValueText: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    dropdownMenuBox: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 12,
+      marginTop: -4,
+      marginBottom: 12,
+      overflow: 'hidden',
+      shadowColor: '#0F172A',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.08,
+      shadowRadius: 10,
+      elevation: 4,
+    },
+    dropdownMenuItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 14,
+      paddingVertical: 11,
+      borderBottomWidth: 1,
+      borderBottomColor: '#F8FAFC',
+    },
+    dropdownMenuItemActive: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+    },
+    dropdownMenuText: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    selectedTenantBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      marginBottom: 10,
+    },
+    selectedTenantText: {
+      fontSize: 11.5,
+      color: '#065F46',
+      flex: 1,
+    },
+    // legacy - kept for reference but no longer used for the wizard
+    wizardStepIndicator: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 10,
+      padding: 3,
+      marginBottom: 14,
+    },
+    wizardStepItem: {
+      flex: 1,
+      paddingVertical: 7,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 8,
+    },
+    wizardStepItemActive: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      elevation: 1,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.05,
+      shadowRadius: 2,
+    },
+    wizardStepItemPassed: {
+      backgroundColor: 'transparent',
+    },
+    wizardStepText: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    wizardStepTextActive: {
+      color: '#059669',
+      fontWeight: '700',
+    },
+    wizardStepTextPassed: {
+      color: '#059669',
+      fontWeight: '600',
+    },
+    modalSaveDraftBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? 'rgba(5, 150, 105, 0.12)' : '#ECFDF5',
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(5, 150, 105, 0.3)' : '#6EE7B7',
+      borderRadius: 10,
+      paddingVertical: 11,
+      paddingHorizontal: 12,
+    },
+    modalSaveDraftBtnText: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: isDark ? '#A7F3D0' : '#065F46',
+    },
   });

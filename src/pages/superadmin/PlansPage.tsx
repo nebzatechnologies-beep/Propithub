@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useCurrency } from '../../context/CurrencyContext';
-import { Plan } from '../../types';
+import { Plan, ListingBoostPlan } from '../../types';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc, deleteDoc, getDocs, collection } from 'firebase/firestore';
-import { saveTrialPolicyCache, INITIAL_STATE, loadState, saveState } from '../../lib/store';
+import { saveTrialPolicyCache, INITIAL_STATE, loadState, saveState, DEFAULT_BOOST_PLANS } from '../../lib/store';
 import { ButtonProcessing } from '../../components/common/Spinner';
 
 export const PlansPage: React.FC = () => {
@@ -19,6 +19,55 @@ export const PlansPage: React.FC = () => {
   const [isCreatingPlan, setIsCreatingPlan] = useState(false);
   const [isRetiring, setIsRetiring] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
+
+  // Listing Boost Plans (3 Standalone Tiers - Admin controls Days and Price)
+  const [boostPlansState, setBoostPlansState] = useState<ListingBoostPlan[]>(() => {
+    return state.boostPlans && state.boostPlans.length > 0 ? state.boostPlans : DEFAULT_BOOST_PLANS;
+  });
+  const [isSavingBoostPlans, setIsSavingBoostPlans] = useState(false);
+
+  React.useEffect(() => {
+    if (state.boostPlans && state.boostPlans.length > 0) {
+      setBoostPlansState(state.boostPlans);
+    }
+  }, [state.boostPlans]);
+
+  const handleUpdateBoostPlan = (id: string, updates: Partial<ListingBoostPlan>) => {
+    setBoostPlansState((prev) =>
+      prev.map((bp) => (bp.id === id ? { ...bp, ...updates } : bp))
+    );
+  };
+
+  const handleSaveBoostPlans = async () => {
+    setIsSavingBoostPlans(true);
+    try {
+      updateState((prev) => ({
+        ...prev,
+        boostPlans: boostPlansState,
+      }));
+      const currentPersisted = loadState();
+      saveState({
+        ...currentPersisted,
+        boostPlans: boostPlansState,
+      });
+      if (isFirebaseConfigured) {
+        for (const bp of boostPlansState) {
+          await setDoc(doc(db, 'listingBoostPlans', bp.id), bp, { merge: true });
+        }
+      }
+      showToast('Listing Boost Plans updated successfully!');
+    } catch (err: any) {
+      console.error('Failed to save boost plans:', err);
+      showToast('Failed to save boost plans: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setIsSavingBoostPlans(false);
+    }
+  };
+
+  const handleResetBoostPlansToDefaults = () => {
+    setBoostPlansState(DEFAULT_BOOST_PLANS);
+    showToast('Reset to default prices (5, 55, 550). Click "Save Boost Plans" to apply.');
+  };
 
   const getDynamicOwnersCount = (planName: string, fallback: number = 0) => {
     const ownerUsers = (state.users || []).filter((u) => u.role === 'owner');
@@ -136,10 +185,10 @@ export const PlansPage: React.FC = () => {
         const exists = prev.plans.some((p) => p.id === planToSave.id);
         const nextPlans = exists
           ? prev.plans.map((p) => {
-              if (p.id === planToSave.id) return planToSave;
-              if (planToSave.isPopular) return { ...p, isPopular: false };
-              return p;
-            })
+            if (p.id === planToSave.id) return planToSave;
+            if (planToSave.isPopular) return { ...p, isPopular: false };
+            return p;
+          })
           : [...prev.plans.map((p) => (planToSave.isPopular ? { ...p, isPopular: false } : p)), planToSave];
         return {
           ...prev,
@@ -153,10 +202,10 @@ export const PlansPage: React.FC = () => {
         const existsInStore = (currentPersisted.plans || []).some((p: Plan) => p.id === planToSave.id);
         const nextPlans = existsInStore
           ? currentPersisted.plans.map((p: Plan) => {
-              if (p.id === planToSave.id) return planToSave;
-              if (planToSave.isPopular) return { ...p, isPopular: false };
-              return p;
-            })
+            if (p.id === planToSave.id) return planToSave;
+            if (planToSave.isPopular) return { ...p, isPopular: false };
+            return p;
+          })
           : [...(currentPersisted.plans || []).map((p: Plan) => (planToSave.isPopular ? { ...p, isPopular: false } : p)), planToSave];
         saveState({
           ...currentPersisted,
@@ -338,15 +387,13 @@ export const PlansPage: React.FC = () => {
 
   return (
     <div>
-      <div className="panel-head" style={{ border: 'none', padding: '0 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
-        <div>
-          <h3>Subscription Plans</h3>
-        </div>
+      <div className="panel-head" style={{ border: 'none', padding: '0 0 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+        <h3 style={{ margin: 0 }}>Subscription Plans</h3>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           {commercialPlans.length === 0 && (
             <button
               type="button"
-              className={`btn secondary btn-mobile-full ${isSeeding ? 'btn-processing' : ''}`}
+              className={`btn secondary small btn-mobile-full ${isSeeding ? 'btn-processing' : ''}`}
               disabled={isSeeding}
               onClick={handleSeedDefaultPlans}
             >
@@ -359,65 +406,72 @@ export const PlansPage: React.FC = () => {
           )}
           <button
             type="button"
-            className="btn brass btn-mobile-full"
+            className="btn brass small btn-mobile-full"
             onClick={() => setIsNewPlanOpen(true)}
           >
-            + Create New Plan
+            + Create Plan
           </button>
         </div>
       </div>
 
-      {/* Global Free Trial Policy & Dedicated Free Trial Tier (Admin Only) */}
-      <div className="panel" style={{ marginBottom: '24px', border: '1px solid var(--primary-border, rgba(47, 93, 80, 0.25))' }}>
-        <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', background: 'rgba(47, 93, 80, 0.04)' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <h3 style={{ margin: 0 }}>Free Trial Tier &amp; Onboarding Policy</h3>
-              <span className="badge amber" style={{ fontSize: '11px' }}>Admin Only • Hidden from Public &amp; Owners</span>
-            </div>
-            <div className="hint" style={{ marginTop: '2px' }}>
-              Admin-governed onboarding tier. Configures trial duration and resource quotas for new owners during their trial period.
-            </div>
-          </div>
-          <span className={`badge ${state.defaultTrialDays > 0 ? 'green' : 'amber'}`}>
-            {state.defaultTrialDays > 0 ? `${state.defaultTrialDays}-Day Free Trial Active` : 'Free Trial Disabled (Instant Purchase Required)'}
-          </span>
-        </div>
-        <div className="panel-body">
-          {/* Top Row: Duration Controls */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px', paddingBottom: '16px', borderBottom: '1px solid var(--line)' }}>
-            <div style={{ flex: '1 1 360px', maxWidth: '720px' }}>
-              <div style={{ fontWeight: 600, fontSize: '13.5px', marginBottom: '4px' }}>
-                Default Initial Free Trial Duration
+      {/* Compact Side-by-Side Global Policies */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
+          gap: '14px',
+          marginBottom: '22px',
+        }}
+      >
+        {/* Card 1: Free Trial Policy */}
+        <div className="panel" style={{ margin: 0 }}>
+          <div className="panel-body" style={{ padding: '14px 16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <b style={{ fontSize: '13.5px', color: 'var(--ink)' }}>Free Trial Policy</b>
+                <span className={`badge ${state.defaultTrialDays > 0 ? 'green' : 'amber'}`} style={{ fontSize: '11px' }}>
+                  {state.defaultTrialDays > 0 ? `${state.defaultTrialDays}d Active` : 'Disabled'}
+                </span>
               </div>
-              <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', lineHeight: 1.4 }}>
-                When set to <b>No Trial (0d)</b>, new owners must buy a subscription plan immediately before accessing the platform. When set to <b>7, 14, or 30 days</b>, new owners receive an active free trial with the limits configured below.
-              </div>
+              <button
+                type="button"
+                className="btn secondary small"
+                style={{ padding: '4px 10px', fontSize: '11.5px', cursor: 'pointer' }}
+                onClick={() => {
+                  setIsSavingPlan(false);
+                  setEditingPlan(freeTrialPlan);
+                }}
+              >
+                Edit Quotas
+              </button>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
               {[0, 7, 14, 30].map((days) => (
                 <button
                   key={days}
                   type="button"
                   className={`btn ${state.defaultTrialDays === days ? 'brass' : 'secondary'} small`}
+                  style={{ padding: '4px 10px', fontSize: '12px' }}
                   onClick={() => updateTrialDays(days)}
                 >
-                  {days === 0 ? 'No Trial (0d)' : `${days} Days`}
+                  {days === 0 ? 'Off' : `${days}d`}
                 </button>
               ))}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginLeft: 'auto' }}>
                 <input
                   type="number"
                   min="0"
                   max="365"
-                  placeholder="Custom days"
+                  placeholder="Days"
                   value={customTrialInput}
                   onChange={(e) => setCustomTrialInput(e.target.value)}
-                  style={{ width: '90px', padding: '5px 8px', fontSize: '12px' }}
+                  style={{ width: '64px', padding: '4px 8px', fontSize: '12px' }}
                 />
                 <button
                   type="button"
                   className="btn secondary small"
+                  style={{ padding: '4px 10px', fontSize: '12px' }}
                   disabled={!customTrialInput || isNaN(Number(customTrialInput))}
                   onClick={() => {
                     const val = parseInt(customTrialInput, 10);
@@ -431,261 +485,175 @@ export const PlansPage: React.FC = () => {
                 </button>
               </div>
             </div>
-          </div>
 
-          {/* Bottom Row: Free Trial Plan Quotas */}
-          <div style={{ marginTop: '16px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
-              <div>
-                <b style={{ fontSize: '13.5px', color: 'var(--ink)' }}>Free Trial Resource Limits (Admin Governed)</b>
-                <div style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
-                  Enforced limits on all onboarding trial accounts before upgrading to a commercial tier.
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '6px 14px',
+                padding: '8px 10px',
+                background: 'var(--bg)',
+                border: '1px solid var(--line)',
+                borderRadius: '6px',
+                fontSize: '12px',
+                color: 'var(--ink-soft)',
+              }}
+            >
+              <span><b style={{ color: 'var(--ink)' }}>{freeTrialPlan.properties >= 999 ? '∞' : freeTrialPlan.properties}</b> Prop</span>
+              <span>•</span>
+              <span><b style={{ color: 'var(--ink)' }}>{freeTrialPlan.units >= 9999 ? '∞' : freeTrialPlan.units}</b> Units</span>
+              <span>•</span>
+              <span><b style={{ color: 'var(--ink)' }}>{freeTrialPlan.tenants >= 9999 ? '∞' : freeTrialPlan.tenants}</b> Tenants</span>
+              <span>•</span>
+              <span><b style={{ color: 'var(--ink)' }}>{freeTrialPlan.managers}</b> Mgr</span>
+              <span>•</span>
+              <span><b style={{ color: 'var(--ink)' }}>{freeTrialPlan.staff}</b> Staff</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 2: Annual Discount Policy */}
+        <div className="panel" style={{ margin: 0 }}>
+          <div className="panel-body" style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <b style={{ fontSize: '13.5px', color: 'var(--ink)' }}>Annual Billing Discount</b>
+                  <span className={`badge ${(state.annualDiscountPercent ?? 20) > 0 ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                    {(state.annualDiscountPercent ?? 20) > 0 ? `${state.annualDiscountPercent ?? 20}% Off` : '0% Off'}
+                  </span>
+                </div>
+                <span style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>Web &amp; Mobile</span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                {[0, 10, 15, 20, 25, 30].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    className={`btn ${(state.annualDiscountPercent ?? 20) === pct ? 'brass' : 'secondary'} small`}
+                    style={{ padding: '4px 10px', fontSize: '12px' }}
+                    onClick={() => updateAnnualDiscount(pct)}
+                  >
+                    {pct}%
+                  </button>
+                ))}
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginLeft: 'auto' }}>
+                  <input
+                    type="number"
+                    min="0"
+                    max="90"
+                    placeholder="%"
+                    value={customDiscountInput}
+                    onChange={(e) => setCustomDiscountInput(e.target.value)}
+                    style={{ width: '58px', padding: '4px 8px', fontSize: '12px' }}
+                  />
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    style={{ padding: '4px 10px', fontSize: '12px' }}
+                    disabled={!customDiscountInput || isNaN(Number(customDiscountInput))}
+                    onClick={() => {
+                      const val = parseInt(customDiscountInput, 10);
+                      if (!isNaN(val) && val >= 0) {
+                        updateAnnualDiscount(val);
+                        setCustomDiscountInput('');
+                      }
+                    }}
+                  >
+                    Set
+                  </button>
                 </div>
               </div>
-              <button
-                type="button"
-                className="btn brass small"
-                onClick={() => {
-                  setIsSavingPlan(false);
-                  setEditingPlan(freeTrialPlan);
-                }}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
-              >
-                ✏️ Edit Free Trial Limits
-              </button>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
-              <div style={{ padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>MAX PROPERTIES</div>
-                <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--primary)', marginTop: '2px' }}>
-                  {freeTrialPlan.properties >= 999 ? 'Unlimited' : freeTrialPlan.properties}
-                </div>
-              </div>
-              <div style={{ padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>MAX UNITS</div>
-                <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--primary)', marginTop: '2px' }}>
-                  {freeTrialPlan.units >= 9999 ? 'Unlimited' : freeTrialPlan.units}
-                </div>
-              </div>
-              <div style={{ padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>MAX TENANTS</div>
-                <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--primary)', marginTop: '2px' }}>
-                  {freeTrialPlan.tenants >= 9999 ? 'Unlimited' : freeTrialPlan.tenants}
-                </div>
-              </div>
-              <div style={{ padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>MAX MANAGERS</div>
-                <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--primary)', marginTop: '2px' }}>
-                  {freeTrialPlan.managers}
-                </div>
-              </div>
-              <div style={{ padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>MAX STAFF</div>
-                <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--primary)', marginTop: '2px' }}>
-                  {freeTrialPlan.staff}
-                </div>
-              </div>
-              <div style={{ padding: '10px 12px', background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>TRIAL PRICE</div>
-                <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--ledger)', marginTop: '2px' }}>
-                  $0 / mo
-                </div>
-              </div>
+            <div
+              style={{
+                padding: '8px 10px',
+                background: 'var(--bg)',
+                border: '1px solid var(--line)',
+                borderRadius: '6px',
+                fontSize: '12px',
+                color: 'var(--ink-soft)',
+              }}
+            >
+              {(state.annualDiscountPercent ?? 20) > 0 ? (
+                <>Annual cycle applies <b style={{ color: 'var(--ink)' }}>{state.annualDiscountPercent ?? 20}% savings</b> (e.g. $100/mo → <b style={{ color: 'var(--ink)' }}>${Math.round(100 * 12 * (100 - (state.annualDiscountPercent ?? 20)) / 100)}/yr</b>)</>
+              ) : (
+                <>Standard 12× monthly rate with no annual discount.</>
+              )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Annual Subscription Billing & Discount Policy */}
-      <div className="panel" style={{ marginBottom: '24px', border: '1px solid var(--primary-border, rgba(47, 93, 80, 0.25))' }}>
-        <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', background: 'rgba(47, 93, 80, 0.04)' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <h3 style={{ margin: 0 }}>Annual Subscription Discount Policy</h3>
-              <span className="badge blue" style={{ fontSize: '11px' }}>Global Pricing Rule</span>
-            </div>
-            <div className="hint" style={{ marginTop: '2px' }}>
-              Dynamic percentage discount applied when property owners choose an annual billing cycle on Web &amp; Mobile apps.
-            </div>
-          </div>
-          <span className={`badge ${(state.annualDiscountPercent ?? 20) > 0 ? 'green' : 'secondary'}`}>
-            {(state.annualDiscountPercent ?? 20) > 0
-              ? `${state.annualDiscountPercent ?? 20}% Annual Savings Active`
-              : '0% (Standard 12x Price)'}
-          </span>
-        </div>
-        <div className="panel-body">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
-            <div style={{ flex: '1 1 360px', maxWidth: '720px' }}>
-              <div style={{ fontWeight: 600, fontSize: '13.5px', marginBottom: '4px' }}>
-                Annual Billing Cycle Savings Rate
-              </div>
-              <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', lineHeight: 1.4 }}>
-                Currently: <b>{state.annualDiscountPercent ?? 20}% off</b> standard monthly rate. 
-                {(state.annualDiscountPercent ?? 20) > 0 ? (
-                  <> Owners choosing Annual pay for 12 months with a <b>{state.annualDiscountPercent ?? 20}%</b> reduction (e.g., $100/mo becomes <b>${Math.round(100 * 12 * (100 - (state.annualDiscountPercent ?? 20)) / 100)}/yr</b>).</>
-                ) : (
-                  <> Owners pay the full annual sum (12 × monthly price) with no discount applied.</>
-                )}
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              {[0, 10, 15, 20, 25, 30].map((pct) => (
-                <button
-                  key={pct}
-                  type="button"
-                  className={`btn ${(state.annualDiscountPercent ?? 20) === pct ? 'brass' : 'secondary'} small`}
-                  onClick={() => updateAnnualDiscount(pct)}
-                >
-                  {pct === 0 ? '0% (None)' : `${pct}%`}
-                </button>
-              ))}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                <input
-                  type="number"
-                  min="0"
-                  max="90"
-                  placeholder="Custom %"
-                  value={customDiscountInput}
-                  onChange={(e) => setCustomDiscountInput(e.target.value)}
-                  style={{ width: '90px', padding: '5px 8px', fontSize: '12px' }}
-                />
-                <button
-                  type="button"
-                  className="btn secondary small"
-                  disabled={!customDiscountInput || isNaN(Number(customDiscountInput))}
-                  onClick={() => {
-                    const val = parseInt(customDiscountInput, 10);
-                    if (!isNaN(val) && val >= 0) {
-                      updateAnnualDiscount(val);
-                      setCustomDiscountInput('');
-                    }
-                  }}
-                >
-                  Set
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Commercial Plans Grid */}
+      <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <b style={{ fontSize: '13.5px', color: 'var(--ink-soft)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          Commercial Tiers ({commercialPlans.length})
+        </b>
       </div>
 
-      {/* Commercial Plans Header */}
-      <div style={{ marginBottom: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-        <div>
-          <h3 style={{ margin: 0 }}>Public Commercial Plans ({commercialPlans.length})</h3>
-          <div className="hint" style={{ fontSize: '12px', marginTop: '2px' }}>
-            These subscription tiers are published on the public landing page and available to owners for commercial upgrades.
-          </div>
-        </div>
-      </div>
-
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px' }}>
         {commercialPlans.map((p) => (
           <div
             key={p.id}
             className="panel"
             style={{
-              position: 'relative',
-              border: p.isPopular ? '2px solid #0D9488' : undefined,
-              boxShadow: p.isPopular ? '0 4px 20px rgba(13, 148, 136, 0.12)' : undefined,
+              margin: 0,
+              border: p.isPopular ? '1.5px solid #0D9488' : undefined,
             }}
           >
-            {p.isPopular && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: '-12px',
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  background: '#0D9488',
-                  color: '#FFFFFF',
-                  padding: '3px 14px',
-                  borderRadius: '999px',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  letterSpacing: '0.05em',
-                  textTransform: 'uppercase',
-                  boxShadow: '0 2px 6px rgba(0,0,0,0.18)',
-                  whiteSpace: 'nowrap',
-                  zIndex: 2,
-                }}
-              >
-                ★ Popular on Landing Page
+            <div className="panel-body" style={{ padding: '16px 18px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <h3 style={{ margin: 0, fontSize: '16px' }}>{p.name}</h3>
+                  {p.isPopular && (
+                    <span className="badge green" style={{ fontSize: '10.5px', fontWeight: 600 }}>
+                      Popular
+                    </span>
+                  )}
+                </div>
+                <span className="badge grey" style={{ fontSize: '11px' }}>
+                  {getDynamicOwnersCount(p.name, p.owners)} owners
+                </span>
               </div>
-            )}
-            <div className="panel-head" style={{ paddingTop: p.isPopular ? '16px' : undefined }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <h3 style={{ margin: 0 }}>{p.name}</h3>
-                {p.isPopular && (
-                  <span className="badge green" style={{ fontSize: '10.5px', fontWeight: 700 }}>
-                    Popular
-                  </span>
-                )}
-              </div>
-              <span className="badge grey">{getDynamicOwnersCount(p.name, p.owners)} owners</span>
-            </div>
-            <div className="panel-body">
-              <div>
-                <div style={{ fontFamily: 'Fraunces', fontSize: '28px', fontWeight: 600 }}>
+
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', marginBottom: '14px' }}>
+                <span style={{ fontFamily: 'Fraunces', fontSize: '24px', fontWeight: 600, color: 'var(--ink)' }}>
                   {format(convert(p.price, 'USD', viewCurrency), viewCurrency)}
-                  <span style={{ fontSize: '13px', fontWeight: 400, color: 'var(--ink-soft)' }}>
-                    {' '}/ month
-                  </span>
+                </span>
+                <span style={{ fontSize: '12.5px', color: 'var(--ink-soft)' }}>/ mo</span>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--line)', paddingTop: '10px', marginBottom: '14px', display: 'grid', gap: '6px', fontSize: '13px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--ink-soft)' }}>Properties</span>
+                  <b>{p.properties >= 999 ? 'Unlimited' : p.properties}</b>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--ink-soft)' }}>Units</span>
+                  <b>{p.units >= 9999 ? 'Unlimited' : p.units}</b>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--ink-soft)' }}>Tenants</span>
+                  <b>{p.tenants >= 9999 ? 'Unlimited' : p.tenants}</b>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--ink-soft)' }}>Managers</span>
+                  <b>{p.managers}</b>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--ink-soft)' }}>Staff</span>
+                  <b>{p.staff}</b>
                 </div>
               </div>
 
-              <div className="divider" />
-
-              <div className="kv">
-                <span className="k">Max Properties:</span>
-                <b>{p.properties >= 999 ? 'Unlimited' : p.properties}</b>
-              </div>
-              <div className="kv">
-                <span className="k">Max Units:</span>
-                <b>{p.units >= 9999 ? 'Unlimited' : p.units}</b>
-              </div>
-              <div className="kv">
-                <span className="k">Max Tenants:</span>
-                <b>{p.tenants >= 9999 ? 'Unlimited' : p.tenants}</b>
-              </div>
-              <div className="kv">
-                <span className="k">Max Managers (Owner Delegated):</span>
-                <b>{p.managers}</b>
-              </div>
-              <div className="kv">
-                <span className="k">Max Maintenance Staff:</span>
-                <b>{p.staff}</b>
-              </div>
-
-              {/* Popular toggle action */}
-              <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px dashed var(--line)' }}>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                 <button
                   type="button"
-                  className={`btn small btn-mobile-full ${p.isPopular ? 'brass' : 'secondary'}`}
-                  style={{
-                    width: '100%',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px',
-                    fontWeight: 600,
-                    fontSize: '12px',
-                  }}
-                  onClick={() => handleTogglePopular(p.id)}
-                  title={p.isPopular ? 'Click to unmark as popular' : 'Set as the highlighted popular tier on landing page'}
-                >
-                  {p.isPopular ? '★ Popular on Landing Page (Click to unfeature)' : '☆ Set as Popular Plan (Landing Page)'}
-                </button>
-              </div>
-
-              <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className="btn secondary small btn-mobile-full"
-                  style={{ flex: '1 1 auto', cursor: 'pointer' }}
+                  className="btn secondary small"
+                  style={{ flex: 1, cursor: 'pointer' }}
                   onClick={() => {
                     setIsSavingPlan(false);
                     setEditingPlan(p);
@@ -695,8 +663,17 @@ export const PlansPage: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  className="btn danger small btn-mobile-full"
-                  style={{ flex: '1 1 auto' }}
+                  className={`btn ${p.isPopular ? 'brass' : 'secondary'} small`}
+                  style={{ cursor: 'pointer', padding: '5px 10px' }}
+                  onClick={() => handleTogglePopular(p.id)}
+                  title={p.isPopular ? 'Unmark as popular on landing page' : 'Set as popular plan on landing page'}
+                >
+                  {p.isPopular ? '★ Popular' : '☆ Feature'}
+                </button>
+                <button
+                  type="button"
+                  className="btn danger small"
+                  style={{ padding: '5px 10px' }}
                   onClick={() => {
                     const liveCount = getDynamicOwnersCount(p.name, p.owners);
                     if (liveCount > 0) {
@@ -712,6 +689,180 @@ export const PlansPage: React.FC = () => {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Listing Boost Plans Management (Admin Controls Days and Amount) */}
+      <div style={{ marginTop: '40px', paddingTop: '28px', borderTop: '1px solid var(--line)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '14px', marginBottom: '20px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h3 style={{ margin: 0 }}>🔥 Popular Listing Boost Plans</h3>
+              <span className="badge amber" style={{ fontSize: '11px', fontWeight: 700 }}>
+                On-Demand Add-Ons
+              </span>
+            </div>
+
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn secondary small"
+              onClick={handleResetBoostPlansToDefaults}
+              title="Reset default pricing to 5, 55, 550"
+            >
+              Reset to Defaults ($5, $55, $550)
+            </button>
+            <button
+              type="button"
+              className={`btn brass small ${isSavingBoostPlans ? 'btn-processing' : ''}`}
+              disabled={isSavingBoostPlans}
+              onClick={handleSaveBoostPlans}
+            >
+              <ButtonProcessing loading={isSavingBoostPlans} loadingText="Saving..." defaultText="Save Boost Plans" />
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: '20px' }}>
+          {boostPlansState.map((bp, index) => {
+            return (
+              <div
+                key={bp.id}
+                style={{
+                  background: 'var(--surface)',
+                  border: bp.isPopular ? '2px solid rgba(245, 158, 11, 0.6)' : '1px solid var(--line)',
+                  borderRadius: '12px',
+                  padding: '20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '16px',
+                  position: 'relative',
+                  boxShadow: bp.isPopular ? '0 4px 16px rgba(245, 158, 11, 0.12)' : 'none',
+                }}
+              >
+                {bp.isPopular && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '-10px',
+                      right: '16px',
+                      background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                      color: '#ffffff',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      padding: '2px 10px',
+                      borderRadius: '999px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                    }}
+                  >
+                    ★ Recommended Tier
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '18px' }}>{index === 0 ? '⚡' : index === 1 ? '🔥' : '👑'}</span>
+                    <span style={{ fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--ink-soft)', fontWeight: 700 }}>
+                      Tier {index + 1}
+                    </span>
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', margin: 0, fontSize: '12px' }}>
+                    <input
+                      type="checkbox"
+                      checked={bp.isActive}
+                      onChange={(e) => handleUpdateBoostPlan(bp.id, { isActive: e.target.checked })}
+                    />
+                    <span style={{ fontWeight: 600, color: bp.isActive ? 'var(--ink)' : 'var(--ink-soft)' }}>
+                      {bp.isActive ? 'Active' : 'Disabled'}
+                    </span>
+                  </label>
+                </div>
+
+                <div className="field" style={{ margin: 0 }}>
+                  <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)' }}>Plan Name</label>
+                  <input
+                    type="text"
+                    value={bp.name}
+                    placeholder="Plan Name"
+                    onChange={(e) => handleUpdateBoostPlan(bp.id, { name: e.target.value })}
+                    style={{ width: '100%', fontWeight: 600 }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)' }}>Price (USD $)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={bp.price === 0 ? '' : bp.price}
+                      placeholder="0"
+                      onWheel={(e) => (e.target as HTMLElement).blur()}
+                      onChange={(e) => {
+                        const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                        handleUpdateBoostPlan(bp.id, { price: cleaned === '' ? 0 : Number(cleaned) });
+                      }}
+                      style={{ width: '100%', fontWeight: 700, fontSize: '15px' }}
+                    />
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)' }}>Duration (Days)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="365"
+                      value={bp.days === 0 ? '' : bp.days}
+                      placeholder="1"
+                      onWheel={(e) => (e.target as HTMLElement).blur()}
+                      onChange={(e) => {
+                        const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                        handleUpdateBoostPlan(bp.id, { days: cleaned === '' ? 1 : Math.max(1, Number(cleaned)) });
+                      }}
+                      style={{ width: '100%', fontWeight: 700, fontSize: '15px' }}
+                    />
+                  </div>
+                </div>
+
+                {/* Duration shortcut quick pills */}
+                <div>
+                  <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginBottom: '5px' }}>Quick Duration Presets:</div>
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    {[1, 3, 7, 14, 30].map((presetDays) => (
+                      <button
+                        key={presetDays}
+                        type="button"
+                        className={`btn ${bp.days === presetDays ? 'brass' : 'secondary'} small`}
+                        style={{ padding: '2px 8px', fontSize: '11px', height: 'auto', minHeight: '24px' }}
+                        onClick={() => handleUpdateBoostPlan(bp.id, { days: presetDays })}
+                      >
+                        {presetDays}d
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', margin: '4px 0 0', fontSize: '12px' }}>
+                  <input
+                    type="checkbox"
+                    checked={bp.isPopular}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setBoostPlansState((prev) =>
+                        prev.map((p) => ({
+                          ...p,
+                          isPopular: p.id === bp.id ? checked : false,
+                        }))
+                      );
+                    }}
+                  />
+                  <span style={{ color: 'var(--ink)', fontWeight: 600 }}>Mark as Highlighted / Recommended Tier</span>
+                </label>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Edit Plan Modal */}
@@ -839,9 +990,6 @@ export const PlansPage: React.FC = () => {
                   <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', margin: 0 }}>
                     <div>
                       <b style={{ color: 'var(--ink)', fontSize: '13px' }}>★ Set as Popular Plan (Landing Page)</b>
-                      <div className="hint" style={{ marginTop: '2px', fontSize: '12px' }}>
-                        Highlights this tier with the "Most Popular" badge and primary styling on the public landing page.
-                      </div>
                     </div>
                     <input
                       type="checkbox"
@@ -998,9 +1146,6 @@ export const PlansPage: React.FC = () => {
                 <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', margin: 0 }}>
                   <div>
                     <b style={{ color: 'var(--ink)', fontSize: '13px' }}>★ Set as Popular Plan (Landing Page)</b>
-                    <div className="hint" style={{ marginTop: '2px', fontSize: '12px' }}>
-                      Highlights this tier with the "Most Popular" ribbon on the public landing page.
-                    </div>
                   </div>
                   <input
                     type="checkbox"

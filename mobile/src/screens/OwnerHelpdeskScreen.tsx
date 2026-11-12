@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
@@ -20,7 +21,15 @@ import { useMobileAuth } from '../context/MobileAuthContext';
 import { MobilePlatformSupportTicket } from '../types';
 import { useMobileTheme } from '../context/MobileThemeContext';
 
-export const OwnerHelpdeskScreen: React.FC = () => {
+interface OwnerHelpdeskScreenProps {
+  onProfilePress?: () => void;
+  onNavigate?: (screenKey: string) => void;
+}
+
+export const OwnerHelpdeskScreen: React.FC<OwnerHelpdeskScreenProps> = ({
+  onProfilePress,
+  onNavigate,
+}) => {
   const { colors, isDark } = useMobileTheme();
   const { user } = useMobileAuth();
   const { state, createPlatformSupportTicket, resolvePlatformSupportTicket } = useMobileAppData();
@@ -216,41 +225,17 @@ export const OwnerHelpdeskScreen: React.FC = () => {
       <ScreenStatusBar />
 
       {/* Screen Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <View style={styles.logoBadge}>
-            <PropithubIcon size={20} />
-          </View>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={[styles.headerTitle, { color: colors.navy }]} numberOfLines={1}>Helpdesk</Text>
-          </View>
-        </View>
-        <View style={[styles.ownerBadge, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9', borderColor: colors.line }]}>
-          <Text style={[styles.ownerBadgeText, { color: colors.navy }]}>OWNER</Text>
-        </View>
-      </View>
+      <Header
+        title="Helpdesk"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       <ScrollView
         style={[styles.scroll, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Support Banner Card */}
-        <View style={[styles.supportDarkCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-          <Text style={[styles.bannerHeading, { color: colors.navy }]}>Encountered an issue?</Text>
-          <Text style={[styles.bannerSub, { color: colors.inkSoft }]}>
-            Our engineering desk responds to premium owner issues within 24 hours.
-          </Text>
-          <TouchableOpacity
-            style={styles.raiseTicketBtn}
-            onPress={() => setShowCreateModal(true)}
-            activeOpacity={0.85}
-          >
-            <Feather name="plus" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-            <Text style={styles.raiseTicketBtnText}>Raise Platform Ticket</Text>
-          </TouchableOpacity>
-        </View>
-
         {/* Real-Time Metrics Summary Strip (1-to-1 Web Parity) */}
         <View style={[styles.metricsSummaryRow, { backgroundColor: colors.surface, borderColor: colors.line }]}>
           <View style={styles.metricItem}>
@@ -274,22 +259,40 @@ export const OwnerHelpdeskScreen: React.FC = () => {
           </View>
         </View>
 
-        {/* Search Bar (1-to-1 Web Parity) */}
-        <View style={[styles.searchBar, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-          <Feather name="search" size={16} color={colors.inkSoft} style={{ marginRight: 8 }} />
-          <TextInput
-            style={[styles.searchInput, { color: colors.navy }]}
-            placeholder="Search tickets or ID..."
-            value={searchTerm}
-            onChangeText={setSearchTerm}
-            placeholderTextColor={colors.inkSoft}
-            autoCapitalize="none"
-          />
-          {searchTerm.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchTerm('')}>
-              <Feather name="x" size={16} color={colors.inkSoft} />
-            </TouchableOpacity>
-          )}
+        {/* Search Bar + Raise Ticket Action Row */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <View style={[styles.searchBar, { flex: 1, marginBottom: 0, backgroundColor: colors.surface, borderColor: colors.line }]}>
+            <Feather name="search" size={16} color={colors.inkSoft} style={{ marginRight: 8 }} />
+            <TextInput
+              style={[styles.searchInput, { color: colors.navy }]}
+              placeholder="Search tickets or ID..."
+              value={searchTerm}
+              onChangeText={setSearchTerm}
+              placeholderTextColor={colors.inkSoft}
+              autoCapitalize="none"
+            />
+            {searchTerm.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchTerm('')}>
+                <Feather name="x" size={16} color={colors.inkSoft} />
+              </TouchableOpacity>
+            )}
+          </View>
+          <TouchableOpacity
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: '#059669',
+              paddingHorizontal: 14,
+              paddingVertical: 11,
+              borderRadius: 12,
+              gap: 5,
+            }}
+            onPress={() => setShowCreateModal(true)}
+            activeOpacity={0.85}
+          >
+            <Feather name="plus" size={15} color="#FFFFFF" />
+            <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '800' }}>Raise Ticket</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Status Filter Tabs */}
@@ -314,18 +317,13 @@ export const OwnerHelpdeskScreen: React.FC = () => {
 
         {/* Tickets Section */}
         <Text style={[styles.sectionHeading, { color: colors.inkSoft }]}>
-          Your Support Cases ({filteredTickets.length})
+          Support Cases ({filteredTickets.length})
         </Text>
 
         {filteredTickets.length === 0 ? (
           <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Feather name="inbox" size={44} color={colors.inkSoft} />
+            <Feather name="inbox" size={32} color={colors.inkSoft} />
             <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Support Tickets</Text>
-            <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-              {statusFilter === 'all'
-                ? 'You have not raised any platform support tickets yet.'
-                : `No ${statusFilter} support tickets found.`}
-            </Text>
           </View>
         ) : (
           filteredTickets.map((t) => {
@@ -530,9 +528,6 @@ export const OwnerHelpdeskScreen: React.FC = () => {
                       <Text style={[styles.dropdownTriggerText, { color: colors.navy }]}>
                         {currentCat.label}
                       </Text>
-                      <Text style={[styles.dropdownTriggerSub, { color: colors.inkSoft }]} numberOfLines={1}>
-                        {currentCat.sub}
-                      </Text>
                     </View>
                   </View>
                   <Feather
@@ -582,9 +577,6 @@ export const OwnerHelpdeskScreen: React.FC = () => {
                               >
                                 {cfg.label}
                               </Text>
-                              <Text style={[styles.dropdownItemSub, { color: colors.inkSoft }]} numberOfLines={1}>
-                                {cfg.sub}
-                              </Text>
                             </View>
                           </View>
                           {isSelected && (
@@ -620,9 +612,6 @@ export const OwnerHelpdeskScreen: React.FC = () => {
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.dropdownTriggerText, { color: colors.navy }]}>
                         {currentPri.label} Priority
-                      </Text>
-                      <Text style={[styles.dropdownTriggerSub, { color: colors.inkSoft }]} numberOfLines={1}>
-                        {currentPri.sub}
                       </Text>
                     </View>
                   </View>
@@ -672,9 +661,6 @@ export const OwnerHelpdeskScreen: React.FC = () => {
                                 ]}
                               >
                                 {cfg.label} Priority
-                              </Text>
-                              <Text style={[styles.dropdownItemSub, { color: colors.inkSoft }]} numberOfLines={1}>
-                                {cfg.sub}
                               </Text>
                             </View>
                           </View>

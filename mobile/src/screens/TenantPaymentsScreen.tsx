@@ -15,9 +15,11 @@ import {
 } from 'react-native';
 import { Ionicons, Feather, FontAwesome5 } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { Header } from '../components/Header';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
+import { normalizeCurrencyCode } from '../lib/currencyService';
 import { useMobileToast } from '../context/MobileToastContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
@@ -39,10 +41,14 @@ import {
 
 interface TenantPaymentsScreenProps {
   onPayInvoicePress?: (invoiceId?: string) => void;
+  onNavigate?: (screenKey: string) => void;
+  onProfilePress?: () => void;
 }
 
 export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
   onPayInvoicePress,
+  onNavigate,
+  onProfilePress,
 }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
@@ -62,7 +68,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
     cancelAgreementAutopay,
   } = useMobileAppData();
   const { user } = useMobileAuth();
-  const { format, viewCurrency } = useMobileCurrency();
+  const { format, viewCurrency, convert } = useMobileCurrency();
   const { showToast } = useMobileToast();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -721,7 +727,16 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
         const agTime = new Date(a.createdAt || a.start || 0).getTime();
         const moTime = new Date((m as any).updatedAt || (m as any).settledAt || m.moveOutDate || (m as any).createdAt || 0).getTime();
         if (agTime >= moTime && agTime > 0) return false;
-        return false;
+        return true;
+      }) || (state.depositSettlements || []).some((s) => {
+        const matchesUnit =
+          (s.unit && a.unit && s.unit.toLowerCase().trim() === a.unit.toLowerCase().trim()) ||
+          (activeUnit && s.unit && s.unit.toLowerCase().trim() === activeUnit.unitNumber.toLowerCase().trim());
+        const matchesProp = !s.propertyId || !a.propertyId || s.propertyId === a.propertyId;
+        const isCompleted = s.status === 'refunded' || Boolean(s.tenantConfirmedReceipt);
+        if (!matchesUnit || !matchesProp || !isCompleted) return false;
+        if (s.agreementId) return s.agreementId === a.id;
+        return true;
       });
       return !isAgVacated;
     });
@@ -1705,27 +1720,12 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
       {/* Screen Status Bar */}
       <ScreenStatusBar />
 
-      {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <View style={styles.logoBadge}>
-            <Feather name="credit-card" size={18} color="#FFFFFF" />
-          </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.navy }]}>Payments</Text>
-          </View>
-        </View>
-        {(hasActiveTenancy || myUnits.length > 0 || unpaidInvoices.length > 0) && (
-          <TouchableOpacity
-            style={styles.payNowHeaderBtn}
-            onPress={() => handleOpenPayModal()}
-            activeOpacity={0.85}
-          >
-            <Feather name="zap" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
-            <Text style={styles.payNowHeaderBtnText}>Pay Rent</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* Unified Header */}
+      <Header
+        title="Payments"
+        onNotificationPress={() => onNavigate?.('notifications_center')}
+        onProfilePress={onProfilePress}
+      />
 
       <ScrollView
         style={styles.scroll}
@@ -1746,88 +1746,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
           selectedUnitId={selectedTenantUnitId}
           onSelectUnit={(unitId) => setSelectedTenantUnitId(unitId)}
         />
-
-        {/* Contextual Top Payment Reminders & Due Date Countdowns (1-to-1 Web Parity) */}
-        {contextualPaymentReminders.length > 0 && (
-          <View style={{ marginBottom: 14 }}>
-            {contextualPaymentReminders.map((reminder) => {
-              const isUrgent = reminder.severity === 'urgent';
-              const isPositive = reminder.severity === 'positive';
-              const borderCol = isUrgent ? '#EF4444' : isPositive ? '#10B981' : '#F59E0B';
-              const iconCol = isUrgent ? '#EF4444' : isPositive ? '#10B981' : '#D97706';
-              const bgCol = isUrgent
-                ? isDark ? 'rgba(239, 68, 68, 0.12)' : '#FEF2F2'
-                : isDark ? 'rgba(245, 158, 11, 0.12)' : '#FFFBEB';
-
-              return (
-                <View
-                  key={reminder.id}
-                  style={{
-                    backgroundColor: bgCol,
-                    borderWidth: 1,
-                    borderColor: borderCol,
-                    borderRadius: 10,
-                    padding: 12,
-                    marginBottom: 8,
-                  }}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                    <Feather
-                      name={reminder.icon === 'alert-triangle' ? 'alert-triangle' : 'clock'}
-                      size={15}
-                      color={iconCol}
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text
-                      style={{
-                        fontSize: 13,
-                        fontWeight: '700',
-                        color: isUrgent ? (isDark ? '#FCA5A5' : '#B91C1C') : (isDark ? '#FDE68A' : '#92400E'),
-                        flex: 1,
-                      }}
-                      numberOfLines={1}
-                    >
-                      {reminder.title}
-                    </Text>
-                  </View>
-                  <Text
-                    style={{
-                      fontSize: 12,
-                      color: isDark ? '#E2E8F0' : '#475569',
-                      lineHeight: 17,
-                      marginBottom: 10,
-                    }}
-                  >
-                    {reminder.description}
-                  </Text>
-                  <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-                    <TouchableOpacity
-                      style={{
-                        backgroundColor: isUrgent ? '#EF4444' : '#10B981',
-                        paddingHorizontal: 12,
-                        paddingVertical: 6,
-                        borderRadius: 6,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                      }}
-                      onPress={() => {
-                        const invId = reminder.id.replace('tenant_overdue_', '').replace('tenant_due_soon_', '');
-                        const found = state.invoices.find((i) => i.id === invId);
-                        handleOpenPayModal(found);
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>
-                        {reminder.actionLabel || 'Pay Now'}
-                      </Text>
-                      <Feather name="arrow-right" size={12} color="#FFFFFF" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-        )}
 
         {/* Actionable Cash Refund Handover Claim Banner */}
         {pendingCashClaims.map((claim: any) => (
@@ -1873,33 +1791,8 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
           </View>
         ))}
 
-        {/* Outstanding Balance Hero Card */}
-        <TourTarget id="tenant-payments-hero">
-        <View style={styles.balanceHeroCard}>
-          <View style={styles.balanceHeroLeft}>
-            <Text style={styles.balanceHeroLabel}>Total Due Now</Text>
-            <Text style={styles.balanceHeroAmount}>
-              {format(totalOutstanding, activeCurrency)}
-            </Text>
-            <Text style={[styles.balanceHeroSub, totalOutstanding === 0 && { color: '#059669', fontWeight: '600' }]}>
-              {unpaidInvoices.length > 0
-                ? `${unpaidInvoices.length} Pending Invoice${unpaidInvoices.length > 1 ? 's' : ''}`
-                : 'All Rental Dues Settled ✓'}
-            </Text>
-          </View>
-          {totalOutstanding > 0 && (
-            <TouchableOpacity
-              style={styles.heroPayBtn}
-              onPress={() => handleOpenPayModal(unpaidInvoices[0])}
-              activeOpacity={0.85}
-            >
-              <Feather name="arrow-up-right" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
-              <Text style={styles.heroPayBtnText}>Pay Now</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
         {/* 4 Tabs Matching Web Exactly: rent_due, invoices, ledger, deposit */}
+        <TourTarget id="tenant-payments-hero">
         <View style={styles.tabsCapsule}>
           <TouchableOpacity
             style={[styles.tabBtn, subTab === 'rent_due' && styles.tabBtnActive]}
@@ -2097,14 +1990,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                     </TouchableOpacity>
                   )}
                 </View>
-
-                <View style={styles.trustNoteStrip}>
-                  <Feather name="shield" size={13} color="#10B981" style={{ marginRight: 6 }} />
-                  <Text style={styles.trustNoteText}>
-                    <Text style={{ fontWeight: '700' }}>Security Deposit Separation: </Text>
-                    Refundable deposit is held securely in trust custody and is not applied towards recurring monthly rent.
-                  </Text>
-                </View>
               </View>
             ) : historyDues.length > 0 ? (
               <View style={styles.allSettledCard}>
@@ -2112,7 +1997,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                 <View style={{ flex: 1 }}>
                   <Text style={styles.allSettledTitle}>All Rent Dues Settled</Text>
                   <Text style={styles.allSettledSub}>
-                    There are no pending or overdue rent cycles for your active lease. Review all completed payments in Rent Due History below.
+                    No pending or overdue rent cycles for your active lease.
                   </Text>
                 </View>
               </View>
@@ -2121,7 +2006,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                 <Feather name="calendar" size={26} color="#94A3B8" style={{ marginBottom: 6 }} />
                 <Text style={styles.noScheduleTitle}>No Active Rent Schedule Found</Text>
                 <Text style={styles.noScheduleSub}>
-                  Once your tenancy agreement is active, your real monthly rent schedule will automatically appear here with all upcoming due dates and amounts.
+                  Monthly rent schedule appears once your lease is active.
                 </Text>
               </View>
             )}
@@ -2134,27 +2019,16 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                   borderRadius: 12,
                   borderWidth: 1,
                   borderColor: colors.line,
-                  marginBottom: 16,
-                  overflow: 'hidden',
+                  marginBottom: 14,
+                  padding: 12,
                 }}
               >
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: 14,
-                    backgroundColor: colors.surfaceSunken,
-                    borderBottomWidth: 1,
-                    borderBottomColor: colors.line,
-                  }}
-                >
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Feather name="repeat" size={16} color={colors.brass} />
-                    <View>
-                      <Text style={{ fontSize: 14, fontWeight: '700', color: colors.ink }}>Rent Autopay</Text>
-                      <Text style={{ fontSize: 11, color: colors.inkSoft }}>Single active mandate • Zero double-debit</Text>
-                    </View>
+                    <Feather name="repeat" size={15} color={colors.brass} />
+                    <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.ink }}>
+                      Rent Autopay · {(activeAgreement.autopay?.activeGateway || 'razorpay').toUpperCase()} (Day {activeAgreement.rentDueDay || 1})
+                    </Text>
                   </View>
                   <View
                     style={{
@@ -2166,91 +2040,57 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                   >
                     <Text
                       style={{
-                        fontSize: 11,
+                        fontSize: 10.5,
                         fontWeight: '700',
                         color: activeAgreement.autopay?.status === 'active' ? '#166534' : '#92400E',
                       }}
                     >
-                      {activeAgreement.autopay?.status === 'active' ? 'Autopay Active' : 'Autopay Inactive'}
+                      {activeAgreement.autopay?.status === 'active' ? 'Active' : 'Inactive'}
                     </Text>
                   </View>
                 </View>
 
-                <View style={{ padding: 14 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
-                    <View style={{ flex: 1, marginRight: 8, backgroundColor: colors.surfaceSunken, padding: 10, borderRadius: 8 }}>
-                      <Text style={{ fontSize: 10, fontWeight: '700', color: colors.inkSoft, textTransform: 'uppercase' }}>
-                        Active Method
-                      </Text>
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink, marginTop: 2 }}>
-                        {(activeAgreement.autopay?.activeGateway || 'razorpay').toUpperCase()}
-                      </Text>
-                      <Text style={{ fontSize: 10, color: colors.inkSoft, marginTop: 1 }}>
-                        {activeAgreement.autopay?.mandateId ? `Ref: ${activeAgreement.autopay.mandateId.slice(-8)}` : 'Manual'}
-                      </Text>
-                    </View>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      backgroundColor: colors.surfaceSunken,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      paddingVertical: 8,
+                      borderRadius: 8,
+                      alignItems: 'center',
+                    }}
+                    onPress={() => {
+                      setSelectedMobileGateway((activeAgreement.autopay?.activeGateway || 'razorpay') as any);
+                      setShowAutopayModal(true);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: colors.ink }}>Change Method</Text>
+                  </TouchableOpacity>
 
-                    <View style={{ flex: 1, backgroundColor: colors.surfaceSunken, padding: 10, borderRadius: 8 }}>
-                      <Text style={{ fontSize: 10, fontWeight: '700', color: colors.inkSoft, textTransform: 'uppercase' }}>
-                        Scheduled Debit
-                      </Text>
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink, marginTop: 2 }}>
-                        {format(activeAgreement.rent || 0, activeAgreement.currency || activeCurrency)}
-                      </Text>
-                      <Text style={{ fontSize: 10, color: colors.inkSoft, marginTop: 1 }}>
-                        Due day {activeAgreement.rentDueDay || 1}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
-                    <TouchableOpacity
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      backgroundColor: activeAgreement.autopay?.status === 'active' ? '#FEE2E2' : colors.brass,
+                      paddingVertical: 8,
+                      borderRadius: 8,
+                      alignItems: 'center',
+                    }}
+                    onPress={handleToggleMobileTenantAutopay}
+                    activeOpacity={0.8}
+                  >
+                    <Text
                       style={{
-                        flex: 1,
-                        backgroundColor: colors.surfaceSunken,
-                        borderWidth: 1,
-                        borderColor: colors.line,
-                        paddingVertical: 9,
-                        borderRadius: 8,
-                        alignItems: 'center',
+                        fontSize: 12,
+                        fontWeight: '700',
+                        color: activeAgreement.autopay?.status === 'active' ? '#991B1B' : '#FFFFFF',
                       }}
-                      onPress={() => {
-                        setSelectedMobileGateway((activeAgreement.autopay?.activeGateway || 'razorpay') as any);
-                        setShowAutopayModal(true);
-                      }}
-                      activeOpacity={0.8}
                     >
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: colors.ink }}>Change Method</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={{
-                        flex: 1,
-                        backgroundColor: activeAgreement.autopay?.status === 'active' ? '#FEE2E2' : colors.brass,
-                        paddingVertical: 9,
-                        borderRadius: 8,
-                        alignItems: 'center',
-                      }}
-                      onPress={handleToggleMobileTenantAutopay}
-                      activeOpacity={0.8}
-                    >
-                      <Text
-                        style={{
-                          fontSize: 12,
-                          fontWeight: '700',
-                          color: activeAgreement.autopay?.status === 'active' ? '#991B1B' : '#FFFFFF',
-                        }}
-                      >
-                        {activeAgreement.autopay?.status === 'active' ? 'Pause Autopay' : 'Enable Autopay'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={{ borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 8 }}>
-                    <Text style={{ fontSize: 11, color: colors.inkSoft, lineHeight: 16 }}>
-                      🛡️ Auto-skips if paid early or in cash • 💬 48h advance notice sent via WhatsApp &amp; Email.
+                      {activeAgreement.autopay?.status === 'active' ? 'Pause Autopay' : 'Enable Autopay'}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 </View>
               </View>
             )}
@@ -2380,10 +2220,10 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                         <View style={styles.cycleCardBottom}>
                           <Text style={styles.cycleNoteText}>
                             {item.isMoveInMonth
-                              ? 'Immediate First Month Rent (Move-in)'
+                              ? 'First Month Rent (Move-in)'
                               : item.isRenewalCycle
                                 ? `Renewed Term (${item.percentageIncrease ? `+${item.percentageIncrease}%` : 'New Rate'})`
-                                : 'Standard Monthly Cycle • 5-day grace period'}
+                                : item.monthName || 'Monthly Rent'}
                           </Text>
 
                           {isPending ? (
@@ -2526,39 +2366,43 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                   <View style={styles.divider} />
 
                   <View style={styles.invoiceLineItems}>
-                    <View style={styles.invoiceLineItem}>
-                      <Text style={styles.lineItemLabel}>Monthly Rent</Text>
-                      <Text style={styles.lineItemVal}>{format(inv.amount || inv.total, inv.currency || activeCurrency)}</Text>
-                    </View>
-                    {(inv as any).utilityCharges ? (
-                      <View style={styles.invoiceLineItem}>
-                        <Text style={styles.lineItemLabel}>Utility / Maintenance Dues</Text>
-                        <Text style={styles.lineItemVal}>{format((inv as any).utilityCharges, inv.currency || activeCurrency)}</Text>
-                      </View>
-                    ) : null}
-                    {(inv.lateFeeApplied || 0) > 0 && (
-                      <View style={styles.invoiceLineItem}>
-                        <Text style={[styles.lineItemLabel, { color: '#DC2626', fontWeight: '600' }]}>
-                          Late Fee Penalty ({inv.lateFeeCalculation || 'Overdue'})
-                        </Text>
-                        <Text style={[styles.lineItemVal, { color: '#DC2626', fontWeight: '700' }]}>
-                          +{format(inv.lateFeeApplied || 0, inv.currency || activeCurrency)}
-                        </Text>
-                      </View>
+                    {((inv as any).utilityCharges || (inv.lateFeeApplied || 0) > 0 || inv.lateFeeWaived) && (
+                      <>
+                        <View style={styles.invoiceLineItem}>
+                          <Text style={styles.lineItemLabel}>Monthly Rent</Text>
+                          <Text style={styles.lineItemVal}>{format(inv.amount || inv.total, inv.currency || activeCurrency)}</Text>
+                        </View>
+                        {(inv as any).utilityCharges ? (
+                          <View style={styles.invoiceLineItem}>
+                            <Text style={styles.lineItemLabel}>Utility / Maintenance Dues</Text>
+                            <Text style={styles.lineItemVal}>{format((inv as any).utilityCharges, inv.currency || activeCurrency)}</Text>
+                          </View>
+                        ) : null}
+                        {(inv.lateFeeApplied || 0) > 0 && (
+                          <View style={styles.invoiceLineItem}>
+                            <Text style={[styles.lineItemLabel, { color: '#DC2626', fontWeight: '600' }]}>
+                              Late Fee ({inv.lateFeeCalculation || 'Overdue'})
+                            </Text>
+                            <Text style={[styles.lineItemVal, { color: '#DC2626', fontWeight: '700' }]}>
+                              +{format(inv.lateFeeApplied || 0, inv.currency || activeCurrency)}
+                            </Text>
+                          </View>
+                        )}
+                        {inv.lateFeeWaived && (
+                          <View style={styles.invoiceLineItem}>
+                            <Text style={[styles.lineItemLabel, { color: '#16A34A', fontWeight: '600' }]}>
+                              Late Fee
+                            </Text>
+                            <Text style={[styles.lineItemVal, { color: '#16A34A', fontWeight: '600' }]}>
+                              Waived
+                            </Text>
+                          </View>
+                        )}
+                      </>
                     )}
-                    {inv.lateFeeWaived && (
-                      <View style={styles.invoiceLineItem}>
-                        <Text style={[styles.lineItemLabel, { color: '#16A34A', fontWeight: '600' }]}>
-                          Late Fee Penalty
-                        </Text>
-                        <Text style={[styles.lineItemVal, { color: '#16A34A', fontWeight: '600' }]}>
-                          Waived
-                        </Text>
-                      </View>
-                    )}
-                    <View style={[styles.invoiceLineItem, { marginTop: 4 }]}>
-                      <Text style={[styles.lineItemLabel, { fontWeight: '700', color: '#0F172A' }]}>Total Amount</Text>
-                      <Text style={[styles.lineItemVal, { fontWeight: '800', color: '#0F172A', fontSize: 15 }]}>
+                    <View style={[styles.invoiceLineItem, { marginTop: 2 }]}>
+                      <Text style={[styles.lineItemLabel, { fontWeight: '700', color: colors.navy }]}>Total Amount</Text>
+                      <Text style={[styles.lineItemVal, { fontWeight: '800', color: colors.navy, fontSize: 15 }]}>
                         {format(inv.total, inv.currency || activeCurrency)}
                       </Text>
                     </View>
@@ -2579,7 +2423,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                       <Text style={styles.invoiceDocBtnText}>View Invoice (PDF)</Text>
                     </TouchableOpacity>
 
-                    {inv.status !== 'paid' && (
+                    {inv.status !== 'paid' && (inv as any).status !== 'void' && (inv as any).status !== 'cancelled' && (
                       <TouchableOpacity
                         style={styles.invoicePayBtn}
                         onPress={() => handleOpenPayModal(inv)}
@@ -2850,25 +2694,41 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
               <View style={styles.depositHeroCard}>
                 <View style={styles.depositHeroTop}>
                   <View style={styles.depositHeroIconBox}>
-                    <Feather name="shield" size={20} color="#059669" />
+                    <Feather name={isDisbursed ? 'check-circle' : 'shield'} size={20} color="#059669" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.depositHeroTitle}>Security Deposit</Text>
+                    <Text style={styles.depositHeroTitle}>
+                      {isDisbursed ? 'Security Deposit (Settled)' : 'Security Deposit'}
+                    </Text>
                     <Text style={styles.depositHeroSub}>
-                      Gross deposit held in trust custody for Unit {activeUnit?.unitNumber || activeAgreement?.unit || 'Residence'}
+                      {isDisbursed
+                        ? `Deposit settlement concluded for Unit ${activeUnit?.unitNumber || activeAgreement?.unit || 'Residence'}`
+                        : `Gross deposit held in trust custody for Unit ${activeUnit?.unitNumber || activeAgreement?.unit || 'Residence'}`}
                     </Text>
                   </View>
                 </View>
 
-                <View style={styles.depositAmountBox}>
-                  <Text style={styles.depositAmountLabel}>Deposit Held & Secured in Trust</Text>
-                  <Text style={styles.depositAmountBig}>
-                    {format(
-                      activeAgreement?.deposit || activeUnit?.deposit || 0,
-                      activeAgreement?.currency || activeUnit?.currency || activeProperty?.currency || activeCurrency
-                    )}
-                  </Text>
-                </View>
+                {(() => {
+                  const baseDep = isDisbursed
+                    ? (activeSettlement?.finalRefundAmount ?? activeSettlement?.netRefundableAmount ?? activeSettlement?.grossDepositHeld ?? activeSettlement?.originalDeposit ?? activeAgreement?.deposit ?? activeUnit?.deposit ?? 0)
+                    : (activeAgreement?.deposit ?? activeUnit?.deposit ?? 0);
+                  const baseCurr = activeAgreement?.currency || activeUnit?.currency || activeProperty?.currency || activeCurrency;
+                  const isDiff = Boolean(viewCurrency && normalizeCurrencyCode(viewCurrency) !== normalizeCurrencyCode(baseCurr));
+                  const converted = isDiff ? convert(Number(baseDep) || 0, baseCurr, viewCurrency) : null;
+                  const dispCurr = viewCurrency || baseCurr;
+                  const dispAmt = isDiff && converted !== null ? Math.round(converted) : (Number(baseDep) || 0);
+
+                  return (
+                    <View style={styles.depositAmountBox}>
+                      <Text style={styles.depositAmountLabel}>
+                        {isDisbursed ? 'Deposit Settled & Refunded' : 'Deposit Held & Secured in Trust'}
+                      </Text>
+                      <Text style={styles.depositAmountBig}>
+                        {format(dispAmt, dispCurr)}
+                      </Text>
+                    </View>
+                  );
+                })()}
 
                 <View style={styles.depositSpecsGrid}>
                   <View style={styles.depositSpecCell}>
@@ -2882,9 +2742,11 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                     </Text>
                   </View>
                   <View style={styles.depositSpecCell}>
-                    <Text style={styles.depositSpecLabel}>Est. Refund Date</Text>
+                    <Text style={styles.depositSpecLabel}>{isDisbursed ? 'Disbursed Date' : 'Est. Refund Date'}</Text>
                     <Text style={styles.depositSpecVal}>
-                      {activeMoveOut?.refundDate || activeMoveOut?.moveOutDate || 'Upon Tenancy Conclude'}
+                      {isDisbursed
+                        ? (activeSettlement?.disbursedAt?.split('T')[0] || (activeMoveOut as any)?.settledAt?.split('T')[0] || activeMoveOut?.refundDate || activeMoveOut?.moveOutDate || new Date().toISOString().split('T')[0])
+                        : (activeMoveOut?.refundDate || activeMoveOut?.moveOutDate || 'Upon Tenancy Conclude')}
                     </Text>
                   </View>
                 </View>

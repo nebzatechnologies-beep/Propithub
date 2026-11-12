@@ -440,12 +440,13 @@ export const StaffDashboardQueuePage: React.FC = () => {
                   {filteredQueue.map((t) => (
                     <div key={t.id} className="staff-card">
                       <div className="staff-card-header">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <b style={{ fontSize: '13.5px', color: 'var(--ink)' }}>{t.id}</b>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                          <b style={{ fontSize: '13px', color: 'var(--ink)' }}>{t.id}</b>
                           <span
                             className={`badge ${
                               t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'
                             }`}
+                            style={{ flexShrink: 0 }}
                           >
                             {t.priority}
                           </span>
@@ -458,6 +459,7 @@ export const StaffDashboardQueuePage: React.FC = () => {
                               ? 'brass'
                               : 'amber'
                           }`}
+                          style={{ flexShrink: 0 }}
                         >
                           {t.status.toUpperCase()}
                         </span>

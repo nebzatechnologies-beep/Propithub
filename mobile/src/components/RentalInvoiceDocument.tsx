@@ -12,6 +12,7 @@ import { Ionicons, Feather } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { MobileInvoice, MobilePaymentTransaction } from '../types';
+import { useMobileAppData } from '../context/MobileAppDataContext';
 
 interface RentalInvoiceDocumentProps {
   invoice?: MobileInvoice | null;
@@ -26,12 +27,20 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
   ownerName = 'Propithub Real Estate Management',
   onClose,
 }) => {
+  const { state } = useMobileAppData();
+
   // Determine if deposit or standard rent invoice
   const isDeposit =
     invoice?.invoiceType === 'deposit' ||
     invoice?.type === 'deposit' ||
     transaction?.type === 'deposit' ||
     transaction?.type === 'deposit_refund';
+
+  const ownerId = invoice?.ownerId || transaction?.ownerId;
+  const ownerSettings = ownerId ? state.ownerSettings[ownerId] : undefined;
+  const effectiveTemplate = isDeposit
+    ? (ownerSettings?.depositTemplate || ownerSettings?.invoiceTemplate)
+    : ownerSettings?.invoiceTemplate;
 
   const docId = invoice?.id || transaction?.id || 'INV-000000';
   const currency = invoice?.currency || transaction?.currency || 'USD';
@@ -48,11 +57,11 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
   const unitNumber = invoice?.unit || transaction?.unit || 'N/A';
   const propertyName = invoice?.propertyName || transaction?.propertyName || 'PROPITHUB RESIDENTIAL';
 
-  const issuerName = ownerName || (invoice as any)?.issuerName || (propertyName ? `${propertyName} Management` : 'Property Management');
-  const issuerTaxNo = (invoice as any)?.issuerTaxNo || '';
-  const issuerAddress = (invoice as any)?.issuerAddress || '';
-  const issuerPhone = (invoice as any)?.issuerPhone || '';
-  const issuerEmail = (invoice as any)?.issuerEmail || '';
+  const issuerName = effectiveTemplate?.issuerName || (invoice as any)?.issuerName || ownerName || (propertyName ? `${propertyName} Management` : 'Property Management');
+  const issuerTaxNo = effectiveTemplate?.issuerTaxNo || (invoice as any)?.issuerTaxNo || '';
+  const issuerAddress = effectiveTemplate?.issuerAddress || (invoice as any)?.issuerAddress || '';
+  const issuerPhone = effectiveTemplate?.issuerPhone || (invoice as any)?.issuerPhone || '';
+  const issuerEmail = effectiveTemplate?.issuerEmail || (invoice as any)?.issuerEmail || '';
 
   const issueDate = invoice?.issueDate || transaction?.date || new Date().toISOString().split('T')[0];
   const dueDate = invoice?.due || transaction?.dueDate || issueDate;
@@ -63,7 +72,7 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
   const billingPeriodStart = issueDate;
   const billingPeriodEnd = dueDate;
 
-  const documentTitle = isDeposit ? 'SECURITY DEPOSIT VOUCHER' : 'TAX INVOICE';
+  const documentTitle = (invoice as any)?.documentTitle || effectiveTemplate?.documentTitle || (isDeposit ? 'DEPOSIT RECEIPT' : 'INVOICE');
   const documentSubtitle = isDeposit
     ? 'Official Security Deposit Voucher'
     : 'Rental Billing & Tax Receipt';
@@ -148,11 +157,12 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
               <div>
                 <div class="brand">${propertyName}</div>
                 <div class="issuer-name">${issuerName}</div>
-                ${issuerTaxNo ? `<div class="issuer-tax">${issuerTaxNo}</div>` : ''}
-                ${(issuerAddress || issuerPhone || issuerEmail) ? `<div class="issuer-meta">
+                <div class="issuer-meta">
                   ${issuerAddress ? `${issuerAddress}<br />` : ''}
-                  ${[issuerPhone ? `Phone: ${issuerPhone}` : '', issuerEmail ? `Email: ${issuerEmail}` : ''].filter(Boolean).join(' • ')}
-                </div>` : ''}
+                  ${issuerEmail ? `${issuerEmail}<br />` : ''}
+                  ${issuerPhone ? `${issuerPhone}<br />` : ''}
+                  ${issuerTaxNo ? `<div style="color: #059669; font-weight: 700; margin-top: 2px;">${issuerTaxNo}</div>` : ''}
+                </div>
               </div>
               <div>
                 <div class="doc-title">${documentTitle}</div>
@@ -315,13 +325,10 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
           <View style={{ flex: 1 }}>
             <Text style={styles.brandTitle}>{propertyName}</Text>
             <Text style={styles.issuerName}>{issuerName}</Text>
-            {issuerTaxNo ? <Text style={styles.issuerTax}>{issuerTaxNo}</Text> : null}
             {issuerAddress ? <Text style={styles.issuerMeta}>{issuerAddress}</Text> : null}
-            {(issuerPhone || issuerEmail) ? (
-              <Text style={styles.issuerMeta}>
-                {[issuerPhone ? `Phone: ${issuerPhone}` : '', issuerEmail ? `Email: ${issuerEmail}` : ''].filter(Boolean).join(' • ')}
-              </Text>
-            ) : null}
+            {issuerEmail ? <Text style={styles.issuerMeta}>{issuerEmail}</Text> : null}
+            {issuerPhone ? <Text style={styles.issuerMeta}>{issuerPhone}</Text> : null}
+            {issuerTaxNo ? <Text style={[styles.issuerTax, { color: '#059669' }]}>{issuerTaxNo}</Text> : null}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={[styles.docTypeTitle, isDeposit && { color: '#059669' }]}>
@@ -412,13 +419,17 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
         </View>
 
         {/* Terms & Conditions Section */}
-        <View style={styles.termsSection}>
-          <Text style={styles.sectionHeadLabel}>TERMS & CONDITIONS (T&C):</Text>
-          <Text style={styles.termsBodyText}>{termsText}</Text>
-          {notesText ? (
-            <Text style={styles.notesText}><Text style={{ fontWeight: '700', color: '#0F172A' }}>Note: </Text>{notesText}</Text>
-          ) : null}
-        </View>
+        {((invoice as any)?.includeTerms !== false && termsText) ? (
+          <View style={styles.termsSection}>
+            <Text style={styles.sectionHeadLabel}>{isDeposit ? 'DEPOSIT TERMS & CONDITIONS (T&C):' : 'TERMS & CONDITIONS (T&C):'}</Text>
+            {termsText.split('\n').filter(Boolean).map((clause, idx) => (
+              <Text key={idx} style={[styles.termsBodyText, { marginBottom: 3 }]}>{clause.trim()}</Text>
+            ))}
+            {notesText ? (
+              <Text style={styles.notesText}><Text style={{ fontWeight: '700', color: '#0F172A' }}>Note: </Text>{notesText}</Text>
+            ) : null}
+          </View>
+        ) : null}
 
         {/* Signatory Footer */}
         <View style={styles.signSection}>

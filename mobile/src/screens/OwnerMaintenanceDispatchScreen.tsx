@@ -21,20 +21,27 @@ import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { MobileTicket, MobileStaffMember } from '../types';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
+import { usePlanLimits } from '../hooks/usePlanLimits';
+import { PlanLimitModal } from '../components/PlanLimitModal';
 
 interface OwnerMaintenanceDispatchScreenProps {
   onProfilePress?: () => void;
   onCreateTicketPress?: () => void;
+  onNavigate?: (screenKey: string) => void;
 }
 
 export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchScreenProps> = ({
   onProfilePress,
   onCreateTicketPress,
+  onNavigate,
 }) => {
   const { state, updateTicket, addStaff } = useMobileAppData();
   const { user } = useMobileAuth();
   const { format, viewCurrency, currencySymbol } = useMobileCurrency();
   const { colors, isDark } = useMobileTheme();
+  const { usage, currentPlanName } = usePlanLimits();
+  const [showLimitModal, setShowLimitModal] = useState(false);
+  const [removedStaffIds, setRemovedStaffIds] = useState<string[]>([]);
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const [activeTab, setActiveTab] = useState<'orders' | 'techs'>('orders');
 
@@ -47,8 +54,8 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
 
   const staffTechs = useMemo(() => {
     if (!ownerId) return [];
-    return state.staff.filter((s) => s.ownerId === ownerId);
-  }, [state.staff, ownerId]);
+    return state.staff.filter((s) => s.ownerId === ownerId && !removedStaffIds.includes(s.id));
+  }, [state.staff, ownerId, removedStaffIds]);
 
   // Dispatch Assignment Modal State
   const [assignModalVisible, setAssignModalVisible] = useState(false);
@@ -160,7 +167,7 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
       {/* Header */}
       <Header
         title="Maintenance"
-        onNotificationPress={() => {}}
+        onNotificationPress={() => onNavigate?.('notifications_center')}
         onProfilePress={onProfilePress}
       />
 
@@ -170,6 +177,22 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
           contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
         >
+          {/* 2-Column KPI Row: Opened & Resolved */}
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
+            <View style={{ flex: 1, backgroundColor: colors.surface, borderColor: colors.line, borderWidth: 1, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 10, alignItems: 'center' }}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#EF4444' }}>
+                {tickets.filter((t) => t.status !== 'resolved' && t.status !== 'closed').length}
+              </Text>
+              <Text style={{ fontSize: 11, fontWeight: '700', color: colors.inkSoft, letterSpacing: 0.5, marginTop: 3 }}>OPENED</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: colors.surface, borderColor: colors.line, borderWidth: 1, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 10, alignItems: 'center' }}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#059669' }}>
+                {tickets.filter((t) => t.status === 'resolved' || t.status === 'closed').length}
+              </Text>
+              <Text style={{ fontSize: 11, fontWeight: '700', color: colors.inkSoft, letterSpacing: 0.5, marginTop: 3 }}>RESOLVED</Text>
+            </View>
+          </View>
+
           {/* Segmented Capsule Tabs (1-to-1 Web MaintenancePage Parity) */}
           <TourTarget id="owner-maintenance-controls">
             <View style={[styles.tabContainer, { backgroundColor: isDark ? '#1E293B' : '#E9EEF5' }]}>
@@ -188,7 +211,7 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
                 activeOpacity={0.8}
               >
                 <Text style={[styles.tabText, activeTab === 'techs' && [styles.tabTextActive, { color: colors.navy }]]}>
-                  Technicians ({staffTechs.length})
+                  Technicians ({staffTechs.length}/{usage.staff.max})
                 </Text>
               </TouchableOpacity>
             </View>
@@ -283,7 +306,13 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
               {/* Onboard Technician Action Card */}
               <TouchableOpacity
                 style={[styles.onboardBannerCard, { backgroundColor: colors.surface, borderColor: colors.line }]}
-                onPress={() => setOnboardModalVisible(true)}
+                onPress={() => {
+                  if (usage.staff.isFull) {
+                    setShowLimitModal(true);
+                    return;
+                  }
+                  setOnboardModalVisible(true);
+                }}
                 activeOpacity={0.85}
               >
                 <View style={styles.onboardBannerLeft}>
@@ -291,7 +320,9 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
                     <Feather name="user-plus" size={18} color="#FFFFFF" />
                   </View>
                   <View>
-                    <Text style={[styles.onboardBannerTitle, { color: colors.navy }]}>Onboard New Technician</Text>
+                    <Text style={[styles.onboardBannerTitle, { color: colors.navy }]}>
+                      Onboard Technician ({staffTechs.length}/{usage.staff.max})
+                    </Text>
                   </View>
                 </View>
                 <Feather name="chevron-right" size={18} color={colors.inkSoft} />
@@ -314,8 +345,29 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
                   </View>
                   <View style={[styles.techFooter, { borderTopColor: colors.line }]}>
                     <Text style={[styles.techStats, { color: colors.inkSoft }]}>Active Work: {st.activeTickets ?? 0} jobs</Text>
-                    <View style={styles.onlineBadge}>
-                      <Text style={styles.onlineBadgeText}>{(st.status || 'Active').toUpperCase()}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={styles.onlineBadge}>
+                        <Text style={styles.onlineBadgeText}>{(st.status || 'Active').toUpperCase()}</Text>
+                      </View>
+                      <TouchableOpacity
+                        onPress={() => {
+                          Alert.alert(
+                            'Remove Technician',
+                            `Remove ${st.name} from your field staff roster?`,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: 'Remove',
+                                style: 'destructive',
+                                onPress: () => setRemovedStaffIds((prev) => [...prev, st.id]),
+                              },
+                            ]
+                          );
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Feather name="trash-2" size={14} color="#EF4444" />
+                      </TouchableOpacity>
                     </View>
                   </View>
                 </View>
@@ -521,6 +573,19 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
           </View>
         </View>
       </Modal>
+
+      <PlanLimitModal
+        visible={showLimitModal}
+        resourceType="staff"
+        currentUsage={usage.staff.used}
+        limit={usage.staff.max}
+        planName={currentPlanName}
+        onClose={() => setShowLimitModal(false)}
+        onUpgrade={() => {
+          setShowLimitModal(false);
+          onNavigate?.('owner_plan_subscription');
+        }}
+      />
     </SafeAreaView>
   );
 };

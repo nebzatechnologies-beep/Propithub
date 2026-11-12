@@ -237,36 +237,45 @@ export const parseAddressString = (rawAddress?: string): { city: string; country
   if (!detectedCity && parts.length > 1) {
     for (let i = parts.length - 2; i >= 0; i--) {
       const p = parts[i];
-      if (!isInvalidCountry(p) && p.length > 2 && p.length < 30) {
-        detectedCity = p.replace(/\b\d+\b/g, '').trim();
-        break;
+      if (!isInvalidCountry(p) && !isNumericCoordinate(p) && p.length > 2 && p.length < 30) {
+        const cleaned = p.replace(/\b\d+\b/g, '').trim();
+        if (cleaned && isValidCityName(cleaned)) {
+          detectedCity = cleaned;
+          break;
+        }
       }
     }
   }
 
+  const rawCandidate = parts.length > 1 ? parts[parts.length - 2] : parts[0];
+  const candidateCleaned = rawCandidate && !isNumericCoordinate(rawCandidate) ? rawCandidate.replace(/\b\d+\b/g, '').trim() : '';
+  const fallbackCity = candidateCleaned && isValidCityName(candidateCleaned) ? candidateCleaned : '';
+
   return {
-    city: detectedCity || parts[parts.length - 2] || 'City',
+    city: detectedCity || fallbackCity,
     country: detectedCountry,
   };
 };
 
 /**
- * Sanitizes country string; if it is a street name or invalid, cleans it using address or fallback
+ * Sanitizes country string; if it is a street name, coordinate, or invalid, cleans it using address or fallback
  */
 export const sanitizeCountry = (country?: string, address?: string): string => {
-  if (country && !isInvalidCountry(country)) {
+  if (country && !isInvalidCountry(country) && !isNumericCoordinate(country)) {
     return country.trim();
   }
-  if (address) {
+  if (address && !isNumericCoordinate(address)) {
     const parsed = parseAddressString(address);
-    return parsed.country;
+    if (parsed.country && !isNumericCoordinate(parsed.country)) {
+      return parsed.country;
+    }
   }
   return 'India';
 };
 
 /**
  * Resolves a clean, elegant location label for cards (e.g. "Secunderabad, Hyderabad" or "Secunderabad, India")
- * Never displays a street or raw door number
+ * Never displays a street, raw door number, or numeric coordinates
  */
 export const resolveDisplayLocation = (
   unitAddress?: string,
@@ -275,13 +284,13 @@ export const resolveDisplayLocation = (
 ): string => {
   const cleanCountry = sanitizeCountry(unitCountry, unitAddress);
 
-  if (unitCity && !isInvalidCountry(unitCity)) {
+  if (unitCity && isValidCityName(unitCity)) {
     return `${unitCity}, ${cleanCountry}`;
   }
 
-  if (unitAddress) {
+  if (unitAddress && !isNumericCoordinate(unitAddress)) {
     const { city, country } = parseAddressString(unitAddress);
-    if (city && city.toLowerCase() !== country.toLowerCase()) {
+    if (city && isValidCityName(city) && city.toLowerCase() !== country.toLowerCase()) {
       return `${city}, ${country}`;
     }
     return country;
@@ -291,12 +300,41 @@ export const resolveDisplayLocation = (
 };
 
 /**
- * Checks if a string is pure numeric coordinates (e.g. "72.5054191" or "23.0371789, 72.5054191")
+ * Checks if a string is pure numeric coordinates (e.g. "72.5054191", "23.0371789, 72.5054191", "17.445, 78.382", "17.445° N, 78.382° E")
  */
 export const isNumericCoordinate = (val?: string): boolean => {
   if (!val || typeof val !== 'string') return false;
   const t = val.trim();
-  return /^[0-9.,+\-\s]+$/.test(t) && /\d+\.\d+/.test(t);
+  if (!t) return false;
+  // Pure digits, signs, decimals, commas, spaces (e.g. "17.445, 78.382" or "17.445" or "17.44500")
+  if (/^[0-9.,+\-\s]+$/.test(t) && /\d/.test(t)) return true;
+  // Coordinates with degrees, minutes, direction letters (e.g. "17.445° N, 78.382° E" or "17.445N 78.382W")
+  if (/^[0-9.,+\-\s°NSEWnsew:/]+$/.test(t) && /\d+\.\d+/.test(t)) return true;
+  // Explicit coordinate indicators
+  if (/^(?:lat(?:itude)?|long(?:itude)?|lng|coords?)\b/i.test(t)) return true;
+  // Embedded coordinate pair pattern like "17.445, 78.382"
+  if (/-?\d{1,3}\.\d{3,}\s*,\s*-?\d{1,3}\.\d{3,}/.test(t)) return true;
+  // If there are no alphabetical characters at all, it cannot be a human-readable city/place name
+  if (!/[a-zA-Z\u00C0-\u024F\u1E00-\u1EFF]/.test(t)) return true;
+  return false;
+};
+
+/**
+ * Validates whether a string is a clean, human-readable city or place name (never coordinates, URLs, or placeholders)
+ */
+export const isValidCityName = (val?: string): boolean => {
+  if (!val || typeof val !== 'string') return false;
+  const t = val.trim();
+  if (t.length < 2 || t.length > 50) return false;
+  if (isNumericCoordinate(t) || isAddressUrl(t)) return false;
+  // Must contain alphabetical letters
+  if (!/[a-zA-Z\u00C0-\u024F\u1E00-\u1EFF]/.test(t)) return false;
+  // Reject strings with decimal coordinate sequences
+  if (/\d+\.\d{2,}/.test(t)) return false;
+  // Reject placeholder names
+  const lower = t.toLowerCase();
+  if (['city', 'unknown', 'n/a', 'na', 'null', 'undefined', 'property address', 'address on file'].includes(lower)) return false;
+  return true;
 };
 
 /**
