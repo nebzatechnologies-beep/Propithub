@@ -4139,6 +4139,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       ...commsCfg,
       twilioAuthToken: '',
       sendgridKey: '',
+      birdApiKey: '',
       whatsappAccessToken: '',
       geminiApiKey: '',
     };
@@ -6848,8 +6849,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     let errorMessage: string | undefined = entry.errorMessage;
 
     // Check gateway configuration
-    const hasSg = Boolean(state.commsConfig?.sendgridConnected || state.commsConfig?.sendgridKey);
-    const hasTw = Boolean(state.commsConfig?.twilioConnected || (state.commsConfig?.twilioSid && state.commsConfig?.twilioAuthToken));
+    const hasBird = Boolean(state.commsConfig?.birdConnected);
+    const hasSg = Boolean(hasBird || state.commsConfig?.sendgridConnected || state.commsConfig?.sendgridKey);
+    const hasTw = Boolean(hasBird || state.commsConfig?.twilioConnected || (state.commsConfig?.twilioSid && state.commsConfig?.twilioAuthToken));
 
     // If external delivery requested and Firebase is configured
     if (isFirebaseConfigured && (wantsEmail || wantsSms)) {
@@ -6889,8 +6891,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       } else {
         const reasons: string[] = [];
-        if (wantsEmail && !hasSg) reasons.push('SendGrid unconfigured');
-        if (wantsSms && !hasTw) reasons.push('Twilio unconfigured');
+        if (wantsEmail && !hasSg) reasons.push('Email provider unconfigured');
+        if (wantsSms && !hasTw) reasons.push('SMS provider unconfigured');
         errorMessage = reasons.join(', ');
       }
     } else if (wantsEmail || wantsSms) {

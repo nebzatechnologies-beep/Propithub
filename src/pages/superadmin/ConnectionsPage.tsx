@@ -33,6 +33,9 @@ export const ConnectionsPage: React.FC = () => {
   const [twNum, setTwNum] = useState(state.commsConfig.twilioNumber || '');
   const [sgFrom, setSgFrom] = useState(state.commsConfig.sendgridFrom || '');
   const [sgKey, setSgKey] = useState('');
+  const [birdKey, setBirdKey] = useState('');
+  const [birdFrom, setBirdFrom] = useState(state.commsConfig.birdEmailFrom || 'notifications@mail.propithub.com');
+  const [birdSender, setBirdSender] = useState(state.commsConfig.birdSmsSender || 'PROPITHUB');
   const [testPhone, setTestPhone] = useState(user?.phone || '+919876543210');
   const [testEmail, setTestEmail] = useState(user?.email || 'admin@propithub.com');
 
@@ -72,6 +75,7 @@ export const ConnectionsPage: React.FC = () => {
 
         if (cm?.twilio?.configured) setTwAuth((prev) => prev || cm.twilio.maskedSecret);
         if (cm?.sendgrid?.configured) setSgKey((prev) => prev || cm.sendgrid.maskedSecret);
+        if (cm?.bird?.configured) setBirdKey((prev) => prev || cm.bird.maskedSecret);
         if (cm?.whatsapp?.configured) setWaToken((prev) => prev || cm.whatsapp.maskedSecret);
         if (cm?.gemini?.configured) setGeminiKey((prev) => prev || cm.gemini.maskedSecret);
       }
@@ -108,6 +112,8 @@ export const ConnectionsPage: React.FC = () => {
       setTwSid(state.commsConfig.twilioSid || '');
       setTwNum(state.commsConfig.twilioNumber || '');
       setSgFrom(state.commsConfig.sendgridFrom || '');
+      setBirdFrom(state.commsConfig.birdEmailFrom || 'notifications@mail.propithub.com');
+      setBirdSender(state.commsConfig.birdSmsSender || 'PROPITHUB');
 
       setWaPhoneId(state.commsConfig.whatsappPhoneNumberId || '');
       setWaWabaId(state.commsConfig.whatsappWabaId || '');
@@ -286,6 +292,23 @@ export const ConnectionsPage: React.FC = () => {
       });
       await fetchSecretsStatus();
       showToast(isConn ? '✓ SendGrid live credentials saved and connected.' : 'SendGrid settings saved.');
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const saveBird = async () => {
+    setSavingKey('bird');
+    try {
+      const isConn = Boolean(birdKey.trim());
+      await saveCommsConfig({
+        birdApiKey: birdKey.trim(),
+        birdEmailFrom: birdFrom.trim(),
+        birdSmsSender: birdSender.trim(),
+        birdConnected: isConn,
+      });
+      await fetchSecretsStatus();
+      showToast(isConn ? '✓ Bird API key saved. Email and SMS now send through Bird.' : 'Bird settings saved.');
     } finally {
       setSavingKey(null);
     }
@@ -854,6 +877,153 @@ export const ConnectionsPage: React.FC = () => {
           </h3>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '22px' }}>
+            {/* Bird (Email + SMS) */}
+            {(() => {
+              const isConnected = !!state.commsConfig.birdConnected;
+              const isOpen = expandedGateway === 'bird';
+              return (
+                <div
+                  style={{
+                    border: '1px solid var(--line-strong, #E2E8F0)',
+                    borderRadius: '10px',
+                    background: 'var(--surface)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '14px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
+                    }}
+                    onClick={() => setExpandedGateway(isOpen ? null : 'bird')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--ink)' }}>
+                        Bird — Email &amp; SMS (recommended)
+                      </span>
+                      <span className={`badge ${isConnected ? 'green' : 'grey'}`} style={{ fontSize: '11px' }}>
+                        {isConnected ? 'Connected' : 'Not connected'}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: '14px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '6px' }}
+                        onClick={() => setExpandedGateway(isOpen ? null : 'bird')}
+                      >
+                        {isOpen ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ padding: '16px 18px', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '12px' }}>
+                        One Bird API key sends both email and SMS. When Bird is connected it is used instead of
+                        SendGrid and Twilio. The key is stored server-side only and is never sent to the browser.
+                      </div>
+                      <div className="field" style={{ marginBottom: '12px' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Bird API key</label>
+                        <input
+                          type="password"
+                          value={birdKey}
+                          onChange={(e) => setBirdKey(e.target.value)}
+                          placeholder="bk_us1_••••••••••••••••"
+                        />
+                      </div>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Email from address</label>
+                          <input
+                            type="text"
+                            value={birdFrom}
+                            onChange={(e) => setBirdFrom(e.target.value)}
+                            placeholder="notifications@mail.propithub.com"
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>SMS sender ID</label>
+                          <input
+                            type="text"
+                            value={birdSender}
+                            onChange={(e) => setBirdSender(e.target.value)}
+                            placeholder="PROPITHUB"
+                          />
+                        </div>
+                      </div>
+                      <div className="row" style={{ marginBottom: '12px' }}>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Test phone (E.164)</label>
+                          <input
+                            type="text"
+                            value={testPhone}
+                            onChange={(e) => setTestPhone(e.target.value)}
+                            placeholder="+91XXXXXXXXXX"
+                          />
+                        </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Test email address</label>
+                          <input
+                            type="email"
+                            value={testEmail}
+                            onChange={(e) => setTestEmail(e.target.value)}
+                            placeholder="admin@propithub.com"
+                          />
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className={`btn brass small ${savingKey === 'bird' ? 'btn-processing' : ''}`}
+                          onClick={saveBird}
+                          disabled={savingKey === 'bird'}
+                        >
+                          <ButtonProcessing
+                            loading={savingKey === 'bird'}
+                            loadingText="Saving..."
+                            defaultText="Save"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn secondary small ${testingComms === 'email' ? 'btn-processing' : ''}`}
+                          disabled={testingComms === 'email'}
+                          onClick={() => handleTestComms('email')}
+                        >
+                          <ButtonProcessing
+                            loading={testingComms === 'email'}
+                            loadingText="Sending..."
+                            defaultText="Send Test Email"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn secondary small ${testingComms === 'sms' ? 'btn-processing' : ''}`}
+                          disabled={testingComms === 'sms'}
+                          onClick={() => handleTestComms('sms')}
+                        >
+                          <ButtonProcessing
+                            loading={testingComms === 'sms'}
+                            loadingText="Sending..."
+                            defaultText="Send Test SMS"
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Twilio */}
             {(() => {
               const isConnected = !!state.commsConfig.twilioConnected;

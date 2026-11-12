@@ -394,6 +394,43 @@ async function getUserContact(userId?: string): Promise<{ phone?: string; email?
 }
 
 /**
+ * Bird (bird.com) transactional API client.
+ * One API key covers both email and SMS. The key prefix (bk_us1_ / bk_eu1_) selects the regional host.
+ * The key is stored server-side only in /platformSecrets/comms (field birdApiKey) and set from
+ * Superadmin -> Integrations, or via the BIRD_API_KEY environment variable.
+ */
+function getBirdApiKey(comms: any): string {
+  const key = String(comms?.birdApiKey || process.env.BIRD_API_KEY || '').trim();
+  if (!key || key.includes('•••')) return '';
+  return key;
+}
+
+async function birdPost(
+  apiKey: string,
+  path: string,
+  body: any
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const region = (apiKey.match(/^b[km]_([a-z0-9]+)_/i) || [])[1] || 'us1';
+  try {
+    const res = await fetch(`https://${region}.platform.bird.com${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { success: false, error: data?.message || `Bird HTTP ${res.status}${data?.code ? ` (${data.code})` : ''}` };
+    }
+    return { success: true, id: data?.id };
+  } catch (err: any) {
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+/**
  * Production Twilio SMS Dispatcher
  */
 export async function sendTwilioSms(
@@ -406,6 +443,24 @@ export async function sendTwilioSms(
   if (!formatted || formatted.length < 8) return { success: false, error: `Invalid E.164 phone: ${toPhone}` };
 
   const comms = overrideComms || (await getPlatformCommsConfig());
+
+  // Preferred provider: Bird (used whenever a Bird API key is configured)
+  const birdKey = getBirdApiKey(comms);
+  if (birdKey) {
+    const r = await birdPost(birdKey, '/v1/sms/messages', {
+      from: comms.birdSmsSender || 'PROPITHUB',
+      to: formatted,
+      text: message,
+      category: 'transactional',
+    });
+    if (r.success) {
+      functions.logger.info(`[Bird SMS] Accepted for ${formatted} (ID: ${r.id})`);
+      return { success: true, sid: r.id };
+    }
+    functions.logger.error(`[Bird SMS] Failed to ${formatted}:`, r.error);
+    return { success: false, error: r.error };
+  }
+
   const twilioSid = comms.twilioSid || process.env.TWILIO_ACCOUNT_SID;
   const twilioAuthToken = comms.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN;
   const twilioNumber = comms.twilioNumber || process.env.TWILIO_PHONE_NUMBER;
@@ -487,6 +542,35 @@ export async function sendSendGridEmail(
   if (!toEmail || !subject) return { success: false, error: 'Missing destination email or subject.' };
 
   const comms = overrideComms || (await getPlatformCommsConfig());
+
+  // Preferred provider: Bird (used whenever a Bird API key is configured)
+  const birdKey = getBirdApiKey(comms);
+  if (birdKey) {
+    const birdBody: any = {
+      from: { email: comms.birdEmailFrom || 'notifications@mail.propithub.com', name: 'Propithub' },
+      to: [toEmail],
+      reply_to: [comms.birdReplyTo || 'support@propithub.com'],
+      subject,
+      text,
+      html: html || `<p>${text}</p>`,
+      category: 'transactional',
+    };
+    if (attachments && attachments.length > 0) {
+      birdBody.attachments = attachments.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        content_type: a.type || 'application/octet-stream',
+      }));
+    }
+    const r = await birdPost(birdKey, '/v1/email/messages', birdBody);
+    if (r.success) {
+      functions.logger.info(`[Bird Email] Accepted for ${toEmail}: "${subject}" (ID: ${r.id}, attachments: ${attachments?.length || 0})`);
+      return { success: true };
+    }
+    functions.logger.error(`[Bird Email] Failed to ${toEmail}:`, r.error);
+    return { success: false, error: r.error };
+  }
+
   const sendgridKey = comms.sendgridKey || process.env.SENDGRID_API_KEY;
   const sendgridFrom = comms.sendgridFrom || process.env.SENDGRID_FROM_EMAIL || 'notifications@propithub.com';
 
@@ -2673,6 +2757,7 @@ export const savePlatformCommsAndEvents = functions.https.onCall(async (data, co
 
   const cleanTwilioAuth = preserveSecret(commsConfig?.twilioAuthToken, currentComms?.twilioAuthToken);
   const cleanSendgridKey = preserveSecret(commsConfig?.sendgridKey, currentComms?.sendgridKey);
+  const cleanBirdKey = preserveSecret(commsConfig?.birdApiKey, currentComms?.birdApiKey);
   const cleanWaToken = preserveSecret(commsConfig?.whatsappAccessToken, currentComms?.whatsappAccessToken);
   const cleanGeminiKey = preserveSecret(commsConfig?.geminiApiKey, currentComms?.geminiApiKey);
 
@@ -2688,6 +2773,10 @@ export const savePlatformCommsAndEvents = functions.https.onCall(async (data, co
     twilioAuthToken: cleanTwilioAuth,
     sendgridFrom: sgFrom,
     sendgridKey: cleanSendgridKey,
+    birdApiKey: cleanBirdKey,
+    birdEmailFrom: (commsConfig?.birdEmailFrom || '').trim(),
+    birdSmsSender: (commsConfig?.birdSmsSender || '').trim(),
+    birdReplyTo: (commsConfig?.birdReplyTo || '').trim(),
     whatsappPhoneNumberId: waPhoneId,
     whatsappWabaId: (commsConfig?.whatsappWabaId || '').trim(),
     whatsappAccessToken: cleanWaToken,
@@ -2697,6 +2786,7 @@ export const savePlatformCommsAndEvents = functions.https.onCall(async (data, co
     geminiModel: commsConfig?.geminiModel || 'gemini-1.5-flash',
     twilioConnected: Boolean(twSid && cleanTwilioAuth && twNum),
     sendgridConnected: Boolean(cleanSendgridKey && sgFrom),
+    birdConnected: Boolean(cleanBirdKey),
     whatsappConnected: Boolean(waPhoneId && cleanWaToken),
     aiConnected: Boolean(cleanGeminiKey),
   };
@@ -2715,6 +2805,10 @@ export const savePlatformCommsAndEvents = functions.https.onCall(async (data, co
     twilioConnected: fullSecrets.twilioConnected,
     sendgridFrom: fullSecrets.sendgridFrom,
     sendgridConnected: fullSecrets.sendgridConnected,
+    birdEmailFrom: fullSecrets.birdEmailFrom,
+    birdSmsSender: fullSecrets.birdSmsSender,
+    birdReplyTo: fullSecrets.birdReplyTo,
+    birdConnected: fullSecrets.birdConnected,
     whatsappPhoneNumberId: fullSecrets.whatsappPhoneNumberId,
     whatsappWabaId: fullSecrets.whatsappWabaId,
     whatsappBotEnabled: fullSecrets.whatsappBotEnabled,
@@ -2941,6 +3035,14 @@ export const getPlatformSecretsStatus = functions.https.onCall(async (data, cont
         maskedSecret: mask(comms?.sendgridKey),
         from: comms?.sendgridFrom || '',
         connected: Boolean(comms?.sendgridConnected),
+      },
+      bird: {
+        configured: Boolean(comms?.birdApiKey),
+        maskedSecret: mask(comms?.birdApiKey),
+        emailFrom: comms?.birdEmailFrom || '',
+        smsSender: comms?.birdSmsSender || '',
+        replyTo: comms?.birdReplyTo || '',
+        connected: Boolean(comms?.birdConnected),
       },
       whatsapp: {
         configured: Boolean(comms?.whatsappAccessToken),
@@ -4623,15 +4725,16 @@ async function sendInvoiceEmail(
   }
 ) {
   const comms = await getPlatformCommsConfig();
+  const hasBird = Boolean(getBirdApiKey(comms));
   const sendgridKey = comms.sendgridKey || process.env.SENDGRID_API_KEY;
   const sendgridFrom = comms.sendgridFrom || process.env.SENDGRID_FROM_EMAIL || 'billing@propithub.com';
 
-  if (!sendgridKey || sendgridKey.includes('•••')) {
-    functions.logger.info(`SendGrid email skipped (no API key) for ${toEmail}`);
+  if (!hasBird && (!sendgridKey || sendgridKey.includes('•••'))) {
+    functions.logger.info(`Invoice email skipped (no email provider configured) for ${toEmail}`);
     return;
   }
 
-  sgMail.setApiKey(sendgridKey);
+  if (!hasBird) sgMail.setApiKey(sendgridKey);
 
   const itemsHtml = (invoiceData.lineItems || [
     { description: 'Standard Billing Charge', amount: invoiceData.amount },
@@ -4705,15 +4808,20 @@ async function sendInvoiceEmail(
   `;
 
   try {
-    await sgMail.send({
-      to: toEmail,
-      from: sendgridFrom,
-      subject,
-      html,
-    });
+    if (hasBird) {
+      const r = await sendSendGridEmail(toEmail, subject, subject, html, comms);
+      if (!r.success) throw new Error(r.error || 'Bird email failed');
+    } else {
+      await sgMail.send({
+        to: toEmail,
+        from: sendgridFrom,
+        subject,
+        html,
+      });
+    }
     functions.logger.info(`Official invoice email sent to ${toEmail} for ${invoiceData.invoiceId}`);
   } catch (err: any) {
-    functions.logger.error(`SendGrid invoice email error to ${toEmail}:`, err);
+    functions.logger.error(`Invoice email error to ${toEmail}:`, err);
   }
 }
 

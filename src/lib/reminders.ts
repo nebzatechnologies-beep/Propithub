@@ -1323,12 +1323,12 @@ export const getSuperadminReminders = (
     });
   }
 
-  const isTwilioConfigured = state.commsConfig?.twilioConnected || state.commsConfig?.twilioAuthToken;
+  const isTwilioConfigured = state.commsConfig?.birdConnected || state.commsConfig?.twilioConnected || state.commsConfig?.twilioAuthToken;
   if (!isTwilioConfigured) {
     reminders.push({
       id: 'superadmin_sms_gateway_unconnected',
-      title: 'Twilio SMS Gateway Incomplete',
-      description: 'Configure Twilio production API keys to enable live automated SMS notifications and receipts.',
+      title: 'SMS & Email Gateway Incomplete',
+      description: 'Connect your Bird API key (or Twilio) to enable live automated SMS and email notifications and receipts.',
       severity: 'info',
       icon: 'bell',
       actionLabel: 'Configure SMS',

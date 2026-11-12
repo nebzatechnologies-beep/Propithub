@@ -4898,8 +4898,9 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     let errorMessage: string | undefined = entry.errorMessage;
 
     // Check cloud comms gateway configuration
-    const hasSg = Boolean(state.commsConfig?.sendgridKey);
-    const hasTw = Boolean(state.commsConfig?.twilioSid && state.commsConfig?.twilioAuthToken);
+    const hasBird = Boolean(state.commsConfig?.birdConnected);
+    const hasSg = Boolean(hasBird || state.commsConfig?.sendgridKey);
+    const hasTw = Boolean(hasBird || (state.commsConfig?.twilioSid && state.commsConfig?.twilioAuthToken));
 
     if (isFirebaseConfigured && (wantsEmail || wantsSms)) {
       if ((wantsEmail && hasSg) || (wantsSms && hasTw)) {
