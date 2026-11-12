@@ -183,6 +183,56 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
     return numMatch || propMatch || tenantMatch;
   });
 
+  // Owner Spotlight Pass Status
+  const ownerSettings = user?.id ? (state as any).ownerSettings?.[user.id] : undefined;
+  const isPassActive = Boolean(
+    ownerSettings?.popularBoostUntil &&
+    new Date(ownerSettings.popularBoostUntil).getTime() > Date.now()
+  );
+  const passDaysLeft = isPassActive && ownerSettings?.popularBoostUntil
+    ? Math.max(1, Math.ceil((new Date(ownerSettings.popularBoostUntil).getTime() - Date.now()) / 86400000))
+    : 0;
+
+  const handleToggleUnitPopular = (unit: MobileUnit) => {
+    const nextPopular = !unit.isPopular;
+    if (nextPopular && !isPassActive) {
+      Alert.alert(
+        'Spotlight Pass Required',
+        'To feature your listings with the 🔥 Popular badge and top search placement, activate an Owner Spotlight Pass (3 Days, 7 Days, or 30 Days) under Plans & Billing.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'View Plans',
+            onPress: () => {
+              if (onNavigate) {
+                onNavigate('owner_plan_subscription');
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    const expiry = nextPopular
+      ? (ownerSettings?.popularBoostUntil || unit.popularUntil || new Date(Date.now() + 86400000 * 3).toISOString())
+      : null;
+
+    saveUnit({
+      ...unit,
+      isPopular: nextPopular,
+      popularUntil: expiry,
+      isListedPublicly: nextPopular ? true : unit.isListedPublicly,
+    });
+
+    Alert.alert(
+      nextPopular ? 'Popular Spotlight Active 🔥' : 'Spotlight Turned Off',
+      nextPopular
+        ? `Unit ${unit.unitNumber} is now featured as Popular at the top of Search!`
+        : `Unit ${unit.unitNumber} removed from Popular spotlight.`
+    );
+  };
+
   const handleOpenAddUnit = (prop: MobileProperty) => {
     if (usage.units.isFull) {
       setLimitModalType('units');
@@ -443,6 +493,58 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
           </View>
         </TourTarget>
 
+        {/* Spotlight Pass Active Banner */}
+        {isPassActive && (
+          <View
+            style={{
+              backgroundColor: isDark ? 'rgba(217, 119, 6, 0.12)' : '#FEF3C7',
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 14,
+              borderWidth: 1,
+              borderColor: isDark ? 'rgba(217, 119, 6, 0.35)' : '#FDE68A',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <View
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 9,
+                backgroundColor: isDark ? 'rgba(217, 119, 6, 0.25)' : '#FDE047',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text style={{ fontSize: 18 }}>🔥</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4 }}>
+                <Text style={{ fontSize: 12.5, fontWeight: '800', color: isDark ? '#FBBF24' : '#92400E' }}>
+                  Spotlight Pass Active ({ownerSettings?.popularBoostPlanName || 'Active Pass'})
+                </Text>
+                <View
+                  style={{
+                    backgroundColor: isDark ? '#78350F' : '#F59E0B',
+                    paddingHorizontal: 7,
+                    paddingVertical: 2,
+                    borderRadius: 6,
+                  }}
+                >
+                  <Text style={{ fontSize: 10, fontWeight: '800', color: '#FFFFFF' }}>
+                    {passDaysLeft}d left
+                  </Text>
+                </View>
+              </View>
+              <Text style={{ fontSize: 11, color: isDark ? '#FCD34D' : '#78350F', marginTop: 2, lineHeight: 15 }}>
+                All available listings are boosted to Popular on search. You can also toggle individual units ON/OFF anytime below.
+              </Text>
+            </View>
+          </View>
+        )}
+
         {/* TAB 1: PROPERTIES VIEW */}
         {activeTab === 'properties' && (
           <View>
@@ -657,12 +759,12 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                               </Text>
                             </View>
 
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                               {(!u.status || u.status === 'vacant') && (
                                 <TouchableOpacity
                                   onPress={() => saveUnit({ ...u, isListedPublicly: !u.isListedPublicly })}
                                   style={{
-                                    paddingHorizontal: 7,
+                                    paddingHorizontal: 6,
                                     paddingVertical: 3,
                                     borderRadius: 6,
                                     backgroundColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.14)' : 'rgba(100, 116, 139, 0.12)',
@@ -673,12 +775,43 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                                 >
                                   <Text
                                     style={{
-                                      fontSize: 9.5,
+                                      fontSize: 9,
                                       fontWeight: '800',
                                       color: u.isListedPublicly ? '#059669' : colors.inkSoft,
                                     }}
                                   >
                                     {u.isListedPublicly ? 'LIVE' : 'UNLISTED'}
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
+
+                              {(!u.status || u.status === 'vacant' || (u as any).isListedPublicly) && (
+                                <TouchableOpacity
+                                  onPress={() => handleToggleUnitPopular(u)}
+                                  style={{
+                                    paddingHorizontal: 6,
+                                    paddingVertical: 3,
+                                    borderRadius: 6,
+                                    backgroundColor: u.isPopular
+                                      ? (isDark ? 'rgba(217, 119, 6, 0.25)' : '#FEF3C7')
+                                      : (isDark ? 'rgba(100, 116, 139, 0.14)' : '#F1F5F9'),
+                                    borderWidth: 1,
+                                    borderColor: u.isPopular ? '#F59E0B' : colors.line,
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 2,
+                                  }}
+                                  activeOpacity={0.75}
+                                >
+                                  <Text style={{ fontSize: 9 }}>🔥</Text>
+                                  <Text
+                                    style={{
+                                      fontSize: 9,
+                                      fontWeight: '800',
+                                      color: u.isPopular ? (isDark ? '#FBBF24' : '#B45309') : colors.inkSoft,
+                                    }}
+                                  >
+                                    {u.isPopular ? 'POPULAR' : 'BOOST'}
                                   </Text>
                                 </TouchableOpacity>
                               )}
@@ -789,14 +922,14 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                       <Text style={[styles.dirTenantText, { color: colors.inkSoft }]}>
                         Resident: <Text style={{ fontWeight: '700', color: colors.navy }}>{u.tenant || 'Vacant'}</Text>
                       </Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         {(!u.status || u.status === 'vacant') && (
                           <TouchableOpacity
                             onPress={() => saveUnit({ ...u, isListedPublicly: !u.isListedPublicly })}
                             style={{
-                              paddingHorizontal: 9,
-                              paddingVertical: 5,
-                              borderRadius: 8,
+                              paddingHorizontal: 8,
+                              paddingVertical: 4,
+                              borderRadius: 6,
                               backgroundColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.14)' : 'rgba(100, 116, 139, 0.12)',
                               borderWidth: 1,
                               borderColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.35)' : colors.line,
@@ -805,15 +938,47 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                           >
                             <Text
                               style={{
-                                fontSize: 10.5,
+                                fontSize: 10,
                                 fontWeight: '800',
                                 color: u.isListedPublicly ? '#059669' : colors.inkSoft,
                               }}
                             >
-                              {u.isListedPublicly ? '● Listed Publicly' : '○ Unlisted'}
+                              {u.isListedPublicly ? '● Listed' : '○ Unlisted'}
                             </Text>
                           </TouchableOpacity>
                         )}
+
+                        {(!u.status || u.status === 'vacant' || (u as any).isListedPublicly) && (
+                          <TouchableOpacity
+                            onPress={() => handleToggleUnitPopular(u)}
+                            style={{
+                              paddingHorizontal: 8,
+                              paddingVertical: 4,
+                              borderRadius: 6,
+                              backgroundColor: u.isPopular
+                                ? (isDark ? 'rgba(217, 119, 6, 0.25)' : '#FEF3C7')
+                                : (isDark ? 'rgba(100, 116, 139, 0.14)' : '#F1F5F9'),
+                              borderWidth: 1,
+                              borderColor: u.isPopular ? '#F59E0B' : colors.line,
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 3,
+                            }}
+                            activeOpacity={0.75}
+                          >
+                            <Text style={{ fontSize: 9.5 }}>🔥</Text>
+                            <Text
+                              style={{
+                                fontSize: 10,
+                                fontWeight: '800',
+                                color: u.isPopular ? (isDark ? '#FBBF24' : '#B45309') : colors.inkSoft,
+                              }}
+                            >
+                              {u.isPopular ? 'Popular: ON' : 'Make Popular'}
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+
                         <TouchableOpacity
                           style={styles.dirEditBtn}
                           onPress={() => handleOpenEditUnit(u)}
@@ -1297,6 +1462,64 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                     </Text>
                   </View>
                 )}
+
+                {/* Popular Spotlight Boost Status */}
+                <View
+                  style={{
+                    backgroundColor: editingUnit.isPopular
+                      ? (isDark ? 'rgba(217, 119, 6, 0.15)' : '#FEF3C7')
+                      : colors.surfaceSunken,
+                    borderRadius: 10,
+                    padding: 12,
+                    marginVertical: 10,
+                    borderWidth: 1,
+                    borderColor: editingUnit.isPopular ? '#F59E0B' : colors.line,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <View style={{ flex: 1, marginRight: 10 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={{ fontSize: 14 }}>🔥</Text>
+                      <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.navy }}>
+                        Popular Spotlight
+                      </Text>
+                    </View>
+                    <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 2, lineHeight: 15 }}>
+                      {editingUnit.isPopular
+                        ? `Featured on search${isPassActive ? ` (${passDaysLeft}d left on pass)` : ''}`
+                        : isPassActive
+                        ? 'Included in your active pass'
+                        : 'Requires an active Spotlight Pass'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => {
+                      handleToggleUnitPopular(editingUnit);
+                      setEditingUnit((prev) => (prev ? { ...prev, isPopular: !prev.isPopular } : null));
+                    }}
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      backgroundColor: editingUnit.isPopular ? '#D97706' : colors.surface,
+                      borderWidth: 1,
+                      borderColor: editingUnit.isPopular ? '#B45309' : colors.line,
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '700',
+                        color: editingUnit.isPopular ? '#FFFFFF' : colors.ink,
+                      }}
+                    >
+                      {editingUnit.isPopular ? 'Turn Off' : 'Turn On'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
 
                 {/* Utility Sub-Meters */}
                 <View style={styles.grid2}>

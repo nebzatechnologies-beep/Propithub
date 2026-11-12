@@ -22,7 +22,7 @@ import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { usePlanLimits } from '../hooks/usePlanLimits';
-import { MobilePlan, MobilePlatformInvoice } from '../types';
+import { MobilePlan, MobilePlatformInvoice, ListingBoostPlan, DEFAULT_BOOST_PLANS } from '../types';
 import { doc, setDoc } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../lib/firebase';
 import {
@@ -44,7 +44,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
   onBack,
 }) => {
   const { colors, isDark } = useMobileTheme();
-  const { state, savePlatformInvoice, saveOwnerSettings, updateOwnerAutopay, cancelOwnerAutopay } = useMobileAppData();
+  const { state, savePlatformInvoice, saveOwnerSettings, updateOwnerAutopay, cancelOwnerAutopay, saveUnit } = useMobileAppData();
   const { user, updateUserProfile } = useMobileAuth();
   const { convert, format } = useMobileCurrency();
   const {
@@ -84,6 +84,26 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
   const [mandateAccountNum, setMandateAccountNum] = useState('');
   const [mandatePaypalEmail, setMandatePaypalEmail] = useState(user?.email || '');
   const [mandateConsentChecked, setMandateConsentChecked] = useState(true);
+
+  // Listing Boost / Spotlight Pass State
+  const [buyingBoostPlan, setBuyingBoostPlan] = useState<ListingBoostPlan | null>(null);
+  const [boostGateway, setBoostGateway] = useState<'stripe' | 'razorpay' | 'paypal' | 'easebuzz'>('stripe');
+  const [isProcessingBoost, setIsProcessingBoost] = useState(false);
+
+  const isBoostPassActive = Boolean(
+    ownerSettings?.popularBoostUntil &&
+    new Date(ownerSettings.popularBoostUntil).getTime() > Date.now()
+  );
+
+  const boostPassDaysRemaining = isBoostPassActive && ownerSettings?.popularBoostUntil
+    ? Math.max(1, Math.ceil((new Date(ownerSettings.popularBoostUntil).getTime() - Date.now()) / 86400000))
+    : 0;
+
+  const boostPlans: ListingBoostPlan[] = useMemo(() => {
+    return (state.boostPlans && state.boostPlans.length > 0)
+      ? state.boostPlans.filter((bp: ListingBoostPlan) => bp.isActive !== false)
+      : DEFAULT_BOOST_PLANS;
+  }, [state.boostPlans]);
 
   // Available billing gateways detected from SuperAdmin config
   const availableGateways = useMemo(() => {
@@ -264,8 +284,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
     if (isSamePlanAndCycle) {
       Alert.alert(
         'Already Subscribed',
-        `You already have an active subscription to the ${targetPlanObj.name} plan on ${billingCycle === 'annual' ? 'an annual' : 'a monthly'} billing cycle.${
-          ownerSettings?.subscriptionEndsAt ? ` Active until ${new Date(ownerSettings.subscriptionEndsAt).toLocaleDateString()}.` : ''
+        `You already have an active subscription to the ${targetPlanObj.name} plan on ${billingCycle === 'annual' ? 'an annual' : 'a monthly'} billing cycle.${ownerSettings?.subscriptionEndsAt ? ` Active until ${new Date(ownerSettings.subscriptionEndsAt).toLocaleDateString()}.` : ''
         }`
       );
       return;
@@ -551,6 +570,207 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
     setIsProcessing(false);
   };
 
+  const handleConfirmBoostPurchase = async () => {
+    if (!buyingBoostPlan) return;
+    if (isBoostPassActive) {
+      Alert.alert(
+        'Pass Active',
+        `You already have an active Spotlight Pass running (${boostPassDaysRemaining}d remaining). You cannot purchase another pass until it expires.`
+      );
+      return;
+    }
+
+    setIsProcessingBoost(true);
+    const boostPlan = buyingBoostPlan;
+    const planPrice = Number(boostPlan.price) || 0;
+    const boostTxnId = `BOOST-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    const applyBoostActivation = async () => {
+      const nowIso = new Date().toISOString();
+      const expiryIso = new Date(Date.now() + boostPlan.days * 86400000).toISOString();
+
+      const updatedBoostSettings = {
+        popularBoostUntil: expiryIso,
+        popularBoostPlanId: boostPlan.id,
+        popularBoostPlanName: boostPlan.name,
+        popularBoostPlanPrice: planPrice,
+        popularBoostDays: boostPlan.days,
+        popularBoostActivatedAt: nowIso,
+      };
+
+      const invoiceId = `INV-BOOST-${Math.floor(100000 + Math.random() * 900000)}`;
+      const newInvoice: MobilePlatformInvoice = {
+        id: invoiceId,
+        ownerId: ownerId || '',
+        ownerName: user?.displayName || 'Property Owner',
+        ownerEmail: user?.email || 'owner@propithub.com',
+        planId: boostPlan.id,
+        planName: `Spotlight Pass: ${boostPlan.name} (${boostPlan.days} Days · All Available Listings)`,
+        periodStart: nowIso,
+        periodEnd: expiryIso,
+        amount: planPrice,
+        tax: 0,
+        total: planPrice,
+        billingCycle: 'monthly',
+        currency: 'USD',
+        status: 'paid',
+        issueDate: nowIso,
+        dueDate: nowIso,
+        paidAt: nowIso,
+        paymentMethod: boostGateway.toUpperCase(),
+        transactionRef: boostTxnId,
+        notes: `Popular Listing Spotlight Pass (${boostPlan.days} Days) featuring all vacant/available listings`,
+      };
+
+      try {
+        if (ownerId) {
+          await saveOwnerSettings(ownerId, updatedBoostSettings);
+        }
+        await savePlatformInvoice(newInvoice);
+
+        // Update all vacant/public units of this owner
+        const targetUnits = (state.units || []).filter(
+          (u) => (u.ownerId === ownerId || !u.ownerId) && (u.status === 'vacant' || (u as any).isListedPublicly)
+        );
+        for (const u of targetUnits) {
+          saveUnit({
+            ...u,
+            isPopular: true,
+            isListedPublicly: true,
+            popularUntil: expiryIso,
+            popularActivatedAt: nowIso,
+            popularPlanId: boostPlan.id,
+            popularPlanPrice: boostPlan.price,
+          });
+        }
+
+        Alert.alert(
+          'Spotlight Pass Activated! 🔥',
+          `"${boostPlan.name}" is now active! All your available listings are featured at the top of search for ${boostPlan.days} days.`
+        );
+      } catch (err: any) {
+        Alert.alert('Notice', `Pass activated locally. ${err?.message || ''}`);
+      } finally {
+        setIsProcessingBoost(false);
+        setBuyingBoostPlan(null);
+      }
+    };
+
+    if (planPrice === 0) {
+      await applyBoostActivation();
+      return;
+    }
+
+    try {
+      if (boostGateway === 'easebuzz') {
+        const ebKey = state.platformGateways.easebuzz?.merchantKey || '';
+        const ebSalt = state.platformGateways.easebuzz?.salt || '';
+        if (!ebKey || !ebSalt) {
+          await applyBoostActivation();
+          return;
+        }
+        await launchEasebuzzPayment({
+          merchantKey: ebKey,
+          salt: ebSalt,
+          amount: Math.round(convert(planPrice, 'USD', 'INR')),
+          currency: 'INR',
+          name: `Spotlight Pass: ${boostPlan.name}`,
+          description: `${boostPlan.days}-Day Popular Spotlight`,
+          paymentRecordId: boostTxnId,
+          customerName: user?.displayName || 'Owner',
+          customerEmail: user?.email || '',
+          onSuccess: () => applyBoostActivation(),
+          onError: (err) => {
+            setIsProcessingBoost(false);
+            Alert.alert('Payment Notice', String(err));
+          },
+        });
+        return;
+      }
+
+      if (boostGateway === 'razorpay') {
+        const rzpKey = state.platformGateways.razorpay?.keyId || '';
+        if (!rzpKey) {
+          await applyBoostActivation();
+          return;
+        }
+        await launchRazorpayPayment({
+          keyId: rzpKey,
+          amount: Math.round(convert(planPrice, 'USD', 'INR')),
+          currency: 'INR',
+          name: `Spotlight Pass: ${boostPlan.name}`,
+          description: `${boostPlan.days}-Day Popular Spotlight`,
+          paymentRecordId: boostTxnId,
+          customerName: user?.displayName || 'Owner',
+          customerEmail: user?.email || '',
+          customerPhone: user?.phone || '',
+          role: 'owner',
+          ownerId: ownerId || '',
+          planId: boostPlan.id,
+          billingCycle: 'monthly',
+          onSuccess: () => applyBoostActivation(),
+          onError: (err) => {
+            setIsProcessingBoost(false);
+            Alert.alert('Payment Notice', String(err));
+          },
+        });
+        return;
+      }
+
+      if (boostGateway === 'stripe') {
+        const stripePub = state.platformGateways.stripe?.pubKey || '';
+        if (!stripePub) {
+          await applyBoostActivation();
+          return;
+        }
+        await launchStripePayment({
+          publishableKey: stripePub,
+          amount: planPrice,
+          currency: 'usd',
+          paymentRecordId: boostTxnId,
+          customerName: user?.displayName || 'Owner',
+          customerEmail: user?.email || '',
+          role: 'owner',
+          ownerId: ownerId || '',
+          onSuccess: () => applyBoostActivation(),
+          onError: (err) => {
+            setIsProcessingBoost(false);
+            Alert.alert('Payment Notice', String(err));
+          },
+        });
+        return;
+      }
+
+      if (boostGateway === 'paypal') {
+        const paypalClientId = state.platformGateways.paypal?.clientId || '';
+        if (!paypalClientId) {
+          await applyBoostActivation();
+          return;
+        }
+        await launchPayPalPayment({
+          clientId: paypalClientId,
+          amount: planPrice,
+          currency: 'USD',
+          name: `Spotlight Pass: ${boostPlan.name}`,
+          description: `${boostPlan.days}-Day Popular Spotlight`,
+          paymentRecordId: boostTxnId,
+          customerEmail: user?.email || '',
+          onSuccess: () => applyBoostActivation(),
+          onError: (err) => {
+            setIsProcessingBoost(false);
+            Alert.alert('Payment Notice', String(err));
+          },
+        });
+        return;
+      }
+
+      await applyBoostActivation();
+    } catch (err: any) {
+      setIsProcessingBoost(false);
+      Alert.alert('Payment Error', err?.message || 'Transaction could not be processed.');
+    }
+  };
+
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
 
@@ -611,8 +831,8 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                 hasActivePaidSubscription
                   ? styles.statusBadgeActive
                   : isTrial
-                  ? styles.statusBadgeTrial
-                  : styles.statusBadgeExpired,
+                    ? styles.statusBadgeTrial
+                    : styles.statusBadgeExpired,
               ]}
             >
               <Text
@@ -621,16 +841,16 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                   hasActivePaidSubscription
                     ? styles.statusBadgeTextActive
                     : isTrial
-                    ? styles.statusBadgeTextTrial
-                    : styles.statusBadgeTextExpired,
+                      ? styles.statusBadgeTextTrial
+                      : styles.statusBadgeTextExpired,
                 ]}
                 numberOfLines={1}
               >
                 {hasActivePaidSubscription
                   ? 'ACTIVE PLAN'
                   : isTrial
-                  ? `TRIAL (${daysLeft}d left)`
-                  : 'EXPIRED'}
+                    ? `TRIAL (${daysLeft}d left)`
+                    : 'EXPIRED'}
               </Text>
             </View>
           </View>
@@ -638,11 +858,11 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
           <Text style={[styles.bannerSub, { color: colors.inkSoft }]}>
             {hasActivePaidSubscription
               ? `Your workspace is active. Renews on ${new Date(
-                  ownerSettings?.subscriptionEndsAt || Date.now() + 30 * 86400000
-                ).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.`
+                ownerSettings?.subscriptionEndsAt || Date.now() + 30 * 86400000
+              ).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.`
               : isTrial
-              ? 'You are trialing the Starter tier. Upgrade to Growth or Enterprise to add Managers and expand capacity.'
-              : 'Your subscription has ended. Upgrade to an active plan below to restore full operational access.'}
+                ? 'You are trialing the Starter tier. Upgrade to Growth or Enterprise to add Managers and expand capacity.'
+                : 'Your subscription has ended. Upgrade to an active plan below to restore full operational access.'}
           </Text>
 
           <View style={styles.heroBtnRow}>
@@ -768,8 +988,8 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                       {ownerSettings?.subscriptionEndsAt
                         ? new Date(ownerSettings.subscriptionEndsAt).toLocaleDateString()
                         : isTrial
-                        ? `${daysLeft} days remaining (Manual renewal)`
-                        : 'On period end'}
+                          ? `${daysLeft} days remaining (Manual renewal)`
+                          : 'On period end'}
                     </Text>
                   </View>
                 </View>
@@ -983,6 +1203,114 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                 </View>
               );
             })}
+
+            {/* Popular Listing Boost Plans Section */}
+            <View style={{ marginTop: 24, marginBottom: 8 }}>
+              <Text style={[styles.sectionHeading, { color: colors.inkSoft, marginBottom: 4 }]}>
+                🔥 POPULAR LISTING BOOST PLANS
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.inkSoft, marginBottom: 12 }}>
+                Promote all your vacant listings to the top of search with a verified Popular badge.
+              </Text>
+
+              {isBoostPassActive && (
+                <View
+                  style={{
+                    backgroundColor: isDark ? 'rgba(245, 158, 11, 0.15)' : '#FEF3C7',
+                    borderWidth: 1,
+                    borderColor: '#F59E0B',
+                    borderRadius: 10,
+                    padding: 12,
+                    marginBottom: 12,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <Text style={{ fontSize: 14 }}>🔥</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: isDark ? '#FBBF24' : '#B45309' }}>
+                      Spotlight Pass Active ({ownerSettings?.popularBoostPlanName || 'Active Pass'})
+                    </Text>
+                  </View>
+                  <Text style={{ fontSize: 12, color: colors.navy, lineHeight: 17 }}>
+                    All available listings are featured at the top of search until{' '}
+                    <Text style={{ fontWeight: '700' }}>
+                      {ownerSettings?.popularBoostUntil ? new Date(ownerSettings.popularBoostUntil).toLocaleDateString() : ''}
+                    </Text>{' '}
+                    ({boostPassDaysRemaining} {boostPassDaysRemaining === 1 ? 'day' : 'days'} remaining). You can toggle individual listings in your Portfolio.
+                  </Text>
+                </View>
+              )}
+
+              {/* 3 Boost Cards */}
+              {boostPlans.map((bp) => (
+                <View
+                  key={bp.id}
+                  style={[
+                    styles.tierCard,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: bp.isPopular ? '#F59E0B' : colors.line,
+                      padding: 14,
+                      marginBottom: 10,
+                    },
+                    bp.isPopular && { borderWidth: 1.5 },
+                  ]}
+                >
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={[styles.tierName, { color: colors.navy, fontSize: 15 }]}>{bp.name}</Text>
+                        {bp.isPopular && (
+                          <View style={{ backgroundColor: '#F59E0B', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 }}>
+                            <Text style={{ color: '#FFFFFF', fontSize: 9, fontWeight: '800' }}>MOST POPULAR</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={{ fontSize: 12, color: bp.isPopular ? '#D97706' : colors.inkSoft, fontWeight: '600', marginTop: 2 }}>
+                        ⏱ {bp.days} Days Duration
+                      </Text>
+                    </View>
+
+                    <Text style={[styles.tierPricing, { fontSize: 20 }]}>
+                      ${bp.price}
+                      <Text style={{ fontSize: 11, color: colors.inkSoft, fontWeight: '600' }}> USD</Text>
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.tierSelectBtn,
+                      {
+                        backgroundColor: isBoostPassActive ? (isDark ? '#334155' : '#E2E8F0') : bp.isPopular ? '#10B981' : (isDark ? '#1E293B' : '#F1F5F9'),
+                        borderWidth: isBoostPassActive ? 0 : bp.isPopular ? 0 : 1,
+                        borderColor: colors.line,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        paddingVertical: 9,
+                        borderRadius: 8,
+                      },
+                    ]}
+                    disabled={isBoostPassActive}
+                    onPress={() => {
+                      setBuyingBoostPlan(bp);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text
+                      style={[
+                        styles.tierSelectBtnText,
+                        {
+                          color: isBoostPassActive ? colors.inkSoft : bp.isPopular ? '#FFFFFF' : colors.navy,
+                          fontWeight: '700',
+                          fontSize: 13,
+                        },
+                      ]}
+                    >
+                      {isBoostPassActive ? `Pass Active (${boostPassDaysRemaining}d left · Locked)` : 'Buy'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
           </>
         ) : (
           <>
@@ -1159,7 +1487,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
               ) : (
                 <View style={{ marginTop: 16 }}>
                   <Text style={[styles.inputLabel, { color: colors.inkSoft, marginBottom: 8 }]}>Select Payment Gateway Engine</Text>
-                  
+
                   {/* Dropdown trigger */}
                   <TouchableOpacity
                     style={{
@@ -1726,6 +2054,209 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
           </View>
         </View>
       </Modal>
+
+      {/* ─── POPULAR BOOST / SPOTLIGHT PASS CHECKOUT MODAL ─── */}
+      <Modal
+        visible={Boolean(buyingBoostPlan)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isProcessingBoost) setBuyingBoostPlan(null);
+        }}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: 16,
+              padding: 20,
+              width: '100%',
+              maxWidth: 420,
+              borderWidth: 1,
+              borderColor: colors.line,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.15,
+              shadowRadius: 12,
+              elevation: 8,
+            }}
+          >
+            {/* Header */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, marginRight: 8 }}>
+                <View
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    backgroundColor: '#FEF3C7',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 16 }}>🔥</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: colors.navy }} numberOfLines={1}>
+                    Spotlight Pass Checkout
+                  </Text>
+                  <Text style={{ fontSize: 11, color: colors.inkSoft }}>
+                    {buyingBoostPlan?.name} · {buyingBoostPlan?.days} Days
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  if (!isProcessingBoost) setBuyingBoostPlan(null);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                disabled={isProcessingBoost}
+              >
+                <Feather name="x" size={20} color={colors.inkSoft} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Price Card */}
+            <View
+              style={{
+                backgroundColor: colors.surfaceSunken,
+                borderRadius: 12,
+                padding: 14,
+                marginBottom: 14,
+                borderWidth: 1,
+                borderColor: colors.line,
+              }}
+            >
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>{buyingBoostPlan?.name}</Text>
+                <Text style={{ fontSize: 20, fontWeight: '800', color: '#D97706' }}>
+                  {format(buyingBoostPlan?.price || 0, 'USD')}
+                </Text>
+              </View>
+              <Text style={{ fontSize: 11.5, color: colors.inkSoft, lineHeight: 16 }}>
+                Boosts <Text style={{ fontWeight: '700', color: colors.navy }}>all your vacant & public listings</Text> to 🔥 Popular status for {buyingBoostPlan?.days} consecutive days.
+              </Text>
+            </View>
+
+            {/* Benefits */}
+            <View style={{ gap: 8, marginBottom: 16 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Feather name="check-circle" size={14} color="#10B981" />
+                <Text style={{ fontSize: 12, color: colors.ink, flex: 1 }}>
+                  Top-ranked placement with gold flame badge on Search
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Feather name="check-circle" size={14} color="#10B981" />
+                <Text style={{ fontSize: 12, color: colors.ink, flex: 1 }}>
+                  Free 1-click ON/OFF toggle in Portfolio anytime
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Feather name="check-circle" size={14} color="#10B981" />
+                <Text style={{ fontSize: 12, color: colors.ink, flex: 1 }}>
+                  Valid for full {buyingBoostPlan?.days} days ({buyingBoostPlan ? Math.round(((buyingBoostPlan.price || 0) / buyingBoostPlan.days) * 100) / 100 : 0}/day)
+                </Text>
+              </View>
+            </View>
+
+            {/* Payment Method Selector */}
+            <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Select Payment Method
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
+              {[
+                { key: 'stripe', label: 'Stripe', icon: 'credit-card' },
+                { key: 'razorpay', label: 'Razorpay', icon: 'zap' },
+                { key: 'easebuzz', label: 'Easebuzz', icon: 'shield' },
+                { key: 'paypal', label: 'PayPal', icon: 'dollar-sign' },
+              ].map((gw) => {
+                const isSelected = boostGateway === gw.key;
+                return (
+                  <TouchableOpacity
+                    key={gw.key}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 10,
+                      paddingHorizontal: 4,
+                      borderRadius: 8,
+                      borderWidth: 1.5,
+                      borderColor: isSelected ? '#D97706' : colors.line,
+                      backgroundColor: isSelected ? 'rgba(217, 119, 6, 0.08)' : colors.surfaceSunken,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    onPress={() => setBoostGateway(gw.key as any)}
+                    disabled={isProcessingBoost}
+                    activeOpacity={0.8}
+                  >
+                    <Feather
+                      name={gw.icon as any}
+                      size={15}
+                      color={isSelected ? '#D97706' : colors.inkSoft}
+                      style={{ marginBottom: 4 }}
+                    />
+                    <Text
+                      style={{
+                        fontSize: 10.5,
+                        fontWeight: isSelected ? '700' : '500',
+                        color: isSelected ? '#D97706' : colors.ink,
+                      }}
+                      numberOfLines={1}
+                    >
+                      {gw.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Action Buttons */}
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: colors.line,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: colors.surfaceSunken,
+                }}
+                onPress={() => {
+                  if (!isProcessingBoost) setBuyingBoostPlan(null);
+                }}
+                disabled={isProcessingBoost}
+              >
+                <Text style={{ fontSize: 13, fontWeight: '600', color: colors.ink }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{
+                  flex: 2,
+                  paddingVertical: 12,
+                  borderRadius: 8,
+                  backgroundColor: isProcessingBoost ? colors.inkSoft : '#D97706',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexDirection: 'row',
+                  gap: 6,
+                }}
+                onPress={handleConfirmBoostPurchase}
+                disabled={isProcessingBoost}
+                activeOpacity={0.85}
+              >
+                {isProcessingBoost && <ActivityIndicator size="small" color="#FFFFFF" />}
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFFFFF' }}>
+                  {isProcessingBoost
+                    ? 'Processing...'
+                    : `Pay ${format(buyingBoostPlan?.price || 0, 'USD')}`}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -1761,722 +2292,722 @@ const QuotaMeter: React.FC<{
 // ─── Stylesheet matching Helpdesk & Reputation screens ───────────────────────
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    backgroundColor: colors.surface,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  backBtn: {
-    marginRight: 10,
-    padding: 6,
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-  },
-  logoBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  headerSub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  ownerBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  ownerBadgeText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  scroll: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-  },
-  content: {
-    padding: 18,
-    paddingBottom: 40,
-  },
-  supportDarkCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  heroTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 6,
-  },
-  heroEyebrow: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.8,
-  },
-  bannerHeading: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: colors.navy,
-    marginTop: 2,
-    marginBottom: 4,
-  },
-  bannerSub: {
-    fontSize: 12.5,
-    color: colors.inkSoft,
-    lineHeight: 18,
-    marginBottom: 14,
-  },
-  heroBtnRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flexWrap: 'wrap',
-  },
-  raiseTicketBtn: {
-    backgroundColor: '#10B981',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    minWidth: 140,
-    justifyContent: 'center',
-  },
-  raiseTicketBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  cancelRenewBtn: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    flexShrink: 1,
-    alignItems: 'center',
-  },
-  cancelRenewBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  statusBadgeActive: {
-    backgroundColor: '#DCFCE7',
-  },
-  statusBadgeTrial: {
-    backgroundColor: '#EFF6FF',
-  },
-  statusBadgeExpired: {
-    backgroundColor: '#FEE2E2',
-  },
-  statusBadgeText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-  },
-  statusBadgeTextActive: {
-    color: '#15803D',
-  },
-  statusBadgeTextTrial: {
-    color: '#1D4ED8',
-  },
-  statusBadgeTextExpired: {
-    color: '#DC2626',
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#E2E8F0',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 16,
-  },
-  tabButton: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 8,
-  },
-  tabButtonActive: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  tabText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  tabTextActive: {
-    color: colors.navy,
-    fontWeight: '700',
-  },
-  sectionHeading: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-    marginTop: 6,
-    marginBottom: 12,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.navy,
-    flex: 1,
-    marginRight: 8,
-  },
-  liveCapacityBadge: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  liveCapacityBadgeText: {
-    color: colors.inkSoft,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  meterContainer: {
-    marginTop: 10,
-  },
-  meterLabelsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 5,
-  },
-  meterLabel: {
-    fontSize: 12.5,
-    color: colors.ink,
-    fontWeight: '600',
-  },
-  meterValue: {
-    fontSize: 12.5,
-  },
-  meterTrack: {
-    height: 7,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  meterFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  tierCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  tierCardCurrent: {
-    borderColor: '#10B981',
-    backgroundColor: '#F0FDF4',
-  },
-  tierHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  tierName: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  tierPricing: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#10B981',
-    marginTop: 2,
-  },
-  tierPeriod: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    fontWeight: '400',
-  },
-  currentTierPill: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  currentTierPillText: {
-    color: '#15803D',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  tierSelectBtn: {
-    backgroundColor: '#10B981',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  tierSelectBtnText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 12.5,
-  },
-  tierLimitsGrid: {
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-    paddingTop: 12,
-    marginTop: 8,
-  },
-  tierLimitsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  tierLimitItem: {
-    flex: 1,
-    alignItems: 'center',
-    paddingHorizontal: 4,
-  },
-  tierLimitValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  tierLimitLabel: {
-    fontSize: 10.5,
-    color: colors.inkSoft,
-    marginTop: 2,
-    fontWeight: '500',
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.ink,
-    marginTop: 10,
-  },
-  emptySub: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 4,
-    textAlign: 'center',
-    paddingHorizontal: 20,
-  },
-  invoiceCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  invoiceCardHead: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  invoiceId: {
-    fontSize: 13,
-    fontWeight: '700',
-    fontFamily: 'monospace',
-    color: colors.navy,
-  },
-  invoicePlanName: {
-    fontSize: 12,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  invoiceStatusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 5,
-  },
-  invPaidBadge: {
-    backgroundColor: '#DCFCE7',
-  },
-  invPaidText: {
-    color: '#15803D',
-    fontWeight: '700',
-    fontSize: 10,
-  },
-  invPendingBadge: {
-    backgroundColor: '#FEF3C7',
-  },
-  invPendingText: {
-    color: '#B45309',
-    fontWeight: '700',
-    fontSize: 10,
-  },
-  invoiceStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  invoiceCardBody: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-    paddingTop: 8,
-  },
-  invoiceAmount: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  invoiceDate: {
-    fontSize: 11.5,
-    color: colors.inkSoft,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  modalTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: colors.navy,
-  },
-  modalCloseBtn: {
-    padding: 4,
-    borderRadius: 6,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-  },
-  inputLabel: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: colors.ink,
-    marginBottom: 8,
-  },
-  inputLabelNoMargin: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: colors.ink,
-  },
-  planSelectorRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  planSelectPill: {
-    flex: 1,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    padding: 10,
-    alignItems: 'center',
-  },
-  planSelectPillActive: {
-    borderColor: '#10B981',
-    backgroundColor: '#F0FDF4',
-  },
-  planSelectPillTitle: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: colors.inkSoft,
-  },
-  planSelectPillTitleActive: {
-    color: colors.navy,
-  },
-  planSelectPillPrice: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  planSelectPillPriceActive: {
-    color: '#15803D',
-    fontWeight: '700',
-  },
-  savingsBadge: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 5,
-  },
-  savingsBadgeText: {
-    color: '#15803D',
-    fontSize: 10.5,
-    fontWeight: '700',
-  },
-  cycleToggleWrap: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-    borderRadius: 8,
-    padding: 3,
-  },
-  cycleBtn: {
-    flex: 1,
-    paddingVertical: 7,
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  cycleBtnActive: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  cycleBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.inkSoft,
-  },
-  cycleBtnTextActive: {
-    color: colors.navy,
-    fontWeight: '700',
-  },
-  violationWarning: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 12,
-  },
-  violationWarningText: {
-    flex: 1,
-    fontSize: 11.5,
-    color: '#DC2626',
-    lineHeight: 16,
-  },
-  gatewaysList: {
-    gap: 8,
-  },
-  gatewayCard: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 10,
-    padding: 10,
-  },
-  gatewayCardActive: {
-    borderColor: '#10B981',
-    backgroundColor: '#F0FDF4',
-  },
-  gwIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gwIconWrapActive: {
-    borderColor: '#BBF7D0',
-    backgroundColor: '#DCFCE7',
-  },
-  gwTitle: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  gwTitleActive: {
-    color: colors.navy,
-  },
-  gwDesc: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 1,
-  },
-  gwBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  gwBadgeText: {
-    fontSize: 9.5,
-    fontWeight: '700',
-  },
-  summaryBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 3,
-  },
-  summaryLabel: {
-    fontSize: 12,
-    color: colors.inkSoft,
-  },
-  summaryValue: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.navy,
-  },
-  summaryTotalLabel: {
-    fontSize: 13.5,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  summaryTotalValue: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#10B981',
-  },
-  modalFooter: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 14,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-  },
-  cancelBtn: {
-    flex: 1,
-    paddingVertical: 11,
-    alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
-  },
-  cancelBtnText: {
-    color: colors.inkSoft,
-    fontWeight: '600',
-    fontSize: 13,
-  },
-  confirmPayBtn: {
-    flex: 2,
-    paddingVertical: 11,
-    alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: '#10B981',
-  },
-  confirmPayBtnText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  receiptBox: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  receiptSectionTitle: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.inkSoft,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-    marginBottom: 6,
-  },
-  receiptTextBold: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.navy,
-  },
-  receiptText: {
-    fontSize: 12,
-    color: colors.ink,
-    marginTop: 2,
-  },
-  receiptTextMuted: {
-    fontSize: 11,
-    color: colors.inkSoft,
-    marginTop: 2,
-  },
-  closeReceiptBtn: {
-    backgroundColor: '#10B981',
-    paddingVertical: 11,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  closeReceiptBtnText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 13,
-  },
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 18,
+      paddingVertical: 14,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+      backgroundColor: colors.surface,
+    },
+    headerLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flex: 1,
+    },
+    backBtn: {
+      marginRight: 10,
+      padding: 6,
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+    },
+    logoBadge: {
+      width: 36,
+      height: 36,
+      borderRadius: 8,
+      backgroundColor: '#ECFDF5',
+      borderWidth: 1,
+      borderColor: '#A7F3D0',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 10,
+    },
+    headerTitle: {
+      fontSize: 17,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    headerSub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+    },
+    ownerBadge: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    ownerBadgeText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    scroll: {
+      flex: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+    },
+    content: {
+      padding: 18,
+      paddingBottom: 40,
+    },
+    supportDarkCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      padding: 18,
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    heroTopRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 6,
+    },
+    heroEyebrow: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.8,
+    },
+    bannerHeading: {
+      fontSize: 20,
+      fontWeight: '800',
+      color: colors.navy,
+      marginTop: 2,
+      marginBottom: 4,
+    },
+    bannerSub: {
+      fontSize: 12.5,
+      color: colors.inkSoft,
+      lineHeight: 18,
+      marginBottom: 14,
+    },
+    heroBtnRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      flexWrap: 'wrap',
+    },
+    raiseTicketBtn: {
+      backgroundColor: '#10B981',
+      borderRadius: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      flexDirection: 'row',
+      alignItems: 'center',
+      flex: 1,
+      minWidth: 140,
+      justifyContent: 'center',
+    },
+    raiseTicketBtnText: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    cancelRenewBtn: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      flexShrink: 1,
+      alignItems: 'center',
+    },
+    cancelRenewBtnText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    statusBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    statusBadgeActive: {
+      backgroundColor: '#DCFCE7',
+    },
+    statusBadgeTrial: {
+      backgroundColor: '#EFF6FF',
+    },
+    statusBadgeExpired: {
+      backgroundColor: '#FEE2E2',
+    },
+    statusBadgeText: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      letterSpacing: 0.4,
+    },
+    statusBadgeTextActive: {
+      color: '#15803D',
+    },
+    statusBadgeTextTrial: {
+      color: '#1D4ED8',
+    },
+    statusBadgeTextExpired: {
+      color: '#DC2626',
+    },
+    tabContainer: {
+      flexDirection: 'row',
+      backgroundColor: '#E2E8F0',
+      borderRadius: 10,
+      padding: 3,
+      marginBottom: 16,
+    },
+    tabButton: {
+      flex: 1,
+      paddingVertical: 8,
+      alignItems: 'center',
+      borderRadius: 8,
+    },
+    tabButtonActive: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    tabText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    tabTextActive: {
+      color: colors.navy,
+      fontWeight: '700',
+    },
+    sectionHeading: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+      marginTop: 6,
+      marginBottom: 12,
+    },
+    card: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      padding: 16,
+      marginBottom: 14,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    cardHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 12,
+    },
+    cardTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.navy,
+      flex: 1,
+      marginRight: 8,
+    },
+    liveCapacityBadge: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    liveCapacityBadgeText: {
+      color: colors.inkSoft,
+      fontSize: 11,
+      fontWeight: '600',
+    },
+    meterContainer: {
+      marginTop: 10,
+    },
+    meterLabelsRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginBottom: 5,
+    },
+    meterLabel: {
+      fontSize: 12.5,
+      color: colors.ink,
+      fontWeight: '600',
+    },
+    meterValue: {
+      fontSize: 12.5,
+    },
+    meterTrack: {
+      height: 7,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 4,
+      overflow: 'hidden',
+    },
+    meterFill: {
+      height: '100%',
+      borderRadius: 4,
+    },
+    tierCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      padding: 16,
+      marginBottom: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    tierCardCurrent: {
+      borderColor: '#10B981',
+      backgroundColor: '#F0FDF4',
+    },
+    tierHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 12,
+    },
+    tierName: {
+      fontSize: 16,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    tierPricing: {
+      fontSize: 18,
+      fontWeight: '800',
+      color: '#10B981',
+      marginTop: 2,
+    },
+    tierPeriod: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      fontWeight: '400',
+    },
+    currentTierPill: {
+      backgroundColor: '#DCFCE7',
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: '#BBF7D0',
+    },
+    currentTierPillText: {
+      color: '#15803D',
+      fontSize: 11,
+      fontWeight: '700',
+    },
+    tierSelectBtn: {
+      backgroundColor: '#10B981',
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      borderRadius: 8,
+    },
+    tierSelectBtnText: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+      fontSize: 12.5,
+    },
+    tierLimitsGrid: {
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      paddingTop: 12,
+      marginTop: 8,
+    },
+    tierLimitsRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    tierLimitItem: {
+      flex: 1,
+      alignItems: 'center',
+      paddingHorizontal: 4,
+    },
+    tierLimitValue: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    tierLimitLabel: {
+      fontSize: 10.5,
+      color: colors.inkSoft,
+      marginTop: 2,
+      fontWeight: '500',
+    },
+    emptyContainer: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 40,
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    emptyTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.ink,
+      marginTop: 10,
+    },
+    emptySub: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 4,
+      textAlign: 'center',
+      paddingHorizontal: 20,
+    },
+    invoiceCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 10,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    invoiceCardHead: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    invoiceId: {
+      fontSize: 13,
+      fontWeight: '700',
+      fontFamily: 'monospace',
+      color: colors.navy,
+    },
+    invoicePlanName: {
+      fontSize: 12,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    invoiceStatusBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 5,
+    },
+    invPaidBadge: {
+      backgroundColor: '#DCFCE7',
+    },
+    invPaidText: {
+      color: '#15803D',
+      fontWeight: '700',
+      fontSize: 10,
+    },
+    invPendingBadge: {
+      backgroundColor: '#FEF3C7',
+    },
+    invPendingText: {
+      color: '#B45309',
+      fontWeight: '700',
+      fontSize: 10,
+    },
+    invoiceStatusText: {
+      fontSize: 10,
+      fontWeight: '700',
+    },
+    invoiceCardBody: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginTop: 10,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      paddingTop: 8,
+    },
+    invoiceAmount: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    invoiceDate: {
+      fontSize: 11.5,
+      color: colors.inkSoft,
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(15, 23, 42, 0.75)',
+      justifyContent: 'flex-end',
+    },
+    modalContent: {
+      backgroundColor: colors.surface,
+      borderTopLeftRadius: 20,
+      borderTopRightRadius: 20,
+      padding: 20,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 14,
+      paddingBottom: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.line,
+    },
+    modalTitle: {
+      fontSize: 17,
+      fontWeight: '800',
+      color: colors.navy,
+    },
+    modalCloseBtn: {
+      padding: 4,
+      borderRadius: 6,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+    },
+    inputLabel: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.ink,
+      marginBottom: 8,
+    },
+    inputLabelNoMargin: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.ink,
+    },
+    planSelectorRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    planSelectPill: {
+      flex: 1,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      padding: 10,
+      alignItems: 'center',
+    },
+    planSelectPillActive: {
+      borderColor: '#10B981',
+      backgroundColor: '#F0FDF4',
+    },
+    planSelectPillTitle: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+    },
+    planSelectPillTitleActive: {
+      color: colors.navy,
+    },
+    planSelectPillPrice: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    planSelectPillPriceActive: {
+      color: '#15803D',
+      fontWeight: '700',
+    },
+    savingsBadge: {
+      backgroundColor: '#DCFCE7',
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 5,
+    },
+    savingsBadgeText: {
+      color: '#15803D',
+      fontSize: 10.5,
+      fontWeight: '700',
+    },
+    cycleToggleWrap: {
+      flexDirection: 'row',
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+      borderRadius: 8,
+      padding: 3,
+    },
+    cycleBtn: {
+      flex: 1,
+      paddingVertical: 7,
+      alignItems: 'center',
+      borderRadius: 6,
+    },
+    cycleBtnActive: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    cycleBtnText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.inkSoft,
+    },
+    cycleBtnTextActive: {
+      color: colors.navy,
+      fontWeight: '700',
+    },
+    violationWarning: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#FEF2F2',
+      borderWidth: 1,
+      borderColor: '#FECACA',
+      padding: 10,
+      borderRadius: 8,
+      marginTop: 12,
+    },
+    violationWarningText: {
+      flex: 1,
+      fontSize: 11.5,
+      color: '#DC2626',
+      lineHeight: 16,
+    },
+    gatewaysList: {
+      gap: 8,
+    },
+    gatewayCard: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderWidth: 1,
+      borderColor: colors.line,
+      borderRadius: 10,
+      padding: 10,
+    },
+    gatewayCardActive: {
+      borderColor: '#10B981',
+      backgroundColor: '#F0FDF4',
+    },
+    gwIconWrap: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.line,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    gwIconWrapActive: {
+      borderColor: '#BBF7D0',
+      backgroundColor: '#DCFCE7',
+    },
+    gwTitle: {
+      fontSize: 12.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    gwTitleActive: {
+      color: colors.navy,
+    },
+    gwDesc: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 1,
+    },
+    gwBadge: {
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+    },
+    gwBadgeText: {
+      fontSize: 9.5,
+      fontWeight: '700',
+    },
+    summaryBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 10,
+      padding: 12,
+      marginTop: 14,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    summaryRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingVertical: 3,
+    },
+    summaryLabel: {
+      fontSize: 12,
+      color: colors.inkSoft,
+    },
+    summaryValue: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.navy,
+    },
+    summaryTotalLabel: {
+      fontSize: 13.5,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    summaryTotalValue: {
+      fontSize: 15,
+      fontWeight: '800',
+      color: '#10B981',
+    },
+    modalFooter: {
+      flexDirection: 'row',
+      gap: 10,
+      marginTop: 14,
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor: colors.line,
+    },
+    cancelBtn: {
+      flex: 1,
+      paddingVertical: 11,
+      alignItems: 'center',
+      borderRadius: 8,
+      backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+    },
+    cancelBtnText: {
+      color: colors.inkSoft,
+      fontWeight: '600',
+      fontSize: 13,
+    },
+    confirmPayBtn: {
+      flex: 2,
+      paddingVertical: 11,
+      alignItems: 'center',
+      borderRadius: 8,
+      backgroundColor: '#10B981',
+    },
+    confirmPayBtnText: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+      fontSize: 13,
+    },
+    receiptBox: {
+      backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 10,
+      borderWidth: 1,
+      borderColor: colors.line,
+    },
+    receiptSectionTitle: {
+      fontSize: 10.5,
+      fontWeight: '700',
+      color: colors.inkSoft,
+      letterSpacing: 0.5,
+      textTransform: 'uppercase',
+      marginBottom: 6,
+    },
+    receiptTextBold: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.navy,
+    },
+    receiptText: {
+      fontSize: 12,
+      color: colors.ink,
+      marginTop: 2,
+    },
+    receiptTextMuted: {
+      fontSize: 11,
+      color: colors.inkSoft,
+      marginTop: 2,
+    },
+    closeReceiptBtn: {
+      backgroundColor: '#10B981',
+      paddingVertical: 11,
+      borderRadius: 8,
+      alignItems: 'center',
+      marginTop: 12,
+    },
+    closeReceiptBtnText: {
+      color: '#FFFFFF',
+      fontWeight: '700',
+      fontSize: 13,
+    },
   });

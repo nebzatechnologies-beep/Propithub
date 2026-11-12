@@ -922,7 +922,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
         const mergedPlans = Array.from(baseMap.values());
 
-        // Self-heal Firestore if any plan document was incomplete in Firestore
+        // Self-heal Firestore if any plan document was incomplete in Firestore (guarded outside state updater)
         if (isFirebaseConfigured && !snapshot.empty) {
           mergedPlans.forEach((plan) => {
             const fbDoc = fbDocsMap.get(plan.id);
@@ -930,6 +930,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
               setDoc(doc(db, 'plans', plan.id), plan, { merge: true }).catch(console.warn);
             }
           });
+        }
+
+        if (JSON.stringify(prev.plans) === JSON.stringify(mergedPlans)) {
+          return prev;
         }
 
         return {
@@ -993,6 +997,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
 
         const mergedBoostPlans = Array.from(baseMap.values());
+        if (JSON.stringify(prev.boostPlans) === JSON.stringify(mergedBoostPlans)) {
+          return prev;
+        }
         return {
           ...prev,
           boostPlans: mergedBoostPlans,

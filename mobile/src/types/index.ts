@@ -660,6 +660,36 @@ export interface ListingBoostPlan {
   isActive: boolean;
 }
 
+export const DEFAULT_BOOST_PLANS: ListingBoostPlan[] = [
+  {
+    id: 'boost_spotlight_3d',
+    name: 'Quick Spotlight',
+    days: 3,
+    price: 5,
+    currency: 'USD',
+    isPopular: false,
+    isActive: true,
+  },
+  {
+    id: 'boost_featured_7d',
+    name: 'Featured Pro',
+    days: 7,
+    price: 55,
+    currency: 'USD',
+    isPopular: true,
+    isActive: true,
+  },
+  {
+    id: 'boost_dominance_30d',
+    name: 'Premier Dominance',
+    days: 30,
+    price: 550,
+    currency: 'USD',
+    isPopular: false,
+    isActive: true,
+  },
+];
+
 export interface MobilePlatformInvoice {
   id: string;
   ownerId: string;
@@ -765,6 +795,12 @@ export interface MobileOwnerSettings {
   previousActivePlanId?: string;
   isInitialTrial?: boolean;
   purgeScheduledAt?: string | null;
+  popularBoostUntil?: string | null;
+  popularBoostPlanId?: string | null;
+  popularBoostPlanName?: string | null;
+  popularBoostPlanPrice?: number | null;
+  popularBoostDays?: number | null;
+  popularBoostActivatedAt?: string | null;
   invoiceTemplate?: MobileInvoiceTemplateConfig;
   depositTemplate?: MobileInvoiceTemplateConfig;
   lateFeeConfig?: MobileLateFeeSettings;

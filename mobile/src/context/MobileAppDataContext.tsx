@@ -41,6 +41,8 @@ import {
   MobileDepositSettlement,
   MobileAgreementTemplate,
   MobilePropertyEnquiry,
+  ListingBoostPlan,
+  DEFAULT_BOOST_PLANS,
 } from '../types';
 import { calculateMobileInvoiceLateFee } from '../lib/lateFeeService';
 import { DEFAULT_CURRENCY_SYMBOL, formatCurrencyAmount } from '../lib/currencyService';
@@ -138,6 +140,7 @@ export interface MobileAppState {
   platformSupport: MobilePlatformSupportTicket[];
   reviews: MobileTenantReview[];
   plans: MobilePlan[];
+  boostPlans: ListingBoostPlan[];
   platformInvoices: MobilePlatformInvoice[];
   ownerSettings: Record<string, MobileOwnerSettings>;
   platformGateways: MobilePlatformGateways;
@@ -183,6 +186,7 @@ const INITIAL_STATE: MobileAppState = {
   platformSupport: [],
   reviews: [],
   plans: DEFAULT_PLANS,
+  boostPlans: DEFAULT_BOOST_PLANS,
   platformInvoices: [],
   ownerSettings: {},
   platformGateways: DEFAULT_PLATFORM_GATEWAYS,
@@ -366,6 +370,14 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     }, (err) => handleSyncError('plans', err));
 
+    const unsubBoostPlans = onSnapshot(collection(db, 'listingBoostPlans'), (snap) => {
+      const items: ListingBoostPlan[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as ListingBoostPlan));
+      if (items.length > 0) {
+        setState((prev) => ({ ...prev, boostPlans: items }));
+      }
+    }, (err) => handleSyncError('listingBoostPlans', err));
+
     const unsubGateways = onSnapshot(doc(db, 'platformConfig', 'gateways'), (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -399,6 +411,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     return () => {
       unsubReviews();
       unsubPlans();
+      unsubBoostPlans();
       unsubGateways();
       unsubTrial();
     };

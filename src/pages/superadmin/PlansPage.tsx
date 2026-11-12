@@ -28,7 +28,13 @@ export const PlansPage: React.FC = () => {
 
   React.useEffect(() => {
     if (state.boostPlans && state.boostPlans.length > 0) {
-      setBoostPlansState(state.boostPlans);
+      const nextBoostPlans = state.boostPlans;
+      setBoostPlansState((prev) => {
+        if (JSON.stringify(prev) === JSON.stringify(nextBoostPlans)) {
+          return prev;
+        }
+        return nextBoostPlans;
+      });
     }
   }, [state.boostPlans]);
 
@@ -418,13 +424,13 @@ export const PlansPage: React.FC = () => {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
           gap: '14px',
           marginBottom: '22px',
         }}
       >
         {/* Card 1: Free Trial Policy */}
-        <div className="panel" style={{ margin: 0 }}>
+        <div className="panel" style={{ margin: 0, minWidth: 0 }}>
           <div className="panel-body" style={{ padding: '14px 16px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -513,7 +519,7 @@ export const PlansPage: React.FC = () => {
         </div>
 
         {/* Card 2: Annual Discount Policy */}
-        <div className="panel" style={{ margin: 0 }}>
+        <div className="panel" style={{ margin: 0, minWidth: 0 }}>
           <div className="panel-body" style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}>
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
@@ -594,13 +600,14 @@ export const PlansPage: React.FC = () => {
         </b>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px' }}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '14px' }}>
         {commercialPlans.map((p) => (
           <div
             key={p.id}
             className="panel"
             style={{
               margin: 0,
+              minWidth: 0,
               border: p.isPopular ? '1.5px solid #0D9488' : undefined,
             }}
           >
@@ -723,7 +730,7 @@ export const PlansPage: React.FC = () => {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: '20px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 290px), 1fr))', gap: '20px' }}>
           {boostPlansState.map((bp, index) => {
             return (
               <div
@@ -737,6 +744,7 @@ export const PlansPage: React.FC = () => {
                   flexDirection: 'column',
                   gap: '16px',
                   position: 'relative',
+                  minWidth: 0,
                   boxShadow: bp.isPopular ? '0 4px 16px rgba(245, 158, 11, 0.12)' : 'none',
                 }}
               >

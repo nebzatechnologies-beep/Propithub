@@ -472,6 +472,7 @@ a {
 .content {
   flex: 1;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 24px 32px 60px;
   width: 100%;
   box-sizing: border-box;
