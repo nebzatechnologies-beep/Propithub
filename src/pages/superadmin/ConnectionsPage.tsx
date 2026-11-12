@@ -6,6 +6,7 @@ import { functions } from '../../lib/firebase';
 import { pingGatewayEndpoint } from '../../lib/payments';
 import { FlaskConical, MessageSquare, Sparkles, Copy, Check, Eye, EyeOff, ShieldCheck, Zap, Bot, Send } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
+import { SMS_EVENT_DEFAULTS } from '../../lib/smsEvents';
 
 export const ConnectionsPage: React.FC = () => {
   const { state, savePlatformGateways, saveCommsConfig, saveNotificationToggles, showToast } = useAppData();
@@ -132,7 +133,10 @@ export const ConnectionsPage: React.FC = () => {
   }, [state.commsConfig]);
 
   // Staged notification events
-  const [localNotifs, setLocalNotifs] = useState<Record<string, boolean>>({ ...state.notificationToggles });
+  const [localNotifs, setLocalNotifs] = useState<Record<string, boolean>>({ ...SMS_EVENT_DEFAULTS, ...state.notificationToggles });
+  useEffect(() => {
+    setLocalNotifs({ ...SMS_EVENT_DEFAULTS, ...state.notificationToggles });
+  }, [state.notificationToggles]);
 
   const handleTestComms = async (channel: 'sms' | 'email') => {
     setTestingComms(channel);
@@ -334,6 +338,7 @@ export const ConnectionsPage: React.FC = () => {
       'Ticket status change': true,
       'Lease expiry warning': true,
       'Dispute update': true,
+      ...SMS_EVENT_DEFAULTS,
     };
     setLocalNotifs(defaults);
     await saveNotificationToggles(defaults);
