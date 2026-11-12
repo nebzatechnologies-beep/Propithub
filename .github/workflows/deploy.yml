@@ -1,0 +1,48 @@
+name: Deploy to Firebase
+
+# Deploys the website (hosting) and the Cloud Functions to the propithub
+# Firebase project whenever code lands on main. It can also be run by hand
+# from the Actions tab ("Run workflow").
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: firebase-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install and build the website
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install and build the functions
+        working-directory: functions
+        run: |
+          npm ci
+          npm run build
+
+      - name: Sign in to Google Cloud (keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: github-deployer@propithub.iam.gserviceaccount.com
+
+      - name: Deploy hosting and functions
+        run: npx --yes firebase-tools@13 deploy --only hosting,functions --project propithub --non-interactive --force
