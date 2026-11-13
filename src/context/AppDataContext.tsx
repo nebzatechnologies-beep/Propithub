@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppState, loadState, saveState, saveLandingConfigCache, saveTrialPolicyCache, loadCachedTrialDays, INITIAL_STATE, DEFAULT_BOOST_PLANS } from '../lib/store';
-import { collection, doc, onSnapshot, setDoc, getDoc, deleteDoc, query, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, getDoc, deleteDoc, query, where, or } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { httpsCallable } from 'firebase/functions';
 import { useAuth } from './AuthContext';
@@ -187,6 +187,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const { user: scopeUser, isLoading: authLoading } = useAuth();
   // Owners only need their own records; other roles keep the existing behaviour for now.
   const scopeOwnerId = scopeUser && scopeUser.role === 'owner' ? scopeUser.id : null;
+  // Tenants only need their landlord's records plus anything that is theirs. A tenant with no landlord yet
+  // (or a detached one) keeps the unscoped behaviour so invitations still reach them.
+  const scopeTenantLandlord = scopeUser && scopeUser.role === 'tenant' ? ((scopeUser as any).ownerId || null) : null;
+  const scopeTenantUid = scopeTenantLandlord ? scopeUser!.id : null;
+  const scopeTenantEmail = scopeTenantLandlord ? String((scopeUser as any).email || '').toLowerCase() : '';
   const [state, setState] = useState<AppState>(loadState);
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([]);
 
@@ -241,8 +246,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!isFirebaseConfigured || authLoading) return;
 
     // For owners, read only documents that belong to them (much less data to download and hold in memory).
-    const scoped = (name: string) =>
-      scopeOwnerId ? query(collection(db, name), where('ownerId', '==', scopeOwnerId)) : collection(db, name);
+    const scoped = (name: string) => {
+      if (scopeOwnerId) return query(collection(db, name), where('ownerId', '==', scopeOwnerId));
+      if (scopeTenantLandlord && scopeTenantUid) {
+        const mine = [where('ownerId', '==', scopeTenantLandlord)];
+        if (name === 'tenants') mine.push(where('id', '==', scopeTenantUid));
+        else if (name !== 'properties' && name !== 'units') {
+          mine.push(where('tenantId', '==', scopeTenantUid));
+          if (name === 'tenancyRequests' && scopeTenantEmail) mine.push(where('tenantEmail', '==', scopeTenantEmail));
+          if (name === 'agreements' && scopeTenantEmail) mine.push(where('tenantEmail', '==', scopeTenantEmail));
+        }
+        return query(collection(db, name), or(...mine));
+      }
+      return collection(db, name);
+    };
 
     // Immediate direct query on mount for instant zero-latency loading of trial policy
     getDoc(doc(db, 'platformConfig', 'trialPolicy')).then((snap) => {
@@ -1445,7 +1462,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubAcks();
       unsubEnquiries();
     };
-  }, [scopeOwnerId, authLoading]);
+  }, [scopeOwnerId, scopeTenantLandlord, scopeTenantUid, scopeTenantEmail, authLoading]);
 
   // Cross-Tab / Cross-Platform real-time synchronization concurrency
   useEffect(() => {
