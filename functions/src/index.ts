@@ -837,6 +837,12 @@ export const onTenancyRequestCreated = functions.firestore
   .document('tenancyRequests/{requestId}')
   .onCreate(async (snap, context) => {
     const r = snap.data() || {};
+    if (r.tenantId && r.ownerId) {
+      // Inviting someone again after removing them un-hides them for this owner.
+      await db.collection('tenants').doc(String(r.tenantId)).set(
+        { removedOwnerIds: admin.firestore.FieldValue.arrayRemove(r.ownerId) }, { merge: true }
+      ).catch(() => {});
+    }
     const to = String(r.tenantEmail || '').trim().toLowerCase();
     if (!to) {
       functions.logger.warn(`[onTenancyRequestCreated] No tenant email on request ${context.params.requestId}`);
@@ -1308,7 +1314,10 @@ export const deleteTenantAccount = functions.https.onCall(async (data, context) 
   const reqSnap = await db.collection('tenancyRequests').get();
   reqSnap.docs.forEach((d) => { const r = d.data(); if ((ids.has(r.tenantId) || emailMatches(r.tenantEmail)) && mine(r)) toDelete.push(d.ref); });
   const tenSnap = await db.collection('tenants').get();
-  tenSnap.docs.forEach((d) => { const t = d.data(); if ((ids.has(d.id) || ids.has(t.userId) || emailMatches(t.email)) && mine(t)) toDelete.push(d.ref); });
+  // Tenant records are tombstoned rather than deleted: a tenant session or stale tab that re-saves its own
+  // record would otherwise resurrect the row on this owner's dashboard.
+  const tenantTombstones: FirebaseFirestore.DocumentReference[] = [];
+  tenSnap.docs.forEach((d) => { const t = d.data(); if ((ids.has(d.id) || ids.has(t.userId) || emailMatches(t.email)) && mine(t)) tenantTombstones.push(d.ref); });
 
   // Free units that were reserved for this tenant.
   const unitSnap = await db.collection('units').get();
@@ -1327,12 +1336,15 @@ export const deleteTenantAccount = functions.https.onCall(async (data, context) 
     toDelete.slice(i, i + 400).forEach((r) => batch.delete(r));
     await batch.commit();
   }
+  for (const ref of tenantTombstones) {
+    await ref.set({ removedOwnerIds: admin.firestore.FieldValue.arrayUnion(callerUid) }, { merge: true });
+  }
   // The tenant's own login stays (they may have other landlords); just detach them from this owner.
   if (uid && userData && userData.ownerId === callerUid) {
     await db.collection('users').doc(uid).update({ ownerId: null, ownerName: null });
   }
-  functions.logger.info(`[deleteTenantAccount] ${callerUid} removed tenant ${uid || tenantId || tenantEmail}: ${toDelete.length} records`);
-  return { success: true, deleted: toDelete.length };
+  functions.logger.info(`[deleteTenantAccount] ${callerUid} removed tenant ${uid || tenantId || tenantEmail}: ${toDelete.length} records deleted, ${tenantTombstones.length} tenant docs tombstoned`);
+  return { success: true, deleted: toDelete.length, tombstoned: tenantTombstones.length };
 });
 
 /**
