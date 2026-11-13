@@ -449,6 +449,12 @@ export const Tenant360Page: React.FC = () => {
   const canCancelRequest = (r: TenancyRequest) =>
     r.status === 'pending' || (r.status === 'accepted' && !isLeaseLive(r));
 
+  // The Invitations tab lists only invitations that still need attention. Once the tenant accepted AND the lease is
+  // live they are already under Active Tenants, so showing them here as "pending" was confusing.
+  const invitationList = mySentRequests.filter(
+    (r) => r.status !== 'fulfilled' && !(r.status === 'accepted' && isLeaseLive(r))
+  );
+
   // A tenant can be deleted unless they are in an active/signed lease (that goes through move-out).
   const tenantHasLiveLease = (t: TenantRecord) =>
     (state.agreements || []).some(
@@ -675,7 +681,7 @@ export const Tenant360Page: React.FC = () => {
           }}
         >
           <Send size={15} />
-          Pending Invitations ({mySentRequests.length})
+          Pending Invitations ({invitationList.length})
         </button>
       </div>
 
@@ -852,7 +858,7 @@ export const Tenant360Page: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {mySentRequests.length === 0 ? (
+                  {invitationList.length === 0 ? (
                     <tr>
                       <td colSpan={8} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
                         <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
@@ -864,7 +870,7 @@ export const Tenant360Page: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    mySentRequests.map((r) => {
+                    invitationList.map((r) => {
                       let statusBadge = (
                         <span className="badge amber" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                           <Clock size={12} /> Pending Tenant Response
@@ -957,7 +963,7 @@ export const Tenant360Page: React.FC = () => {
 
           {/* Mobile Card View */}
           <div className="mobile-card-view">
-            {mySentRequests.length === 0 ? (
+            {invitationList.length === 0 ? (
               <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
                 <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
                   No tenancy requests sent yet
@@ -967,7 +973,7 @@ export const Tenant360Page: React.FC = () => {
                 </div>
               </div>
             ) : (
-              mySentRequests.map((r) => {
+              invitationList.map((r) => {
                 let statusBadge = (
                   <span className="badge amber" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                     <Clock size={12} /> Pending Response
