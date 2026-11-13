@@ -281,7 +281,9 @@ export const LeasingPage: React.FC = () => {
 
   // Leases that are not yet running can be deleted by the owner (frees the unit and clears the invitation).
   const canDeletePendingLease = (a: Agreement) =>
-    ['awaiting_tenant_signature', 'awaiting_tenant_upload', 'pending_approval', 'pending_deposit', 'pending_countersign', 'rejected'].includes(a.status as string);
+    ['awaiting_tenant_signature', 'awaiting_tenant_upload', 'pending_approval', 'pending_deposit', 'pending_countersign', 'rejected'].includes(a.status as string) ||
+    // A lease that was cancelled before it ever started (no counter-signature, deposit never paid)
+    (a.status === 'terminated' && !a.counterSignedAt && a.depositStatus !== 'paid');
 
   const handleDeletePendingLease = async (a: Agreement) => {
     if (!window.confirm(`Delete this pending lease for ${a.tenant} (Unit ${a.unit})? The unit becomes vacant again and the invitation is removed. This cannot be undone.`)) return;
