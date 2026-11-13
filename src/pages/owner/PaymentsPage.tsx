@@ -1194,6 +1194,22 @@ export const PaymentsPage: React.FC = () => {
       .reduce((sum, p) => sum + convert(p.amount || 0, p.currency || 'USD', activeCurrencyCode), 0);
   }, [myPayments, convert, activeCurrencyCode, state.invoices]);
 
+  // Opens the proof-review dialog (UTR, screenshot, Confirm / Decline) for a rent or deposit row awaiting confirmation.
+  const openProofForItem = (item: { tenantId?: string; unitNumber?: string; unitId?: string; invoiceId?: string; depositInvoice?: Invoice }, kind: 'rent' | 'deposit') => {
+    const isDep = (i: Invoice) => i.invoiceType === 'deposit' || (i as any).type === 'deposit';
+    const pending = state.invoices.filter((i) => i.status === 'pending_confirmation');
+    const inv =
+      (item.invoiceId && pending.find((i) => i.id === item.invoiceId)) ||
+      (item.depositInvoice && pending.find((i) => i.id === item.depositInvoice!.id)) ||
+      pending.find((i) => ((item.tenantId && i.tenantId === item.tenantId) || (item.unitNumber && i.unit === item.unitNumber)) && isDep(i) === (kind === 'deposit'));
+    if (inv) { setReviewingProofInvoice(inv); return; }
+    const claim = (state.cashClaims || []).find(
+      (c) => c.status === 'pending_confirmation' && ((item.tenantId && c.tenantId === item.tenantId) || (item.unitNumber && c.unit === item.unitNumber))
+    );
+    if (claim) { setReviewingClaim(claim); return; }
+    showToast('No proof was found for this payment yet. Ask the tenant to submit it again, or use Record Pay.');
+  };
+
   const handleConfirmReceipt = async (id: string) => {
     const targetPay = state.payments.find((p) => p.id === id);
 
@@ -2149,7 +2165,12 @@ export const PaymentsPage: React.FC = () => {
                                     />
                                   </button>
                                 )}
-                                {item.status !== 'paid' ? (
+                                {item.status === 'pending_confirmation' && (
+<button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'rent')}>
+<ShieldCheck size={13} /> Review &amp; Confirm
+</button>
+)}
+{item.status !== 'paid' ? (
                                   <button
                                     type="button"
                                     className="btn brass small"
@@ -2281,7 +2302,12 @@ export const PaymentsPage: React.FC = () => {
                             />
                           </button>
                         )}
-                        {item.status !== 'paid' ? (
+                        {item.status === 'pending_confirmation' && (
+<button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'rent')}>
+<ShieldCheck size={13} /> Review &amp; Confirm
+</button>
+)}
+{item.status !== 'paid' ? (
                           <button
                             type="button"
                             className="btn brass small btn-mobile-full"
@@ -2557,7 +2583,12 @@ export const PaymentsPage: React.FC = () => {
                                     + Voucher
                                   </button>
                                 )}
-                                {(item.status === 'pending_collection' || item.status === 'pending_confirmation') && (
+                                {item.status === 'pending_confirmation' && (
+<button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'deposit')}>
+<ShieldCheck size={13} /> Review &amp; Confirm
+</button>
+)}
+{(item.status === 'pending_collection' || item.status === 'pending_confirmation') && (
                                   <button
                                     type="button"
                                     className="btn brass small"
@@ -2677,7 +2708,12 @@ export const PaymentsPage: React.FC = () => {
                             + Generate Voucher
                           </button>
                         )}
-                        {(item.status === 'pending_collection' || item.status === 'pending_confirmation') && (
+                        {item.status === 'pending_confirmation' && (
+<button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'deposit')}>
+<ShieldCheck size={13} /> Review &amp; Confirm
+</button>
+)}
+{(item.status === 'pending_collection' || item.status === 'pending_confirmation') && (
                           <button
                             type="button"
                             className="btn brass small btn-mobile-full"
