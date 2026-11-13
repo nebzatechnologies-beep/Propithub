@@ -142,7 +142,16 @@ export function usePlanLimits(explicitOwnerId?: string) {
     (!latestPaidInvoice.periodEnd || new Date(latestPaidInvoice.periodEnd).getTime() > Date.now())
   );
 
-  const hasActivePaidSubscription = Boolean(
+  // An owner whose record says "active" with a future subscription end date has paid, even if the
+  // invoice record is missing or not yet synced - they must not be shown as still on trial.
+  const hasActiveSubscriptionRecord = Boolean(
+    ownerSettings?.planStatus === 'active' &&
+    ownerSettings?.subscriptionEndsAt &&
+    new Date(ownerSettings.subscriptionEndsAt).getTime() > Date.now() &&
+    ownerSettings?.isInitialTrial !== true
+  );
+
+  const hasActivePaidSubscription = hasActiveSubscriptionRecord || Boolean(
     hasPaidInvoice &&
     isPaidInvoiceUnexpired &&
     (ownerSettings?.planStatus === 'active' || !ownerSettings?.subscriptionEndsAt || new Date(ownerSettings.subscriptionEndsAt).getTime() > Date.now())

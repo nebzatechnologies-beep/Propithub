@@ -4,7 +4,7 @@ import { collection, doc, onSnapshot, setDoc, getDocs, getDoc, deleteDoc } from 
 import { onAuthStateChanged } from 'firebase/auth';
 import { httpsCallable } from 'firebase/functions';
 import { db, isFirebaseConfigured, auth, functions } from '../lib/firebase';
-import { compressImage } from '../lib/imageUploader';
+import { compressImage, uploadDocumentFile } from '../lib/imageUploader';
 import { SMS_EVENT_DEFAULTS } from '../lib/smsEvents';
 import { sanitizeCountry, isInvalidCountry } from '../lib/addressUtils';
 import { generateTransactionId, generateDepositVoucherId } from '../lib/idGenerators';
@@ -2082,11 +2082,40 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const uploadSignedAgreement = async (
     agreementId: string,
-    fileData: string,
+    rawFileData: string,
     fileName: string,
-    uploadedIds?: TenantUploadedIdItem[]
+    rawUploadedIds?: TenantUploadedIdItem[]
   ): Promise<string> => {
     const now = new Date().toISOString();
+
+    // Move the scans/photos into Cloud Storage and keep only their links in the database.
+    // Storing the raw file inside the agreement record exceeds Firestore's 1 MB document
+    // limit for any real scan, which made tenant uploads fail or silently never reach the owner.
+    let fileData = rawFileData;
+    let uploadedIds = rawUploadedIds;
+    if (isFirebaseConfigured) {
+      const agForUpload = state.agreements.find((a) => a.id === agreementId);
+      const meta = { tenantId: agForUpload?.tenantId || '', ownerId: agForUpload?.ownerId || '' };
+      const toStorageUrl = async (data: string, name: string, tag: string): Promise<string> => {
+        if (!data || !data.startsWith('data:')) return data;
+        const ext = ((name || '').split('.').pop() || 'pdf').replace(/[^a-zA-Z0-9]/g, '').slice(0, 5) || 'pdf';
+        const url = await uploadDocumentFile(data, `agreements/${agreementId}/${Date.now()}_${tag}.${ext}`, meta);
+        if (!url || url.startsWith('data:')) {
+          throw new Error('Could not store the document. Please check your connection and try a PDF or photo under 20 MB.');
+        }
+        return url;
+      };
+      fileData = await toStorageUrl(rawFileData, fileName, 'signed');
+      if (rawUploadedIds && rawUploadedIds.length > 0) {
+        uploadedIds = await Promise.all(
+          rawUploadedIds.map(async (item, i) => ({
+            ...item,
+            fileUrl: await toStorageUrl(item.fileUrl, item.fileName, `id${i}`),
+          }))
+        );
+      }
+    }
+
     let targetAgreement: Agreement | undefined;
     let updatedKycDocs: { title: string; fileUrl: string; verified: boolean }[] = [];
     let tenantRecordIdToUpdate: string | undefined;
@@ -2197,6 +2226,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       } catch (err) {
         console.warn('Firestore uploadSignedAgreement error:', err);
+        throw err;
       }
     }
 
