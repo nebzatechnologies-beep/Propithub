@@ -37,7 +37,31 @@ export const TeamPage: React.FC = () => {
     password: string;
     role: string;
     property?: string;
+    phone?: string;
+    emailStatus?: 'delivered' | 'failed';
+    birdStatus?: string;
+    emailError?: string;
   } | null>(null);
+  const [isResendingInvite, setIsResendingInvite] = useState(false);
+  const resendManagerInvite = async () => {
+    if (!credentialsModal || !credentialsModal.password) {
+      showToast('No saved password for this person. Add them again to send a fresh invite.');
+      return;
+    }
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: credentialsModal.name,
+      email: credentialsModal.email,
+      password: credentialsModal.password,
+      role: 'manager',
+      phone: credentialsModal.phone || '',
+      ownerId,
+      ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not resend the invite.'); return; }
+    setCredentialsModal((m) => m ? { ...m, emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError } : m);
+  };
 
   // Assign / Unassign modal state
   const [reassignModal, setReassignModal] = useState<{
@@ -167,6 +191,7 @@ export const TeamPage: React.FC = () => {
 
     const assignedPropObj = state.properties.find((p) => p.id === pmPropertyId);
 
+    const pmPhoneForModal = pmPhone.trim();
     setIsAddPmOpen(false);
     setPmName('');
     setPmEmail('');
@@ -181,6 +206,10 @@ export const TeamPage: React.FC = () => {
       password: passwordToUse,
       role: 'Property Manager',
       property: assignedPropObj?.name || 'All Properties',
+      phone: pmPhoneForModal,
+      emailStatus: res.emailStatus,
+      birdStatus: res.birdStatus,
+      emailError: res.emailError,
     });
 
     showToast(res.emailStatus === 'failed'
@@ -673,8 +702,22 @@ export const TeamPage: React.FC = () => {
             </div>
             <div className="modal-body" style={{ padding: '20px' }}>
               <p style={{ fontSize: '13px', color: 'var(--ink)', marginBottom: '16px', lineHeight: 1.5 }}>
-                Share these login details with <b>{credentialsModal.name}</b>. They can sign in immediately at the main login portal.
+                Login details for <b>{credentialsModal.name}</b>.
               </p>
+              <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px', fontSize: '13px', lineHeight: 1.5,
+                background: credentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+                border: `1px solid ${credentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.35)' : 'rgba(16,185,129,0.35)'}` }}>
+                {credentialsModal.emailStatus === undefined
+                  ? 'Press "Resend invite email" to email these credentials to the manager.'
+                  : credentialsModal.emailStatus === 'failed'
+                    ? <>The invite email could not be delivered{credentialsModal.emailError ? ` (${credentialsModal.emailError})` : ''}. Share the details below manually or resend.</>
+                    : <>Credentials emailed to <b>{credentialsModal.email}</b> (status: {credentialsModal.birdStatus || 'accepted'}). Ask them to check spam if it is not in the inbox.</>}
+                <div style={{ marginTop: '8px' }}>
+                  <button type="button" className="btn secondary small" disabled={isResendingInvite} onClick={resendManagerInvite}>
+                    {isResendingInvite ? 'Sending…' : 'Resend invite email'}
+                  </button>
+                </div>
+              </div>
 
               <div style={{ background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: '8px', padding: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '13px' }}>

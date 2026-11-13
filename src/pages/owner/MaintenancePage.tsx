@@ -49,7 +49,31 @@ export const MaintenancePage: React.FC = () => {
     email: string;
     password: string;
     role: string;
+    phone?: string;
+    emailStatus?: 'delivered' | 'failed';
+    birdStatus?: string;
+    emailError?: string;
   } | null>(null);
+  const [isResendingInvite, setIsResendingInvite] = useState(false);
+  const resendStaffInvite = async () => {
+    if (!staffCredentialsModal || !staffCredentialsModal.password) {
+      showToast('No saved password for this person. Add them again to send a fresh invite.');
+      return;
+    }
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: staffCredentialsModal.name,
+      email: staffCredentialsModal.email,
+      password: staffCredentialsModal.password,
+      role: 'staff',
+      phone: staffCredentialsModal.phone || '',
+      ownerId,
+      ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not resend the invite.'); return; }
+    setStaffCredentialsModal((m) => m ? { ...m, emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError } : m);
+  };
 
   const generateRandomStaffPassword = () => {
     const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
@@ -183,6 +207,10 @@ export const MaintenancePage: React.FC = () => {
       email: staffEmail,
       password: passwordToUse,
       role: newStaff.role,
+      phone: newStaffPhone.trim(),
+      emailStatus: res.emailStatus,
+      birdStatus: res.birdStatus,
+      emailError: res.emailError,
     });
     showToast(res.emailStatus === 'failed'
       ? `${name} was added, but the invite email could not be sent${res.emailError ? ` (${res.emailError})` : ''}. Share the credentials shown.`
@@ -964,8 +992,22 @@ export const MaintenancePage: React.FC = () => {
             </div>
             <div className="modal-body" style={{ padding: '20px' }}>
               <p style={{ fontSize: '13px', color: 'var(--ink)', marginBottom: '16px', lineHeight: 1.5 }}>
-                Share these login details with <b>{staffCredentialsModal.name}</b> ({staffCredentialsModal.role}). They can sign in immediately at the portal to access their maintenance queue.
+                Login details for <b>{staffCredentialsModal.name}</b> ({staffCredentialsModal.role}).
               </p>
+              <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px', fontSize: '13px', lineHeight: 1.5,
+                background: staffCredentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+                border: `1px solid ${staffCredentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.35)' : 'rgba(16,185,129,0.35)'}` }}>
+                {staffCredentialsModal.emailStatus === undefined
+                  ? 'Press "Resend invite email" to email these credentials to the staff member.'
+                  : staffCredentialsModal.emailStatus === 'failed'
+                    ? <>The invite email could not be delivered{staffCredentialsModal.emailError ? ` (${staffCredentialsModal.emailError})` : ''}. Share the details below manually or resend.</>
+                    : <>Credentials emailed to <b>{staffCredentialsModal.email}</b> (status: {staffCredentialsModal.birdStatus || 'accepted'}). Ask them to check spam if it is not in the inbox.</>}
+                <div style={{ marginTop: '8px' }}>
+                  <button type="button" className="btn secondary small" disabled={isResendingInvite} onClick={resendStaffInvite}>
+                    {isResendingInvite ? 'Sending…' : 'Resend invite email'}
+                  </button>
+                </div>
+              </div>
 
               <div style={{ background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: '8px', padding: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '13px' }}>
