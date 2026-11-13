@@ -692,8 +692,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Please enter your email address.' };
     }
     try {
-      await sendPasswordResetEmail(auth, email.trim().toLowerCase());
-      return { success: true };
+      try {
+        // Preferred: our own sender (Bird) so the email actually arrives.
+        await httpsCallable<{ email: string }, { success: boolean }>(functions, 'requestPasswordReset')({ email: email.trim().toLowerCase() });
+        return { success: true };
+      } catch (callErr: any) {
+        if (callErr?.code === 'functions/invalid-argument') {
+          return { success: false, error: 'Please enter a valid email address.' };
+        }
+        // Fall back to Firebase's built-in mailer if our function is unreachable.
+        await sendPasswordResetEmail(auth, email.trim().toLowerCase());
+        return { success: true };
+      }
     } catch (err: any) {
       if (err.code === 'auth/user-not-found') {
         return { success: false, error: 'No account found with this email address.' };
