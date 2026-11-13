@@ -341,10 +341,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           fbTenants.push(t);
         }
       });
-      if (fbTenants.length > 0) {
+      {
+        // The server snapshot is authoritative: merging into the cached copy meant a removed tenant never left.
         setState((prev) => {
           const tenantMap = new Map<string, TenantRecord>();
-          const allTenants = [...prev.tenants, ...fbTenants];
+          const allTenants = [...fbTenants];
           // Deduplicate by email and unit
           const seenKeys = new Set<string>();
           const deduped: TenantRecord[] = [];
@@ -469,10 +470,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const r = d.data() as TenancyRequest;
         if (r && r.id) fbRequests.push(r);
       });
-      if (fbRequests.length > 0) {
+      {
+        // Server snapshot is authoritative so deleted/cancelled invitations disappear after a reload.
         setState((prev) => {
           const reqMap = new Map<string, TenancyRequest>();
-          (prev.tenancyRequests || []).forEach((r) => reqMap.set(r.id, r));
           fbRequests.forEach((r) => reqMap.set(r.id, r));
           const allRequests = Array.from(reqMap.values());
 
