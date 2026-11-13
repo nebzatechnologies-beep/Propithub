@@ -459,6 +459,7 @@ export const SMS_EVENT_DEFAULTS: Record<string, boolean> = {
   'SMS: Announcement': true,
   'SMS: Cash claim': false,
   'SMS: Cash confirmed': true,
+  'SMS: Plan receipt': true,
 };
 
 export async function isSmsEnabledForEvent(eventKey: string): Promise<boolean> {
@@ -737,8 +738,14 @@ export const setClaimsOnRequest = functions.firestore
     }
 
     try {
-      await auth.setCustomUserClaims(uid, { role, ownerId: ownerId || null });
-      functions.logger.info(`[setClaimsOnRequest] Set claims for ${uid}: role=${role}, ownerId=${ownerId || 'none'}`);
+      // Claims are best-effort: a failure here (e.g. the auth user is missing) must NEVER block
+      // the credentials email, otherwise the new staff/manager gets nothing.
+      try {
+        await auth.setCustomUserClaims(uid, { role, ownerId: ownerId || null });
+        functions.logger.info(`[setClaimsOnRequest] Set claims for ${uid}: role=${role}, ownerId=${ownerId || 'none'}`);
+      } catch (claimErr: any) {
+        functions.logger.error(`[setClaimsOnRequest] setCustomUserClaims failed for ${uid}: ${claimErr?.message}`);
+      }
 
       // Mark as processed to prevent re-triggering
       await db.collection('userClaimRequests').doc(uid).update({
@@ -5464,6 +5471,28 @@ async function sendInvoiceEmail(
  * 19. onRentalInvoiceWrite (Firestore Trigger)
  * Automatically triggers email and SMS delivery to tenant when an invoice is issued or marked paid.
  */
+/**
+ * Tenant in-app notification the moment their first month's rent invoice is issued
+ * (right after the security deposit is settled). Email is already sent by onRentalInvoiceWrite.
+ */
+export const onRentInvoiceCreatedTenant = functions.firestore
+  .document('invoices/{invoiceId}')
+  .onCreate(async (snap, context) => {
+    const inv = snap.data() || {};
+    const id = String(context.params.invoiceId);
+    if (!inv.tenantId || id.toUpperCase().startsWith('DEP-')) return;
+    const isFirst = /-M1$/i.test(id);
+    const amount = Number(inv.total || inv.amount || 0);
+    await notifyOwnerOnboardingStep({
+      ownerId: inv.tenantId,
+      dedupeKey: `rent_due_${id}`,
+      title: isFirst ? "Security deposit received — pay your first month's rent" : 'New rent invoice issued',
+      detail: `${isFirst ? "Your security deposit is confirmed. " : ''}Rent of ${fmtMoney('INR', amount)} for ${inv.unit || 'your unit'} is due${inv.due ? ' by ' + inv.due : ''}. Pay now from Payments.`,
+      link: '/tenant/payments',
+      skipEmail: true,
+    }).catch((e) => functions.logger.warn('rent invoice in-app failed', e?.message));
+  });
+
 export const onRentalInvoiceWrite = functions.firestore
   .document('invoices/{invoiceId}')
   .onWrite(async (change, context) => {
@@ -5603,17 +5632,38 @@ export const onPlatformInvoiceWrite = functions.firestore
     if (!after) return;
 
     const invoiceId = context.params.invoiceId;
-    const ownerEmail = after.ownerEmail;
-    if (!ownerEmail) return;
+    const ownerContact = await getUserContact(after.ownerId);
+    const ownerEmail = after.ownerEmail || ownerContact?.email;
+    if (!ownerEmail && !ownerContact?.phone) return;
 
     // Trigger: Transitioned to paid
     if (after.status === 'paid' && (!before || before.status !== 'paid')) {
+      const planLabel = after.planName || 'Growth';
+      const cur = String(after.currency || 'USD').toUpperCase();
+      const total = after.total || after.amount || 0;
+      // In-app notification (idempotent) + SMS to the owner.
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `plan_receipt_${invoiceId}`,
+        title: `Plan activated: ${planLabel}`,
+        detail: `Your ${planLabel} subscription payment of ${cur} ${total} was received. Receipt ${invoiceId} has been emailed to you.`,
+        link: '/owner/plan',
+        skipEmail: true,
+      }).catch((e) => functions.logger.warn('plan receipt in-app failed', e?.message));
+      if (ownerContact?.phone) {
+        await sendEventSms(
+          'SMS: Plan receipt',
+          ownerContact.phone,
+          `Propithub: Your ${planLabel} plan is active. Payment of ${cur} ${total} received (Receipt ${invoiceId}). Thank you!`
+        ).catch((e) => functions.logger.warn('plan receipt sms failed', e?.message));
+      }
+      if (!ownerEmail) return;
       await sendInvoiceEmail(ownerEmail, `Propithub Platform Receipt: Invoice ${invoiceId} Settled`, {
         invoiceId,
         title: `Propithub SaaS Subscription Receipt — ${after.planName || 'Growth'} Plan`,
         recipientName: after.ownerName || 'Property Owner',
         amount: after.total || after.amount || 0,
-        currency: '$',
+        currency: String(after.currency || 'USD').toUpperCase(),
         status: 'PAID',
         dueDate: after.dueDate || '',
         paidAt: after.paidAt || new Date().toISOString(),

@@ -620,6 +620,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (err?.code === 'auth/weak-password') {
           return { success: false, error: 'Password should be at least 6 characters long.' };
         }
+        // Any other failure means no real login was created; do not save a ghost profile with a fake id.
+        return { success: false, error: err?.message || 'Could not create the login for this account. Please try again.' };
       }
     }
 
