@@ -189,9 +189,12 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const scopeOwnerId = scopeUser && scopeUser.role === 'owner' ? scopeUser.id : null;
   // Tenants only need their landlord's records plus anything that is theirs. A tenant with no landlord yet
   // (or a detached one) keeps the unscoped behaviour so invitations still reach them.
-  const scopeTenantLandlord = scopeUser && scopeUser.role === 'tenant' ? ((scopeUser as any).ownerId || null) : null;
+  // Managers and staff work for one owner, so they get the same landlord-scoped loading (without the tenant-only clauses).
+  const scopedRole = scopeUser && ['tenant', 'manager', 'staff'].includes(scopeUser.role as string) ? scopeUser.role : null;
+  const scopeTenantLandlord = scopedRole ? ((scopeUser as any).ownerId || null) : null;
   const scopeTenantUid = scopeTenantLandlord ? scopeUser!.id : null;
-  const scopeTenantEmail = scopeTenantLandlord ? String((scopeUser as any).email || '').toLowerCase() : '';
+  const scopeIsTenant = scopedRole === 'tenant';
+  const scopeTenantEmail = scopeTenantLandlord && scopeIsTenant ? String((scopeUser as any).email || '').toLowerCase() : '';
   const [state, setState] = useState<AppState>(loadState);
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([]);
 
@@ -250,13 +253,15 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (scopeOwnerId) return query(collection(db, name), where('ownerId', '==', scopeOwnerId));
       if (scopeTenantLandlord && scopeTenantUid) {
         const mine = [where('ownerId', '==', scopeTenantLandlord)];
-        if (name === 'tenants') mine.push(where('id', '==', scopeTenantUid));
+        if (!scopeIsTenant) {
+          // manager / staff: everything of their owner, nothing else
+        } else if (name === 'tenants') mine.push(where('id', '==', scopeTenantUid));
         else if (name !== 'properties' && name !== 'units') {
           mine.push(where('tenantId', '==', scopeTenantUid));
           if (name === 'tenancyRequests' && scopeTenantEmail) mine.push(where('tenantEmail', '==', scopeTenantEmail));
           if (name === 'agreements' && scopeTenantEmail) mine.push(where('tenantEmail', '==', scopeTenantEmail));
         }
-        return query(collection(db, name), or(...mine));
+        return mine.length === 1 ? query(collection(db, name), mine[0]) : query(collection(db, name), or(...mine));
       }
       return collection(db, name);
     };
@@ -1463,7 +1468,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubAcks();
       unsubEnquiries();
     };
-  }, [scopeOwnerId, scopeTenantLandlord, scopeTenantUid, scopeTenantEmail, authLoading]);
+  }, [scopeOwnerId, scopeTenantLandlord, scopeTenantUid, scopeTenantEmail, scopeIsTenant, authLoading]);
 
   // Cross-Tab / Cross-Platform real-time synchronization concurrency
   useEffect(() => {
