@@ -55,6 +55,39 @@ export const MaintenancePage: React.FC = () => {
     emailError?: string;
   } | null>(null);
   const [isResendingInvite, setIsResendingInvite] = useState(false);
+
+  const shareCredentials = async (person: any, kind: 'staff' | 'manager', mode: 'copy' | 'whatsapp') => {
+    let pw: string = person.tempPassword || '';
+    if (!pw) {
+      // No saved password: set a fresh one so the details we share actually work.
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let rand = '';
+      for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+      pw = `${kind === 'staff' ? 'Staff' : 'Manager'}#${rand}`;
+      const r = await provisionUser({
+        name: person.name, email: person.email, password: pw, role: kind,
+        phone: person.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
+      });
+      if (!r.success) { showToast(r.error || 'Could not prepare the credentials.'); return; }
+      try { await saveStaff({ ...person, tempPassword: pw }); } catch { /* best effort */ }
+    }
+    const text = `Propithub ${kind === 'staff' ? 'Staff' : 'Manager'} Access\nHello ${person.name},\nLogin: https://propithub.web.app/login\nEmail: ${person.email}\nPassword: ${pw}\nPlease change your password after signing in.`;
+    if (mode === 'whatsapp') {
+      const digits = String(person.phone || '').replace(/\D/g, '');
+      window.open(`https://wa.me/${digits}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Credentials copied. Paste them into WhatsApp or any chat.');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); showToast('Credentials copied.'); } catch { showToast(text); }
+      document.body.removeChild(ta);
+    }
+  };
+
   const mailInviteToStaff = async (s: any) => {
     const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
     let rand = '';
@@ -499,7 +532,13 @@ export const MaintenancePage: React.FC = () => {
                     >
                       ✉ Mail invite
                     </button>
-                    {s.tempPassword && (
+                    <button type="button" className="btn secondary small" onClick={() => shareCredentials(s, 'staff', 'copy')}>
+                      Copy credentials
+                    </button>
+                    <button type="button" className="btn secondary small" onClick={() => shareCredentials(s, 'staff', 'whatsapp')}>
+                      WhatsApp
+                    </button>
+                                        {s.tempPassword && (
                       <button
                         type="button"
                         className="btn secondary small"
