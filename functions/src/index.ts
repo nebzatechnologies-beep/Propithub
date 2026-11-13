@@ -908,6 +908,8 @@ async function notifyOwnerOnboardingStep(opts: {
   detail: string;
   link: string;
   emailOverride?: string;
+  /** In-app notification only (use when another trigger already emails the owner about the same event). */
+  skipEmail?: boolean;
 }): Promise<void> {
   if (!opts.ownerId) return;
   const esc = (v: any) =>
@@ -934,6 +936,7 @@ async function notifyOwnerOnboardingStep(opts: {
   } catch (err: any) {
     functions.logger.error('[notifyOwnerOnboardingStep] in-app notification failed:', err?.message || err);
   }
+  if (opts.skipEmail) return;
 
   const contact = await getUserContact(opts.ownerId);
   const to = (opts.emailOverride || contact?.email || '').trim().toLowerCase();
@@ -1362,6 +1365,115 @@ export const repairMyTenantRecords = functions.https.onCall(async (_data, contex
   functions.logger.info(`[repairMyTenantRecords] ${callerUid}: fixed ${fixed}`);
   return { fixed };
 });
+
+
+// ---------------------------------------------------------------------------
+// Owner activity notifications (in-app + email): everything a tenant does that the landlord should know about.
+// All use notifyOwnerOnboardingStep, which is idempotent per dedupeKey, so retries never double-notify.
+// ---------------------------------------------------------------------------
+const fmtMoney = (cur: any, n: any) => `${cur || 'INR'} ${Number(n || 0).toLocaleString('en-IN')}`;
+
+/** Tenant payment proof submitted (UPI / bank) or a payment received online. */
+export const onPaymentOwnerActivity = functions.firestore
+  .document('payments/{paymentId}')
+  .onWrite(async (change, context) => {
+    if (!change.after.exists) return;
+    const after = change.after.data() || {};
+    const before = change.before.exists ? change.before.data() || {} : null;
+    if (!after.ownerId || after.direction === 'outflow') return;
+    const id = context.params.paymentId;
+    const who = after.tenant || after.tenantName || 'Your tenant';
+    const unit = after.unit || 'the unit';
+    const kind = after.type === 'deposit' ? 'security deposit' : after.type === 'late_fee' ? 'late fee' : 'rent';
+
+    if (after.status === 'pending_confirmation' && before?.status !== 'pending_confirmation' && !after.cashClaimId) {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `pay_pending_${id}`,
+        title: `Payment proof submitted: ${fmtMoney(after.currency, after.amount)} (Unit ${unit})`,
+        detail: `${who} says they paid the ${kind} of ${fmtMoney(after.currency, after.amount)} for Unit ${unit} via ${after.method || 'offline transfer'}${after.notes ? ` (${after.notes})` : ''}. Open Payments, check the proof and confirm or decline it.`,
+        link: '/owner/payments',
+      });
+    } else if (
+      after.status === 'paid' && before?.status !== 'paid' && before?.status !== 'pending_confirmation' &&
+      after.audit?.claimedByRole !== 'owner' && after.type !== 'deposit_refund'
+    ) {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `pay_paid_${id}`,
+        title: `Payment received: ${fmtMoney(after.currency, after.amount)} (Unit ${unit})`,
+        detail: `${who} paid the ${kind} of ${fmtMoney(after.currency, after.amount)} for Unit ${unit}${after.method ? ` via ${after.method}` : ''}.`,
+        link: '/owner/payments',
+      });
+    }
+  });
+
+/** Cash handover claims already email/SMS the owner; this adds the missing in-app notification. */
+export const onCashClaimOwnerInApp = functions.firestore
+  .document('cashClaims/{claimId}')
+  .onCreate(async (snap, context) => {
+    const c = snap.data() || {};
+    if (!c.ownerId || c.direction === 'outflow' || c.claimedByRole !== 'tenant') return;
+    await notifyOwnerOnboardingStep({
+      ownerId: c.ownerId,
+      dedupeKey: `claim_${context.params.claimId}`,
+      title: `Cash payment claimed: ${fmtMoney(c.currency, c.amount)} (Unit ${c.unit || ''})`,
+      detail: `${c.tenantName || 'Your tenant'} reports handing over ${fmtMoney(c.currency, c.amount)} in cash for Unit ${c.unit || ''}. Please verify and confirm.`,
+      link: '/owner/payments',
+      skipEmail: true,
+    });
+  });
+
+/** New maintenance request from a tenant (emergency ones are already emailed by onTicketWrite). */
+export const onTicketCreatedOwner = functions.firestore
+  .document('tickets/{ticketId}')
+  .onCreate(async (snap, context) => {
+    const t = snap.data() || {};
+    if (!t.ownerId || !t.tenantId) return;
+    const urgent = t.priority === 'emergency' || t.priority === 'urgent';
+    await notifyOwnerOnboardingStep({
+      ownerId: t.ownerId,
+      dedupeKey: `ticket_${context.params.ticketId}`,
+      title: `New maintenance request: ${t.title || 'Maintenance'} (Unit ${t.unit || ''})`,
+      detail: `${t.tenant || t.tenantName || 'Your tenant'} raised a ${t.priority || ''} priority request for Unit ${t.unit || ''}: ${t.title || ''}${t.description ? ` - ${String(t.description).slice(0, 200)}` : ''}`,
+      link: '/owner/maintenance',
+      skipEmail: urgent,
+    });
+  });
+
+/** Tenant files a move-out notice / request. */
+export const onMoveOutCreatedOwner = functions.firestore
+  .document('moveouts/{moveoutId}')
+  .onCreate(async (snap, context) => {
+    const m = snap.data() || {};
+    if (!m.ownerId) return;
+    await notifyOwnerOnboardingStep({
+      ownerId: m.ownerId,
+      dedupeKey: `moveout_${context.params.moveoutId}`,
+      title: `Move-out request: Unit ${m.unit || ''}`,
+      detail: `${m.tenant || m.tenantName || 'Your tenant'} has filed a move-out request for Unit ${m.unit || ''}${m.moveOutDate ? ` for ${m.moveOutDate}` : ''}. Open Move-Outs to schedule the inspection.`,
+      link: '/owner/vacates',
+    });
+  });
+
+/** Tenant uploads KYC / ID documents to their profile. */
+export const onTenantKycUploadOwner = functions.firestore
+  .document('users/{userId}')
+  .onUpdate(async (change, context) => {
+    const a = change.after.data() || {};
+    const b = change.before.data() || {};
+    if (a.role !== 'tenant' || !a.ownerId) return;
+    const n = Array.isArray(a.kycDocuments) ? a.kycDocuments.length : 0;
+    const prev = Array.isArray(b.kycDocuments) ? b.kycDocuments.length : 0;
+    if (n <= prev) return;
+    await notifyOwnerOnboardingStep({
+      ownerId: a.ownerId,
+      dedupeKey: `kyc_${context.params.userId}_${n}`,
+      title: `${a.displayName || a.name || 'Your tenant'} uploaded KYC documents`,
+      detail: `${a.displayName || a.name || 'Your tenant'} added ${n - prev} identity document(s) to their profile. Open Tenants to review and verify.`,
+      link: '/owner/tenants',
+    });
+  });
 
 
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
