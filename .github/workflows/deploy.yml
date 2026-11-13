@@ -1,7 +1,8 @@
 name: Deploy to Firebase
 
-# Deploys the website (hosting) and the Cloud Functions to the propithub
-# Firebase project whenever code lands on main. It can also be run by hand
+# Deploys the Cloud Functions to the propithub Firebase project whenever code
+# lands on main. The website (hosting) is NOT deployed from here because the
+# build needs the private VITE_FIREBASE_* settings that are not in the repo. It can also be run by hand
 # from the Actions tab ("Run workflow").
 on:
   push:
@@ -27,11 +28,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install and build the website
-        run: |
-          npm ci
-          npm run build
-
       - name: Install and build the functions
         working-directory: functions
         run: |
@@ -44,5 +40,5 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: github-deployer@propithub.iam.gserviceaccount.com
 
-      - name: Deploy hosting and functions
-        run: npx --yes firebase-tools@13 deploy --only hosting,functions --project propithub --non-interactive --force
+      - name: Deploy functions
+        run: npx --yes firebase-tools@13 deploy --only functions --project propithub --non-interactive --force
