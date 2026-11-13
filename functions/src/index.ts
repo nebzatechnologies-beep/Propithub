@@ -750,13 +750,14 @@ export const setClaimsOnRequest = functions.firestore
       const userDoc = await db.collection('users').doc(uid).get();
       if (userDoc.exists) {
         const uData = userDoc.data() || {};
-        if (uData.tempPassword && !uData.inviteSent) {
+        const claimTempPw = after.tempPassword as string | undefined;
+        if ((claimTempPw || uData.tempPassword) && !uData.inviteSent) {
           const uEmail = (uData.email || '').trim().toLowerCase();
           const uPhone = (uData.phone || '').trim();
           const uName = uData.displayName || 'User';
           const uRole = uData.role || 'user';
           const uOwnerName = uData.ownerName || 'Property Management';
-          const uTempPw = uData.tempPassword;
+          const uTempPw = claimTempPw || uData.tempPassword;
 
           const roleNameMap: Record<string, string> = {
             tenant: 'Resident Tenant',
@@ -802,6 +803,10 @@ export const setClaimsOnRequest = functions.firestore
           }
 
           await db.collection('users').doc(uid).update({ inviteSent: true });
+          // Scrub the password from the claim request now that the invite is out.
+          await db.collection('userClaimRequests').doc(uid).update({
+            tempPassword: admin.firestore.FieldValue.delete(),
+          });
 
           await logCommunication({
             type: 'ACCOUNT_INVITE_DISPATCHED',
