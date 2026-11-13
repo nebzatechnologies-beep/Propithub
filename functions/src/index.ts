@@ -1060,7 +1060,7 @@ export const provisionUserAccount = functions.https.onCall(async (data, context)
   }
 
   const callerUid = context.auth.uid;
-  const callerRole = context.auth.token.role;
+  const callerRole = await resolveCallerRole(context);
 
   if (callerRole !== 'owner' && callerRole !== 'superadmin') {
     throw new functions.https.HttpsError('permission-denied', 'Only owners or admins can provision accounts.');
@@ -1237,6 +1237,27 @@ export const provisionUserAccount = functions.https.onCall(async (data, context)
 });
 
 /**
+ * The caller's role: from their sign-in token when present, otherwise from their profile.
+ * Owners who signed up themselves may not have the role in their token yet.
+ */
+async function resolveCallerRole(context: functions.https.CallableContext): Promise<string | undefined> {
+  const fromToken = context.auth?.token?.role as string | undefined;
+  if (fromToken) return fromToken;
+  const uid = context.auth?.uid;
+  if (!uid) return undefined;
+  try {
+    const u = await db.collection('users').doc(uid).get();
+    const r = u.exists ? (u.data()?.role as string | undefined) : undefined;
+    if (r) return r;
+    const o = await db.collection('owners').doc(uid).get();
+    if (o.exists) return 'owner';
+  } catch (err) {
+    functions.logger.warn('[resolveCallerRole] lookup failed:', err);
+  }
+  return undefined;
+}
+
+/**
  * deleteTenantAccount (Callable)
  * Lets an owner (or admin) permanently remove a tenant who is not in an active lease: the login,
  * profile, tenant record, invitations, pending leases and notifications. Frees reserved units.
@@ -1244,7 +1265,7 @@ export const provisionUserAccount = functions.https.onCall(async (data, context)
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
   const callerUid = context.auth.uid;
-  const callerRole = context.auth.token.role;
+  const callerRole = await resolveCallerRole(context);
   if (callerRole !== 'owner' && callerRole !== 'superadmin') {
     throw new functions.https.HttpsError('permission-denied', 'Only owners or admins can delete tenants.');
   }
@@ -2882,7 +2903,7 @@ export const finalizeMoveOutInspection = functions.https.onCall(async (data, con
   }
 
   const moveout = moveoutDoc.data()!;
-  const callerRole = context.auth.token.role;
+  const callerRole = await resolveCallerRole(context);
   const callerUid = context.auth.uid;
 
   if (callerRole !== 'owner' && callerRole !== 'manager') {
@@ -3020,7 +3041,7 @@ export const respondSupportTicket = functions.https.onCall(async (data, context)
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const callerRole = context.auth.token.role;
+  const callerRole = await resolveCallerRole(context);
   if (callerRole !== 'superadmin') {
     throw new functions.https.HttpsError('permission-denied', 'Only superadmin can respond to platform support tickets.');
   }
