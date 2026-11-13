@@ -184,7 +184,9 @@ export const MaintenancePage: React.FC = () => {
       password: passwordToUse,
       role: newStaff.role,
     });
-    showToast(`${name} onboarded with login credentials.`);
+    showToast(res.emailStatus === 'failed'
+      ? `${name} was added, but the invite email could not be sent${res.emailError ? ` (${res.emailError})` : ''}. Share the credentials shown.`
+      : `${name} onboarded. Login credentials emailed to ${staffEmail}.`);
   };
 
   const handleRemoveStaff = async (id: string, name: string) => {

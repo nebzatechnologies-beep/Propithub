@@ -1328,11 +1328,53 @@ export const provisionTeamMember = functions.https.onCall(async (data, context) 
     id: uid, email, displayName: name, role, phone, ownerId, ownerName,
     status: 'active', createdAt: new Date().toISOString(), inviteSent: false,
   }, { merge: true });
-  // Fires setClaimsOnRequest: sets claims and emails/SMS the credentials.
+  // Claims (best effort) - never blocks the invite.
+  try { await auth.setCustomUserClaims(uid, { role, ownerId }); } catch (e: any) {
+    functions.logger.error('[provisionTeamMember] claims failed', e?.message);
+  }
   await db.collection('userClaimRequests').doc(uid).set({
-    uid, role, ownerId, requestedAt: new Date().toISOString(), processed: false, tempPassword: password,
+    uid, role, ownerId, requestedAt: new Date().toISOString(), processed: true,
   });
-  return { success: true, uid };
+
+  // Send the credentials email + SMS RIGHT HERE (no dependency on any other trigger).
+  const roleTitle = role === 'manager' ? 'Property Manager' : 'Maintenance Technician';
+  const subject = `Welcome to Propithub — Your ${roleTitle} Account Credentials`;
+  const esc = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  const html = renderPropithubEmail(
+    subject,
+    `<p>Hello <strong>${esc(name)}</strong>,</p>
+     <p>You have been added as <strong>${roleTitle}</strong> by <strong>${esc(ownerName)}</strong> on Propithub.</p>
+     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:18px;margin:20px 0;">
+       <div style="font-size:12px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;">Your Login Credentials</div>
+       <div style="font-size:14px;margin-bottom:6px;">Email: <strong>${esc(email)}</strong></div>
+       <div style="font-size:14px;margin-bottom:6px;">Temporary Password: <strong style="font-family:monospace;color:#2563eb;background:#eff6ff;padding:2px 6px;border-radius:4px;">${esc(password)}</strong></div>
+       <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Please sign in and change your password under Settings.</div>
+     </div>`,
+    { text: 'Login to Propithub', url: 'https://propithub.web.app/login' }
+  );
+  let emailStatus: 'delivered' | 'failed' = 'failed';
+  let emailError = '';
+  try {
+    const r = await sendSendGridEmail(email, subject, `Hello ${name}, you were added as ${roleTitle} on Propithub. Login: ${email} / Temporary password: ${password}. Sign in at https://propithub.web.app/login`, html);
+    emailStatus = r.success ? 'delivered' : 'failed';
+    if (!r.success) emailError = String((r as any).error || 'send failed');
+  } catch (e: any) { emailError = e?.message || 'send failed'; }
+  let smsStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
+  if (phone) {
+    try {
+      const sr = await sendEventSms('SMS: Welcome message', phone, `Propithub: Hello ${name}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login with ${email} and password ${password}`);
+      smsStatus = sr.skipped ? 'skipped' : sr.success ? 'delivered' : 'failed';
+    } catch { smsStatus = 'failed'; }
+  }
+  await db.collection('users').doc(uid).set({ inviteSent: emailStatus === 'delivered' }, { merge: true });
+  await logCommunication({
+    type: 'ACCOUNT_INVITE_DISPATCHED', category: 'custom', title: `Account Invite: ${name} (${roleTitle})`,
+    body: `Credentials invite for ${email}`, channels: ['email', 'sms'], recipientId: uid, recipientName: name,
+    recipientRole: role as any, recipientContact: { email, phone }, ownerId,
+    deliveryStatus: { email: emailStatus, sms: smsStatus, inApp: 'delivered' },
+  }).catch(() => {});
+  functions.logger.info(`[provisionTeamMember] ${role} ${email}: email=${emailStatus} sms=${smsStatus} ${emailError}`);
+  return { success: true, uid, emailStatus, smsStatus, emailError };
 });
 
 /**
