@@ -44,7 +44,7 @@ export const TeamPage: React.FC = () => {
   } | null>(null);
   const [isResendingInvite, setIsResendingInvite] = useState(false);
 
-  const shareCredentials = async (person: any, kind: 'staff' | 'manager', mode: 'copy' | 'whatsapp') => {
+  const shareCredentials = async (person: any, kind: 'staff' | 'manager', mode: 'copy') => {
     let pw: string = person.tempPassword || '';
     if (!pw) {
       // No saved password: set a fresh one so the details we share actually work.
@@ -60,11 +60,6 @@ export const TeamPage: React.FC = () => {
       try { await saveManager({ ...person, tempPassword: pw }); } catch { /* best effort */ }
     }
     const text = `Propithub ${kind === 'staff' ? 'Staff' : 'Manager'} Access\nHello ${person.name},\nLogin: https://propithub.web.app/login\nEmail: ${person.email}\nPassword: ${pw}\nPlease change your password after signing in.`;
-    if (mode === 'whatsapp') {
-      const digits = String(person.phone || '').replace(/\D/g, '');
-      window.open(`https://wa.me/${digits}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
-      return;
-    }
     try {
       await navigator.clipboard.writeText(text);
       showToast('Credentials copied. Paste them into WhatsApp or any chat.');
@@ -449,9 +444,6 @@ export const TeamPage: React.FC = () => {
                           </button>
                           <button type="button" className="btn secondary small" style={{ fontSize: '12.5px' }} onClick={() => shareCredentials(pm, 'manager', 'copy')}>
                       Copy credentials
-                    </button>
-                    <button type="button" className="btn secondary small" style={{ fontSize: '12.5px' }} onClick={() => shareCredentials(pm, 'manager', 'whatsapp')}>
-                      WhatsApp
                     </button>
                                               {pm.tempPassword && (
                             <button
