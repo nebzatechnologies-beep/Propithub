@@ -90,9 +90,10 @@ export const Tenant360Page: React.FC = () => {
 
   const mySentRequests = (state.tenancyRequests || []).filter(
     (r) =>
-      (ownerId && r.ownerId === ownerId) ||
+      r.status !== 'archived' &&
+      ((ownerId && r.ownerId === ownerId) ||
       (ownerEmail && (r as any).ownerEmail?.toLowerCase() === ownerEmail) ||
-      (r.propertyId && myPropertyIds.has(r.propertyId))
+      (r.propertyId && myPropertyIds.has(r.propertyId)))
   );
 
   const myAgreements = (state.agreements || []).filter((a) => {
@@ -433,6 +434,26 @@ export const Tenant360Page: React.FC = () => {
       }
     });
   }, [myTenants, ownerId]);
+
+  // An accepted invitation can still be withdrawn until the lease is active/signed.
+  const isLeaseLive = (r: TenancyRequest) =>
+    (state.agreements || []).some(
+      (a) =>
+        (a.status === 'active' || a.status === 'signed') &&
+        (a.unit === r.unitNumber || a.unitId === r.unitId) &&
+        (a.tenantId === r.tenantId || (!!r.tenantEmail && a.tenantEmail?.toLowerCase() === r.tenantEmail.toLowerCase()))
+    );
+  const canCancelRequest = (r: TenancyRequest) =>
+    r.status === 'pending' || (r.status === 'accepted' && !isLeaseLive(r));
+
+  // Hide a finished (declined/cancelled) request from the list.
+  const handleRemoveRequest = (r: TenancyRequest) => {
+    saveTenancyRequest({ ...r, status: 'archived', respondedAt: new Date().toISOString() });
+    updateState((prev) => ({
+      ...prev,
+      tenancyRequests: (prev.tenancyRequests || []).map((x) => (x.id === r.id ? { ...x, status: 'archived' as const } : x)),
+    }));
+  };
 
   // Cancel sent request
   const handleCancelRequest = (reqId: string) => {
@@ -793,7 +814,7 @@ export const Tenant360Page: React.FC = () => {
                       if (r.status === 'accepted') {
                         statusBadge = (
                           <span className="badge green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                            <CheckCircle size={12} /> Accepted & Active
+                            <CheckCircle size={12} /> {isLeaseLive(r) ? 'Accepted & Active' : 'Accepted - lease in progress'}
                           </span>
                         );
                       } else if (r.status === 'declined') {
@@ -840,14 +861,18 @@ export const Tenant360Page: React.FC = () => {
                           </td>
                           <td>{statusBadge}</td>
                           <td>
-                            {r.status === 'pending' ? (
+                            {canCancelRequest(r) ? (
                               <button
                                 type="button"
                                 className="btn secondary small"
                                 style={{ color: 'var(--danger)' }}
                                 onClick={() => handleCancelRequest(r.id)}
                               >
-                                Cancel Request
+                                {r.status === 'accepted' ? 'Cancel & Free Unit' : 'Cancel Request'}
+                              </button>
+                            ) : (r.status === 'declined' || r.status === 'cancelled') ? (
+                              <button type="button" className="btn secondary small" onClick={() => handleRemoveRequest(r)}>
+                                Remove
                               </button>
                             ) : (
                               <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>—</span>
@@ -883,7 +908,7 @@ export const Tenant360Page: React.FC = () => {
                 if (r.status === 'accepted') {
                   statusBadge = (
                     <span className="badge green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      <CheckCircle size={12} /> Accepted & Active
+                      <CheckCircle size={12} /> {isLeaseLive(r) ? 'Accepted & Active' : 'Accepted - lease in progress'}
                     </span>
                   );
                 } else if (r.status === 'declined') {
@@ -932,14 +957,19 @@ export const Tenant360Page: React.FC = () => {
                       </div>
                     </div>
 
-                    {r.status === 'pending' && (
+                    {canCancelRequest(r) && (
                       <button
                         type="button"
                         className="btn secondary small btn-mobile-full"
                         style={{ color: 'var(--danger)' }}
                         onClick={() => handleCancelRequest(r.id)}
                       >
-                        Cancel Request
+                        {r.status === 'accepted' ? 'Cancel & Free Unit' : 'Cancel Request'}
+                      </button>
+                    )}
+                    {(r.status === 'declined' || r.status === 'cancelled') && (
+                      <button type="button" className="btn secondary small btn-mobile-full" onClick={() => handleRemoveRequest(r)}>
+                        Remove
                       </button>
                     )}
                   </div>

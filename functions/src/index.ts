@@ -1018,6 +1018,20 @@ export const onTenancyRequestResponse = functions.firestore
         detail: `${tenant} accepted your invitation for ${unit} at ${after.propertyName || 'your property'}. They will now upload the signed lease and documents.`,
         link: '/owner/leasing',
       });
+    } else if (after.status === 'cancelled') {
+      // Tell the tenant the owner withdrew the invitation.
+      const to = String(after.tenantEmail || '').trim().toLowerCase();
+      if (to) {
+        const esc = (v: any) =>
+          String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+        const subject = `Your tenancy invitation for ${unit} was withdrawn`;
+        const html = renderPropithubEmail(
+          subject,
+          `<p>Hello <strong>${esc(tenant)}</strong>,</p><p>The landlord has withdrawn the tenancy invitation for <strong>${esc(unit)}</strong> at <strong>${esc(after.propertyName || 'the property')}</strong>. No further action is needed from you.</p>`
+        );
+        const res = await sendSendGridEmail(to, subject, `The tenancy invitation for ${unit} at ${after.propertyName || ''} was withdrawn by the landlord.`, html);
+        if (!res.success) functions.logger.error('[onTenancyRequestResponse] withdraw email failed');
+      }
     } else if (after.status === 'declined') {
       await notifyOwnerOnboardingStep({
         ownerId: after.ownerId,
