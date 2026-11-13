@@ -1,5 +1,9 @@
 import { StrictMode } from 'react'
-import { // A tab left open across a deploy points at script files that no longer exist; reload once to pick up the new build.
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.tsx'
+
+// A tab left open across a deploy points at script files that no longer exist; reload once to pick up the new build.
 window.addEventListener('vite:preloadError', () => {
   try {
     if (sessionStorage.getItem('chunk-reloaded')) return;
@@ -8,9 +12,6 @@ window.addEventListener('vite:preloadError', () => {
   window.location.reload();
 });
 
-createRoot } from 'react-dom/client'
-import './index.css'
-import App from './App.tsx'
 
 // Prevent accidental value changes on all number inputs when scrolling the mouse wheel
 document.addEventListener(
