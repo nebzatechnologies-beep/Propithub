@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { collection, getDocs } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from '../../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions, isFirebaseConfigured } from '../../lib/firebase';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { TenantRecord, UserProfile, TenancyRequest, Agreement, Invoice, Unit, RequiredIdItem } from '../../types';
@@ -447,6 +448,44 @@ export const Tenant360Page: React.FC = () => {
   const canCancelRequest = (r: TenancyRequest) =>
     r.status === 'pending' || (r.status === 'accepted' && !isLeaseLive(r));
 
+  // A tenant can be deleted unless they are in an active/signed lease (that goes through move-out).
+  const tenantHasLiveLease = (t: TenantRecord) =>
+    (state.agreements || []).some(
+      (a) =>
+        (a.status === 'active' || a.status === 'signed') &&
+        (a.tenantId === t.id || (!!t.email && a.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
+    );
+
+  const handleDeleteTenant = async (t: TenantRecord) => {
+    if (!window.confirm(`Permanently delete ${t.name} (${t.email})? This removes their login, invitations and pending leases, and frees any reserved unit. This cannot be undone.`)) return;
+    try {
+      if (isFirebaseConfigured) {
+        await httpsCallable<any, any>(functions, 'deleteTenantAccount')({ tenantId: t.id, tenantEmail: t.email });
+      }
+      const sameTenant = (x: any) => x.id === t.id || (!!t.email && x.email?.toLowerCase() === t.email.toLowerCase());
+      updateState((prev) => ({
+        ...prev,
+        tenants: (prev.tenants || []).filter((x) => !sameTenant(x)),
+        users: (prev.users || []).filter((x) => !sameTenant(x)),
+        tenancyRequests: (prev.tenancyRequests || []).filter(
+          (r) => r.tenantId !== t.id && r.tenantEmail?.toLowerCase() !== (t.email || '').toLowerCase()
+        ),
+        agreements: (prev.agreements || []).filter(
+          (a) => a.tenantId !== t.id && a.tenantEmail?.toLowerCase() !== (t.email || '').toLowerCase()
+        ),
+        units: (prev.units || []).map((u) =>
+          u.currentTenantId === t.id && u.status !== 'occupied'
+            ? { ...u, status: 'vacant' as const, tenant: null, currentTenantId: null }
+            : u
+        ),
+      }));
+      showToast(`✓ ${t.name} deleted.`);
+    } catch (err: any) {
+      console.error('deleteTenantAccount failed:', err);
+      showToast(err?.message ? `Could not delete tenant: ${err.message}` : 'Could not delete tenant. Please try again.');
+    }
+  };
+
   // Permanently delete an invitation. A live (pending/accepted) one is cancelled first so the unit is freed.
   const handleDeleteRequest = (r: TenancyRequest) => {
     if (!window.confirm(`Delete the invitation for ${r.tenantName} (Unit ${r.unitNumber})? This cannot be undone.`)) return;
@@ -703,6 +742,16 @@ export const Tenant360Page: React.FC = () => {
                               >
                                 View Details
                               </button>
+                              {!tenantHasLiveLease(t) && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  style={{ color: 'var(--danger)', marginLeft: '6px' }}
+                                  onClick={() => handleDeleteTenant(t)}
+                                >
+                                  Delete
+                                </button>
+                              )}
                             </td>
                           </tr>
                         ))
@@ -764,6 +813,16 @@ export const Tenant360Page: React.FC = () => {
                       >
                         View Details
                       </button>
+                      {!tenantHasLiveLease(t) && (
+                        <button
+                          type="button"
+                          className="btn secondary small btn-mobile-full"
+                          style={{ color: 'var(--danger)' }}
+                          onClick={() => handleDeleteTenant(t)}
+                        >
+                          Delete Tenant
+                        </button>
+                      )}
                     </div>
                   ))
                 )}

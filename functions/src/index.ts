@@ -1237,6 +1237,80 @@ export const provisionUserAccount = functions.https.onCall(async (data, context)
 });
 
 /**
+ * deleteTenantAccount (Callable)
+ * Lets an owner (or admin) permanently remove a tenant who is not in an active lease: the login,
+ * profile, tenant record, invitations, pending leases and notifications. Frees reserved units.
+ */
+export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
+  const callerUid = context.auth.uid;
+  const callerRole = context.auth.token.role;
+  if (callerRole !== 'owner' && callerRole !== 'superadmin') {
+    throw new functions.https.HttpsError('permission-denied', 'Only owners or admins can delete tenants.');
+  }
+  const tenantId = String(data?.tenantId || '').trim();
+  const tenantEmail = String(data?.tenantEmail || '').trim().toLowerCase();
+  if (!tenantId && !tenantEmail) throw new functions.https.HttpsError('invalid-argument', 'tenantId or tenantEmail required.');
+
+  // Resolve the tenant's login profile (if any) and make sure it belongs to this owner.
+  let uid = '';
+  let userData: any = null;
+  if (tenantId) {
+    const u = await db.collection('users').doc(tenantId).get();
+    if (u.exists) { uid = u.id; userData = u.data(); }
+  }
+  if (!uid && tenantEmail) {
+    const q = await db.collection('users').where('email', '==', tenantEmail).limit(1).get();
+    if (!q.empty) { uid = q.docs[0].id; userData = q.docs[0].data(); }
+  }
+  if (userData) {
+    if (userData.role !== 'tenant') throw new functions.https.HttpsError('failed-precondition', 'That account is not a tenant.');
+    if (callerRole === 'owner' && userData.ownerId && userData.ownerId !== callerUid) {
+      throw new functions.https.HttpsError('permission-denied', 'This tenant belongs to another owner.');
+    }
+  }
+  const ids = new Set<string>([tenantId, uid].filter(Boolean));
+  const emailMatches = (v: any) => !!tenantEmail && String(v || '').toLowerCase() === tenantEmail;
+  const mine = (d: any) => callerRole === 'superadmin' || !d.ownerId || d.ownerId === callerUid;
+
+  const agSnap = await db.collection('agreements').get();
+  const tenantAgs = agSnap.docs.filter((d) => {
+    const a = d.data();
+    return (ids.has(a.tenantId) || emailMatches(a.tenantEmail)) && mine(a);
+  });
+  if (tenantAgs.some((d) => ['active', 'signed'].includes(d.data().status))) {
+    throw new functions.https.HttpsError('failed-precondition', 'This tenant has an active lease. End it through move-out first.');
+  }
+
+  const toDelete: FirebaseFirestore.DocumentReference[] = tenantAgs.map((d) => d.ref);
+  const reqSnap = await db.collection('tenancyRequests').get();
+  reqSnap.docs.forEach((d) => { const r = d.data(); if ((ids.has(r.tenantId) || emailMatches(r.tenantEmail)) && mine(r)) toDelete.push(d.ref); });
+  const tenSnap = await db.collection('tenants').get();
+  tenSnap.docs.forEach((d) => { const t = d.data(); if ((ids.has(d.id) || ids.has(t.userId) || emailMatches(t.email)) && mine(t)) toDelete.push(d.ref); });
+  if (uid) {
+    const nSnap = await db.collection('notifications').where('userId', '==', uid).get();
+    nSnap.docs.forEach((d) => toDelete.push(d.ref));
+    toDelete.push(db.collection('users').doc(uid));
+  }
+
+  // Free units that were reserved for this tenant.
+  const unitSnap = await db.collection('units').get();
+  const unitWrites = unitSnap.docs.filter((d) => { const u = d.data(); return (ids.has(u.currentTenantId) || ids.has(u.tenantId)) && u.status !== 'occupied'; });
+  for (const u of unitWrites) await u.ref.update({ status: 'vacant', tenant: null, currentTenantId: null });
+
+  for (let i = 0; i < toDelete.length; i += 400) {
+    const batch = db.batch();
+    toDelete.slice(i, i + 400).forEach((r) => batch.delete(r));
+    await batch.commit();
+  }
+  if (uid) {
+    try { await auth.deleteUser(uid); } catch (e: any) { if (e?.code !== 'auth/user-not-found') throw e; }
+  }
+  functions.logger.info(`[deleteTenantAccount] ${callerUid} deleted tenant ${uid || tenantId || tenantEmail}: ${toDelete.length} records`);
+  return { success: true, deleted: toDelete.length };
+});
+
+/**
  * 2. sendReminderNotification (Callable)
  * Triggered by Superadmin (for owner plan renewal reminders)
  * or Maintenance Staff (for tenant repair fee reminders).
