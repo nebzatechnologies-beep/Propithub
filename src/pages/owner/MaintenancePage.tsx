@@ -55,6 +55,27 @@ export const MaintenancePage: React.FC = () => {
     emailError?: string;
   } | null>(null);
   const [isResendingInvite, setIsResendingInvite] = useState(false);
+  const mailInviteToStaff = async (s: any) => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    let rand = '';
+    for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+    const pw = `Staff#${rand}`;
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: s.name, email: s.email, password: pw, role: 'staff',
+      phone: s.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not send the invite.'); return; }
+    try { await saveStaff({ ...s, tempPassword: pw }); } catch { /* record update is best effort */ }
+    setStaffCredentialsModal({
+      isOpen: true, name: s.name, email: s.email, password: pw, role: s.role, phone: s.phone || '',
+      emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError,
+    });
+    showToast(r.emailStatus === 'failed'
+      ? `Invite email to ${s.email} failed${r.emailError ? ` (${r.emailError})` : ''}. Use Copy Credentials.`
+      : `Invite emailed to ${s.email} (${r.birdStatus || 'accepted'}).`);
+  };
   const resendStaffInvite = async () => {
     if (!staffCredentialsModal || !staffCredentialsModal.password) {
       showToast('No saved password for this person. Add them again to send a fresh invite.');
@@ -470,6 +491,14 @@ export const MaintenancePage: React.FC = () => {
                     })()}</span>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn brass small"
+                      disabled={isResendingInvite}
+                      onClick={() => mailInviteToStaff(s)}
+                    >
+                      ✉ Mail invite
+                    </button>
                     {s.tempPassword && (
                       <button
                         type="button"
@@ -482,6 +511,7 @@ export const MaintenancePage: React.FC = () => {
                             email: s.email,
                             password: s.tempPassword || '',
                             role: s.role,
+                            phone: s.phone || '',
                           });
                         }}
                       >

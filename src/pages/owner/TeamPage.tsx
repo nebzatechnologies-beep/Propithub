@@ -43,6 +43,28 @@ export const TeamPage: React.FC = () => {
     emailError?: string;
   } | null>(null);
   const [isResendingInvite, setIsResendingInvite] = useState(false);
+  const mailInviteToManager = async (pm: any) => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    let rand = '';
+    for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+    const pw = `Manager#${rand}`;
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: pm.name, email: pm.email, password: pw, role: 'manager',
+      phone: pm.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not send the invite.'); return; }
+    try { await saveManager({ ...pm, tempPassword: pw }); } catch { /* record update is best effort */ }
+    setCredentialsModal({
+      isOpen: true, name: pm.name, email: pm.email, password: pw, role: 'Property Manager',
+      property: '', phone: pm.phone || '',
+      emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError,
+    });
+    showToast(r.emailStatus === 'failed'
+      ? `Invite email to ${pm.email} failed${r.emailError ? ` (${r.emailError})` : ''}. Use Copy Credentials.`
+      : `Invite emailed to ${pm.email} (${r.birdStatus || 'accepted'}).`);
+  };
   const resendManagerInvite = async () => {
     if (!credentialsModal || !credentialsModal.password) {
       showToast('No saved password for this person. Add them again to send a fresh invite.');
@@ -178,6 +200,7 @@ export const TeamPage: React.FC = () => {
       assignedProperties: pmPropertyId ? [pmPropertyId] : [],
       ownerName: user?.displayName || 'Property Owner',
       ownerId,
+      tempPassword: passwordToUse,
     };
 
     await saveManager(newPm);
@@ -381,6 +404,29 @@ export const TeamPage: React.FC = () => {
                           >
                             <Building2 size={13} /> {assignedProp ? 'Reassign' : 'Assign'}
                           </button>
+
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            style={{ fontSize: '12.5px' }}
+                            disabled={isResendingInvite}
+                            onClick={() => mailInviteToManager(pm)}
+                          >
+                            ✉ Mail invite
+                          </button>
+                          {pm.tempPassword && (
+                            <button
+                              type="button"
+                              className="btn secondary small"
+                              style={{ fontSize: '12.5px' }}
+                              onClick={() => setCredentialsModal({
+                                isOpen: true, name: pm.name, email: pm.email, password: pm.tempPassword,
+                                role: 'Property Manager', property: '', phone: pm.phone || '',
+                              })}
+                            >
+                              Credentials
+                            </button>
+                          )}
 
                           <button
                             type="button"
