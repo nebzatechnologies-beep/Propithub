@@ -47,7 +47,7 @@ import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/
 
 
 export const LeasingPage: React.FC = () => {
-  const { state, updateState, showToast, saveAgreement, deleteAgreement, saveAgreementTemplate, deleteAgreementTemplate, saveUnit, saveInvoice, saveTenant, saveMoveout, saveTenancyRequest, approveSignedAgreement, rejectSignedAgreement, offerLeaseRenewal, approveLeaseRenewal, updateEnquiryStatus } = useAppData();
+  const { state, updateState, showToast, saveAgreement, deleteAgreement, saveAgreementTemplate, deleteAgreementTemplate, saveUnit, saveInvoice, saveTenant, saveMoveout, saveTenancyRequest, deleteTenancyRequest, approveSignedAgreement, rejectSignedAgreement, offerLeaseRenewal, approveLeaseRenewal, updateEnquiryStatus } = useAppData();
   const { user, isOwnerPlanActive } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -278,6 +278,24 @@ export const LeasingPage: React.FC = () => {
     const terminated = myIssuedAgreements.filter((a) => a.status === 'terminated').length;
     return { all, drafts, active, pending, terminated };
   }, [myIssuedAgreements, draftAgreements]);
+
+  // Leases that are not yet running can be deleted by the owner (frees the unit and clears the invitation).
+  const canDeletePendingLease = (a: Agreement) =>
+    ['awaiting_tenant_signature', 'awaiting_tenant_upload', 'pending_approval', 'pending_deposit', 'pending_countersign', 'rejected'].includes(a.status as string);
+
+  const handleDeletePendingLease = async (a: Agreement) => {
+    if (!window.confirm(`Delete this pending lease for ${a.tenant} (Unit ${a.unit})? The unit becomes vacant again and the invitation is removed. This cannot be undone.`)) return;
+    (state.units || [])
+      .filter((u) => u.unitNumber === a.unit && (!a.propertyId || !u.propertyId || u.propertyId === a.propertyId) && u.status === 'reserved')
+      .forEach((u) => saveUnit({ ...u, status: 'vacant' as const, tenant: null, currentTenantId: null }));
+    for (const r of state.tenancyRequests || []) {
+      if (r.unitNumber === a.unit && (r.tenantId === a.tenantId || (!!r.tenantEmail && r.tenantEmail.toLowerCase() === (a.tenantEmail || '').toLowerCase()))) {
+        await deleteTenancyRequest(r.id);
+      }
+    }
+    await deleteAgreement(a.id);
+    showToast(`✓ Pending lease for Unit ${a.unit} deleted.`);
+  };
 
   const filteredAgreements = useMemo(() => {
     return myIssuedAgreements.filter((a) => {
@@ -1218,6 +1236,17 @@ export const LeasingPage: React.FC = () => {
                                     </>
                                   ) : (
                                     <>
+                                      {canDeletePendingLease(a) && (
+                                        <button
+                                          type="button"
+                                          className="btn secondary small"
+                                          onClick={() => handleDeletePendingLease(a)}
+                                          title="Delete pending lease"
+                                          style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#DC2626' }}
+                                        >
+                                          <Trash2 size={13} /> Delete
+                                        </button>
+                                      )}
                                       {isPendingApproval && (
                                         <button
                                           type="button"
@@ -1414,6 +1443,16 @@ export const LeasingPage: React.FC = () => {
                             </>
                           ) : (
                             <>
+                              {canDeletePendingLease(a) && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small btn-mobile-full"
+                                  onClick={() => handleDeletePendingLease(a)}
+                                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '4px', color: '#DC2626' }}
+                                >
+                                  <Trash2 size={13} /> Delete Pending Lease
+                                </button>
+                              )}
                               {isPendingApproval && (
                                 <button
                                   type="button"

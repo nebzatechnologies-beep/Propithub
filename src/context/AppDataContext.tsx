@@ -59,6 +59,7 @@ interface AppDataContextType {
   showToast: (msg: string, type?: ToastType, options?: ToastOptions) => void;
   toasts: { id: string; msg: string }[];
   deleteAgreement: (agreementId: string) => Promise<void>;
+  deleteTenancyRequest: (requestId: string) => Promise<void>;
   saveAgreementTemplate: (template: AgreementTemplate) => Promise<void>;
   deleteAgreementTemplate: (templateId: string) => Promise<void>;
   updateAgreementAutopay: (agreementId: string, autopay: Partial<TenantAutopayMandate>) => Promise<void>;
@@ -3023,6 +3024,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         await deleteDoc(doc(db, 'agreements', agreementId));
       } catch (err) {
         console.warn('Firestore deleteAgreement error:', err);
+      }
+    }
+  };
+
+  const deleteTenancyRequest = async (requestId: string) => {
+    setState((prev) => ({
+      ...prev,
+      tenancyRequests: (prev.tenancyRequests || []).filter((r) => r.id !== requestId),
+    }));
+    if (isFirebaseConfigured) {
+      try {
+        await deleteDoc(doc(db, 'tenancyRequests', requestId));
+      } catch (err) {
+        console.error('Firestore deleteTenancyRequest error:', err);
       }
     }
   };
@@ -7382,6 +7397,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         deleteUserAccount,
         saveAgreement,
         deleteAgreement,
+        deleteTenancyRequest,
         saveAgreementTemplate,
         deleteAgreementTemplate,
         uploadSignedAgreement,
