@@ -36,6 +36,8 @@ export interface ProvisionUserResult {
   success: boolean;
   uid?: string;
   error?: string;
+  emailStatus?: 'delivered' | 'failed';
+  emailError?: string;
 }
 
 interface AuthContextType {
@@ -634,7 +636,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           saveState(updated);
           return updated;
         });
-        return { success: true, uid: newUid };
+        return { success: true, uid: newUid, emailStatus: res?.data?.emailStatus, emailError: res?.data?.emailError };
       } catch (err: any) {
         console.error('provisionTeamMember failed:', err);
         return { success: false, error: err?.message || 'Could not create the account. Please try again.' };
