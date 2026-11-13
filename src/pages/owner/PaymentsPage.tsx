@@ -2,7 +2,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { Invoice, PaymentTransaction, InvoiceTemplateConfig, CashHandoverClaim } from '../../types';
-import { db, isFirebaseConfigured } from '../../lib/firebase';
+import { db, functions, isFirebaseConfigured } from '../../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
 import { doc, setDoc } from 'firebase/firestore';
 import { getDaysFromNowString, getTodayDateString } from '../../lib/dates';
 import { RentalInvoiceStudioModal, DEFAULT_DEPOSIT_TERMS } from '../../components/invoices/RentalInvoiceStudioModal';
@@ -62,6 +63,16 @@ import {
 export const PaymentsPage: React.FC = () => {
   const { state, updateState, saveAgreement, saveInvoice, savePayment, markInvoicePaid, waiveInvoiceLateFee, saveOwnerSettings, confirmCashClaim, rejectCashClaim, submitCashClaim, logCommunication, showToast } = useAppData();
   const { user } = useAuth();
+
+  // One-time repair per session: payments/proofs a tenant submitted without an owner stamp are re-attached to this owner.
+  useEffect(() => {
+    if (!isFirebaseConfigured || !user?.id) return;
+    const key = `repaired-tenant-records-${user.id}`;
+    try { if (sessionStorage.getItem(key)) return; sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+    httpsCallable<unknown, { fixed: number }>(functions, 'repairMyTenantRecords')()
+      .then((r) => { if (r.data?.fixed) console.info(`Re-attached ${r.data.fixed} payment record(s) to your account.`); })
+      .catch((e) => console.warn('repairMyTenantRecords failed', e));
+  }, [user?.id]);
   const ownerId = user?.id || '';
 
   const { viewCurrency, convert } = useCurrency();
