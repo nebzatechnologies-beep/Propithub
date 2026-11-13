@@ -1476,6 +1476,23 @@ export const onTenantKycUploadOwner = functions.firestore
   });
 
 
+/** Welcome email + in-app notification when a new owner account is created. */
+export const onOwnerSignupWelcome = functions.firestore
+  .document('users/{userId}')
+  .onCreate(async (snap, context) => {
+    const u = snap.data() || {};
+    if (u.role !== 'owner') return;
+    const uid = context.params.userId;
+    await notifyOwnerOnboardingStep({
+      ownerId: uid,
+      dedupeKey: `welcome_${uid}`,
+      title: 'Welcome to Propithub',
+      detail: 'Your owner account is ready. Add your first property and unit, then invite a tenant to lease it. We will notify you here and by email at every step: invitation accepted, documents uploaded, payments and maintenance requests.',
+      link: '/owner/dashboard',
+      emailOverride: u.email,
+    });
+  });
+
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
   const callerUid = context.auth.uid;
