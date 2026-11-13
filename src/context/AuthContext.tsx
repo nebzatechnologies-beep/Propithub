@@ -609,6 +609,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cleanName = params.name.trim();
     let uid = `usr_${params.role}_${Date.now()}`;
 
+    // Managers and maintenance staff are created server-side (reliable, re-usable if a previous attempt
+    // left a half-created login, and the credentials email/SMS is dispatched there).
+    if (isFirebaseConfigured && (params.role === 'manager' || params.role === 'staff')) {
+      try {
+        const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
+          name: cleanName,
+          email: cleanEmail,
+          password: params.password,
+          role: params.role,
+          phone: params.phone?.trim() || '',
+          ownerId: params.ownerId,
+          ownerName: params.ownerName || 'Property Owner',
+        });
+        const newUid = res?.data?.uid as string;
+        if (!newUid) return { success: false, error: 'Could not create the account. Please try again.' };
+        const profile: UserProfile = {
+          id: newUid, email: cleanEmail, displayName: cleanName, role: params.role,
+          phone: params.phone?.trim() || '', ownerId: params.ownerId,
+          ownerName: params.ownerName || 'Property Owner', status: 'active', createdAt: new Date().toISOString(),
+        };
+        setAppState((prev) => {
+          const updated = { ...prev, users: [...prev.users.filter((u) => u.id !== newUid && u.email.toLowerCase() !== cleanEmail), profile] };
+          saveState(updated);
+          return updated;
+        });
+        return { success: true, uid: newUid };
+      } catch (err: any) {
+        console.error('provisionTeamMember failed:', err);
+        return { success: false, error: err?.message || 'Could not create the account. Please try again.' };
+      }
+    }
+
     if (isFirebaseConfigured) {
       try {
         uid = await createSecondaryAuthUser(cleanEmail, params.password);
