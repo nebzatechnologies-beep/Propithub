@@ -142,6 +142,7 @@ export const Tenant360Page: React.FC = () => {
 
     // 1. Process explicit tenant records from state.tenants
     state.tenants.forEach((t) => {
+      if (Array.isArray(t.removedOwnerIds) && ownerId && t.removedOwnerIds.includes(ownerId)) return;
       // Disqualify only if this tenant has NO connection to this owner or any of this owner's properties/units/agreements
       const matchesOwnerId = Boolean(ownerId) && Boolean(t.ownerId) && t.ownerId === ownerId;
       const matchesProperty = Boolean(t.propertyId) && myPropertyIds.has(t.propertyId!);
