@@ -2205,7 +2205,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       try {
         if (targetAgreement) {
           const firstId = uploadedIds && uploadedIds.length > 0 ? uploadedIds[0] : undefined;
-          await setDoc(doc(db, 'agreements', agreementId), {
+          await setDoc(doc(db, 'agreements', agreementId), cleanFirestoreObject({
+            ...(targetAgreement as Agreement),
             status: 'pending_approval',
             signedDocumentUrl: fileData,
             signedDocumentName: fileName,
@@ -2216,7 +2217,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             tenantUploadedIdUrl: firstId ? firstId.fileUrl : (targetAgreement as any).tenantUploadedIdUrl || null,
             tenantUploadedIdName: firstId ? firstId.fileName : (targetAgreement as any).tenantUploadedIdName || null,
             tenantUploadedIdAt: firstId ? now : (targetAgreement as any).tenantUploadedIdAt || null,
-          }, { merge: true });
+          }), { merge: true });
 
           if (tenantRecordIdToUpdate && updatedKycDocs.length > 0) {
             await setDoc(doc(db, 'tenants', tenantRecordIdToUpdate), {
@@ -2942,12 +2943,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }));
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'agreements', agreement.id), agreement, { merge: true });
+        // Firestore rejects `undefined` values; without cleaning, the whole save failed silently
+        // and the lease never reached the database (so the owner never saw it).
+        await setDoc(doc(db, 'agreements', agreement.id), cleanFirestoreObject(agreement), { merge: true });
         if (isNew && agreement.unit) {
           deleteDoc(doc(db, 'renewals', agreement.unit)).catch(console.warn);
         }
       } catch (err) {
-        console.warn('Firestore saveAgreement sync error:', err);
+        console.error('Firestore saveAgreement sync error:', err);
       }
     }
 
