@@ -424,9 +424,18 @@ async function birdPost(
         },
         body: JSON.stringify(body),
       });
-      const data: any = await res.json().catch(() => ({}));
+      const rawText = await res.text().catch(() => '');
+      let data: any = {};
+      try { data = rawText ? JSON.parse(rawText) : {}; } catch { data = {}; }
       if (res.ok) return { success: true, id: data?.id };
+      const hdr = ['retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'ratelimit-limit', 'ratelimit-remaining']
+        .map((h) => (res.headers.get(h) ? `${h}=${res.headers.get(h)}` : '')).filter(Boolean).join(' ');
       lastError = data?.message || `Bird HTTP ${res.status}${data?.code ? ` (${data.code})` : ''}`;
+      if (res.status === 429) {
+        const detail = String(rawText || '').replace(/\s+/g, ' ').slice(0, 160);
+        lastError = `Bird HTTP 429 - ${detail || 'no body'}${hdr ? ` [${hdr}]` : ''}`;
+        functions.logger.error(`[Bird] 429 on ${path}: ${rawText.slice(0, 500)} ${hdr}`);
+      }
       const retryable = res.status === 429 || res.status >= 500;
       if (!retryable || attempt === maxAttempts) return { success: false, error: lastError };
       const retryAfter = Number(res.headers.get('retry-after'));
