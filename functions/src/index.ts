@@ -1309,6 +1309,61 @@ export const requestPasswordReset = functions.https.onCall(async (data) => {
   return { success: true };
 });
 
+// ---------------------------------------------------------------------------
+// Payment visibility: records a tenant creates must carry their landlord's ownerId, otherwise the owner
+// (whose dashboard only loads ownerId == own uid) never sees the payment or its proof.
+// ---------------------------------------------------------------------------
+async function ownerOfTenant(tenantId: string): Promise<string> {
+  if (!tenantId) return '';
+  const u = await db.collection('users').doc(tenantId).get();
+  if (u.exists && u.data()?.ownerId) return String(u.data()!.ownerId);
+  const ag = await db.collection('agreements').where('tenantId', '==', tenantId).limit(5).get();
+  const fromAg = ag.docs.map((d) => d.data().ownerId).find(Boolean);
+  if (fromAg) return String(fromAg);
+  const rq = await db.collection('tenancyRequests').where('tenantId', '==', tenantId).limit(5).get();
+  const fromRq = rq.docs.map((d) => d.data().ownerId).find(Boolean);
+  return fromRq ? String(fromRq) : '';
+}
+
+const fillMissingOwnerId = (collectionName: string) =>
+  functions.firestore.document(`${collectionName}/{docId}`).onWrite(async (change) => {
+    if (!change.after.exists) return;
+    const d = change.after.data() || {};
+    if (d.ownerId || !d.tenantId) return;
+    const ownerId = await ownerOfTenant(String(d.tenantId));
+    if (ownerId) {
+      await change.after.ref.update({ ownerId });
+      functions.logger.info(`[fillMissingOwnerId] ${collectionName}/${change.after.id} -> ${ownerId}`);
+    }
+  });
+export const fillOwnerIdOnPayments = fillMissingOwnerId('payments');
+export const fillOwnerIdOnInvoices = fillMissingOwnerId('invoices');
+export const fillOwnerIdOnCashClaims = fillMissingOwnerId('cashClaims');
+
+/** Owner-callable repair for payment records created before the fix above (blank ownerId). */
+export const repairMyTenantRecords = functions.https.onCall(async (_data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
+  const callerUid = context.auth.uid;
+  const role = await resolveCallerRole(context);
+  if (role !== 'owner') return { fixed: 0 };
+  const tenantIds = new Set<string>();
+  (await db.collection('users').where('ownerId', '==', callerUid).where('role', '==', 'tenant').get()).docs.forEach((d) => tenantIds.add(d.id));
+  (await db.collection('agreements').where('ownerId', '==', callerUid).get()).docs.forEach((d) => { const t = d.data().tenantId; if (t) tenantIds.add(String(t)); });
+  (await db.collection('tenancyRequests').where('ownerId', '==', callerUid).get()).docs.forEach((d) => { const t = d.data().tenantId; if (t) tenantIds.add(String(t)); });
+  let fixed = 0;
+  for (const tid of tenantIds) {
+    for (const coll of ['payments', 'invoices', 'cashClaims']) {
+      const snap = await db.collection(coll).where('tenantId', '==', tid).get();
+      for (const d of snap.docs) {
+        if (!d.data().ownerId) { await d.ref.update({ ownerId: callerUid }); fixed++; }
+      }
+    }
+  }
+  functions.logger.info(`[repairMyTenantRecords] ${callerUid}: fixed ${fixed}`);
+  return { fixed };
+});
+
+
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
   const callerUid = context.auth.uid;
