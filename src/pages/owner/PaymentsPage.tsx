@@ -1234,6 +1234,19 @@ export const PaymentsPage: React.FC = () => {
     if (matchingInvoice) {
       await markInvoicePaid(matchingInvoice.id, targetPay?.method || 'Offline Confirmed');
     }
+    if (isFirebaseConfigured && targetPay) {
+      try {
+        await setDoc(
+          doc(db, 'payments', id),
+          { status: 'paid', audit: { ...(targetPay.audit || {}), confirmedBy: user?.id || 'owner', confirmedByName: user?.displayName || 'Property Owner', confirmedAt: new Date().toISOString() } },
+          { merge: true }
+        );
+      } catch (err: any) {
+        console.error('Could not persist payment confirmation:', err);
+        showToast(`Could not save the confirmation: ${err?.message || err}. Please refresh and try again.`);
+        return;
+      }
+    }
 
     updateState((prev) => {
       const updatedPayments = prev.payments.map((p) =>
@@ -1608,6 +1621,34 @@ export const PaymentsPage: React.FC = () => {
     );
     if (linkedClaim) {
       await confirmCashClaim(linkedClaim.id);
+    }
+
+    // Persist the matching payment records as paid (the on-screen update alone was lost on reload, so the row
+    // kept showing "Confirmation Pending").
+    const affectedPayments = (state.payments || []).filter(
+      (p) =>
+        (p.invoiceId === inv.id || (p.tenantId === inv.tenantId && (!p.propertyId || !inv.propertyId || p.propertyId === inv.propertyId) && p.unit === inv.unit)) &&
+        p.status === 'pending_confirmation'
+    );
+    if (isFirebaseConfigured) {
+      try {
+        for (const p of affectedPayments) {
+          await setDoc(
+            doc(db, 'payments', p.id),
+            {
+              status: 'paid',
+              method: settleLabel,
+              audit: { ...(p.audit || {}), confirmedBy: user?.id || 'owner', confirmedByName: user?.displayName || 'Property Owner', confirmedAt: new Date().toISOString() },
+            },
+            { merge: true }
+          );
+        }
+      } catch (err: any) {
+        console.error('Could not persist payment confirmation:', err);
+        showToast(`Could not save the confirmation: ${err?.message || err}. Please refresh and try again.`);
+        setIsApprovingProof(false);
+        return;
+      }
     }
 
     updateState((prev) => {

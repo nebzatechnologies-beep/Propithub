@@ -5714,8 +5714,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (claim.unit) {
           deleteDoc(doc(db, 'renewals', claim.unit)).catch(console.warn);
         }
-      } catch (err) {
-        console.warn('Firestore confirmCashClaim sync error:', err);
+      } catch (err: any) {
+        console.error('Firestore confirmCashClaim sync error:', err);
+        showToast(`Could not save the confirmation: ${err?.message || err}. Please refresh and try again.`);
+        return;
       }
     }
 

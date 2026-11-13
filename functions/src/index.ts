@@ -1493,6 +1493,35 @@ export const onOwnerSignupWelcome = functions.firestore
     });
   });
 
+/** Tenant is told (in-app + email) when the owner confirms or declines their payment proof. */
+export const onPaymentDecisionTenant = functions.firestore
+  .document('payments/{paymentId}')
+  .onUpdate(async (change, context) => {
+    const before = change.before.data() || {};
+    const after = change.after.data() || {};
+    if (before.status !== 'pending_confirmation' || !after.tenantId || after.direction === 'outflow') return;
+    const id = context.params.paymentId;
+    const amt = fmtMoney(after.currency, after.amount);
+    const unit = after.unit || 'your unit';
+    if (after.status === 'paid') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.tenantId,
+        dedupeKey: `paydecision_paid_${id}`,
+        title: `Payment confirmed: ${amt}`,
+        detail: `Your landlord confirmed your payment of ${amt} for Unit ${unit}. Your receipt is available in Payments.`,
+        link: '/tenant/payments',
+      });
+    } else if (after.status === 'disputed' || after.status === 'overdue' || after.status === 'cancelled') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.tenantId,
+        dedupeKey: `paydecision_rejected_${id}`,
+        title: `Payment proof not accepted: ${amt}`,
+        detail: `Your landlord could not verify your payment of ${amt} for Unit ${unit}. Please check the details and submit your proof again.`,
+        link: '/tenant/payments',
+      });
+    }
+  });
+
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
   const callerUid = context.auth.uid;
