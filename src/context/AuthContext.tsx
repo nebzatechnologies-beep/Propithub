@@ -648,6 +648,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ownerId: params.ownerId || null,
           requestedAt: new Date().toISOString(),
           processed: false,
+          // Needed server-side to email the invite; the function deletes it after sending.
+          tempPassword: params.password,
         });
       } catch (err: any) {
         console.error('Firestore setDoc user profile error:', err);
