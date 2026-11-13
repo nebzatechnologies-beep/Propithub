@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
+import { isIndiaOwner, sortGatewaysByRegion } from '../../lib/gatewayDefaults';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { launchRazorpayPayment, launchStripePayment, launchPayPalPayment, launchEasebuzzPayment, launchStripeRecurringMandate, launchRazorpayRecurringMandate, launchPayPalRecurringMandate, launchEasebuzzRecurringMandate } from '../../lib/payments';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
@@ -94,7 +95,7 @@ export const PlanSubscriptionPage: React.FC = () => {
       await cancelOwnerAutopay(effectiveOwnerId);
       showToast('Autopay disabled. Your subscription will not automatically renew at the end of the current period.');
     } else {
-      const activeGw = (ownerSettings?.subscriptionMandate?.activeGateway || 'stripe') as any;
+      const activeGw = (ownerSettings?.subscriptionMandate?.activeGateway || regionalDefaultGateway || 'stripe') as any;
       await updateOwnerAutopay(effectiveOwnerId, {
         autoRenew: true,
         status: 'active',
@@ -337,8 +338,18 @@ export const PlanSubscriptionPage: React.FC = () => {
       });
     }
 
-    return list;
-  }, [state.platformGateways, convert]);
+    return sortGatewaysByRegion(list, isIndiaOwner(user as any, state.properties as any));
+  }, [state.platformGateways, convert, user, state.properties]);
+
+  // Regional default: Razorpay first for India, PayPal first elsewhere (applies to plan checkout, boosts and autopay setup).
+  const regionalDefaultGateway = availableBillingGateways[0]?.key;
+  React.useEffect(() => {
+    if (regionalDefaultGateway) {
+      setSelectedBillingGateway(regionalDefaultGateway);
+      setSelectedNewGateway(regionalDefaultGateway);
+      setBoostGateway(regionalDefaultGateway);
+    }
+  }, [regionalDefaultGateway]);
 
   const [selectedBillingGateway, setSelectedBillingGateway] = useState<'stripe' | 'razorpay' | 'paypal' | 'easebuzz'>(() => {
     return (availableBillingGateways[0]?.key as any) || 'stripe';
