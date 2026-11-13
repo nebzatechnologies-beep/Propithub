@@ -1997,6 +1997,7 @@ export const PaymentsHistoryPage: React.FC = () => {
     }
 
     // Direct / Offline Methods (UPI, Bank)
+    const submittedIsDeposit = String(activePayingInvoice?.id || overduePay?.invoiceId || '').toUpperCase().startsWith('DEP-');
     await finalizePaymentRecord(
       payId,
       payAmount,
@@ -2007,6 +2008,15 @@ export const PaymentsHistoryPage: React.FC = () => {
       offlineNotes || undefined
     );
     showToast('✓ Payment proof submitted! Your landlord will verify and settle the invoice.');
+    // Take the tenant straight to the transaction they just paid.
+    if (submittedIsDeposit) {
+      setSubTab('deposit');
+      setSearchParams((prev) => { const n = new URLSearchParams(prev); n.set('tab', 'deposit'); return n; }, { replace: true });
+    } else {
+      setSubTab('rent_due');
+      setRentDueView('history');
+    }
+    try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* ignore */ }
   };
 
   const getMoveoutBadge = (s: string) => {
