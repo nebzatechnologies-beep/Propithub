@@ -830,6 +830,67 @@ export const setClaimsOnRequest = functions.firestore
   });
 
 /**
+ * Emails the tenant whenever an owner sends a tenancy invitation (tenancyRequests/{id} created).
+ * Before this existed, the invitation lived only inside the app and the tenant was never told.
+ */
+export const onTenancyRequestCreated = functions.firestore
+  .document('tenancyRequests/{requestId}')
+  .onCreate(async (snap, context) => {
+    const r = snap.data() || {};
+    const to = String(r.tenantEmail || '').trim().toLowerCase();
+    if (!to) {
+      functions.logger.warn(`[onTenancyRequestCreated] No tenant email on request ${context.params.requestId}`);
+      return;
+    }
+    const esc = (v: any) =>
+      String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+    const money = (n: any) => `${esc(r.currency || 'INR')} ${Number(n || 0).toLocaleString('en-IN')}`;
+    const tenantName = r.tenantName || 'there';
+    const ownerName = r.ownerName || 'your property owner';
+    const unit = r.isBulkLease && Array.isArray(r.bulkUnitNumbers) ? `Units ${r.bulkUnitNumbers.join(', ')}` : `Unit ${r.unitNumber || ''}`;
+    const subject = `${ownerName} has invited you to lease ${unit} at ${r.propertyName || 'a Propithub property'}`;
+
+    const html = renderPropithubEmail(
+      subject,
+      `<p>Hello <strong>${esc(tenantName)}</strong>,</p>
+       <p><strong>${esc(ownerName)}</strong> has sent you a tenancy invitation on Propithub. Please log in to review the lease and accept it.</p>
+       <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 20px 0;">
+         <div style="font-size: 14px; margin-bottom: 6px;">Property: <strong>${esc(r.propertyName)}</strong></div>
+         <div style="font-size: 14px; margin-bottom: 6px;">${esc(unit)}</div>
+         <div style="font-size: 14px; margin-bottom: 6px;">Monthly rent: <strong>${money(r.rent)}</strong></div>
+         <div style="font-size: 14px; margin-bottom: 6px;">Security deposit: <strong>${money(r.deposit)}</strong></div>
+         <div style="font-size: 14px;">Lease term: <strong>${esc(r.leaseStart)}</strong> to <strong>${esc(r.leaseEnd)}</strong></div>
+       </div>
+       <p style="font-size: 13px; color: #64748b;">Log in with this email address (${esc(to)}). If you did not receive a password, or have forgotten it, use "Forgot password" on the login page.</p>`,
+      { text: 'Review your invitation', url: 'https://propithub.web.app/login' }
+    );
+    const text = `Hello ${tenantName}, ${ownerName} has invited you to lease ${unit} at ${r.propertyName || ''}. Rent ${r.currency || 'INR'} ${r.rent}, deposit ${r.currency || 'INR'} ${r.deposit}, ${r.leaseStart} to ${r.leaseEnd}. Log in at https://propithub.web.app/login with ${to} to review and accept.`;
+
+    let emailStatus: 'delivered' | 'failed' = 'failed';
+    try {
+      const res = await sendSendGridEmail(to, subject, text, html);
+      emailStatus = res.success ? 'delivered' : 'failed';
+      if (!res.success) functions.logger.error('[onTenancyRequestCreated] Email failed:', (res as any).error);
+    } catch (err: any) {
+      functions.logger.error('[onTenancyRequestCreated] Email threw:', err?.message || err);
+    }
+
+    await logCommunication({
+      type: 'TENANCY_INVITATION_SENT',
+      category: 'custom',
+      title: `Tenancy invitation: ${tenantName} - ${unit}`,
+      body: text,
+      channels: ['email'],
+      recipientId: r.tenantId || '',
+      recipientName: tenantName,
+      recipientRole: 'tenant' as any,
+      recipientContact: { email: to, phone: r.tenantPhone || '' },
+      ownerId: r.ownerId || null,
+      deliveryStatus: { email: emailStatus, sms: 'skipped', inApp: 'delivered' },
+    });
+  });
+
+/**
  * 1. provisionUserAccount (Callable)
  * Executed by an Owner to provision Tenant, Property Manager, or Maintenance Staff accounts.
  * - Enforces owner active subscription status.
