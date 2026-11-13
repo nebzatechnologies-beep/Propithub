@@ -411,23 +411,35 @@ async function birdPost(
   body: any
 ): Promise<{ success: boolean; id?: string; error?: string }> {
   const region = (apiKey.match(/^b[km]_([a-z0-9]+)_/i) || [])[1] || 'us1';
-  try {
-    const res = await fetch(`https://${region}.platform.bird.com${path}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data: any = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return { success: false, error: data?.message || `Bird HTTP ${res.status}${data?.code ? ` (${data.code})` : ''}` };
+  // Bird answers 429 (rate limit) or 5xx under load: wait (honouring Retry-After) and try again.
+  const maxAttempts = 5;
+  let lastError = 'Bird request failed';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`https://${region}.platform.bird.com${path}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      const data: any = await res.json().catch(() => ({}));
+      if (res.ok) return { success: true, id: data?.id };
+      lastError = data?.message || `Bird HTTP ${res.status}${data?.code ? ` (${data.code})` : ''}`;
+      const retryable = res.status === 429 || res.status >= 500;
+      if (!retryable || attempt === maxAttempts) return { success: false, error: lastError };
+      const retryAfter = Number(res.headers.get('retry-after'));
+      const waitMs = Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1500 * attempt, 8000);
+      functions.logger.warn(`[Bird] ${res.status} on ${path}, retry ${attempt}/${maxAttempts - 1} in ${waitMs}ms`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+      if (attempt === maxAttempts) return { success: false, error: lastError };
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
     }
-    return { success: true, id: data?.id };
-  } catch (err: any) {
-    return { success: false, error: err?.message || String(err) };
   }
+  return { success: false, error: lastError };
 }
 
 /** Looks up what Bird actually did with an accepted email (delivered / deferred / bounced / rejected...). */
