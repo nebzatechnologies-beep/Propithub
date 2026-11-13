@@ -1269,6 +1269,46 @@ async function resolveCallerRole(context: functions.https.CallableContext): Prom
  * the tenant record, invitations and pending leases are deleted and reserved units are freed.
  * The tenant's own login is NOT deleted.
  */
+/**
+ * requestPasswordReset (Callable, no sign-in needed)
+ * Sends the password-reset link through Bird (our own sender) instead of Firebase's default mailer,
+ * which was landing in spam / not arriving. Always answers "success" so it cannot be used to discover accounts.
+ */
+export const requestPasswordReset = functions.https.onCall(async (data) => {
+  const email = String(data?.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Please enter a valid email address.');
+  }
+  // One reset email per address per minute.
+  const throttleRef = db.collection('passwordResetThrottle').doc(Buffer.from(email).toString('base64url').slice(0, 200));
+  const prior = await throttleRef.get();
+  const last = prior.exists ? Number(prior.data()?.at || 0) : 0;
+  if (Date.now() - last < 60_000) return { success: true };
+  await throttleRef.set({ at: Date.now() });
+
+  let link = '';
+  try {
+    link = await admin.auth().generatePasswordResetLink(email, { url: 'https://propithub.web.app/login' });
+  } catch (err: any) {
+    // user-not-found etc.: say nothing to the caller
+    functions.logger.info(`[requestPasswordReset] no reset link for ${email}: ${err?.code || err?.message}`);
+    return { success: true };
+  }
+  const html = renderPropithubEmail(
+    'Reset your Propithub password',
+    '<p style="font-size:15px;line-height:1.6;">We received a request to reset the password for your Propithub account. Click the button below to choose a new one. If you did not ask for this, you can ignore this email.</p>',
+    { text: 'Reset password', url: link }
+  );
+  const result = await sendSendGridEmail(
+    email,
+    'Reset your Propithub password',
+    `Reset your Propithub password using this link: ${link}\n\nIf you did not request this, ignore this email.`,
+    html
+  );
+  functions.logger.info(`[requestPasswordReset] ${email}: ${result.success ? 'sent' : 'FAILED ' + result.error}`);
+  return { success: true };
+});
+
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
   const callerUid = context.auth.uid;
