@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppState, loadState, saveState, saveLandingConfigCache, saveTrialPolicyCache, loadCachedTrialDays, INITIAL_STATE, DEFAULT_BOOST_PLANS } from '../lib/store';
-import { collection, doc, onSnapshot, setDoc, getDocs, getDoc, deleteDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, getDocs, getDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { httpsCallable } from 'firebase/functions';
+import { useAuth } from './AuthContext';
 import { db, isFirebaseConfigured, auth, functions } from '../lib/firebase';
 import { compressImage, uploadDocumentFile } from '../lib/imageUploader';
 import { SMS_EVENT_DEFAULTS } from '../lib/smsEvents';
@@ -183,6 +184,9 @@ interface AppDataContextType {
 const AppDataContext = createContext<AppDataContextType | undefined>(undefined);
 
 export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user: scopeUser, isLoading: authLoading } = useAuth();
+  // Owners only need their own records; other roles keep the existing behaviour for now.
+  const scopeOwnerId = scopeUser && scopeUser.role === 'owner' ? scopeUser.id : null;
   const [state, setState] = useState<AppState>(loadState);
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([]);
 
@@ -234,7 +238,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Live real-time sync with all Firestore collections
   useEffect(() => {
-    if (!isFirebaseConfigured) return;
+    if (!isFirebaseConfigured || authLoading) return;
+
+    // For owners, read only documents that belong to them (much less data to download and hold in memory).
+    const scoped = (name: string) =>
+      scopeOwnerId ? query(collection(db, name), where('ownerId', '==', scopeOwnerId)) : collection(db, name);
 
     // Immediate direct query on mount for instant zero-latency loading of trial policy
     getDoc(doc(db, 'platformConfig', 'trialPolicy')).then((snap) => {
@@ -263,7 +271,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setState((prev) => ({ ...prev, users: fbUsers }));
     }).catch(console.warn);
 
-    getDocs(collection(db, 'tenants')).then((snap) => {
+    getDocs(scoped('tenants')).then((snap) => {
       const fbTenants: TenantRecord[] = [];
       snap.forEach((d) => {
         const t = d.data() as TenantRecord;
@@ -292,7 +300,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setState((prev) => ({ ...prev, propertyManagers: fbPMs }));
     }).catch(console.warn);
 
-    getDocs(collection(db, 'properties')).then((snap) => {
+    getDocs(scoped('properties')).then((snap) => {
       const fbProps: Property[] = [];
       snap.forEach((d) => {
         const p = d.data() as Property;
@@ -310,7 +318,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setState((prev) => ({ ...prev, properties: fbProps }));
     }).catch(console.warn);
 
-    getDocs(collection(db, 'units')).then((snap) => {
+    getDocs(scoped('units')).then((snap) => {
       const fbUnits: Unit[] = [];
       snap.forEach((d) => {
         const u = d.data() as Unit;
@@ -322,7 +330,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setState((prev) => ({ ...prev, units: fbUnits }));
     }).catch(console.warn);
 
-    getDocs(collection(db, 'tickets')).then((snap) => {
+    getDocs(scoped('tickets')).then((snap) => {
       const fbTickets: Ticket[] = [];
       snap.forEach((d) => {
         const t = d.data() as Ticket;
@@ -338,7 +346,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }).catch(console.warn);
 
-    getDocs(collection(db, 'tenancyRequests')).then((snap) => {
+    getDocs(scoped('tenancyRequests')).then((snap) => {
       const fbRequests: TenancyRequest[] = [];
       snap.forEach((d) => {
         const r = d.data() as TenancyRequest;
@@ -354,7 +362,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }).catch(console.warn);
 
-    getDocs(collection(db, 'agreements')).then((snap) => {
+    getDocs(scoped('agreements')).then((snap) => {
       const fbAgs: Agreement[] = [];
       snap.forEach((d) => {
         const a = d.data() as Agreement;
@@ -438,7 +446,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 2. Sync tenants directory live from Firestore
-    const unsubTenants = onSnapshot(collection(db, 'tenants'), (snapshot) => {
+    const unsubTenants = onSnapshot(scoped('tenants'), (snapshot) => {
       const fbTenants: TenantRecord[] = [];
       snapshot.forEach((d) => {
         const t = d.data() as TenantRecord;
@@ -476,7 +484,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 3. Sync properties live from Firestore
-    const unsubProperties = onSnapshot(collection(db, 'properties'), (snapshot) => {
+    const unsubProperties = onSnapshot(scoped('properties'), (snapshot) => {
       const fbProps: Property[] = [];
       snapshot.forEach((d) => {
         const p = d.data() as Property;
@@ -497,7 +505,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 4. Sync units live from Firestore
-    const unsubUnits = onSnapshot(collection(db, 'units'), (snapshot) => {
+    const unsubUnits = onSnapshot(scoped('units'), (snapshot) => {
       const fbUnits: Unit[] = [];
       snapshot.forEach((d) => {
         const u = d.data() as Unit;
@@ -512,7 +520,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 5. Sync agreements live from Firestore
-    const unsubAgreements = onSnapshot(collection(db, 'agreements'), (snapshot) => {
+    const unsubAgreements = onSnapshot(scoped('agreements'), (snapshot) => {
       const fbAgreements: Agreement[] = [];
       snapshot.forEach((d) => {
         const a = d.data() as Agreement;
@@ -568,7 +576,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 6. Sync tenancy requests live from Firestore
-    const unsubRequests = onSnapshot(collection(db, 'tenancyRequests'), (snapshot) => {
+    const unsubRequests = onSnapshot(scoped('tenancyRequests'), (snapshot) => {
       const fbRequests: TenancyRequest[] = [];
       snapshot.forEach((d) => {
         const r = d.data() as TenancyRequest;
@@ -650,7 +658,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 7. Sync maintenance tickets live from Firestore
-    const unsubTickets = onSnapshot(collection(db, 'tickets'), (snapshot) => {
+    const unsubTickets = onSnapshot(scoped('tickets'), (snapshot) => {
       const fbTickets: Ticket[] = [];
       snapshot.forEach((d) => {
         const t = d.data() as Ticket;
@@ -672,7 +680,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 8. Sync move-outs live from Firestore
-    const unsubMoveouts = onSnapshot(collection(db, 'moveouts'), (snapshot) => {
+    const unsubMoveouts = onSnapshot(scoped('moveouts'), (snapshot) => {
       const fbMoveouts: MoveOut[] = [];
       snapshot.forEach((d) => {
         const m = d.data() as MoveOut;
@@ -709,7 +717,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 9. Sync rental invoices live from Firestore (Owner <-> Tenant)
-    const unsubInvoices = onSnapshot(collection(db, 'invoices'), (snapshot) => {
+    const unsubInvoices = onSnapshot(scoped('invoices'), (snapshot) => {
       const fbInvoices: Invoice[] = [];
       snapshot.forEach((d) => {
         const inv = d.data() as any;
@@ -738,7 +746,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 9a. Sync payments ledger live from Firestore
-    const unsubPayments = onSnapshot(collection(db, 'payments'), (snapshot) => {
+    const unsubPayments = onSnapshot(scoped('payments'), (snapshot) => {
       const fbPayments: PaymentTransaction[] = [];
       snapshot.forEach((d) => {
         const pay = d.data() as any;
@@ -1232,7 +1240,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 24. Sync deposit settlements live from Firestore
-    const unsubSettlements = onSnapshot(collection(db, 'depositSettlements'), (snapshot) => {
+    const unsubSettlements = onSnapshot(scoped('depositSettlements'), (snapshot) => {
       const fbSettlements: DepositSettlement[] = [];
       snapshot.forEach((d) => {
         const s = d.data() as DepositSettlement;
@@ -1567,7 +1575,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubAcks();
       unsubEnquiries();
     };
-  }, []);
+  }, [scopeOwnerId, authLoading]);
 
   // Cross-Tab / Cross-Platform real-time synchronization concurrency
   useEffect(() => {
