@@ -26,6 +26,7 @@ export const Tenant360Page: React.FC = () => {
     updateState,
     showToast,
     saveTenancyRequest,
+    deleteTenancyRequest,
     saveTenant,
     saveAgreement,
     saveInvoice,
@@ -446,13 +447,11 @@ export const Tenant360Page: React.FC = () => {
   const canCancelRequest = (r: TenancyRequest) =>
     r.status === 'pending' || (r.status === 'accepted' && !isLeaseLive(r));
 
-  // Hide a finished (declined/cancelled) request from the list.
-  const handleRemoveRequest = (r: TenancyRequest) => {
-    saveTenancyRequest({ ...r, status: 'archived', respondedAt: new Date().toISOString() });
-    updateState((prev) => ({
-      ...prev,
-      tenancyRequests: (prev.tenancyRequests || []).map((x) => (x.id === r.id ? { ...x, status: 'archived' as const } : x)),
-    }));
+  // Permanently delete an invitation. A live (pending/accepted) one is cancelled first so the unit is freed.
+  const handleDeleteRequest = (r: TenancyRequest) => {
+    if (!window.confirm(`Delete the invitation for ${r.tenantName} (Unit ${r.unitNumber})? This cannot be undone.`)) return;
+    if (canCancelRequest(r)) handleCancelRequest(r.id);
+    deleteTenancyRequest(r.id);
   };
 
   // Cancel sent request
@@ -861,22 +860,31 @@ export const Tenant360Page: React.FC = () => {
                           </td>
                           <td>{statusBadge}</td>
                           <td>
-                            {canCancelRequest(r) ? (
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                style={{ color: 'var(--danger)' }}
-                                onClick={() => handleCancelRequest(r.id)}
-                              >
-                                {r.status === 'accepted' ? 'Cancel & Free Unit' : 'Cancel Request'}
-                              </button>
-                            ) : (r.status === 'declined' || r.status === 'cancelled') ? (
-                              <button type="button" className="btn secondary small" onClick={() => handleRemoveRequest(r)}>
-                                Remove
-                              </button>
-                            ) : (
-                              <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>—</span>
-                            )}
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                              {canCancelRequest(r) && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  style={{ color: 'var(--danger)' }}
+                                  onClick={() => handleCancelRequest(r.id)}
+                                >
+                                  {r.status === 'accepted' ? 'Cancel & Free Unit' : 'Cancel Request'}
+                                </button>
+                              )}
+                              {r.status !== 'fulfilled' && !isLeaseLive(r) && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  style={{ color: 'var(--danger)' }}
+                                  onClick={() => handleDeleteRequest(r)}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                              {r.status === 'accepted' && isLeaseLive(r) && (
+                                <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>—</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -967,9 +975,14 @@ export const Tenant360Page: React.FC = () => {
                         {r.status === 'accepted' ? 'Cancel & Free Unit' : 'Cancel Request'}
                       </button>
                     )}
-                    {(r.status === 'declined' || r.status === 'cancelled') && (
-                      <button type="button" className="btn secondary small btn-mobile-full" onClick={() => handleRemoveRequest(r)}>
-                        Remove
+                    {r.status !== 'fulfilled' && !isLeaseLive(r) && (
+                      <button
+                        type="button"
+                        className="btn secondary small btn-mobile-full"
+                        style={{ color: 'var(--danger)' }}
+                        onClick={() => handleDeleteRequest(r)}
+                      >
+                        Delete
                       </button>
                     )}
                   </div>
