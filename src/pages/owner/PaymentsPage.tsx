@@ -67,9 +67,9 @@ export const PaymentsPage: React.FC = () => {
   // One-time repair per session: payments/proofs a tenant submitted without an owner stamp are re-attached to this owner.
   useEffect(() => {
     if (!isFirebaseConfigured || !user?.id) return;
-    const key = `repaired-tenant-records-${user.id}`;
+    const key = `repaired-tenant-records-v2-${user.id}`;
     try { if (sessionStorage.getItem(key)) return; sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
-    httpsCallable<unknown, { fixed: number }>(functions, 'repairMyTenantRecords')()
+    httpsCallable<unknown, { fixed: number; removed?: number }>(functions, 'repairMyTenantRecords')()
       .then((r) => { if (r.data?.fixed) console.info(`Re-attached ${r.data.fixed} payment record(s) to your account.`); })
       .catch((e) => console.warn('repairMyTenantRecords failed', e));
   }, [user?.id]);

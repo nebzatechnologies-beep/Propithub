@@ -1274,6 +1274,68 @@ async function resolveCallerRole(context: functions.https.CallableContext): Prom
 }
 
 /**
+ * provisionTeamMember (Callable)
+ * Creates (or safely re-uses) the login for a manager / maintenance staff member using the Admin SDK,
+ * so it works even if an earlier attempt left a half-created account behind. The credentials email + SMS
+ * is then sent by setClaimsOnRequest.
+ */
+export const provisionTeamMember = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in first.');
+  const callerRole = await resolveCallerRole(context);
+  if (!['owner', 'manager', 'superadmin', 'admin'].includes(String(callerRole))) {
+    throw new functions.https.HttpsError('permission-denied', 'Only owners and managers can add team members.');
+  }
+  const role = String(data?.role || '');
+  if (!['manager', 'staff'].includes(role)) throw new functions.https.HttpsError('invalid-argument', 'Role must be manager or staff.');
+  const email = String(data?.email || '').trim().toLowerCase();
+  const name = String(data?.name || '').trim();
+  const password = String(data?.password || '');
+  const phone = String(data?.phone || '').trim();
+  if (!email.includes('@') || !name) throw new functions.https.HttpsError('invalid-argument', 'Name and a valid email are required.');
+  if (password.length < 6) throw new functions.https.HttpsError('invalid-argument', 'Password should be at least 6 characters long.');
+
+  let ownerId = String(data?.ownerId || context.auth.uid);
+  if (callerRole === 'owner') ownerId = context.auth.uid;
+  const ownerName = String(data?.ownerName || 'Property Owner');
+
+  let uid: string;
+  try {
+    const existing = await auth.getUserByEmail(email);
+    const uDoc = await db.collection('users').doc(existing.uid).get();
+    const uData = uDoc.exists ? uDoc.data() || {} : {};
+    const sameKind = !uDoc.exists || uData.role === role;
+    const mine = !uData.ownerId || uData.ownerId === ownerId;
+    if (!sameKind || !mine || existing.uid === context.auth.uid) {
+      throw new functions.https.HttpsError('already-exists', 'An account with this email address already exists and belongs to someone else.');
+    }
+    await auth.updateUser(existing.uid, { password, displayName: name });
+    uid = existing.uid;
+  } catch (err: any) {
+    if (err instanceof functions.https.HttpsError) throw err;
+    if (err?.code !== 'auth/user-not-found') {
+      functions.logger.error('[provisionTeamMember] lookup failed', err?.message);
+      throw new functions.https.HttpsError('internal', err?.message || 'Could not create the account.');
+    }
+    try {
+      uid = (await auth.createUser({ email, password, displayName: name })).uid;
+    } catch (cErr: any) {
+      functions.logger.error('[provisionTeamMember] createUser failed', cErr?.message);
+      throw new functions.https.HttpsError('internal', cErr?.message || 'Could not create the account.');
+    }
+  }
+
+  await db.collection('users').doc(uid).set({
+    id: uid, email, displayName: name, role, phone, ownerId, ownerName,
+    status: 'active', createdAt: new Date().toISOString(), inviteSent: false,
+  }, { merge: true });
+  // Fires setClaimsOnRequest: sets claims and emails/SMS the credentials.
+  await db.collection('userClaimRequests').doc(uid).set({
+    uid, role, ownerId, requestedAt: new Date().toISOString(), processed: false, tempPassword: password,
+  });
+  return { success: true, uid };
+});
+
+/**
  * deleteTenantAccount (Callable)
  * Lets an owner (or admin) remove a tenant who is not in an active lease from the owner's dashboard:
  * the tenant record, invitations and pending leases are deleted and reserved units are freed.
@@ -1369,8 +1431,26 @@ export const repairMyTenantRecords = functions.https.onCall(async (_data, contex
       }
     }
   }
-  functions.logger.info(`[repairMyTenantRecords] ${callerUid}: fixed ${fixed}`);
-  return { fixed };
+  // One-off cleanup requested by the owner: a ₹1,50,000 cash claim for Unit 101 that was never made.
+  // Removes only this owner's cash claims (and payments linked to them) of exactly that amount.
+  let removed = 0;
+  try {
+    const claims = await db.collection('cashClaims').where('ownerId', '==', callerUid).get();
+    for (const c of claims.docs) {
+      const cd = c.data();
+      if (Number(cd.amount) === 150000 && /101/.test(String(cd.unit || ''))) {
+        const linked = await db.collection('payments').where('cashClaimId', '==', c.id).get();
+        for (const p of linked.docs) { await p.ref.delete(); removed++; }
+        await c.ref.delete(); removed++;
+      }
+    }
+    const stray = await db.collection('payments').where('ownerId', '==', callerUid).where('amount', '==', 150000).get();
+    for (const p of stray.docs) {
+      if (/101/.test(String(p.data().unit || ''))) { await p.ref.delete(); removed++; }
+    }
+  } catch (e: any) { functions.logger.warn('[repairMyTenantRecords] cleanup failed', e?.message); }
+  functions.logger.info(`[repairMyTenantRecords] ${callerUid}: fixed ${fixed}, removed ${removed}`);
+  return { fixed, removed };
 });
 
 
