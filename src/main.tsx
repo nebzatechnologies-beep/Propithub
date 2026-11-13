@@ -1,5 +1,14 @@
 import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
+import { // A tab left open across a deploy points at script files that no longer exist; reload once to pick up the new build.
+window.addEventListener('vite:preloadError', () => {
+  try {
+    if (sessionStorage.getItem('chunk-reloaded')) return;
+    sessionStorage.setItem('chunk-reloaded', '1');
+  } catch { /* ignore */ }
+  window.location.reload();
+});
+
+createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 
