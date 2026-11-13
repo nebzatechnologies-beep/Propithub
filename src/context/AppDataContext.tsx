@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppState, loadState, saveState, saveLandingConfigCache, saveTrialPolicyCache, loadCachedTrialDays, INITIAL_STATE, DEFAULT_BOOST_PLANS } from '../lib/store';
-import { collection, doc, onSnapshot, setDoc, getDocs, getDoc, deleteDoc, query, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, getDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { httpsCallable } from 'firebase/functions';
 import { useAuth } from './AuthContext';
@@ -261,138 +261,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }).catch(console.warn);
 
-    // Immediate direct query on mount for instant zero-latency loading
-    getDocs(collection(db, 'users')).then((snap) => {
-      const fbUsers: UserProfile[] = [];
-      snap.forEach((d) => {
-        const u = d.data() as UserProfile;
-        if (u && u.email) fbUsers.push({ ...u, id: u.id || d.id });
-      });
-      setState((prev) => ({ ...prev, users: fbUsers }));
-    }).catch(console.warn);
-
-    getDocs(scoped('tenants')).then((snap) => {
-      const fbTenants: TenantRecord[] = [];
-      snap.forEach((d) => {
-        const t = d.data() as TenantRecord;
-        if (t && t.id) fbTenants.push(t);
-      });
-      if (fbTenants.length > 0) {
-        setState((prev) => ({ ...prev, tenants: fbTenants }));
-      }
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'staff')).then((snap) => {
-      const fbStaff: StaffMember[] = [];
-      snap.forEach((d) => {
-        const s = d.data() as StaffMember;
-        if (s) fbStaff.push({ ...s, id: s.id || d.id });
-      });
-      setState((prev) => ({ ...prev, staff: fbStaff }));
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'propertyManagers')).then((snap) => {
-      const fbPMs: any[] = [];
-      snap.forEach((d) => {
-        const pm = d.data();
-        if (pm) fbPMs.push({ ...pm, id: pm.id || d.id });
-      });
-      setState((prev) => ({ ...prev, propertyManagers: fbPMs }));
-    }).catch(console.warn);
-
-    getDocs(scoped('properties')).then((snap) => {
-      const fbProps: Property[] = [];
-      snap.forEach((d) => {
-        const p = d.data() as Property;
-        if (p) {
-          const addrStr = typeof p.address === 'string' ? p.address : p.address?.formattedAddress;
-          const cleanCountry = sanitizeCountry(p.country || (typeof p.address === 'object' ? p.address?.country : undefined), addrStr);
-          fbProps.push({
-            ...p,
-            id: p.id || d.id,
-            country: cleanCountry,
-            address: typeof p.address === 'object' ? { ...p.address, country: cleanCountry } : p.address,
-          });
-        }
-      });
-      setState((prev) => ({ ...prev, properties: fbProps }));
-    }).catch(console.warn);
-
-    getDocs(scoped('units')).then((snap) => {
-      const fbUnits: Unit[] = [];
-      snap.forEach((d) => {
-        const u = d.data() as Unit;
-        if (u) {
-          const cleanCountry = sanitizeCountry(u.country, u.address);
-          fbUnits.push({ ...u, id: u.id || d.id, country: cleanCountry });
-        }
-      });
-      setState((prev) => ({ ...prev, units: fbUnits }));
-    }).catch(console.warn);
-
-    getDocs(scoped('tickets')).then((snap) => {
-      const fbTickets: Ticket[] = [];
-      snap.forEach((d) => {
-        const t = d.data() as Ticket;
-        if (t && t.id) fbTickets.push(t);
-      });
-      if (fbTickets.length > 0) {
-        setState((prev) => {
-          const tickMap = new Map<string, Ticket>();
-          prev.tickets.forEach((t) => tickMap.set(t.id, t));
-          fbTickets.forEach((t) => tickMap.set(t.id, t));
-          return { ...prev, tickets: Array.from(tickMap.values()) };
-        });
-      }
-    }).catch(console.warn);
-
-    getDocs(scoped('tenancyRequests')).then((snap) => {
-      const fbRequests: TenancyRequest[] = [];
-      snap.forEach((d) => {
-        const r = d.data() as TenancyRequest;
-        if (r && r.id) fbRequests.push(r);
-      });
-      if (fbRequests.length > 0) {
-        setState((prev) => {
-          const reqMap = new Map<string, TenancyRequest>();
-          (prev.tenancyRequests || []).forEach((r) => reqMap.set(r.id, r));
-          fbRequests.forEach((r) => reqMap.set(r.id, r));
-          return { ...prev, tenancyRequests: Array.from(reqMap.values()) };
-        });
-      }
-    }).catch(console.warn);
-
-    getDocs(scoped('agreements')).then((snap) => {
-      const fbAgs: Agreement[] = [];
-      snap.forEach((d) => {
-        const a = d.data() as Agreement;
-        if (a && a.id) fbAgs.push(a);
-      });
-      if (fbAgs.length > 0) {
-        setState((prev) => {
-          const agMap = new Map<string, Agreement>();
-          (prev.agreements || []).forEach((a) => agMap.set(a.id, a));
-          fbAgs.forEach((a) => agMap.set(a.id, a));
-          return { ...prev, agreements: Array.from(agMap.values()) };
-        });
-      }
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'cashClaims')).then((snap) => {
-      const fbClaims: CashHandoverClaim[] = [];
-      snap.forEach((d) => {
-        const c = d.data() as CashHandoverClaim;
-        if (c && c.id) fbClaims.push(c);
-      });
-      if (fbClaims.length > 0) {
-        setState((prev) => {
-          const claimMap = new Map<string, CashHandoverClaim>();
-          (prev.cashClaims || []).forEach((c) => claimMap.set(c.id, c));
-          fbClaims.forEach((c) => claimMap.set(c.id, c));
-          return { ...prev, cashClaims: Array.from(claimMap.values()) };
-        });
-      }
-    }).catch(console.warn);
+    // (Duplicate one-off getDocs preloads removed: each collection below already has a live listener,
+    // so they only doubled the reads and the startup work.)
 
     // 1. Sync users live from Firestore
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
