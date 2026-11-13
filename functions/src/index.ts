@@ -1312,7 +1312,14 @@ export const deleteTenantAccount = functions.https.onCall(async (data, context) 
 
   // Free units that were reserved for this tenant.
   const unitSnap = await db.collection('units').get();
-  const unitWrites = unitSnap.docs.filter((d) => { const u = d.data(); return (ids.has(u.currentTenantId) || ids.has(u.tenantId)) && u.status !== 'occupied'; });
+  // No active/signed lease exists (checked above), so any unit still pointing at this tenant is stale
+  // (even if marked occupied) and would otherwise keep re-creating the tenant row on the owner dashboard.
+  const tenantName = String(userData?.displayName || userData?.name || '').toLowerCase().trim();
+  const unitWrites = unitSnap.docs.filter((d) => {
+    const u = d.data();
+    if (ids.has(u.currentTenantId) || ids.has(u.tenantId)) return true;
+    return !!tenantName && !u.currentTenantId && mine(u) && String(u.tenant || '').toLowerCase().trim() === tenantName;
+  });
   for (const u of unitWrites) await u.ref.update({ status: 'vacant', tenant: null, currentTenantId: null });
 
   for (let i = 0; i < toDelete.length; i += 400) {

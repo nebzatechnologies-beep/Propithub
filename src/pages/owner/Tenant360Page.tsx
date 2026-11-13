@@ -474,7 +474,7 @@ export const Tenant360Page: React.FC = () => {
           (a) => a.tenantId !== t.id && a.tenantEmail?.toLowerCase() !== (t.email || '').toLowerCase()
         ),
         units: (prev.units || []).map((u) =>
-          u.currentTenantId === t.id && u.status !== 'occupied'
+          u.currentTenantId === t.id || (!u.currentTenantId && !!u.tenant && u.tenant.toLowerCase().trim() === (t.name || '').toLowerCase().trim())
             ? { ...u, status: 'vacant' as const, tenant: null, currentTenantId: null }
             : u
         ),
