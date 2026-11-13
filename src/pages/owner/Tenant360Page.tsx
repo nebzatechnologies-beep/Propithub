@@ -457,7 +457,7 @@ export const Tenant360Page: React.FC = () => {
     );
 
   const handleDeleteTenant = async (t: TenantRecord) => {
-    if (!window.confirm(`Permanently delete ${t.name} (${t.email})? This removes their login, invitations and pending leases, and frees any reserved unit. This cannot be undone.`)) return;
+    if (!window.confirm(`Remove ${t.name} (${t.email}) from your dashboard? This deletes their tenant record, invitations and pending leases from your account and frees any reserved unit. Their own login is not deleted.`)) return;
     try {
       if (isFirebaseConfigured) {
         await httpsCallable<any, any>(functions, 'deleteTenantAccount')({ tenantId: t.id, tenantEmail: t.email });
@@ -466,7 +466,7 @@ export const Tenant360Page: React.FC = () => {
       updateState((prev) => ({
         ...prev,
         tenants: (prev.tenants || []).filter((x) => !sameTenant(x)),
-        users: (prev.users || []).filter((x) => !sameTenant(x)),
+        users: (prev.users || []).map((x) => (sameTenant(x) && x.ownerId === ownerId ? { ...x, ownerId: null, ownerName: null } : x)),
         tenancyRequests: (prev.tenancyRequests || []).filter(
           (r) => r.tenantId !== t.id && r.tenantEmail?.toLowerCase() !== (t.email || '').toLowerCase()
         ),
@@ -479,10 +479,10 @@ export const Tenant360Page: React.FC = () => {
             : u
         ),
       }));
-      showToast(`✓ ${t.name} deleted.`);
+      showToast(`✓ ${t.name} removed from your dashboard.`);
     } catch (err: any) {
       console.error('deleteTenantAccount failed:', err);
-      showToast(err?.message ? `Could not delete tenant: ${err.message}` : 'Could not delete tenant. Please try again.');
+      showToast(err?.message ? `Could not remove tenant: ${err.message}` : 'Could not remove tenant. Please try again.');
     }
   };
 
@@ -749,7 +749,7 @@ export const Tenant360Page: React.FC = () => {
                                   style={{ color: 'var(--danger)', marginLeft: '6px' }}
                                   onClick={() => handleDeleteTenant(t)}
                                 >
-                                  Delete
+                                  Remove
                                 </button>
                               )}
                             </td>
@@ -820,7 +820,7 @@ export const Tenant360Page: React.FC = () => {
                           style={{ color: 'var(--danger)' }}
                           onClick={() => handleDeleteTenant(t)}
                         >
-                          Delete Tenant
+                          Remove Tenant
                         </button>
                       )}
                     </div>

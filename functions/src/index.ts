@@ -1259,8 +1259,9 @@ async function resolveCallerRole(context: functions.https.CallableContext): Prom
 
 /**
  * deleteTenantAccount (Callable)
- * Lets an owner (or admin) permanently remove a tenant who is not in an active lease: the login,
- * profile, tenant record, invitations, pending leases and notifications. Frees reserved units.
+ * Lets an owner (or admin) remove a tenant who is not in an active lease from the owner's dashboard:
+ * the tenant record, invitations and pending leases are deleted and reserved units are freed.
+ * The tenant's own login is NOT deleted.
  */
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
@@ -1308,11 +1309,6 @@ export const deleteTenantAccount = functions.https.onCall(async (data, context) 
   reqSnap.docs.forEach((d) => { const r = d.data(); if ((ids.has(r.tenantId) || emailMatches(r.tenantEmail)) && mine(r)) toDelete.push(d.ref); });
   const tenSnap = await db.collection('tenants').get();
   tenSnap.docs.forEach((d) => { const t = d.data(); if ((ids.has(d.id) || ids.has(t.userId) || emailMatches(t.email)) && mine(t)) toDelete.push(d.ref); });
-  if (uid) {
-    const nSnap = await db.collection('notifications').where('userId', '==', uid).get();
-    nSnap.docs.forEach((d) => toDelete.push(d.ref));
-    toDelete.push(db.collection('users').doc(uid));
-  }
 
   // Free units that were reserved for this tenant.
   const unitSnap = await db.collection('units').get();
@@ -1324,10 +1320,11 @@ export const deleteTenantAccount = functions.https.onCall(async (data, context) 
     toDelete.slice(i, i + 400).forEach((r) => batch.delete(r));
     await batch.commit();
   }
-  if (uid) {
-    try { await auth.deleteUser(uid); } catch (e: any) { if (e?.code !== 'auth/user-not-found') throw e; }
+  // The tenant's own login stays (they may have other landlords); just detach them from this owner.
+  if (uid && userData && userData.ownerId === callerUid) {
+    await db.collection('users').doc(uid).update({ ownerId: null, ownerName: null });
   }
-  functions.logger.info(`[deleteTenantAccount] ${callerUid} deleted tenant ${uid || tenantId || tenantEmail}: ${toDelete.length} records`);
+  functions.logger.info(`[deleteTenantAccount] ${callerUid} removed tenant ${uid || tenantId || tenantEmail}: ${toDelete.length} records`);
   return { success: true, deleted: toDelete.length };
 });
 
