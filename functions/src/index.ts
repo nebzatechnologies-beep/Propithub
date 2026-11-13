@@ -891,6 +891,145 @@ export const onTenancyRequestCreated = functions.firestore
   });
 
 /**
+ * Tells the owner about a step in the tenant onboarding: writes an in-app notification
+ * (the app listens to the `notifications` collection) and sends an email. The notification
+ * id is deterministic so a retried trigger never creates a duplicate.
+ */
+async function notifyOwnerOnboardingStep(opts: {
+  ownerId?: string;
+  dedupeKey: string;
+  title: string;
+  detail: string;
+  link: string;
+  emailOverride?: string;
+}): Promise<void> {
+  if (!opts.ownerId) return;
+  const esc = (v: any) =>
+    String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  const notifId = `step_${opts.dedupeKey}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+  const ref = db.collection('notifications').doc(notifId);
+  try {
+    const created = await ref
+      .create({
+        id: notifId,
+        userId: opts.ownerId,
+        title: opts.title,
+        body: opts.detail,
+        link: opts.link,
+        isRead: false,
+        createdAt: new Date().toISOString(),
+      })
+      .then(() => true)
+      .catch((e: any) => {
+        if (e?.code === 6 || /already exists/i.test(e?.message || '')) return false; // already handled
+        throw e;
+      });
+    if (!created) return;
+  } catch (err: any) {
+    functions.logger.error('[notifyOwnerOnboardingStep] in-app notification failed:', err?.message || err);
+  }
+
+  const contact = await getUserContact(opts.ownerId);
+  const to = (opts.emailOverride || contact?.email || '').trim().toLowerCase();
+  if (!to) return;
+  let status: 'delivered' | 'failed' = 'failed';
+  try {
+    const html = renderPropithubEmail(
+      opts.title,
+      `<p>Hello <strong>${esc(contact?.name || 'there')}</strong>,</p><p>${esc(opts.detail)}</p>`,
+      { text: 'Open in Propithub', url: `https://propithub.web.app${opts.link}` }
+    );
+    const res = await sendSendGridEmail(to, opts.title, `${opts.detail} Open: https://propithub.web.app${opts.link}`, html);
+    status = res.success ? 'delivered' : 'failed';
+  } catch (err: any) {
+    functions.logger.error('[notifyOwnerOnboardingStep] email failed:', err?.message || err);
+  }
+  await logCommunication({
+    type: 'OWNER_ONBOARDING_STEP',
+    category: 'leasing',
+    title: opts.title,
+    body: opts.detail,
+    channels: ['email', 'in_app'],
+    recipientId: opts.ownerId,
+    recipientName: contact?.name || 'Owner',
+    recipientRole: 'owner' as any,
+    recipientContact: { email: to },
+    ownerId: opts.ownerId,
+    deliveryStatus: { email: status, sms: 'skipped', inApp: 'delivered' },
+  });
+}
+
+/** Owner updates as the tenant moves through the lease agreement steps. */
+export const onAgreementOwnerSteps = functions.firestore
+  .document('agreements/{agreementId}')
+  .onWrite(async (change, context) => {
+    const after = change.after.exists ? change.after.data() : null;
+    const before = change.before.exists ? change.before.data() : null;
+    if (!after || !after.ownerId) return;
+    const id = context.params.agreementId;
+    const tenant = after.tenant || after.tenantName || 'Your tenant';
+    const unit = after.unit || after.unitId || 'the unit';
+
+    if (after.status === 'pending_approval' && before?.status !== 'pending_approval') {
+      const ids = Array.isArray(after.tenantUploadedIds) ? after.tenantUploadedIds.length : 0;
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_docs_${after.signedUploadedAt || ''}`,
+        title: 'Tenant uploaded the signed lease and documents',
+        detail: `${tenant} uploaded the signed lease${ids ? ` and ${ids} ID document(s)` : ''} for Unit ${unit}. Please review and approve.`,
+        link: '/owner/leasing',
+      });
+    }
+    if (after.depositStatus === 'paid' && before?.depositStatus !== 'paid') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_deposit_paid`,
+        title: 'Security deposit received',
+        detail: `The security deposit for Unit ${unit} from ${tenant} has been received.`,
+        link: '/owner/leasing',
+      });
+    }
+    if (after.status === 'pending_countersign' && before?.status !== 'pending_countersign') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_countersign`,
+        title: 'Your counter-signature is needed',
+        detail: `${tenant} has completed their steps for Unit ${unit}. Please counter-sign the lease to activate it.`,
+        link: '/owner/leasing',
+      });
+    }
+  });
+
+/** Owner updates when a tenant answers a tenancy invitation. */
+export const onTenancyRequestResponse = functions.firestore
+  .document('tenancyRequests/{requestId}')
+  .onUpdate(async (change, context) => {
+    const after = change.after.data() || {};
+    const before = change.before.data() || {};
+    if (!after.ownerId || after.status === before.status) return;
+    const id = context.params.requestId;
+    const tenant = after.tenantName || 'The tenant';
+    const unit = after.isBulkLease && Array.isArray(after.bulkUnitNumbers) ? `Units ${after.bulkUnitNumbers.join(', ')}` : `Unit ${after.unitNumber || ''}`;
+    if (after.status === 'accepted') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_accepted`,
+        title: 'Tenancy invitation accepted',
+        detail: `${tenant} accepted your invitation for ${unit} at ${after.propertyName || 'your property'}. They will now upload the signed lease and documents.`,
+        link: '/owner/leasing',
+      });
+    } else if (after.status === 'declined') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_declined`,
+        title: 'Tenancy invitation declined',
+        detail: `${tenant} declined your invitation for ${unit} at ${after.propertyName || 'your property'}.`,
+        link: '/owner/tenants',
+      });
+    }
+  });
+
+/**
  * 1. provisionUserAccount (Callable)
  * Executed by an Owner to provision Tenant, Property Manager, or Maintenance Staff accounts.
  * - Enforces owner active subscription status.
