@@ -1292,7 +1292,7 @@ export const requestPasswordReset = functions.https.onCall(async (data) => {
   } catch (err: any) {
     // user-not-found etc.: say nothing to the caller
     functions.logger.info(`[requestPasswordReset] no reset link for ${email}: ${err?.code || err?.message}`);
-    return { success: true, debugStage: `link:${err?.code || ''}:${String(err?.message || '').slice(0, 160)}` };
+    return { success: true };
   }
   const html = renderPropithubEmail(
     'Reset your Propithub password',
@@ -1306,7 +1306,7 @@ export const requestPasswordReset = functions.https.onCall(async (data) => {
     html
   );
   functions.logger.info(`[requestPasswordReset] ${email}: ${result.success ? 'sent' : 'FAILED ' + result.error}`);
-  return { success: true, debugStage: result.success ? 'sent' : `send:${String(result.error || '').slice(0, 160)}` };
+  return { success: true };
 });
 
 export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
