@@ -186,7 +186,7 @@ export const MaintenancePage: React.FC = () => {
     });
     showToast(res.emailStatus === 'failed'
       ? `${name} was added, but the invite email could not be sent${res.emailError ? ` (${res.emailError})` : ''}. Share the credentials shown.`
-      : `${name} onboarded. Login credentials emailed to ${staffEmail}.`);
+      : `${name} onboarded. Email to ${staffEmail}: ${res.birdStatus || 'accepted'}.`);
   };
 
   const handleRemoveStaff = async (id: string, name: string) => {

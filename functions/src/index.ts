@@ -430,6 +430,16 @@ async function birdPost(
   }
 }
 
+/** Looks up what Bird actually did with an accepted email (delivered / deferred / bounced / rejected...). */
+async function birdEmailStatus(apiKey: string, id: string): Promise<string> {
+  const region = (apiKey.match(/^b[km]_([a-z0-9]+)_/i) || [])[1] || 'us1';
+  try {
+    const res = await fetch(`https://${region}.platform.bird.com/v1/email/messages/${id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const d: any = await res.json().catch(() => ({}));
+    return String(d?.status || (res.ok ? 'unknown' : `lookup_http_${res.status}`));
+  } catch (e: any) { return `lookup_error`; }
+}
+
 /**
  * Production Twilio SMS Dispatcher
  */
@@ -591,7 +601,7 @@ export async function sendSendGridEmail(
     type?: string;
     disposition?: string;
   }>
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; id?: string }> {
   if (!toEmail || !subject) return { success: false, error: 'Missing destination email or subject.' };
 
   const comms = overrideComms || (await getPlatformCommsConfig());
@@ -618,7 +628,7 @@ export async function sendSendGridEmail(
     const r = await birdPost(birdKey, '/v1/email/messages', birdBody);
     if (r.success) {
       functions.logger.info(`[Bird Email] Accepted for ${toEmail}: "${subject}" (ID: ${r.id}, attachments: ${attachments?.length || 0})`);
-      return { success: true };
+      return { success: true, id: r.id };
     }
     functions.logger.error(`[Bird Email] Failed to ${toEmail}:`, r.error);
     return { success: false, error: r.error };
@@ -1354,15 +1364,28 @@ export const provisionTeamMember = functions.https.onCall(async (data, context) 
   );
   let emailStatus: 'delivered' | 'failed' = 'failed';
   let emailError = '';
+  let birdStatus = '';
   try {
     const r = await sendSendGridEmail(email, subject, `Hello ${name}, you were added as ${roleTitle} on Propithub. Login: ${email} / Temporary password: ${password}. Sign in at https://propithub.web.app/login`, html);
     emailStatus = r.success ? 'delivered' : 'failed';
     if (!r.success) emailError = String((r as any).error || 'send failed');
+    if (r.success && r.id) {
+      // Ask Bird what it actually did with the message a few seconds later.
+      const key = getBirdApiKey(await getPlatformCommsConfig());
+      if (key) {
+        await new Promise((res) => setTimeout(res, 4000));
+        birdStatus = await birdEmailStatus(key, r.id);
+        if (['bounced', 'rejected', 'complained', 'canceled', 'partial_failure'].includes(birdStatus)) {
+          emailStatus = 'failed';
+          emailError = `Bird reports the email was ${birdStatus}`;
+        }
+      }
+    }
   } catch (e: any) { emailError = e?.message || 'send failed'; }
   let smsStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
   if (phone) {
     try {
-      const sr = await sendEventSms('SMS: Welcome message', phone, `Propithub: Hello ${name}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login with ${email} and password ${password}`);
+      const sr = await sendTwilioSms(phone, `Propithub: Hello ${name}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login with ${email} and password ${password}`);
       smsStatus = sr.skipped ? 'skipped' : sr.success ? 'delivered' : 'failed';
     } catch { smsStatus = 'failed'; }
   }
@@ -1374,7 +1397,7 @@ export const provisionTeamMember = functions.https.onCall(async (data, context) 
     deliveryStatus: { email: emailStatus, sms: smsStatus, inApp: 'delivered' },
   }).catch(() => {});
   functions.logger.info(`[provisionTeamMember] ${role} ${email}: email=${emailStatus} sms=${smsStatus} ${emailError}`);
-  return { success: true, uid, emailStatus, smsStatus, emailError };
+  return { success: true, uid, emailStatus, smsStatus, emailError, birdStatus };
 });
 
 /**
