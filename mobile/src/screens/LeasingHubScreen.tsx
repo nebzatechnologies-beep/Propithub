@@ -35,6 +35,7 @@ import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { useMobileAlert } from '../context/MobileAlertContext';
 import { useMobileToast } from '../context/MobileToastContext';
+import { generateTempPassword } from '../lib/tempPassword';
 
 export interface SearchCandidate {
   id: string;
@@ -287,7 +288,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     setUploadTenantName(enq.prospectName || '');
     setUploadTenantEmail(enq.prospectEmail || '');
     setUploadTenantPhone(enq.prospectPhone || '');
-    setUploadTenantPassword('Welcome@123');
+    setUploadTenantPassword(generateTempPassword());
     setSelectedTenantObj(null);
     setIsNewTenantMode(true);
     setShowTenantDetailsEdit(false);
@@ -481,7 +482,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const [selectedTenantObj, setSelectedTenantObj] = useState<SearchCandidate | null>(null);
   const [isNewTenantMode, setIsNewTenantMode] = useState(false);
   const [showTenantDetailsEdit, setShowTenantDetailsEdit] = useState(false);
-  const [uploadTenantPassword, setUploadTenantPassword] = useState('Welcome@123');
+  const [uploadTenantPassword, setUploadTenantPassword] = useState(() => generateTempPassword());
   const [liveFirestoreUsers, setLiveFirestoreUsers] = useState<SearchCandidate[]>([]);
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
   const [isSubmittingAgreement, setIsSubmittingAgreement] = useState(false);
@@ -721,7 +722,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     setUploadTenantName('');
     setUploadTenantEmail('');
     setUploadTenantPhone('');
-    setUploadTenantPassword('Welcome@123');
+    setUploadTenantPassword(generateTempPassword());
     setSelectedTenantObj(null);
     setIsNewTenantMode(false);
     setShowTenantDetailsEdit(false);
@@ -1192,7 +1193,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
     const cleanTenantName = uploadTenantName.trim();
     const cleanEmail = uploadTenantEmail.trim().toLowerCase();
-    const tempPassword = uploadTenantPassword.trim() || 'Welcome@123';
+    const tempPassword = uploadTenantPassword.trim() || generateTempPassword();
     const propCurrency = prop?.currency || viewCurrency;
     const nowIso = new Date().toISOString();
 
@@ -3930,7 +3931,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                         style={[styles.modalInput, { marginBottom: 4 }]}
                         value={uploadTenantPassword}
                         onChangeText={setUploadTenantPassword}
-                        placeholder="Welcome@123"
+                        placeholder="Leave blank for a random one"
                         placeholderTextColor={colors.inkSoft}
                       />
                       <Text style={{ fontSize: 11, color: colors.inkSoft, marginBottom: 12 }}>
@@ -3961,7 +3962,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                             showToast('Please enter a valid phone number (7 to 15 digits).');
                             return;
                           }
-                          const pass = uploadTenantPassword.trim() || 'Welcome@123';
+                          const pass = uploadTenantPassword.trim() || generateTempPassword();
                           setUploadTenantPassword(pass);
                           setIsNewTenantMode(true);
                           setSelectedTenantObj({
@@ -5113,7 +5114,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                           return;
                         }
                         if (!uploadTenantPassword.trim()) {
-                          setUploadTenantPassword('Tenant@123');
+                          setUploadTenantPassword(generateTempPassword());
                         }
                         if (!selectedTenantObj) {
                           setSelectedTenantObj({

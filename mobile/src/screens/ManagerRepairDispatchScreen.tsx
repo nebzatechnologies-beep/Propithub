@@ -23,6 +23,7 @@ import { TourTarget } from '../context/MobileTourContext';
 import { usePlanLimits, ResourceQuotaType } from '../hooks/usePlanLimits';
 import { PlanLimitModal } from '../components/PlanLimitModal';
 import { MobileTicket, MobileStaffMember } from '../types';
+import { generateTempPassword } from '../lib/tempPassword';
 
 interface ManagerRepairDispatchScreenProps {
   onProfilePress?: () => void;
@@ -221,7 +222,7 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
         ownerId: ownerId || user.id,
       };
 
-      await addStaff(newMember, newStaffPassword.trim() || 'Staff@123');
+      await addStaff(newMember, newStaffPassword.trim() || generateTempPassword());
       setShowOnboardModal(false);
       setNewStaffName('');
       setNewStaffPhone('');
@@ -723,7 +724,7 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
                   value={newStaffPassword}
                   onChangeText={setNewStaffPassword}
                   secureTextEntry
-                  placeholder="Min. 6 characters (default: Staff@123)"
+                  placeholder="Min. 6 characters (leave blank for a random one)"
                   placeholderTextColor={colors.inkSoft}
                 />
               </View>

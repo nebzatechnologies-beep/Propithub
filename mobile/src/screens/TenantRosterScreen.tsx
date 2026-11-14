@@ -31,6 +31,7 @@ import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { useMobileAlert } from '../context/MobileAlertContext';
 import { useMobileToast } from '../context/MobileToastContext';
+import { generateTempPassword } from '../lib/tempPassword';
 
 interface TenantRosterScreenProps {
   onProfilePress?: () => void;
@@ -71,7 +72,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newPhone, setNewPhone] = useState('');
-  const [newPassword, setNewPassword] = useState('Tenant@123');
+  const [newPassword, setNewPassword] = useState(() => generateTempPassword());
   const ownerProperties = useMemo(() => {
     return state.properties.filter((p) => p.ownerId === user.id);
   }, [state.properties, user.id]);
@@ -599,7 +600,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
       kycDocuments: existingTenant?.kycDocuments || [],
     };
 
-    await addTenant(newRecord, newPassword || 'Tenant@123');
+    await addTenant(newRecord, newPassword || generateTempPassword());
 
     // Update unit to reserved
     if (assignedUnit) {
@@ -669,6 +670,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
 
   // Dispatch Formal Tenancy Request
   const handleSendRequest = async () => {
+    const inviteTempPassword = generateTempPassword();
     const cleanCandName = candidateName.trim();
     const cleanCandEmail = candidateEmail.trim().toLowerCase();
     const cleanCandPhone = candidatePhone.trim();
@@ -745,7 +747,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
             status: 'invited',
             rating: 5,
           },
-          'Tenant@123'
+          inviteTempPassword
         );
         if (provId) {
           targetTenantId = provId;
@@ -812,7 +814,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
         { label: 'Candidate', value: newReq.tenantName, icon: 'user' },
         { label: 'Unit', value: `Unit ${newReq.unitNumber}`, icon: 'home' },
         { label: 'Account Email', value: newReq.tenantEmail, icon: 'mail' },
-        { label: 'Login Password', value: 'Tenant@123', icon: 'key' },
+        { label: 'Login Password', value: inviteTempPassword, icon: 'key' },
         { label: 'Monthly Rent', value: `${currencySymbol}${newReq.rent.toLocaleString()}/mo`, icon: 'dollar-sign' },
         { label: 'Status', value: 'Unit Reserved • Account Ready', icon: 'shield' },
       ],

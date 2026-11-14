@@ -47,6 +47,7 @@ import {
 import { calculateMobileInvoiceLateFee } from '../lib/lateFeeService';
 import { DEFAULT_CURRENCY_SYMBOL, formatCurrencyAmount } from '../lib/currencyService';
 import { uploadOrCompressDocument, getObjectByteSize } from '../lib/imageUploader';
+import { generateTempPassword } from '../lib/tempPassword';
 
 export const DEFAULT_CASH_CLAIMS: MobileCashHandoverClaim[] = [];
 export const DEFAULT_TENANCY_REQUESTS: MobileTenancyRequest[] = [];
@@ -3834,7 +3835,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     let tenantUserProfile: MobileUserProfile | null = null;
     if (cleanEmail && isFirebaseConfigured) {
-      const pass = password || 'Tenant@123';
+      const pass = password || generateTempPassword();
       try {
         const createdUid = await createSecondaryAuthUser(cleanEmail, pass);
         if (createdUid) {
@@ -3959,7 +3960,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     let emailError: string | undefined;
 
     if (cleanEmail && isFirebaseConfigured) {
-      const pass = password || 'Staff@123';
+      const pass = password || generateTempPassword();
       try {
         const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
           name: (member.name || '').trim(),
@@ -4040,7 +4041,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     let emailError: string | undefined;
 
     if (cleanEmail && isFirebaseConfigured) {
-      const pass = password || 'Manager@123';
+      const pass = password || generateTempPassword();
       try {
         const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
           name: (manager.name || '').trim(),

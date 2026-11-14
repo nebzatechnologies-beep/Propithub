@@ -1,7 +1,7 @@
 import './polyfills';
 import { Platform, Alert, Share } from 'react-native';
 import { jsPDF } from 'jspdf';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 
 export interface DocumentDownloadItem {
