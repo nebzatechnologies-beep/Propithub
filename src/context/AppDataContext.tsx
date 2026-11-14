@@ -3718,7 +3718,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
 
     // Log communication for new paid payments
-    if (isNew && payment.status === 'paid') {
+    if (isNew && payment.status === 'paid' && !(payment as any).suppressNotify) {
       const payType = payment.type === 'deposit' ? 'Security Deposit Paid' : 'Rent Payment Recorded';
       const tenant = state.tenants.find((t) => t.id === payment.tenantId || (payment.tenant && t.name.toLowerCase() === payment.tenant.toLowerCase()));
       const userRec = state.users.find((u) => u.id === payment.tenantId || (tenant?.email && u.email?.toLowerCase() === tenant.email.toLowerCase()));

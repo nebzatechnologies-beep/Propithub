@@ -743,7 +743,9 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
             type: 'deposit',
             currency: propCurrency,
             notes: `Security deposit collected offline as confirmed during invitation dispatch.`,
-          };
+            // Recorded at invite time, before the tenant has accepted: nobody should be told a deposit was "paid" yet.
+            suppressNotify: true,
+          } as PaymentTransaction;
           savePayment(depTx);
         }
 
