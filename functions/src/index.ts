@@ -1543,6 +1543,8 @@ export const onPaymentOwnerActivity = functions.firestore
     const after = change.after.data() || {};
     const before = change.before.exists ? change.before.data() || {} : null;
     if (!after.ownerId || after.direction === 'outflow') return;
+    // Offline deposits recorded while sending an invitation are not a tenant action; stay silent.
+    if (after.suppressNotify) return;
     const id = context.params.paymentId;
     const who = after.tenant || after.tenantName || 'Your tenant';
     const unit = after.unit || 'the unit';
