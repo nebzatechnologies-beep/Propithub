@@ -36,6 +36,9 @@ export interface ProvisionUserResult {
   success: boolean;
   uid?: string;
   error?: string;
+  emailStatus?: 'delivered' | 'failed';
+  emailError?: string;
+  birdStatus?: string;
 }
 
 interface AuthContextType {
@@ -631,6 +634,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cleanName = params.name.trim();
     let uid = `usr_${params.role}_${Date.now()}`;
 
+    // Managers and maintenance staff are created server-side (reliable, re-usable if a previous attempt
+    // left a half-created login, and the credentials email/SMS is dispatched there).
+    if (isFirebaseConfigured && (params.role === 'manager' || params.role === 'staff')) {
+      try {
+        const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
+          name: cleanName,
+          email: cleanEmail,
+          password: params.password,
+          role: params.role,
+          phone: params.phone?.trim() || '',
+          ownerId: params.ownerId,
+          ownerName: params.ownerName || 'Property Owner',
+        });
+        const newUid = res?.data?.uid as string;
+        if (!newUid) return { success: false, error: 'Could not create the account. Please try again.' };
+        const profile: UserProfile = {
+          id: newUid, email: cleanEmail, displayName: cleanName, role: params.role,
+          phone: params.phone?.trim() || '', ownerId: params.ownerId,
+          ownerName: params.ownerName || 'Property Owner', status: 'active', createdAt: new Date().toISOString(),
+        };
+        setAppState((prev) => {
+          const updated = { ...prev, users: [...prev.users.filter((u) => u.id !== newUid && u.email.toLowerCase() !== cleanEmail), profile] };
+          saveState(updated);
+          return updated;
+        });
+        return { success: true, uid: newUid, emailStatus: res?.data?.emailStatus, emailError: res?.data?.emailError, birdStatus: res?.data?.birdStatus };
+      } catch (err: any) {
+        console.error('provisionTeamMember failed:', err);
+        return { success: false, error: err?.message || 'Could not create the account. Please try again.' };
+      }
+    }
+
     if (isFirebaseConfigured) {
       try {
         uid = await createSecondaryAuthUser(cleanEmail, params.password);
@@ -642,6 +677,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (err?.code === 'auth/weak-password') {
           return { success: false, error: 'Password should be at least 6 characters long.' };
         }
+        // Any other failure means no real login was created; do not save a ghost profile with a fake id.
+        return { success: false, error: err?.message || 'Could not create the login for this account. Please try again.' };
       }
     }
 
@@ -670,6 +707,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ownerId: params.ownerId || null,
           requestedAt: new Date().toISOString(),
           processed: false,
+          // Needed server-side to email the invite; the function deletes it after sending.
+          tempPassword: params.password,
         });
       } catch (err: any) {
         console.error('Firestore setDoc user profile error:', err);
@@ -712,8 +751,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Please enter your email address.' };
     }
     try {
-      await sendPasswordResetEmail(auth, email.trim().toLowerCase());
-      return { success: true };
+      try {
+        // Preferred: our own sender (Bird) so the email actually arrives.
+        await httpsCallable<{ email: string }, { success: boolean }>(functions, 'requestPasswordReset')({ email: email.trim().toLowerCase() });
+        return { success: true };
+      } catch (callErr: any) {
+        if (callErr?.code === 'functions/invalid-argument') {
+          return { success: false, error: 'Please enter a valid email address.' };
+        }
+        // Fall back to Firebase's built-in mailer if our function is unreachable.
+        await sendPasswordResetEmail(auth, email.trim().toLowerCase());
+        return { success: true };
+      }
     } catch (err: any) {
       if (err.code === 'auth/user-not-found') {
         return { success: false, error: 'No account found with this email address.' };

@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppState, loadState, saveState, saveLandingConfigCache, saveTrialPolicyCache, loadCachedTrialDays, INITIAL_STATE, DEFAULT_BOOST_PLANS } from '../lib/store';
-import { collection, doc, onSnapshot, setDoc, getDocs, getDoc, deleteDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, getDoc, deleteDoc, query, where, or } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { httpsCallable } from 'firebase/functions';
+import { useAuth } from './AuthContext';
 import { db, isFirebaseConfigured, auth, functions } from '../lib/firebase';
-import { compressImage } from '../lib/imageUploader';
+import { compressImage, uploadDocumentFile } from '../lib/imageUploader';
 import { SMS_EVENT_DEFAULTS } from '../lib/smsEvents';
 import { sanitizeCountry, isInvalidCountry } from '../lib/addressUtils';
 import { generateTransactionId, generateDepositVoucherId } from '../lib/idGenerators';
@@ -59,6 +60,7 @@ interface AppDataContextType {
   showToast: (msg: string, type?: ToastType, options?: ToastOptions) => void;
   toasts: { id: string; msg: string }[];
   deleteAgreement: (agreementId: string) => Promise<void>;
+  deleteTenancyRequest: (requestId: string) => Promise<void>;
   saveAgreementTemplate: (template: AgreementTemplate) => Promise<void>;
   deleteAgreementTemplate: (templateId: string) => Promise<void>;
   updateAgreementAutopay: (agreementId: string, autopay: Partial<TenantAutopayMandate>) => Promise<void>;
@@ -188,6 +190,17 @@ interface AppDataContextType {
 const AppDataContext = createContext<AppDataContextType | undefined>(undefined);
 
 export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user: scopeUser, isLoading: authLoading } = useAuth();
+  // Owners only need their own records; other roles keep the existing behaviour for now.
+  const scopeOwnerId = scopeUser && scopeUser.role === 'owner' ? scopeUser.id : null;
+  // Tenants only need their landlord's records plus anything that is theirs. A tenant with no landlord yet
+  // (or a detached one) keeps the unscoped behaviour so invitations still reach them.
+  // Managers and staff work for one owner, so they get the same landlord-scoped loading (without the tenant-only clauses).
+  const scopedRole = scopeUser && ['tenant', 'manager', 'staff'].includes(scopeUser.role as string) ? scopeUser.role : null;
+  const scopeTenantLandlord = scopedRole ? ((scopeUser as any).ownerId || null) : null;
+  const scopeTenantUid = scopeTenantLandlord ? scopeUser!.id : null;
+  const scopeIsTenant = scopedRole === 'tenant';
+  const scopeTenantEmail = scopeTenantLandlord && scopeIsTenant ? String((scopeUser as any).email || '').toLowerCase() : '';
   const [state, setState] = useState<AppState>(loadState);
   const [toasts, setToasts] = useState<{ id: string; msg: string }[]>([]);
 
@@ -239,7 +252,25 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Live real-time sync with all Firestore collections
   useEffect(() => {
-    if (!isFirebaseConfigured) return;
+    if (!isFirebaseConfigured || authLoading) return;
+
+    // For owners, read only documents that belong to them (much less data to download and hold in memory).
+    const scoped = (name: string) => {
+      if (scopeOwnerId) return query(collection(db, name), where('ownerId', '==', scopeOwnerId));
+      if (scopeTenantLandlord && scopeTenantUid) {
+        const mine = [where('ownerId', '==', scopeTenantLandlord)];
+        if (!scopeIsTenant) {
+          // manager / staff: everything of their owner, nothing else
+        } else if (name === 'tenants') mine.push(where('id', '==', scopeTenantUid));
+        else if (name !== 'properties' && name !== 'units') {
+          mine.push(where('tenantId', '==', scopeTenantUid));
+          if (name === 'tenancyRequests' && scopeTenantEmail) mine.push(where('tenantEmail', '==', scopeTenantEmail));
+          if (name === 'agreements' && scopeTenantEmail) mine.push(where('tenantEmail', '==', scopeTenantEmail));
+        }
+        return mine.length === 1 ? query(collection(db, name), mine[0]) : query(collection(db, name), or(...mine));
+      }
+      return collection(db, name);
+    };
 
     // Immediate direct query on mount for instant zero-latency loading of trial policy
     getDoc(doc(db, 'platformConfig', 'trialPolicy')).then((snap) => {
@@ -258,138 +289,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }).catch(console.warn);
 
-    // Immediate direct query on mount for instant zero-latency loading
-    getDocs(collection(db, 'users')).then((snap) => {
-      const fbUsers: UserProfile[] = [];
-      snap.forEach((d) => {
-        const u = d.data() as UserProfile;
-        if (u && u.email) fbUsers.push({ ...u, id: u.id || d.id });
-      });
-      setState((prev) => ({ ...prev, users: fbUsers }));
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'tenants')).then((snap) => {
-      const fbTenants: TenantRecord[] = [];
-      snap.forEach((d) => {
-        const t = d.data() as TenantRecord;
-        if (t && t.id) fbTenants.push(t);
-      });
-      if (fbTenants.length > 0) {
-        setState((prev) => ({ ...prev, tenants: fbTenants }));
-      }
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'staff')).then((snap) => {
-      const fbStaff: StaffMember[] = [];
-      snap.forEach((d) => {
-        const s = d.data() as StaffMember;
-        if (s) fbStaff.push({ ...s, id: s.id || d.id });
-      });
-      setState((prev) => ({ ...prev, staff: fbStaff }));
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'propertyManagers')).then((snap) => {
-      const fbPMs: any[] = [];
-      snap.forEach((d) => {
-        const pm = d.data();
-        if (pm) fbPMs.push({ ...pm, id: pm.id || d.id });
-      });
-      setState((prev) => ({ ...prev, propertyManagers: fbPMs }));
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'properties')).then((snap) => {
-      const fbProps: Property[] = [];
-      snap.forEach((d) => {
-        const p = d.data() as Property;
-        if (p) {
-          const addrStr = typeof p.address === 'string' ? p.address : p.address?.formattedAddress;
-          const cleanCountry = sanitizeCountry(p.country || (typeof p.address === 'object' ? p.address?.country : undefined), addrStr);
-          fbProps.push({
-            ...p,
-            id: p.id || d.id,
-            country: cleanCountry,
-            address: typeof p.address === 'object' ? { ...p.address, country: cleanCountry } : p.address,
-          });
-        }
-      });
-      setState((prev) => ({ ...prev, properties: fbProps }));
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'units')).then((snap) => {
-      const fbUnits: Unit[] = [];
-      snap.forEach((d) => {
-        const u = d.data() as Unit;
-        if (u) {
-          const cleanCountry = sanitizeCountry(u.country, u.address);
-          fbUnits.push({ ...u, id: u.id || d.id, country: cleanCountry });
-        }
-      });
-      setState((prev) => ({ ...prev, units: fbUnits }));
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'tickets')).then((snap) => {
-      const fbTickets: Ticket[] = [];
-      snap.forEach((d) => {
-        const t = d.data() as Ticket;
-        if (t && t.id) fbTickets.push(t);
-      });
-      if (fbTickets.length > 0) {
-        setState((prev) => {
-          const tickMap = new Map<string, Ticket>();
-          prev.tickets.forEach((t) => tickMap.set(t.id, t));
-          fbTickets.forEach((t) => tickMap.set(t.id, t));
-          return { ...prev, tickets: Array.from(tickMap.values()) };
-        });
-      }
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'tenancyRequests')).then((snap) => {
-      const fbRequests: TenancyRequest[] = [];
-      snap.forEach((d) => {
-        const r = d.data() as TenancyRequest;
-        if (r && r.id) fbRequests.push(r);
-      });
-      if (fbRequests.length > 0) {
-        setState((prev) => {
-          const reqMap = new Map<string, TenancyRequest>();
-          (prev.tenancyRequests || []).forEach((r) => reqMap.set(r.id, r));
-          fbRequests.forEach((r) => reqMap.set(r.id, r));
-          return { ...prev, tenancyRequests: Array.from(reqMap.values()) };
-        });
-      }
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'agreements')).then((snap) => {
-      const fbAgs: Agreement[] = [];
-      snap.forEach((d) => {
-        const a = d.data() as Agreement;
-        if (a && a.id) fbAgs.push(a);
-      });
-      if (fbAgs.length > 0) {
-        setState((prev) => {
-          const agMap = new Map<string, Agreement>();
-          (prev.agreements || []).forEach((a) => agMap.set(a.id, a));
-          fbAgs.forEach((a) => agMap.set(a.id, a));
-          return { ...prev, agreements: Array.from(agMap.values()) };
-        });
-      }
-    }).catch(console.warn);
-
-    getDocs(collection(db, 'cashClaims')).then((snap) => {
-      const fbClaims: CashHandoverClaim[] = [];
-      snap.forEach((d) => {
-        const c = d.data() as CashHandoverClaim;
-        if (c && c.id) fbClaims.push(c);
-      });
-      if (fbClaims.length > 0) {
-        setState((prev) => {
-          const claimMap = new Map<string, CashHandoverClaim>();
-          (prev.cashClaims || []).forEach((c) => claimMap.set(c.id, c));
-          fbClaims.forEach((c) => claimMap.set(c.id, c));
-          return { ...prev, cashClaims: Array.from(claimMap.values()) };
-        });
-      }
-    }).catch(console.warn);
+    // (Duplicate one-off getDocs preloads removed: each collection below already has a live listener,
+    // so they only doubled the reads and the startup work.)
 
     // 1. Sync users live from Firestore
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -443,7 +344,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 2. Sync tenants directory live from Firestore
-    const unsubTenants = onSnapshot(collection(db, 'tenants'), (snapshot) => {
+    const unsubTenants = onSnapshot(scoped('tenants'), (snapshot) => {
       const fbTenants: TenantRecord[] = [];
       snapshot.forEach((d) => {
         const t = d.data() as TenantRecord;
@@ -451,10 +352,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
           fbTenants.push(t);
         }
       });
-      if (fbTenants.length > 0) {
+      {
+        // The server snapshot is authoritative: merging into the cached copy meant a removed tenant never left.
         setState((prev) => {
           const tenantMap = new Map<string, TenantRecord>();
-          const allTenants = [...prev.tenants, ...fbTenants];
+          const allTenants = [...fbTenants];
           // Deduplicate by email and unit
           const seenKeys = new Set<string>();
           const deduped: TenantRecord[] = [];
@@ -481,7 +383,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 3. Sync properties live from Firestore
-    const unsubProperties = onSnapshot(collection(db, 'properties'), (snapshot) => {
+    const unsubProperties = onSnapshot(scoped('properties'), (snapshot) => {
       const fbProps: Property[] = [];
       snapshot.forEach((d) => {
         const p = d.data() as Property;
@@ -502,7 +404,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 4. Sync units live from Firestore
-    const unsubUnits = onSnapshot(collection(db, 'units'), (snapshot) => {
+    const unsubUnits = onSnapshot(scoped('units'), (snapshot) => {
       const fbUnits: Unit[] = [];
       snapshot.forEach((d) => {
         const u = d.data() as Unit;
@@ -517,7 +419,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 5. Sync agreements live from Firestore
-    const unsubAgreements = onSnapshot(collection(db, 'agreements'), (snapshot) => {
+    const unsubAgreements = onSnapshot(scoped('agreements'), (snapshot) => {
       const fbAgreements: Agreement[] = [];
       snapshot.forEach((d) => {
         const a = d.data() as Agreement;
@@ -573,16 +475,16 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 6. Sync tenancy requests live from Firestore
-    const unsubRequests = onSnapshot(collection(db, 'tenancyRequests'), (snapshot) => {
+    const unsubRequests = onSnapshot(scoped('tenancyRequests'), (snapshot) => {
       const fbRequests: TenancyRequest[] = [];
       snapshot.forEach((d) => {
         const r = d.data() as TenancyRequest;
         if (r && r.id) fbRequests.push(r);
       });
-      if (fbRequests.length > 0) {
+      {
+        // Server snapshot is authoritative so deleted/cancelled invitations disappear after a reload.
         setState((prev) => {
           const reqMap = new Map<string, TenancyRequest>();
-          (prev.tenancyRequests || []).forEach((r) => reqMap.set(r.id, r));
           fbRequests.forEach((r) => reqMap.set(r.id, r));
           const allRequests = Array.from(reqMap.values());
 
@@ -655,7 +557,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 7. Sync maintenance tickets live from Firestore
-    const unsubTickets = onSnapshot(collection(db, 'tickets'), (snapshot) => {
+    const unsubTickets = onSnapshot(scoped('tickets'), (snapshot) => {
       const fbTickets: Ticket[] = [];
       snapshot.forEach((d) => {
         const t = d.data() as Ticket;
@@ -677,7 +579,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 8. Sync move-outs live from Firestore
-    const unsubMoveouts = onSnapshot(collection(db, 'moveouts'), (snapshot) => {
+    const unsubMoveouts = onSnapshot(scoped('moveouts'), (snapshot) => {
       const fbMoveouts: MoveOut[] = [];
       snapshot.forEach((d) => {
         const m = d.data() as MoveOut;
@@ -714,7 +616,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 9. Sync rental invoices live from Firestore (Owner <-> Tenant)
-    const unsubInvoices = onSnapshot(collection(db, 'invoices'), (snapshot) => {
+    const unsubInvoices = onSnapshot(scoped('invoices'), (snapshot) => {
       const fbInvoices: Invoice[] = [];
       snapshot.forEach((d) => {
         const inv = d.data() as any;
@@ -743,7 +645,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 9a. Sync payments ledger live from Firestore
-    const unsubPayments = onSnapshot(collection(db, 'payments'), (snapshot) => {
+    const unsubPayments = onSnapshot(scoped('payments'), (snapshot) => {
       const fbPayments: PaymentTransaction[] = [];
       snapshot.forEach((d) => {
         const pay = d.data() as any;
@@ -1237,7 +1139,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // 24. Sync deposit settlements live from Firestore
-    const unsubSettlements = onSnapshot(collection(db, 'depositSettlements'), (snapshot) => {
+    const unsubSettlements = onSnapshot(scoped('depositSettlements'), (snapshot) => {
       const fbSettlements: DepositSettlement[] = [];
       snapshot.forEach((d) => {
         const s = d.data() as DepositSettlement;
@@ -1648,7 +1550,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubEnquiries();
       unsubReviews();
     };
-  }, []);
+  }, [scopeOwnerId, scopeTenantLandlord, scopeTenantUid, scopeTenantEmail, scopeIsTenant, authLoading]);
 
   // Cross-Tab / Cross-Platform real-time synchronization concurrency
   useEffect(() => {
@@ -2164,11 +2066,40 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const uploadSignedAgreement = async (
     agreementId: string,
-    fileData: string,
+    rawFileData: string,
     fileName: string,
-    uploadedIds?: TenantUploadedIdItem[]
+    rawUploadedIds?: TenantUploadedIdItem[]
   ): Promise<string> => {
     const now = new Date().toISOString();
+
+    // Move the scans/photos into Cloud Storage and keep only their links in the database.
+    // Storing the raw file inside the agreement record exceeds Firestore's 1 MB document
+    // limit for any real scan, which made tenant uploads fail or silently never reach the owner.
+    let fileData = rawFileData;
+    let uploadedIds = rawUploadedIds;
+    if (isFirebaseConfigured) {
+      const agForUpload = state.agreements.find((a) => a.id === agreementId);
+      const meta = { tenantId: agForUpload?.tenantId || '', ownerId: agForUpload?.ownerId || '' };
+      const toStorageUrl = async (data: string, name: string, tag: string): Promise<string> => {
+        if (!data || !data.startsWith('data:')) return data;
+        const ext = ((name || '').split('.').pop() || 'pdf').replace(/[^a-zA-Z0-9]/g, '').slice(0, 5) || 'pdf';
+        const url = await uploadDocumentFile(data, `agreements/${agreementId}/${Date.now()}_${tag}.${ext}`, meta);
+        if (!url || url.startsWith('data:')) {
+          throw new Error('Could not store the document. Please check your connection and try a PDF or photo under 20 MB.');
+        }
+        return url;
+      };
+      fileData = await toStorageUrl(rawFileData, fileName, 'signed');
+      if (rawUploadedIds && rawUploadedIds.length > 0) {
+        uploadedIds = await Promise.all(
+          rawUploadedIds.map(async (item, i) => ({
+            ...item,
+            fileUrl: await toStorageUrl(item.fileUrl, item.fileName, `id${i}`),
+          }))
+        );
+      }
+    }
+
     let targetAgreement: Agreement | undefined;
     let updatedKycDocs: { title: string; fileUrl: string; verified: boolean }[] = [];
     let tenantRecordIdToUpdate: string | undefined;
@@ -2258,7 +2189,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       try {
         if (targetAgreement) {
           const firstId = uploadedIds && uploadedIds.length > 0 ? uploadedIds[0] : undefined;
-          await setDoc(doc(db, 'agreements', agreementId), {
+          await setDoc(doc(db, 'agreements', agreementId), cleanFirestoreObject({
+            ...(targetAgreement as Agreement),
             status: 'pending_approval',
             signedDocumentUrl: fileData,
             signedDocumentName: fileName,
@@ -2269,7 +2201,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
             tenantUploadedIdUrl: firstId ? firstId.fileUrl : (targetAgreement as any).tenantUploadedIdUrl || null,
             tenantUploadedIdName: firstId ? firstId.fileName : (targetAgreement as any).tenantUploadedIdName || null,
             tenantUploadedIdAt: firstId ? now : (targetAgreement as any).tenantUploadedIdAt || null,
-          }, { merge: true });
+          }), { merge: true });
 
           if (tenantRecordIdToUpdate && updatedKycDocs.length > 0) {
             await setDoc(doc(db, 'tenants', tenantRecordIdToUpdate), {
@@ -2279,6 +2211,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       } catch (err) {
         console.warn('Firestore uploadSignedAgreement error:', err);
+        throw err;
       }
     }
 
@@ -2994,12 +2927,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }));
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'agreements', agreement.id), agreement, { merge: true });
+        // Firestore rejects `undefined` values; without cleaning, the whole save failed silently
+        // and the lease never reached the database (so the owner never saw it).
+        await setDoc(doc(db, 'agreements', agreement.id), cleanFirestoreObject(agreement), { merge: true });
         if (isNew && agreement.unit) {
           deleteDoc(doc(db, 'renewals', agreement.unit)).catch(console.warn);
         }
       } catch (err) {
-        console.warn('Firestore saveAgreement sync error:', err);
+        console.error('Firestore saveAgreement sync error:', err);
       }
     }
 
@@ -3072,6 +3007,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         await deleteDoc(doc(db, 'agreements', agreementId));
       } catch (err) {
         console.warn('Firestore deleteAgreement error:', err);
+      }
+    }
+  };
+
+  const deleteTenancyRequest = async (requestId: string) => {
+    setState((prev) => ({
+      ...prev,
+      tenancyRequests: (prev.tenancyRequests || []).filter((r) => r.id !== requestId),
+    }));
+    if (isFirebaseConfigured) {
+      try {
+        await deleteDoc(doc(db, 'tenancyRequests', requestId));
+      } catch (err) {
+        console.error('Firestore deleteTenancyRequest error:', err);
       }
     }
   };
@@ -5964,8 +5913,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (claim.unit) {
           deleteDoc(doc(db, 'renewals', claim.unit)).catch(console.warn);
         }
-      } catch (err) {
-        console.warn('Firestore confirmCashClaim sync error:', err);
+      } catch (err: any) {
+        console.error('Firestore confirmCashClaim sync error:', err);
+        showToast(`Could not save the confirmation: ${err?.message || err}. Please refresh and try again.`);
+        return;
       }
     }
 
@@ -7567,6 +7518,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         deleteUserAccount,
         saveAgreement,
         deleteAgreement,
+        deleteTenancyRequest,
         saveAgreementTemplate,
         deleteAgreementTemplate,
         uploadSignedAgreement,

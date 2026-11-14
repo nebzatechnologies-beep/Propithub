@@ -2,7 +2,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { Invoice, PaymentTransaction, InvoiceTemplateConfig, CashHandoverClaim } from '../../types';
-import { db, isFirebaseConfigured } from '../../lib/firebase';
+import { db, functions, isFirebaseConfigured } from '../../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
 import { doc, setDoc } from 'firebase/firestore';
 import { getDaysFromNowString, getTodayDateString } from '../../lib/dates';
 import { RentalInvoiceStudioModal, DEFAULT_DEPOSIT_TERMS } from '../../components/invoices/RentalInvoiceStudioModal';
@@ -63,6 +64,16 @@ import {
 export const PaymentsPage: React.FC = () => {
   const { state, updateState, saveAgreement, saveInvoice, savePayment, markInvoicePaid, waiveInvoiceLateFee, saveOwnerSettings, saveNotification, confirmCashClaim, rejectCashClaim, submitCashClaim, logCommunication, showToast } = useAppData();
   const { user } = useAuth();
+
+  // One-time repair per session: payments/proofs a tenant submitted without an owner stamp are re-attached to this owner.
+  useEffect(() => {
+    if (!isFirebaseConfigured || !user?.id) return;
+    const key = `repaired-tenant-records-v2-${user.id}`;
+    try { if (sessionStorage.getItem(key)) return; sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+    httpsCallable<unknown, { fixed: number; removed?: number }>(functions, 'repairMyTenantRecords')()
+      .then((r) => { if (r.data?.fixed) console.info(`Re-attached ${r.data.fixed} payment record(s) to your account.`); })
+      .catch((e) => console.warn('repairMyTenantRecords failed', e));
+  }, [user?.id]);
   const ownerId = user?.id || '';
 
   const { viewCurrency, convert } = useCurrency();
@@ -1203,6 +1214,22 @@ export const PaymentsPage: React.FC = () => {
       .reduce((sum, p) => sum + convert(p.amount || 0, p.currency || 'USD', activeCurrencyCode), 0);
   }, [myPayments, convert, activeCurrencyCode, state.invoices]);
 
+  // Opens the proof-review dialog (UTR, screenshot, Confirm / Decline) for a rent or deposit row awaiting confirmation.
+  const openProofForItem = (item: { tenantId?: string; unitNumber?: string; unitId?: string; invoiceId?: string; depositInvoice?: Invoice }, kind: 'rent' | 'deposit') => {
+    const isDep = (i: Invoice) => i.invoiceType === 'deposit' || (i as any).type === 'deposit';
+    const pending = state.invoices.filter((i) => i.status === 'pending_confirmation');
+    const inv =
+      (item.invoiceId && pending.find((i) => i.id === item.invoiceId)) ||
+      (item.depositInvoice && pending.find((i) => i.id === item.depositInvoice!.id)) ||
+      pending.find((i) => ((item.tenantId && i.tenantId === item.tenantId) || (item.unitNumber && i.unit === item.unitNumber)) && isDep(i) === (kind === 'deposit'));
+    if (inv) { setReviewingProofInvoice(inv); return; }
+    const claim = (state.cashClaims || []).find(
+      (c) => c.status === 'pending_confirmation' && ((item.tenantId && c.tenantId === item.tenantId) || (item.unitNumber && c.unit === item.unitNumber))
+    );
+    if (claim) { setReviewingClaim(claim); return; }
+    showToast('No proof was found for this payment yet. Ask the tenant to submit it again, or use Record Pay.');
+  };
+
   const handleConfirmReceipt = async (id: string) => {
     const targetPay = state.payments.find((p) => p.id === id);
 
@@ -1226,6 +1253,19 @@ export const PaymentsPage: React.FC = () => {
 
     if (matchingInvoice) {
       await markInvoicePaid(matchingInvoice.id, targetPay?.method || 'Offline Confirmed');
+    }
+    if (isFirebaseConfigured && targetPay) {
+      try {
+        await setDoc(
+          doc(db, 'payments', id),
+          { status: 'paid', audit: { ...(targetPay.audit || {}), confirmedBy: user?.id || 'owner', confirmedByName: user?.displayName || 'Property Owner', confirmedAt: new Date().toISOString() } },
+          { merge: true }
+        );
+      } catch (err: any) {
+        console.error('Could not persist payment confirmation:', err);
+        showToast(`Could not save the confirmation: ${err?.message || err}. Please refresh and try again.`);
+        return;
+      }
     }
 
     updateState((prev) => {
@@ -1607,17 +1647,32 @@ export const PaymentsPage: React.FC = () => {
       await confirmCashClaim(linkedClaim.id);
     }
 
-    const notif = {
-      id: `notif_${Date.now()}`,
-      userId: inv.tenantId || '',
-      title: 'Payment Confirmed & Invoice Settled',
-      body: `Your payment of ${getCurrencySymbol(inv.currency) || DEFAULT_CURRENCY_SYMBOL}${inv.total.toLocaleString()} for Unit ${inv.unit} has been verified and settled by the landlord. Tax invoice voucher is available.`,
-      link: '/tenant/payments',
-      isRead: false,
-      createdAt: new Date().toISOString(),
-    };
-    if (inv.tenantId) {
-      await saveNotification(notif);
+    // Persist the matching payment records as paid (the on-screen update alone was lost on reload, so the row
+    // kept showing "Confirmation Pending").
+    const affectedPayments = (state.payments || []).filter(
+      (p) =>
+        (p.invoiceId === inv.id || (p.tenantId === inv.tenantId && (!p.propertyId || !inv.propertyId || p.propertyId === inv.propertyId) && p.unit === inv.unit)) &&
+        p.status === 'pending_confirmation'
+    );
+    if (isFirebaseConfigured) {
+      try {
+        for (const p of affectedPayments) {
+          await setDoc(
+            doc(db, 'payments', p.id),
+            {
+              status: 'paid',
+              method: settleLabel,
+              audit: { ...(p.audit || {}), confirmedBy: user?.id || 'owner', confirmedByName: user?.displayName || 'Property Owner', confirmedAt: new Date().toISOString() },
+            },
+            { merge: true }
+          );
+        }
+      } catch (err: any) {
+        console.error('Could not persist payment confirmation:', err);
+        showToast(`Could not save the confirmation: ${err?.message || err}. Please refresh and try again.`);
+        setIsApprovingProof(false);
+        return;
+      }
     }
 
     updateState((prev) => {
@@ -2162,6 +2217,11 @@ export const PaymentsPage: React.FC = () => {
                                     />
                                   </button>
                                 )}
+                                {item.status === 'pending_confirmation' && (
+                                  <button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'rent')}>
+                                    <ShieldCheck size={13} /> Review &amp; Confirm
+                                  </button>
+                                )}
                                 {item.status !== 'paid' ? (
                                   <button
                                     type="button"
@@ -2293,6 +2353,11 @@ export const PaymentsPage: React.FC = () => {
                               defaultText="Remind"
                               icon={<Send size={12} />}
                             />
+                          </button>
+                        )}
+                        {item.status === 'pending_confirmation' && (
+                          <button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'rent')}>
+                            <ShieldCheck size={13} /> Review &amp; Confirm
                           </button>
                         )}
                         {item.status !== 'paid' ? (
@@ -2571,6 +2636,11 @@ export const PaymentsPage: React.FC = () => {
                                     + Voucher
                                   </button>
                                 )}
+                                {item.status === 'pending_confirmation' && (
+                                  <button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'deposit')}>
+                                    <ShieldCheck size={13} /> Review &amp; Confirm
+                                  </button>
+                                )}
                                 {(item.status === 'pending_collection' || item.status === 'pending_confirmation') && (
                                   <button
                                     type="button"
@@ -2689,6 +2759,11 @@ export const PaymentsPage: React.FC = () => {
                             }}
                           >
                             + Generate Voucher
+                          </button>
+                        )}
+                        {item.status === 'pending_confirmation' && (
+                          <button type="button" className="btn small" style={{ background: '#EA580C', borderColor: '#EA580C', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', padding: '4px 8px' }} title="See the tenant's UTR and proof, then confirm or decline" onClick={() => openProofForItem(item, 'deposit')}>
+                            <ShieldCheck size={13} /> Review &amp; Confirm
                           </button>
                         )}
                         {(item.status === 'pending_collection' || item.status === 'pending_confirmation') && (

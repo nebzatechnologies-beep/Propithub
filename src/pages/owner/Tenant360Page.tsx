@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { collection, getDocs } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from '../../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions, isFirebaseConfigured } from '../../lib/firebase';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { TenantRecord, UserProfile, TenancyRequest, Agreement, Invoice, Unit, RequiredIdItem } from '../../types';
@@ -26,6 +27,7 @@ export const Tenant360Page: React.FC = () => {
     updateState,
     showToast,
     saveTenancyRequest,
+    deleteTenancyRequest,
     saveTenant,
     saveAgreement,
     saveInvoice,
@@ -119,20 +121,12 @@ export const Tenant360Page: React.FC = () => {
       (u.propertyId && myPropertyIds.has(u.propertyId))
   );
 
-  const mySentRequests = React.useMemo(() => {
-    return (state.tenancyRequests || [])
-      .filter(
-        (r) =>
-          (ownerId && r.ownerId === ownerId) ||
-          (ownerEmail && (r as any).ownerEmail?.toLowerCase() === ownerEmail) ||
-          (r.propertyId && myPropertyIds.has(r.propertyId))
-      )
-      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-  }, [state.tenancyRequests, ownerId, ownerEmail, myPropertyIds]);
-
-  const pendingRequestCount = React.useMemo(
-    () => mySentRequests.filter((r) => r.status === 'pending').length,
-    [mySentRequests]
+  const mySentRequests = (state.tenancyRequests || []).filter(
+    (r) =>
+      r.status !== 'archived' &&
+      ((ownerId && r.ownerId === ownerId) ||
+        (ownerEmail && (r as any).ownerEmail?.toLowerCase() === ownerEmail) ||
+        (r.propertyId && myPropertyIds.has(r.propertyId)))
   );
 
   const myAgreements = (state.agreements || []).filter((a) => {
@@ -179,6 +173,7 @@ export const Tenant360Page: React.FC = () => {
 
     // 1. Process explicit tenant records from state.tenants
     state.tenants.forEach((t) => {
+      if (Array.isArray(t.removedOwnerIds) && ownerId && t.removedOwnerIds.includes(ownerId)) return;
       // Disqualify only if this tenant has NO connection to this owner or any of this owner's properties/units/agreements
       const matchesOwnerId = Boolean(ownerId) && Boolean(t.ownerId) && t.ownerId === ownerId;
       const matchesProperty = Boolean(t.propertyId) && myPropertyIds.has(t.propertyId!);
@@ -507,6 +502,68 @@ export const Tenant360Page: React.FC = () => {
     });
   }, [myTenants, ownerId]);
 
+  // An accepted invitation can still be withdrawn until the lease is active/signed.
+  const isLeaseLive = (r: TenancyRequest) =>
+    (state.agreements || []).some(
+      (a) =>
+        (a.status === 'active' || a.status === 'signed') &&
+        (a.unit === r.unitNumber || a.unitId === r.unitId) &&
+        (a.tenantId === r.tenantId || (!!r.tenantEmail && a.tenantEmail?.toLowerCase() === r.tenantEmail.toLowerCase()))
+    );
+  const canCancelRequest = (r: TenancyRequest) =>
+    r.status === 'pending' || (r.status === 'accepted' && !isLeaseLive(r));
+
+  // The Invitations tab lists only invitations that still need attention. Once the tenant accepted AND the lease is
+  // live they are already under Active Tenants, so showing them here as "pending" was confusing.
+  const invitationList = mySentRequests.filter(
+    (r) => r.status !== 'fulfilled' && !(r.status === 'accepted' && isLeaseLive(r))
+  );
+
+  // A tenant can be deleted unless they are in an active/signed lease (that goes through move-out).
+  const tenantHasLiveLease = (t: TenantRecord) =>
+    (state.agreements || []).some(
+      (a) =>
+        (a.status === 'active' || a.status === 'signed') &&
+        (a.tenantId === t.id || (!!t.email && a.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
+    );
+
+  const handleDeleteTenant = async (t: TenantRecord) => {
+    if (!window.confirm(`Remove ${t.name} (${t.email}) from your dashboard? This deletes their tenant record, invitations and pending leases from your account and frees any reserved unit. Their own login is not deleted.`)) return;
+    try {
+      if (isFirebaseConfigured) {
+        await httpsCallable<any, any>(functions, 'deleteTenantAccount')({ tenantId: t.id, tenantEmail: t.email });
+      }
+      const sameTenant = (x: any) => x.id === t.id || (!!t.email && x.email?.toLowerCase() === t.email.toLowerCase());
+      updateState((prev) => ({
+        ...prev,
+        tenants: (prev.tenants || []).filter((x) => !sameTenant(x)),
+        users: (prev.users || []).map((x) => (sameTenant(x) && x.ownerId === ownerId ? { ...x, ownerId: null, ownerName: null } : x)),
+        tenancyRequests: (prev.tenancyRequests || []).filter(
+          (r) => r.tenantId !== t.id && r.tenantEmail?.toLowerCase() !== (t.email || '').toLowerCase()
+        ),
+        agreements: (prev.agreements || []).filter(
+          (a) => a.tenantId !== t.id && a.tenantEmail?.toLowerCase() !== (t.email || '').toLowerCase()
+        ),
+        units: (prev.units || []).map((u) =>
+          u.currentTenantId === t.id || (!u.currentTenantId && !!u.tenant && u.tenant.toLowerCase().trim() === (t.name || '').toLowerCase().trim())
+            ? { ...u, status: 'vacant' as const, tenant: null, currentTenantId: null }
+            : u
+        ),
+      }));
+      showToast(`✓ ${t.name} removed from your dashboard.`);
+    } catch (err: any) {
+      console.error('deleteTenantAccount failed:', err);
+      showToast(err?.message ? `Could not remove tenant: ${err.message}` : 'Could not remove tenant. Please try again.');
+    }
+  };
+
+  // Permanently delete an invitation. A live (pending/accepted) one is cancelled first so the unit is freed.
+  const handleDeleteRequest = (r: TenancyRequest) => {
+    if (!window.confirm(`Delete the invitation for ${r.tenantName} (Unit ${r.unitNumber})? This cannot be undone.`)) return;
+    if (canCancelRequest(r)) handleCancelRequest(r.id);
+    deleteTenancyRequest(r.id);
+  };
+
   // Cancel sent request
   const handleCancelRequest = (reqId: string) => {
     const targetReq = (state.tenancyRequests || []).find((r) => r.id === reqId);
@@ -730,7 +787,7 @@ export const Tenant360Page: React.FC = () => {
           }}
         >
           <Send size={15} />
-          Pending Invitations ({pendingRequestCount})
+          Pending Invitations ({invitationList.length})
         </button>
       </div>
 
@@ -738,134 +795,154 @@ export const Tenant360Page: React.FC = () => {
       {activeTab === 'active' && (
         <div className="panel">
           <div className="panel-body">
-              {/* Desktop Table View */}
-              <div className="desktop-table-view">
-                <div className="table-wrap">
-                  <table>
-                    <thead>
+            {/* Desktop Table View */}
+            <div className="desktop-table-view">
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Tenant</th>
+                      <th>Units Rented</th>
+                      <th>{getTableCurrencyHeader('Monthly Rent', viewCurrency)}</th>
+                      <th>{getTableCurrencyHeader('Deposit Held', viewCurrency)}</th>
+                      <th>KYC Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTenants.length === 0 ? (
                       <tr>
-                        <th>Tenant</th>
-                        <th>Units Rented</th>
-                        <th>{getTableCurrencyHeader('Monthly Rent', viewCurrency)}</th>
-                        <th>{getTableCurrencyHeader('Deposit Held', viewCurrency)}</th>
-                        <th>KYC Status</th>
-                        <th>Action</th>
+                        <td colSpan={6} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
+                          <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
+                            No active tenants
+                          </div>
+                          <div style={{ fontSize: '12.5px' }}>
+                            Use the "Onboard Tenant" button above to add a tenant or send a lease invitation.
+                          </div>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {filteredTenants.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
-                            <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
-                              No active tenants
-                            </div>
-                            <div style={{ fontSize: '12.5px' }}>
-                              Use the "Onboard Tenant" button above to add a tenant or send a lease invitation.
+                    ) : (
+                      filteredTenants.map((t) => (
+                        <tr key={t.id}>
+                          <td>
+                            <div className="person">
+                              <div className="avatar">{t.name.slice(0, 2).toUpperCase()}</div>
+                              <div className="who">
+                                <b>{t.name}</b>
+                                <span>
+                                  {t.email} • {t.phone}
+                                </span>
+                              </div>
                             </div>
                           </td>
-                        </tr>
-                      ) : (
-                        filteredTenants.map((t) => (
-                          <tr key={t.id}>
-                            <td>
-                              <div className="person">
-                                <div className="avatar">{t.name.slice(0, 2).toUpperCase()}</div>
-                                <div className="who">
-                                  <b>{t.name}</b>
-                                  <span>
-                                    {t.email} • {t.phone}
-                                  </span>
-                                </div>
-                              </div>
-                            </td>
-                            <td>
-                              <b>{(t.unitsRented || [t.unit || 'Unit']).join(', ')}</b>
-                            </td>
-                            <td><CurrencyAmount amount={t.rent} currency={t.currency} /></td>
-                            <td><CurrencyAmount amount={t.deposit} currency={t.currency} /></td>
-                            <td>
-                              {(t.kycDocuments || []).some((k) => k.verified) ? (
-                                <span className="badge green">✓ KYC Verified</span>
-                              ) : (
-                                <span className="badge grey">Pending KYC</span>
-                              )}
-                            </td>
-                            <td>
+                          <td>
+                            <b>{(t.unitsRented || [t.unit || 'Unit']).join(', ')}</b>
+                          </td>
+                          <td><CurrencyAmount amount={t.rent} currency={t.currency} /></td>
+                          <td><CurrencyAmount amount={t.deposit} currency={t.currency} /></td>
+                          <td>
+                            {(t.kycDocuments || []).some((k) => k.verified) ? (
+                              <span className="badge green">✓ KYC Verified</span>
+                            ) : (
+                              <span className="badge grey">Pending KYC</span>
+                            )}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn secondary small"
+                              onClick={() => setSelectedTenantId(t.id)}
+                            >
+                              View Details
+                            </button>
+                            {!tenantHasLiveLease(t) && (
                               <button
                                 type="button"
                                 className="btn secondary small"
-                                onClick={() => setSelectedTenantId(t.id)}
+                                style={{ color: 'var(--danger)', marginLeft: '6px' }}
+                                onClick={() => handleDeleteTenant(t)}
                               >
-                                View Details
+                                Remove
                               </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               </div>
+            </div>
 
-              {/* Mobile Card View */}
-              <div className="mobile-card-view">
-                {filteredTenants.length === 0 ? (
-                  <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
-                    <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
-                      No active tenants
-                    </div>
-                    <div style={{ fontSize: '12.5px' }}>
-                      Use the "Onboard Tenant" button above to add a tenant or send a lease invitation.
-                    </div>
+            {/* Mobile Card View */}
+            <div className="mobile-card-view">
+              {filteredTenants.length === 0 ? (
+                <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
+                  <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
+                    No active tenants
                   </div>
-                ) : (
-                  filteredTenants.map((t) => (
-                    <div key={t.id} className="staff-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
-                        <div className="person">
-                          <div className="avatar">{t.name.slice(0, 2).toUpperCase()}</div>
-                          <div className="who">
-                            <b>{t.name}</b>
-                            <span>{t.email}</span>
-                            <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>{t.phone}</span>
-                          </div>
-                        </div>
-                        {(t.kycDocuments || []).some((k) => k.verified) ? (
-                          <span className="badge green" style={{ fontSize: '11px', flexShrink: 0 }}>✓ KYC Verified</span>
-                        ) : (
-                          <span className="badge grey" style={{ fontSize: '11px', flexShrink: 0 }}>Pending KYC</span>
-                        )}
-                      </div>
-
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px' }}>
-                        <div>
-                          <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Units Rented</div>
-                          <b style={{ color: 'var(--ink)' }}>{(t.unitsRented || [t.unit || 'Unit']).join(', ')}</b>
-                        </div>
-                        <div>
-                          <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Monthly Rent</div>
-                          <b style={{ color: 'var(--ledger)' }}><CurrencyAmount amount={t.rent} currency={t.currency} /></b>
-                        </div>
-                        <div>
-                          <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Deposit Held</div>
-                          <b><CurrencyAmount amount={t.deposit} currency={t.currency} /></b>
+                  <div style={{ fontSize: '12.5px' }}>
+                    Use the "Onboard Tenant" button above to add a tenant or send a lease invitation.
+                  </div>
+                </div>
+              ) : (
+                filteredTenants.map((t) => (
+                  <div key={t.id} className="staff-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                      <div className="person">
+                        <div className="avatar">{t.name.slice(0, 2).toUpperCase()}</div>
+                        <div className="who">
+                          <b>{t.name}</b>
+                          <span>{t.email}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>{t.phone}</span>
                         </div>
                       </div>
+                      {(t.kycDocuments || []).some((k) => k.verified) ? (
+                        <span className="badge green" style={{ fontSize: '11px', flexShrink: 0 }}>✓ KYC Verified</span>
+                      ) : (
+                        <span className="badge grey" style={{ fontSize: '11px', flexShrink: 0 }}>Pending KYC</span>
+                      )}
+                    </div>
 
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', padding: '10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px' }}>
+                      <div>
+                        <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Units Rented</div>
+                        <b style={{ color: 'var(--ink)' }}>{(t.unitsRented || [t.unit || 'Unit']).join(', ')}</b>
+                      </div>
+                      <div>
+                        <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Monthly Rent</div>
+                        <b style={{ color: 'var(--ledger)' }}><CurrencyAmount amount={t.rent} currency={t.currency} /></b>
+                      </div>
+                      <div>
+                        <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Deposit Held</div>
+                        <b><CurrencyAmount amount={t.deposit} currency={t.currency} /></b>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn secondary small btn-mobile-full"
+                      onClick={() => setSelectedTenantId(t.id)}
+                    >
+                      View Details
+                    </button>
+                    {!tenantHasLiveLease(t) && (
                       <button
                         type="button"
                         className="btn secondary small btn-mobile-full"
-                        onClick={() => setSelectedTenantId(t.id)}
+                        style={{ color: 'var(--danger)' }}
+                        onClick={() => handleDeleteTenant(t)}
                       >
-                        View Details
+                        Remove Tenant
                       </button>
-                    </div>
-                  ))
-                )}
-              </div>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           </div>
-        )}
+        </div>
+      )}
 
       {/* TAB 2: Sent Tenancy Requests & Invitations */}
       {activeTab === 'requests' && (
@@ -887,7 +964,7 @@ export const Tenant360Page: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRequests.length === 0 ? (
+                  {invitationList.length === 0 ? (
                     <tr>
                       <td colSpan={8} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
                         <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
@@ -899,7 +976,7 @@ export const Tenant360Page: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredRequests.map((r) => {
+                    invitationList.map((r) => {
                       let statusBadge = (
                         <span className="badge amber" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                           <Clock size={12} /> Pending Tenant Response
@@ -908,7 +985,7 @@ export const Tenant360Page: React.FC = () => {
                       if (r.status === 'accepted') {
                         statusBadge = (
                           <span className="badge green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                            <CheckCircle size={12} /> Accepted & Active
+                            <CheckCircle size={12} /> {isLeaseLive(r) ? 'Accepted & Active' : 'Accepted - lease in progress'}
                           </span>
                         );
                       } else if (r.status === 'declined') {
@@ -955,18 +1032,31 @@ export const Tenant360Page: React.FC = () => {
                           </td>
                           <td>{statusBadge}</td>
                           <td>
-                            {r.status === 'pending' ? (
-                              <button
-                                type="button"
-                                className="btn secondary small"
-                                style={{ color: 'var(--danger)' }}
-                                onClick={() => handleCancelRequest(r.id)}
-                              >
-                                Cancel Request
-                              </button>
-                            ) : (
-                              <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>—</span>
-                            )}
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                              {canCancelRequest(r) && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  style={{ color: 'var(--danger)' }}
+                                  onClick={() => handleCancelRequest(r.id)}
+                                >
+                                  {r.status === 'accepted' ? 'Cancel & Free Unit' : 'Cancel Request'}
+                                </button>
+                              )}
+                              {r.status !== 'fulfilled' && !isLeaseLive(r) && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  style={{ color: 'var(--danger)' }}
+                                  onClick={() => handleDeleteRequest(r)}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                              {r.status === 'accepted' && isLeaseLive(r) && (
+                                <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>—</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -979,7 +1069,7 @@ export const Tenant360Page: React.FC = () => {
 
           {/* Mobile Card View */}
           <div className="mobile-card-view">
-            {filteredRequests.length === 0 ? (
+            {invitationList.length === 0 ? (
               <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
                 <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
                   No tenancy requests sent yet
@@ -989,7 +1079,7 @@ export const Tenant360Page: React.FC = () => {
                 </div>
               </div>
             ) : (
-              filteredRequests.map((r) => {
+              invitationList.map((r) => {
                 let statusBadge = (
                   <span className="badge amber" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                     <Clock size={12} /> Pending Response
@@ -998,7 +1088,7 @@ export const Tenant360Page: React.FC = () => {
                 if (r.status === 'accepted') {
                   statusBadge = (
                     <span className="badge green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      <CheckCircle size={12} /> Accepted & Active
+                      <CheckCircle size={12} /> {isLeaseLive(r) ? 'Accepted & Active' : 'Accepted - lease in progress'}
                     </span>
                   );
                 } else if (r.status === 'declined') {
@@ -1047,14 +1137,24 @@ export const Tenant360Page: React.FC = () => {
                       </div>
                     </div>
 
-                    {r.status === 'pending' && (
+                    {canCancelRequest(r) && (
                       <button
                         type="button"
                         className="btn secondary small btn-mobile-full"
                         style={{ color: 'var(--danger)' }}
                         onClick={() => handleCancelRequest(r.id)}
                       >
-                        Cancel Request
+                        {r.status === 'accepted' ? 'Cancel & Free Unit' : 'Cancel Request'}
+                      </button>
+                    )}
+                    {r.status !== 'fulfilled' && !isLeaseLive(r) && (
+                      <button
+                        type="button"
+                        className="btn secondary small btn-mobile-full"
+                        style={{ color: 'var(--danger)' }}
+                        onClick={() => handleDeleteRequest(r)}
+                      >
+                        Delete
                       </button>
                     )}
                   </div>

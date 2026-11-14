@@ -31,7 +31,8 @@ import { Agreement, Invoice, PaymentTransaction, TenantRecord, DepositSettlement
 import { buildRentSchedule, RentScheduleResult, RentCycleItem } from '../../lib/rentScheduleUtils';
 import { DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
 import { downloadCashHandoverReceiptPdf, downloadSingleInvoicePDF } from '../../lib/pdf';
-import { compressImage } from '../../lib/imageUploader';
+import { compressImage, uploadDocumentFile } from '../../lib/imageUploader';
+import { isFirebaseConfigured } from '../../lib/firebase';
 import { generateTransactionId, generateInvoiceId, generateReceiptId } from '../../lib/idGenerators';
 import { dispatchRentPaymentReceiptEmail } from '../../lib/receiptMailer';
 import {
@@ -144,7 +145,7 @@ export const PaymentsHistoryPage: React.FC = () => {
 
   const resolvedUnit = tenantRecord?.unit || (user as any)?.unitNumber || '';
   const hasAssignedUnit = Boolean(resolvedUnit && resolvedUnit !== 'Unassigned');
-  const resolvedOwnerId = tenantRecord?.ownerId || '';
+  const resolvedOwnerId = tenantRecord?.ownerId || (user as any)?.ownerId || '';
 
   // 1. Gather all authorized unique IDs for this tenant
   const myTenantIds = useMemo(() => {
@@ -1564,6 +1565,26 @@ export const PaymentsHistoryPage: React.FC = () => {
     }
   };
 
+  // Proof screenshots/PDFs go to Storage; embedding them in the Firestore document breaks the 1 MB limit
+  // and the write then fails silently, so the owner never sees the payment or its proof.
+  const storeProof = async (data: string | undefined, key: string, ownerForMeta: string): Promise<string | undefined> => {
+    if (!data || !isFirebaseConfigured || !data.startsWith('data:')) return data;
+    const ext = data.startsWith('data:application/pdf') ? 'pdf' : 'jpg';
+    let url = data;
+    try {
+      url = await uploadDocumentFile(data, `invoices/${key}/${Date.now()}_proof.${ext}`, {
+        tenantId: user?.id || '',
+        ownerId: ownerForMeta || '',
+      });
+    } catch (e) {
+      console.warn('Proof upload failed:', e);
+    }
+    if (url.startsWith('data:') && url.length > 700_000) {
+      throw new Error('Could not upload your proof. Please try a smaller image or check your connection.');
+    }
+    return url;
+  };
+
   const finalizePaymentRecord = async (
     payId: string,
     amount: number,
@@ -1573,6 +1594,8 @@ export const PaymentsHistoryPage: React.FC = () => {
     proofUrl?: string,
     proofNotes?: string
   ) => {
+    const ownerIdEff = resolvedOwnerId || activePayingInvoice?.ownerId || activeAgreement?.ownerId || '';
+    proofUrl = await storeProof(proofUrl, payId, ownerIdEff);
     const overduePay = state.payments.find(
       (p) =>
         p.status === 'overdue' &&
@@ -1583,7 +1606,7 @@ export const PaymentsHistoryPage: React.FC = () => {
     );
     const newPayment: PaymentTransaction = {
       id: payId,
-      ownerId: resolvedOwnerId,
+      ownerId: ownerIdEff,
       tenant: tenantName,
       tenantId: user?.id || tenantRecord?.id || `usr_tenant_${Date.now()}`,
       unit: resolvedUnit,
@@ -1939,7 +1962,7 @@ export const PaymentsHistoryPage: React.FC = () => {
     if (selectedMethod === 'cash') {
       setIsProcessing(true);
       try {
-        const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || resolvedOwnerId;
+        const targetOwnerId = activePayingInvoice?.ownerId || activeAgreement?.ownerId || resolvedOwnerId || '';
         const targetUnit = activePayingInvoice?.unit || activeAgreement?.unit || resolvedUnit;
         const targetPropertyName = activePayingInvoice?.propertyName || currentProperty?.name || tenantRecord?.propertyName;
         await submitCashClaim({
@@ -1959,7 +1982,7 @@ export const PaymentsHistoryPage: React.FC = () => {
           handoverDate: cashHandoverDate || new Date().toISOString().split('T')[0],
           handoverLocation: cashHandoverLocation || `Unit ${targetUnit || 'Premises'} / On-Site Handover`,
           notes: offlineNotes ? (offlineRef ? `Ref: ${offlineRef} — ${offlineNotes}` : offlineNotes) : (offlineRef ? `Ref: ${offlineRef}` : undefined),
-          proofPhotoUrl: offlineProofUrl || undefined,
+          proofPhotoUrl: await storeProof(offlineProofUrl || undefined, `claim_${payId}`, targetOwnerId),
         });
         setOfflineRef('');
         setOfflineProofUrl('');
@@ -1975,6 +1998,7 @@ export const PaymentsHistoryPage: React.FC = () => {
     }
 
     // Direct / Offline Methods (UPI, Bank)
+    const submittedIsDeposit = String(activePayingInvoice?.id || overduePay?.invoiceId || '').toUpperCase().startsWith('DEP-');
     await finalizePaymentRecord(
       payId,
       payAmount,
@@ -1985,6 +2009,15 @@ export const PaymentsHistoryPage: React.FC = () => {
       offlineNotes || undefined
     );
     showToast('✓ Payment proof submitted! Your landlord will verify and settle the invoice.');
+    // Take the tenant straight to the transaction they just paid.
+    if (submittedIsDeposit) {
+      setSubTab('deposit');
+      setSearchParams((prev) => { const n = new URLSearchParams(prev); n.set('tab', 'deposit'); return n; }, { replace: true });
+    } else {
+      setSubTab('rent_due');
+      setRentDueView('history');
+    }
+    try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* ignore */ }
   };
 
   const getMoveoutBadge = (s: string) => {

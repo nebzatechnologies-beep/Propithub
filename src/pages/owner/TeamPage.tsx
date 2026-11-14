@@ -37,7 +37,81 @@ export const TeamPage: React.FC = () => {
     password: string;
     role: string;
     property?: string;
+    phone?: string;
+    emailStatus?: 'delivered' | 'failed';
+    birdStatus?: string;
+    emailError?: string;
   } | null>(null);
+  const [isResendingInvite, setIsResendingInvite] = useState(false);
+
+  const shareCredentials = async (person: any, kind: 'staff' | 'manager', mode: 'copy') => {
+    let pw: string = person.tempPassword || '';
+    if (!pw) {
+      // No saved password: set a fresh one so the details we share actually work.
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let rand = '';
+      for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+      pw = `${kind === 'staff' ? 'Staff' : 'Manager'}#${rand}`;
+      const r = await provisionUser({
+        name: person.name, email: person.email, password: pw, role: kind,
+        phone: person.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
+      });
+      if (!r.success) { showToast(r.error || 'Could not prepare the credentials.'); return; }
+      try { await saveManager({ ...person, tempPassword: pw }); } catch { /* best effort */ }
+    }
+    const text = `Propithub ${kind === 'staff' ? 'Staff' : 'Manager'} Access\nHello ${person.name},\nLogin: https://propithub.web.app/login\nEmail: ${person.email}\nPassword: ${pw}\nPlease change your password after signing in.`;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Credentials copied. Paste them into WhatsApp or any chat.');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); showToast('Credentials copied.'); } catch { showToast(text); }
+      document.body.removeChild(ta);
+    }
+  };
+
+  const mailInviteToManager = async (pm: any) => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    let rand = '';
+    for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+    const pw = `Manager#${rand}`;
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: pm.name, email: pm.email, password: pw, role: 'manager',
+      phone: pm.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not send the invite.'); return; }
+    try { await saveManager({ ...pm, tempPassword: pw }); } catch { /* record update is best effort */ }
+    setCredentialsModal({
+      isOpen: true, name: pm.name, email: pm.email, password: pw, role: 'Property Manager',
+      property: '', phone: pm.phone || '',
+      emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError,
+    });
+    showToast(r.emailStatus === 'failed'
+      ? `Invite email to ${pm.email} failed${r.emailError ? ` (${r.emailError})` : ''}. Use Copy Credentials.`
+      : `Invite emailed to ${pm.email} (${r.birdStatus || 'accepted'}).`);
+  };
+  const resendManagerInvite = async () => {
+    if (!credentialsModal || !credentialsModal.password) {
+      showToast('No saved password for this person. Add them again to send a fresh invite.');
+      return;
+    }
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: credentialsModal.name,
+      email: credentialsModal.email,
+      password: credentialsModal.password,
+      role: 'manager',
+      phone: credentialsModal.phone || '',
+      ownerId,
+      ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not resend the invite.'); return; }
+    setCredentialsModal((m) => m ? { ...m, emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError } : m);
+  };
 
   // Assign / Unassign modal state
   const [reassignModal, setReassignModal] = useState<{
@@ -154,6 +228,7 @@ export const TeamPage: React.FC = () => {
       assignedProperties: pmPropertyId ? [pmPropertyId] : [],
       ownerName: user?.displayName || 'Property Owner',
       ownerId,
+      tempPassword: passwordToUse,
     };
 
     await saveManager(newPm);
@@ -167,6 +242,7 @@ export const TeamPage: React.FC = () => {
 
     const assignedPropObj = state.properties.find((p) => p.id === pmPropertyId);
 
+    const pmPhoneForModal = pmPhone.trim();
     setIsAddPmOpen(false);
     setPmName('');
     setPmEmail('');
@@ -181,9 +257,15 @@ export const TeamPage: React.FC = () => {
       password: passwordToUse,
       role: 'Property Manager',
       property: assignedPropObj?.name || 'All Properties',
+      phone: pmPhoneForModal,
+      emailStatus: res.emailStatus,
+      birdStatus: res.birdStatus,
+      emailError: res.emailError,
     });
 
-    showToast(`${name} onboarded successfully with login credentials.`);
+    showToast(res.emailStatus === 'failed'
+      ? `${name} was added, but the invite email could not be sent${res.emailError ? ` (${res.emailError})` : ''}. Share the credentials shown.`
+      : `${name} onboarded. Email to ${email}: ${res.birdStatus || 'accepted'}.`);
   };
 
   const getManagerAssignedProperty = (m: any) => {
@@ -367,6 +449,32 @@ export const TeamPage: React.FC = () => {
                           >
                             <Building2 size={13} /> {assignedProp ? 'Reassign' : 'Assign'}
                           </button>
+
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            style={{ fontSize: '12.5px' }}
+                            disabled={isResendingInvite}
+                            onClick={() => mailInviteToManager(pm)}
+                          >
+                            ✉ Mail invite
+                          </button>
+                          <button type="button" className="btn secondary small" style={{ fontSize: '12.5px' }} onClick={() => shareCredentials(pm, 'manager', 'copy')}>
+                      Copy credentials
+                    </button>
+                                              {pm.tempPassword && (
+                            <button
+                              type="button"
+                              className="btn secondary small"
+                              style={{ fontSize: '12.5px' }}
+                              onClick={() => setCredentialsModal({
+                                isOpen: true, name: pm.name, email: pm.email, password: pm.tempPassword,
+                                role: 'Property Manager', property: '', phone: pm.phone || '',
+                              })}
+                            >
+                              Credentials
+                            </button>
+                          )}
 
                           <button
                             type="button"
@@ -688,8 +796,22 @@ export const TeamPage: React.FC = () => {
             </div>
             <div className="modal-body" style={{ padding: '20px' }}>
               <p style={{ fontSize: '13px', color: 'var(--ink)', marginBottom: '16px', lineHeight: 1.5 }}>
-                Share these login details with <b>{credentialsModal.name}</b>. They can sign in immediately at the main login portal.
+                Login details for <b>{credentialsModal.name}</b>.
               </p>
+              <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px', fontSize: '13px', lineHeight: 1.5,
+                background: credentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+                border: `1px solid ${credentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.35)' : 'rgba(16,185,129,0.35)'}` }}>
+                {credentialsModal.emailStatus === undefined
+                  ? 'Press "Resend invite email" to email these credentials to the manager.'
+                  : credentialsModal.emailStatus === 'failed'
+                    ? <>The invite email could not be delivered{credentialsModal.emailError ? ` (${credentialsModal.emailError})` : ''}. Share the details below manually or resend.</>
+                    : <>Credentials emailed to <b>{credentialsModal.email}</b> (status: {credentialsModal.birdStatus || 'accepted'}). Ask them to check spam if it is not in the inbox.</>}
+                <div style={{ marginTop: '8px' }}>
+                  <button type="button" className="btn secondary small" disabled={isResendingInvite} onClick={resendManagerInvite}>
+                    {isResendingInvite ? 'Sending…' : 'Resend invite email'}
+                  </button>
+                </div>
+              </div>
 
               <div style={{ background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: '8px', padding: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '13px' }}>

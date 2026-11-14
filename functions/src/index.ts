@@ -411,23 +411,54 @@ async function birdPost(
   body: any
 ): Promise<{ success: boolean; id?: string; error?: string }> {
   const region = (apiKey.match(/^b[km]_([a-z0-9]+)_/i) || [])[1] || 'us1';
-  try {
-    const res = await fetch(`https://${region}.platform.bird.com${path}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data: any = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return { success: false, error: data?.message || `Bird HTTP ${res.status}${data?.code ? ` (${data.code})` : ''}` };
+  // Bird answers 429 (rate limit) or 5xx under load: wait (honouring Retry-After) and try again.
+  const maxAttempts = 5;
+  let lastError = 'Bird request failed';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`https://${region}.platform.bird.com${path}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      const rawText = await res.text().catch(() => '');
+      let data: any = {};
+      try { data = rawText ? JSON.parse(rawText) : {}; } catch { data = {}; }
+      if (res.ok) return { success: true, id: data?.id };
+      const hdr = ['retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'ratelimit-limit', 'ratelimit-remaining']
+        .map((h) => (res.headers.get(h) ? `${h}=${res.headers.get(h)}` : '')).filter(Boolean).join(' ');
+      lastError = data?.message || `Bird HTTP ${res.status}${data?.code ? ` (${data.code})` : ''}`;
+      if (res.status === 429) {
+        const detail = String(rawText || '').replace(/\s+/g, ' ').slice(0, 160);
+        lastError = `Bird HTTP 429 - ${detail || 'no body'}${hdr ? ` [${hdr}]` : ''}`;
+        functions.logger.error(`[Bird] 429 on ${path}: ${rawText.slice(0, 500)} ${hdr}`);
+      }
+      const retryable = res.status === 429 || res.status >= 500;
+      if (!retryable || attempt === maxAttempts) return { success: false, error: lastError };
+      const retryAfter = Number(res.headers.get('retry-after'));
+      const waitMs = Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1500 * attempt, 8000);
+      functions.logger.warn(`[Bird] ${res.status} on ${path}, retry ${attempt}/${maxAttempts - 1} in ${waitMs}ms`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+      if (attempt === maxAttempts) return { success: false, error: lastError };
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
     }
-    return { success: true, id: data?.id };
-  } catch (err: any) {
-    return { success: false, error: err?.message || String(err) };
   }
+  return { success: false, error: lastError };
+}
+
+/** Looks up what Bird actually did with an accepted email (delivered / deferred / bounced / rejected...). */
+async function birdEmailStatus(apiKey: string, id: string): Promise<string> {
+  const region = (apiKey.match(/^b[km]_([a-z0-9]+)_/i) || [])[1] || 'us1';
+  try {
+    const res = await fetch(`https://${region}.platform.bird.com/v1/email/messages/${id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const d: any = await res.json().catch(() => ({}));
+    return String(d?.status || (res.ok ? 'unknown' : `lookup_http_${res.status}`));
+  } catch (e: any) { return `lookup_error`; }
 }
 
 /**
@@ -459,6 +490,7 @@ export const SMS_EVENT_DEFAULTS: Record<string, boolean> = {
   'SMS: Announcement': true,
   'SMS: Cash claim': false,
   'SMS: Cash confirmed': true,
+  'SMS: Plan receipt': true,
 };
 
 export async function isSmsEnabledForEvent(eventKey: string): Promise<boolean> {
@@ -590,7 +622,7 @@ export async function sendSendGridEmail(
     type?: string;
     disposition?: string;
   }>
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; id?: string }> {
   if (!toEmail || !subject) return { success: false, error: 'Missing destination email or subject.' };
 
   const comms = overrideComms || (await getPlatformCommsConfig());
@@ -617,7 +649,7 @@ export async function sendSendGridEmail(
     const r = await birdPost(birdKey, '/v1/email/messages', birdBody);
     if (r.success) {
       functions.logger.info(`[Bird Email] Accepted for ${toEmail}: "${subject}" (ID: ${r.id}, attachments: ${attachments?.length || 0})`);
-      return { success: true };
+      return { success: true, id: r.id };
     }
     functions.logger.error(`[Bird Email] Failed to ${toEmail}:`, r.error);
     return { success: false, error: r.error };
@@ -737,8 +769,14 @@ export const setClaimsOnRequest = functions.firestore
     }
 
     try {
-      await auth.setCustomUserClaims(uid, { role, ownerId: ownerId || null });
-      functions.logger.info(`[setClaimsOnRequest] Set claims for ${uid}: role=${role}, ownerId=${ownerId || 'none'}`);
+      // Claims are best-effort: a failure here (e.g. the auth user is missing) must NEVER block
+      // the credentials email, otherwise the new staff/manager gets nothing.
+      try {
+        await auth.setCustomUserClaims(uid, { role, ownerId: ownerId || null });
+        functions.logger.info(`[setClaimsOnRequest] Set claims for ${uid}: role=${role}, ownerId=${ownerId || 'none'}`);
+      } catch (claimErr: any) {
+        functions.logger.error(`[setClaimsOnRequest] setCustomUserClaims failed for ${uid}: ${claimErr?.message}`);
+      }
 
       // Mark as processed to prevent re-triggering
       await db.collection('userClaimRequests').doc(uid).update({
@@ -750,13 +788,14 @@ export const setClaimsOnRequest = functions.firestore
       const userDoc = await db.collection('users').doc(uid).get();
       if (userDoc.exists) {
         const uData = userDoc.data() || {};
-        if (uData.tempPassword && !uData.inviteSent) {
+        const claimTempPw = after.tempPassword as string | undefined;
+        if ((claimTempPw || uData.tempPassword) && !uData.inviteSent) {
           const uEmail = (uData.email || '').trim().toLowerCase();
           const uPhone = (uData.phone || '').trim();
           const uName = uData.displayName || 'User';
           const uRole = uData.role || 'user';
           const uOwnerName = uData.ownerName || 'Property Management';
-          const uTempPw = uData.tempPassword;
+          const uTempPw = claimTempPw || uData.tempPassword;
 
           const roleNameMap: Record<string, string> = {
             tenant: 'Resident Tenant',
@@ -802,6 +841,10 @@ export const setClaimsOnRequest = functions.firestore
           }
 
           await db.collection('users').doc(uid).update({ inviteSent: true });
+          // Scrub the password from the claim request now that the invite is out.
+          await db.collection('userClaimRequests').doc(uid).update({
+            tempPassword: admin.firestore.FieldValue.delete(),
+          });
 
           await logCommunication({
             type: 'ACCOUNT_INVITE_DISPATCHED',
@@ -825,6 +868,229 @@ export const setClaimsOnRequest = functions.firestore
   });
 
 /**
+ * Emails the tenant whenever an owner sends a tenancy invitation (tenancyRequests/{id} created).
+ * Before this existed, the invitation lived only inside the app and the tenant was never told.
+ */
+export const onTenancyRequestCreated = functions.firestore
+  .document('tenancyRequests/{requestId}')
+  .onCreate(async (snap, context) => {
+    const r = snap.data() || {};
+    if (r.tenantId && r.ownerId) {
+      // Inviting someone again after removing them un-hides them for this owner.
+      await db.collection('tenants').doc(String(r.tenantId)).set(
+        { removedOwnerIds: admin.firestore.FieldValue.arrayRemove(r.ownerId) }, { merge: true }
+      ).catch(() => {});
+    }
+    const to = String(r.tenantEmail || '').trim().toLowerCase();
+    if (!to) {
+      functions.logger.warn(`[onTenancyRequestCreated] No tenant email on request ${context.params.requestId}`);
+      return;
+    }
+    const esc = (v: any) =>
+      String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+    const money = (n: any) => `${esc(r.currency || 'INR')} ${Number(n || 0).toLocaleString('en-IN')}`;
+    const tenantName = r.tenantName || 'there';
+    const ownerName = r.ownerName || 'your property owner';
+    const unit = r.isBulkLease && Array.isArray(r.bulkUnitNumbers) ? `Units ${r.bulkUnitNumbers.join(', ')}` : `Unit ${r.unitNumber || ''}`;
+    const subject = `${ownerName} has invited you to lease ${unit} at ${r.propertyName || 'a Propithub property'}`;
+
+    const html = renderPropithubEmail(
+      subject,
+      `<p>Hello <strong>${esc(tenantName)}</strong>,</p>
+       <p><strong>${esc(ownerName)}</strong> has sent you a tenancy invitation on Propithub. Please log in to review the lease and accept it.</p>
+       <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 20px 0;">
+         <div style="font-size: 14px; margin-bottom: 6px;">Property: <strong>${esc(r.propertyName)}</strong></div>
+         <div style="font-size: 14px; margin-bottom: 6px;">${esc(unit)}</div>
+         <div style="font-size: 14px; margin-bottom: 6px;">Monthly rent: <strong>${money(r.rent)}</strong></div>
+         <div style="font-size: 14px; margin-bottom: 6px;">Security deposit: <strong>${money(r.deposit)}</strong></div>
+         <div style="font-size: 14px;">Lease term: <strong>${esc(r.leaseStart)}</strong> to <strong>${esc(r.leaseEnd)}</strong></div>
+       </div>
+       <p style="font-size: 13px; color: #64748b;">Log in with this email address (${esc(to)}). If you did not receive a password, or have forgotten it, use "Forgot password" on the login page.</p>`,
+      { text: 'Review your invitation', url: 'https://propithub.web.app/login' }
+    );
+    const text = `Hello ${tenantName}, ${ownerName} has invited you to lease ${unit} at ${r.propertyName || ''}. Rent ${r.currency || 'INR'} ${r.rent}, deposit ${r.currency || 'INR'} ${r.deposit}, ${r.leaseStart} to ${r.leaseEnd}. Log in at https://propithub.web.app/login with ${to} to review and accept.`;
+
+    let emailStatus: 'delivered' | 'failed' = 'failed';
+    try {
+      const res = await sendSendGridEmail(to, subject, text, html);
+      emailStatus = res.success ? 'delivered' : 'failed';
+      if (!res.success) functions.logger.error('[onTenancyRequestCreated] Email failed:', (res as any).error);
+    } catch (err: any) {
+      functions.logger.error('[onTenancyRequestCreated] Email threw:', err?.message || err);
+    }
+
+    await logCommunication({
+      type: 'TENANCY_INVITATION_SENT',
+      category: 'custom',
+      title: `Tenancy invitation: ${tenantName} - ${unit}`,
+      body: text,
+      channels: ['email'],
+      recipientId: r.tenantId || '',
+      recipientName: tenantName,
+      recipientRole: 'tenant' as any,
+      recipientContact: { email: to, phone: r.tenantPhone || '' },
+      ownerId: r.ownerId || null,
+      deliveryStatus: { email: emailStatus, sms: 'skipped', inApp: 'delivered' },
+    });
+  });
+
+/**
+ * Tells the owner about a step in the tenant onboarding: writes an in-app notification
+ * (the app listens to the `notifications` collection) and sends an email. The notification
+ * id is deterministic so a retried trigger never creates a duplicate.
+ */
+async function notifyOwnerOnboardingStep(opts: {
+  ownerId?: string;
+  dedupeKey: string;
+  title: string;
+  detail: string;
+  link: string;
+  emailOverride?: string;
+  /** In-app notification only (use when another trigger already emails the owner about the same event). */
+  skipEmail?: boolean;
+}): Promise<void> {
+  if (!opts.ownerId) return;
+  const esc = (v: any) =>
+    String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  const notifId = `step_${opts.dedupeKey}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+  const ref = db.collection('notifications').doc(notifId);
+  try {
+    const created = await ref
+      .create({
+        id: notifId,
+        userId: opts.ownerId,
+        title: opts.title,
+        body: opts.detail,
+        link: opts.link,
+        isRead: false,
+        createdAt: new Date().toISOString(),
+      })
+      .then(() => true)
+      .catch((e: any) => {
+        if (e?.code === 6 || /already exists/i.test(e?.message || '')) return false; // already handled
+        throw e;
+      });
+    if (!created) return;
+  } catch (err: any) {
+    functions.logger.error('[notifyOwnerOnboardingStep] in-app notification failed:', err?.message || err);
+  }
+  if (opts.skipEmail) return;
+
+  const contact = await getUserContact(opts.ownerId);
+  const to = (opts.emailOverride || contact?.email || '').trim().toLowerCase();
+  if (!to) return;
+  let status: 'delivered' | 'failed' = 'failed';
+  try {
+    const html = renderPropithubEmail(
+      opts.title,
+      `<p>Hello <strong>${esc(contact?.name || 'there')}</strong>,</p><p>${esc(opts.detail)}</p>`,
+      { text: 'Open in Propithub', url: `https://propithub.web.app${opts.link}` }
+    );
+    const res = await sendSendGridEmail(to, opts.title, `${opts.detail} Open: https://propithub.web.app${opts.link}`, html);
+    status = res.success ? 'delivered' : 'failed';
+  } catch (err: any) {
+    functions.logger.error('[notifyOwnerOnboardingStep] email failed:', err?.message || err);
+  }
+  await logCommunication({
+    type: 'OWNER_ONBOARDING_STEP',
+    category: 'leasing',
+    title: opts.title,
+    body: opts.detail,
+    channels: ['email', 'in_app'],
+    recipientId: opts.ownerId,
+    recipientName: contact?.name || 'Owner',
+    recipientRole: 'owner' as any,
+    recipientContact: { email: to },
+    ownerId: opts.ownerId,
+    deliveryStatus: { email: status, sms: 'skipped', inApp: 'delivered' },
+  });
+}
+
+/** Owner updates as the tenant moves through the lease agreement steps. */
+export const onAgreementOwnerSteps = functions.firestore
+  .document('agreements/{agreementId}')
+  .onWrite(async (change, context) => {
+    const after = change.after.exists ? change.after.data() : null;
+    const before = change.before.exists ? change.before.data() : null;
+    if (!after || !after.ownerId) return;
+    const id = context.params.agreementId;
+    const tenant = after.tenant || after.tenantName || 'Your tenant';
+    const unit = after.unit || after.unitId || 'the unit';
+
+    if (after.status === 'pending_approval' && before?.status !== 'pending_approval') {
+      const ids = Array.isArray(after.tenantUploadedIds) ? after.tenantUploadedIds.length : 0;
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_docs_${after.signedUploadedAt || ''}`,
+        title: 'Tenant uploaded the signed lease and documents',
+        detail: `${tenant} uploaded the signed lease${ids ? ` and ${ids} ID document(s)` : ''} for Unit ${unit}. Please review and approve.`,
+        link: '/owner/leasing',
+      });
+    }
+    if (after.depositStatus === 'paid' && before?.depositStatus !== 'paid') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_deposit_paid`,
+        title: 'Security deposit received',
+        detail: `The security deposit for Unit ${unit} from ${tenant} has been received.`,
+        link: '/owner/leasing',
+      });
+    }
+    if (after.status === 'pending_countersign' && before?.status !== 'pending_countersign') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_countersign`,
+        title: 'Your counter-signature is needed',
+        detail: `${tenant} has completed their steps for Unit ${unit}. Please counter-sign the lease to activate it.`,
+        link: '/owner/leasing',
+      });
+    }
+  });
+
+/** Owner updates when a tenant answers a tenancy invitation. */
+export const onTenancyRequestResponse = functions.firestore
+  .document('tenancyRequests/{requestId}')
+  .onUpdate(async (change, context) => {
+    const after = change.after.data() || {};
+    const before = change.before.data() || {};
+    if (!after.ownerId || after.status === before.status) return;
+    const id = context.params.requestId;
+    const tenant = after.tenantName || 'The tenant';
+    const unit = after.isBulkLease && Array.isArray(after.bulkUnitNumbers) ? `Units ${after.bulkUnitNumbers.join(', ')}` : `Unit ${after.unitNumber || ''}`;
+    if (after.status === 'accepted') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_accepted`,
+        title: 'Tenancy invitation accepted',
+        detail: `${tenant} accepted your invitation for ${unit} at ${after.propertyName || 'your property'}. They will now upload the signed lease and documents.`,
+        link: '/owner/leasing',
+      });
+    } else if (after.status === 'cancelled') {
+      // Tell the tenant the owner withdrew the invitation.
+      const to = String(after.tenantEmail || '').trim().toLowerCase();
+      if (to) {
+        const esc = (v: any) =>
+          String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+        const subject = `Your tenancy invitation for ${unit} was withdrawn`;
+        const html = renderPropithubEmail(
+          subject,
+          `<p>Hello <strong>${esc(tenant)}</strong>,</p><p>The landlord has withdrawn the tenancy invitation for <strong>${esc(unit)}</strong> at <strong>${esc(after.propertyName || 'the property')}</strong>. No further action is needed from you.</p>`
+        );
+        const res = await sendSendGridEmail(to, subject, `The tenancy invitation for ${unit} at ${after.propertyName || ''} was withdrawn by the landlord.`, html);
+        if (!res.success) functions.logger.error('[onTenancyRequestResponse] withdraw email failed');
+      }
+    } else if (after.status === 'declined') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `${id}_declined`,
+        title: 'Tenancy invitation declined',
+        detail: `${tenant} declined your invitation for ${unit} at ${after.propertyName || 'your property'}.`,
+        link: '/owner/tenants',
+      });
+    }
+  });
+
+/**
  * 1. provisionUserAccount (Callable)
  * Executed by an Owner to provision Tenant, Property Manager, or Maintenance Staff accounts.
  * - Enforces owner active subscription status.
@@ -841,7 +1107,7 @@ export const provisionUserAccount = functions.https.onCall(async (data, context)
   }
 
   const callerUid = context.auth.uid;
-  const callerRole = context.auth.token.role;
+  const callerRole = await resolveCallerRole(context);
 
   if (callerRole !== 'owner' && callerRole !== 'superadmin') {
     throw new functions.https.HttpsError('permission-denied', 'Only owners or admins can provision accounts.');
@@ -1015,6 +1281,496 @@ export const provisionUserAccount = functions.https.onCall(async (data, context)
   });
 
   return { success: true, uid: userRecord.uid, email, role };
+});
+
+/**
+ * The caller's role: from their sign-in token when present, otherwise from their profile.
+ * Owners who signed up themselves may not have the role in their token yet.
+ */
+async function resolveCallerRole(context: functions.https.CallableContext): Promise<string | undefined> {
+  const fromToken = context.auth?.token?.role as string | undefined;
+  if (fromToken) return fromToken;
+  const uid = context.auth?.uid;
+  if (!uid) return undefined;
+  try {
+    const u = await db.collection('users').doc(uid).get();
+    const r = u.exists ? (u.data()?.role as string | undefined) : undefined;
+    if (r) return r;
+    const o = await db.collection('owners').doc(uid).get();
+    if (o.exists) return 'owner';
+  } catch (err) {
+    functions.logger.warn('[resolveCallerRole] lookup failed:', err);
+  }
+  return undefined;
+}
+
+/**
+ * provisionTeamMember (Callable)
+ * Creates (or safely re-uses) the login for a manager / maintenance staff member using the Admin SDK,
+ * so it works even if an earlier attempt left a half-created account behind. The credentials email + SMS
+ * is then sent by setClaimsOnRequest.
+ */
+export const provisionTeamMember = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in first.');
+  const callerRole = await resolveCallerRole(context);
+  if (!['owner', 'manager', 'superadmin', 'admin'].includes(String(callerRole))) {
+    throw new functions.https.HttpsError('permission-denied', 'Only owners and managers can add team members.');
+  }
+  const role = String(data?.role || '');
+  if (!['manager', 'staff'].includes(role)) throw new functions.https.HttpsError('invalid-argument', 'Role must be manager or staff.');
+  const email = String(data?.email || '').trim().toLowerCase();
+  const name = String(data?.name || '').trim();
+  const password = String(data?.password || '');
+  const phone = String(data?.phone || '').trim();
+  if (!email.includes('@') || !name) throw new functions.https.HttpsError('invalid-argument', 'Name and a valid email are required.');
+  if (password.length < 6) throw new functions.https.HttpsError('invalid-argument', 'Password should be at least 6 characters long.');
+
+  let ownerId = String(data?.ownerId || context.auth.uid);
+  if (callerRole === 'owner') ownerId = context.auth.uid;
+  const ownerName = String(data?.ownerName || 'Property Owner');
+
+  let uid: string;
+  try {
+    const existing = await auth.getUserByEmail(email);
+    const uDoc = await db.collection('users').doc(existing.uid).get();
+    const uData = uDoc.exists ? uDoc.data() || {} : {};
+    const sameKind = !uDoc.exists || uData.role === role;
+    const mine = !uData.ownerId || uData.ownerId === ownerId;
+    if (!sameKind || !mine || existing.uid === context.auth.uid) {
+      throw new functions.https.HttpsError('already-exists', 'An account with this email address already exists and belongs to someone else.');
+    }
+    await auth.updateUser(existing.uid, { password, displayName: name });
+    uid = existing.uid;
+  } catch (err: any) {
+    if (err instanceof functions.https.HttpsError) throw err;
+    if (err?.code !== 'auth/user-not-found') {
+      functions.logger.error('[provisionTeamMember] lookup failed', err?.message);
+      throw new functions.https.HttpsError('internal', err?.message || 'Could not create the account.');
+    }
+    try {
+      uid = (await auth.createUser({ email, password, displayName: name })).uid;
+    } catch (cErr: any) {
+      functions.logger.error('[provisionTeamMember] createUser failed', cErr?.message);
+      throw new functions.https.HttpsError('internal', cErr?.message || 'Could not create the account.');
+    }
+  }
+
+  await db.collection('users').doc(uid).set({
+    id: uid, email, displayName: name, role, phone, ownerId, ownerName,
+    status: 'active', createdAt: new Date().toISOString(), inviteSent: false,
+  }, { merge: true });
+  // Claims (best effort) - never blocks the invite.
+  try { await auth.setCustomUserClaims(uid, { role, ownerId }); } catch (e: any) {
+    functions.logger.error('[provisionTeamMember] claims failed', e?.message);
+  }
+  await db.collection('userClaimRequests').doc(uid).set({
+    uid, role, ownerId, requestedAt: new Date().toISOString(), processed: true,
+  });
+
+  // Send the credentials email + SMS RIGHT HERE (no dependency on any other trigger).
+  const roleTitle = role === 'manager' ? 'Property Manager' : 'Maintenance Technician';
+  const subject = `Welcome to Propithub — Your ${roleTitle} Account Credentials`;
+  const esc = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  const html = renderPropithubEmail(
+    subject,
+    `<p>Hello <strong>${esc(name)}</strong>,</p>
+     <p>You have been added as <strong>${roleTitle}</strong> by <strong>${esc(ownerName)}</strong> on Propithub.</p>
+     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:18px;margin:20px 0;">
+       <div style="font-size:12px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;">Your Login Credentials</div>
+       <div style="font-size:14px;margin-bottom:6px;">Email: <strong>${esc(email)}</strong></div>
+       <div style="font-size:14px;margin-bottom:6px;">Temporary Password: <strong style="font-family:monospace;color:#2563eb;background:#eff6ff;padding:2px 6px;border-radius:4px;">${esc(password)}</strong></div>
+       <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Please sign in and change your password under Settings.</div>
+     </div>`,
+    { text: 'Login to Propithub', url: 'https://propithub.web.app/login' }
+  );
+  let emailStatus: 'delivered' | 'failed' = 'failed';
+  let emailError = '';
+  let birdStatus = '';
+  try {
+    const r = await sendSendGridEmail(email, subject, `Hello ${name}, you were added as ${roleTitle} on Propithub. Login: ${email} / Temporary password: ${password}. Sign in at https://propithub.web.app/login`, html);
+    emailStatus = r.success ? 'delivered' : 'failed';
+    if (!r.success) emailError = String((r as any).error || 'send failed');
+    if (r.success && r.id) {
+      // Ask Bird what it actually did with the message a few seconds later.
+      const key = getBirdApiKey(await getPlatformCommsConfig());
+      if (key) {
+        await new Promise((res) => setTimeout(res, 4000));
+        birdStatus = await birdEmailStatus(key, r.id);
+        if (['bounced', 'rejected', 'complained', 'canceled', 'partial_failure'].includes(birdStatus)) {
+          emailStatus = 'failed';
+          emailError = `Bird reports the email was ${birdStatus}`;
+        }
+      }
+    }
+  } catch (e: any) { emailError = e?.message || 'send failed'; }
+  let smsStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
+  if (phone) {
+    try {
+      const sr = await sendTwilioSms(phone, `Propithub: Hello ${name}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login with ${email} and password ${password}`);
+      smsStatus = sr.skipped ? 'skipped' : sr.success ? 'delivered' : 'failed';
+    } catch { smsStatus = 'failed'; }
+  }
+  await db.collection('users').doc(uid).set({ inviteSent: emailStatus === 'delivered' }, { merge: true });
+  await logCommunication({
+    type: 'ACCOUNT_INVITE_DISPATCHED', category: 'custom', title: `Account Invite: ${name} (${roleTitle})`,
+    body: `Credentials invite for ${email}`, channels: ['email', 'sms'], recipientId: uid, recipientName: name,
+    recipientRole: role as any, recipientContact: { email, phone }, ownerId,
+    deliveryStatus: { email: emailStatus, sms: smsStatus, inApp: 'delivered' },
+  }).catch(() => {});
+  functions.logger.info(`[provisionTeamMember] ${role} ${email}: email=${emailStatus} sms=${smsStatus} ${emailError}`);
+  return { success: true, uid, emailStatus, smsStatus, emailError, birdStatus };
+});
+
+/**
+ * deleteTenantAccount (Callable)
+ * Lets an owner (or admin) remove a tenant who is not in an active lease from the owner's dashboard:
+ * the tenant record, invitations and pending leases are deleted and reserved units are freed.
+ * The tenant's own login is NOT deleted.
+ */
+/**
+ * requestPasswordReset (Callable, no sign-in needed)
+ * Sends the password-reset link through Bird (our own sender) instead of Firebase's default mailer,
+ * which was landing in spam / not arriving. Always answers "success" so it cannot be used to discover accounts.
+ */
+export const requestPasswordReset = functions.https.onCall(async (data) => {
+  const email = String(data?.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Please enter a valid email address.');
+  }
+  // One reset email per address per minute.
+  const throttleRef = db.collection('passwordResetThrottle').doc(Buffer.from(email).toString('base64url').slice(0, 200));
+  const prior = await throttleRef.get();
+  const last = prior.exists ? Number(prior.data()?.at || 0) : 0;
+  if (Date.now() - last < 60_000) return { success: true };
+  await throttleRef.set({ at: Date.now() });
+
+  let link = '';
+  try {
+    link = await admin.auth().generatePasswordResetLink(email, { url: 'https://propithub.web.app/login' });
+  } catch (err: any) {
+    // user-not-found etc.: say nothing to the caller
+    functions.logger.info(`[requestPasswordReset] no reset link for ${email}: ${err?.code || err?.message}`);
+    return { success: true };
+  }
+  const html = renderPropithubEmail(
+    'Reset your Propithub password',
+    '<p style="font-size:15px;line-height:1.6;">We received a request to reset the password for your Propithub account. Click the button below to choose a new one. If you did not ask for this, you can ignore this email.</p>',
+    { text: 'Reset password', url: link }
+  );
+  const result = await sendSendGridEmail(
+    email,
+    'Reset your Propithub password',
+    `Reset your Propithub password using this link: ${link}\n\nIf you did not request this, ignore this email.`,
+    html
+  );
+  functions.logger.info(`[requestPasswordReset] ${email}: ${result.success ? 'sent' : 'FAILED ' + result.error}`);
+  return { success: true };
+});
+
+// ---------------------------------------------------------------------------
+// Payment visibility: records a tenant creates must carry their landlord's ownerId, otherwise the owner
+// (whose dashboard only loads ownerId == own uid) never sees the payment or its proof.
+// ---------------------------------------------------------------------------
+async function ownerOfTenant(tenantId: string): Promise<string> {
+  if (!tenantId) return '';
+  const u = await db.collection('users').doc(tenantId).get();
+  if (u.exists && u.data()?.ownerId) return String(u.data()!.ownerId);
+  const ag = await db.collection('agreements').where('tenantId', '==', tenantId).limit(5).get();
+  const fromAg = ag.docs.map((d) => d.data().ownerId).find(Boolean);
+  if (fromAg) return String(fromAg);
+  const rq = await db.collection('tenancyRequests').where('tenantId', '==', tenantId).limit(5).get();
+  const fromRq = rq.docs.map((d) => d.data().ownerId).find(Boolean);
+  return fromRq ? String(fromRq) : '';
+}
+
+const fillMissingOwnerId = (collectionName: string) =>
+  functions.firestore.document(`${collectionName}/{docId}`).onWrite(async (change) => {
+    if (!change.after.exists) return;
+    const d = change.after.data() || {};
+    if (d.ownerId || !d.tenantId) return;
+    const ownerId = await ownerOfTenant(String(d.tenantId));
+    if (ownerId) {
+      await change.after.ref.update({ ownerId });
+      functions.logger.info(`[fillMissingOwnerId] ${collectionName}/${change.after.id} -> ${ownerId}`);
+    }
+  });
+export const fillOwnerIdOnPayments = fillMissingOwnerId('payments');
+export const fillOwnerIdOnInvoices = fillMissingOwnerId('invoices');
+export const fillOwnerIdOnCashClaims = fillMissingOwnerId('cashClaims');
+
+/** Owner-callable repair for payment records created before the fix above (blank ownerId). */
+export const repairMyTenantRecords = functions.https.onCall(async (_data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
+  const callerUid = context.auth.uid;
+  const role = await resolveCallerRole(context);
+  if (role !== 'owner') return { fixed: 0 };
+  const tenantIds = new Set<string>();
+  (await db.collection('users').where('ownerId', '==', callerUid).where('role', '==', 'tenant').get()).docs.forEach((d) => tenantIds.add(d.id));
+  (await db.collection('agreements').where('ownerId', '==', callerUid).get()).docs.forEach((d) => { const t = d.data().tenantId; if (t) tenantIds.add(String(t)); });
+  (await db.collection('tenancyRequests').where('ownerId', '==', callerUid).get()).docs.forEach((d) => { const t = d.data().tenantId; if (t) tenantIds.add(String(t)); });
+  let fixed = 0;
+  for (const tid of tenantIds) {
+    for (const coll of ['payments', 'invoices', 'cashClaims']) {
+      const snap = await db.collection(coll).where('tenantId', '==', tid).get();
+      for (const d of snap.docs) {
+        if (!d.data().ownerId) { await d.ref.update({ ownerId: callerUid }); fixed++; }
+      }
+    }
+  }
+  // One-off cleanup requested by the owner: a ₹1,50,000 cash claim for Unit 101 that was never made.
+  // Removes only this owner's cash claims (and payments linked to them) of exactly that amount.
+  let removed = 0;
+  try {
+    const claims = await db.collection('cashClaims').where('ownerId', '==', callerUid).get();
+    for (const c of claims.docs) {
+      const cd = c.data();
+      if (Number(cd.amount) === 150000 && /101/.test(String(cd.unit || ''))) {
+        const linked = await db.collection('payments').where('cashClaimId', '==', c.id).get();
+        for (const p of linked.docs) { await p.ref.delete(); removed++; }
+        await c.ref.delete(); removed++;
+      }
+    }
+    const stray = await db.collection('payments').where('ownerId', '==', callerUid).where('amount', '==', 150000).get();
+    for (const p of stray.docs) {
+      if (/101/.test(String(p.data().unit || ''))) { await p.ref.delete(); removed++; }
+    }
+  } catch (e: any) { functions.logger.warn('[repairMyTenantRecords] cleanup failed', e?.message); }
+  functions.logger.info(`[repairMyTenantRecords] ${callerUid}: fixed ${fixed}, removed ${removed}`);
+  return { fixed, removed };
+});
+
+
+// ---------------------------------------------------------------------------
+// Owner activity notifications (in-app + email): everything a tenant does that the landlord should know about.
+// All use notifyOwnerOnboardingStep, which is idempotent per dedupeKey, so retries never double-notify.
+// ---------------------------------------------------------------------------
+const fmtMoney = (cur: any, n: any) => `${cur || 'INR'} ${Number(n || 0).toLocaleString('en-IN')}`;
+
+/** Tenant payment proof submitted (UPI / bank) or a payment received online. */
+export const onPaymentOwnerActivity = functions.firestore
+  .document('payments/{paymentId}')
+  .onWrite(async (change, context) => {
+    if (!change.after.exists) return;
+    const after = change.after.data() || {};
+    const before = change.before.exists ? change.before.data() || {} : null;
+    if (!after.ownerId || after.direction === 'outflow') return;
+    const id = context.params.paymentId;
+    const who = after.tenant || after.tenantName || 'Your tenant';
+    const unit = after.unit || 'the unit';
+    const kind = after.type === 'deposit' ? 'security deposit' : after.type === 'late_fee' ? 'late fee' : 'rent';
+
+    if (after.status === 'pending_confirmation' && before?.status !== 'pending_confirmation' && !after.cashClaimId) {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `pay_pending_${id}`,
+        title: `Payment proof submitted: ${fmtMoney(after.currency, after.amount)} (Unit ${unit})`,
+        detail: `${who} says they paid the ${kind} of ${fmtMoney(after.currency, after.amount)} for Unit ${unit} via ${after.method || 'offline transfer'}${after.notes ? ` (${after.notes})` : ''}. Open Payments, check the proof and confirm or decline it.`,
+        link: '/owner/payments',
+      });
+    } else if (
+      after.status === 'paid' && before?.status !== 'paid' && before?.status !== 'pending_confirmation' &&
+      after.audit?.claimedByRole !== 'owner' && after.type !== 'deposit_refund'
+    ) {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `pay_paid_${id}`,
+        title: `Payment received: ${fmtMoney(after.currency, after.amount)} (Unit ${unit})`,
+        detail: `${who} paid the ${kind} of ${fmtMoney(after.currency, after.amount)} for Unit ${unit}${after.method ? ` via ${after.method}` : ''}.`,
+        link: '/owner/payments',
+      });
+    }
+  });
+
+/** Cash handover claims already email/SMS the owner; this adds the missing in-app notification. */
+export const onCashClaimOwnerInApp = functions.firestore
+  .document('cashClaims/{claimId}')
+  .onCreate(async (snap, context) => {
+    const c = snap.data() || {};
+    if (!c.ownerId || c.direction === 'outflow' || c.claimedByRole !== 'tenant') return;
+    await notifyOwnerOnboardingStep({
+      ownerId: c.ownerId,
+      dedupeKey: `claim_${context.params.claimId}`,
+      title: `Cash payment claimed: ${fmtMoney(c.currency, c.amount)} (Unit ${c.unit || ''})`,
+      detail: `${c.tenantName || 'Your tenant'} reports handing over ${fmtMoney(c.currency, c.amount)} in cash for Unit ${c.unit || ''}. Please verify and confirm.`,
+      link: '/owner/payments',
+      skipEmail: true,
+    });
+  });
+
+/** New maintenance request from a tenant (emergency ones are already emailed by onTicketWrite). */
+export const onTicketCreatedOwner = functions.firestore
+  .document('tickets/{ticketId}')
+  .onCreate(async (snap, context) => {
+    const t = snap.data() || {};
+    if (!t.ownerId || !t.tenantId) return;
+    const urgent = t.priority === 'emergency' || t.priority === 'urgent';
+    await notifyOwnerOnboardingStep({
+      ownerId: t.ownerId,
+      dedupeKey: `ticket_${context.params.ticketId}`,
+      title: `New maintenance request: ${t.title || 'Maintenance'} (Unit ${t.unit || ''})`,
+      detail: `${t.tenant || t.tenantName || 'Your tenant'} raised a ${t.priority || ''} priority request for Unit ${t.unit || ''}: ${t.title || ''}${t.description ? ` - ${String(t.description).slice(0, 200)}` : ''}`,
+      link: '/owner/maintenance',
+      skipEmail: urgent,
+    });
+  });
+
+/** Tenant files a move-out notice / request. */
+export const onMoveOutCreatedOwner = functions.firestore
+  .document('moveouts/{moveoutId}')
+  .onCreate(async (snap, context) => {
+    const m = snap.data() || {};
+    if (!m.ownerId) return;
+    await notifyOwnerOnboardingStep({
+      ownerId: m.ownerId,
+      dedupeKey: `moveout_${context.params.moveoutId}`,
+      title: `Move-out request: Unit ${m.unit || ''}`,
+      detail: `${m.tenant || m.tenantName || 'Your tenant'} has filed a move-out request for Unit ${m.unit || ''}${m.moveOutDate ? ` for ${m.moveOutDate}` : ''}. Open Move-Outs to schedule the inspection.`,
+      link: '/owner/vacates',
+    });
+  });
+
+/** Tenant uploads KYC / ID documents to their profile. */
+export const onTenantKycUploadOwner = functions.firestore
+  .document('users/{userId}')
+  .onUpdate(async (change, context) => {
+    const a = change.after.data() || {};
+    const b = change.before.data() || {};
+    if (a.role !== 'tenant' || !a.ownerId) return;
+    const n = Array.isArray(a.kycDocuments) ? a.kycDocuments.length : 0;
+    const prev = Array.isArray(b.kycDocuments) ? b.kycDocuments.length : 0;
+    if (n <= prev) return;
+    await notifyOwnerOnboardingStep({
+      ownerId: a.ownerId,
+      dedupeKey: `kyc_${context.params.userId}_${n}`,
+      title: `${a.displayName || a.name || 'Your tenant'} uploaded KYC documents`,
+      detail: `${a.displayName || a.name || 'Your tenant'} added ${n - prev} identity document(s) to their profile. Open Tenants to review and verify.`,
+      link: '/owner/tenants',
+    });
+  });
+
+
+/** Welcome email + in-app notification when a new owner account is created. */
+export const onOwnerSignupWelcome = functions.firestore
+  .document('users/{userId}')
+  .onCreate(async (snap, context) => {
+    const u = snap.data() || {};
+    if (u.role !== 'owner') return;
+    const uid = context.params.userId;
+    await notifyOwnerOnboardingStep({
+      ownerId: uid,
+      dedupeKey: `welcome_${uid}`,
+      title: 'Welcome to Propithub',
+      detail: 'Your owner account is ready. Add your first property and unit, then invite a tenant to lease it. We will notify you here and by email at every step: invitation accepted, documents uploaded, payments and maintenance requests.',
+      link: '/owner/dashboard',
+      emailOverride: u.email,
+    });
+  });
+
+/** Tenant is told (in-app + email) when the owner confirms or declines their payment proof. */
+export const onPaymentDecisionTenant = functions.firestore
+  .document('payments/{paymentId}')
+  .onUpdate(async (change, context) => {
+    const before = change.before.data() || {};
+    const after = change.after.data() || {};
+    if (before.status !== 'pending_confirmation' || !after.tenantId || after.direction === 'outflow') return;
+    const id = context.params.paymentId;
+    const amt = fmtMoney(after.currency, after.amount);
+    const unit = after.unit || 'your unit';
+    if (after.status === 'paid') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.tenantId,
+        dedupeKey: `paydecision_paid_${id}`,
+        title: `Payment confirmed: ${amt}`,
+        detail: `Your landlord confirmed your payment of ${amt} for Unit ${unit}. Your receipt is available in Payments.`,
+        link: '/tenant/payments',
+      });
+    } else if (after.status === 'disputed' || after.status === 'overdue' || after.status === 'cancelled') {
+      await notifyOwnerOnboardingStep({
+        ownerId: after.tenantId,
+        dedupeKey: `paydecision_rejected_${id}`,
+        title: `Payment proof not accepted: ${amt}`,
+        detail: `Your landlord could not verify your payment of ${amt} for Unit ${unit}. Please check the details and submit your proof again.`,
+        link: '/tenant/payments',
+      });
+    }
+  });
+
+export const deleteTenantAccount = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in required.');
+  const callerUid = context.auth.uid;
+  const callerRole = await resolveCallerRole(context);
+  if (callerRole !== 'owner' && callerRole !== 'superadmin') {
+    throw new functions.https.HttpsError('permission-denied', 'Only owners or admins can delete tenants.');
+  }
+  const tenantId = String(data?.tenantId || '').trim();
+  const tenantEmail = String(data?.tenantEmail || '').trim().toLowerCase();
+  if (!tenantId && !tenantEmail) throw new functions.https.HttpsError('invalid-argument', 'tenantId or tenantEmail required.');
+
+  // Resolve the tenant's login profile (if any) and make sure it belongs to this owner.
+  let uid = '';
+  let userData: any = null;
+  if (tenantId) {
+    const u = await db.collection('users').doc(tenantId).get();
+    if (u.exists) { uid = u.id; userData = u.data(); }
+  }
+  if (!uid && tenantEmail) {
+    const q = await db.collection('users').where('email', '==', tenantEmail).limit(1).get();
+    if (!q.empty) { uid = q.docs[0].id; userData = q.docs[0].data(); }
+  }
+  if (userData) {
+    if (userData.role !== 'tenant') throw new functions.https.HttpsError('failed-precondition', 'That account is not a tenant.');
+    if (callerRole === 'owner' && userData.ownerId && userData.ownerId !== callerUid) {
+      throw new functions.https.HttpsError('permission-denied', 'This tenant belongs to another owner.');
+    }
+  }
+  const ids = new Set<string>([tenantId, uid].filter(Boolean));
+  const emailMatches = (v: any) => !!tenantEmail && String(v || '').toLowerCase() === tenantEmail;
+  const mine = (d: any) => callerRole === 'superadmin' || !d.ownerId || d.ownerId === callerUid;
+
+  const agSnap = await db.collection('agreements').get();
+  const tenantAgs = agSnap.docs.filter((d) => {
+    const a = d.data();
+    return (ids.has(a.tenantId) || emailMatches(a.tenantEmail)) && mine(a);
+  });
+  if (tenantAgs.some((d) => ['active', 'signed'].includes(d.data().status))) {
+    throw new functions.https.HttpsError('failed-precondition', 'This tenant has an active lease. End it through move-out first.');
+  }
+
+  const toDelete: FirebaseFirestore.DocumentReference[] = tenantAgs.map((d) => d.ref);
+  const reqSnap = await db.collection('tenancyRequests').get();
+  reqSnap.docs.forEach((d) => { const r = d.data(); if ((ids.has(r.tenantId) || emailMatches(r.tenantEmail)) && mine(r)) toDelete.push(d.ref); });
+  const tenSnap = await db.collection('tenants').get();
+  // Tenant records are tombstoned rather than deleted: a tenant session or stale tab that re-saves its own
+  // record would otherwise resurrect the row on this owner's dashboard.
+  const tenantTombstones: FirebaseFirestore.DocumentReference[] = [];
+  tenSnap.docs.forEach((d) => { const t = d.data(); if ((ids.has(d.id) || ids.has(t.userId) || emailMatches(t.email)) && mine(t)) tenantTombstones.push(d.ref); });
+
+  // Free units that were reserved for this tenant.
+  const unitSnap = await db.collection('units').get();
+  // No active/signed lease exists (checked above), so any unit still pointing at this tenant is stale
+  // (even if marked occupied) and would otherwise keep re-creating the tenant row on the owner dashboard.
+  const tenantName = String(userData?.displayName || userData?.name || '').toLowerCase().trim();
+  const unitWrites = unitSnap.docs.filter((d) => {
+    const u = d.data();
+    if (ids.has(u.currentTenantId) || ids.has(u.tenantId)) return true;
+    return !!tenantName && !u.currentTenantId && mine(u) && String(u.tenant || '').toLowerCase().trim() === tenantName;
+  });
+  for (const u of unitWrites) await u.ref.update({ status: 'vacant', tenant: null, currentTenantId: null });
+
+  for (let i = 0; i < toDelete.length; i += 400) {
+    const batch = db.batch();
+    toDelete.slice(i, i + 400).forEach((r) => batch.delete(r));
+    await batch.commit();
+  }
+  for (const ref of tenantTombstones) {
+    await ref.set({ removedOwnerIds: admin.firestore.FieldValue.arrayUnion(callerUid) }, { merge: true });
+  }
+  // The tenant's own login stays (they may have other landlords); just detach them from this owner.
+  if (uid && userData && userData.ownerId === callerUid) {
+    await db.collection('users').doc(uid).update({ ownerId: null, ownerName: null });
+  }
+  functions.logger.info(`[deleteTenantAccount] ${callerUid} removed tenant ${uid || tenantId || tenantEmail}: ${toDelete.length} records deleted, ${tenantTombstones.length} tenant docs tombstoned`);
+  return { success: true, deleted: toDelete.length, tombstoned: tenantTombstones.length };
 });
 
 /**
@@ -2589,7 +3345,7 @@ export const finalizeMoveOutInspection = functions.https.onCall(async (data, con
   }
 
   const moveout = moveoutDoc.data()!;
-  const callerRole = context.auth.token.role;
+  const callerRole = await resolveCallerRole(context);
   const callerUid = context.auth.uid;
 
   if (callerRole !== 'owner' && callerRole !== 'manager') {
@@ -2727,7 +3483,7 @@ export const respondSupportTicket = functions.https.onCall(async (data, context)
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const callerRole = context.auth.token.role;
+  const callerRole = await resolveCallerRole(context);
   if (callerRole !== 'superadmin') {
     throw new functions.https.HttpsError('permission-denied', 'Only superadmin can respond to platform support tickets.');
   }
@@ -4881,6 +5637,28 @@ async function sendInvoiceEmail(
  * 19. onRentalInvoiceWrite (Firestore Trigger)
  * Automatically triggers email and SMS delivery to tenant when an invoice is issued or marked paid.
  */
+/**
+ * Tenant in-app notification the moment their first month's rent invoice is issued
+ * (right after the security deposit is settled). Email is already sent by onRentalInvoiceWrite.
+ */
+export const onRentInvoiceCreatedTenant = functions.firestore
+  .document('invoices/{invoiceId}')
+  .onCreate(async (snap, context) => {
+    const inv = snap.data() || {};
+    const id = String(context.params.invoiceId);
+    if (!inv.tenantId || id.toUpperCase().startsWith('DEP-')) return;
+    const isFirst = /-M1$/i.test(id);
+    const amount = Number(inv.total || inv.amount || 0);
+    await notifyOwnerOnboardingStep({
+      ownerId: inv.tenantId,
+      dedupeKey: `rent_due_${id}`,
+      title: isFirst ? "Security deposit received — pay your first month's rent" : 'New rent invoice issued',
+      detail: `${isFirst ? "Your security deposit is confirmed. " : ''}Rent of ${fmtMoney('INR', amount)} for ${inv.unit || 'your unit'} is due${inv.due ? ' by ' + inv.due : ''}. Pay now from Payments.`,
+      link: '/tenant/payments',
+      skipEmail: true,
+    }).catch((e) => functions.logger.warn('rent invoice in-app failed', e?.message));
+  });
+
 export const onRentalInvoiceWrite = functions.firestore
   .document('invoices/{invoiceId}')
   .onWrite(async (change, context) => {
@@ -5020,17 +5798,38 @@ export const onPlatformInvoiceWrite = functions.firestore
     if (!after) return;
 
     const invoiceId = context.params.invoiceId;
-    const ownerEmail = after.ownerEmail;
-    if (!ownerEmail) return;
+    const ownerContact = await getUserContact(after.ownerId);
+    const ownerEmail = after.ownerEmail || ownerContact?.email;
+    if (!ownerEmail && !ownerContact?.phone) return;
 
     // Trigger: Transitioned to paid
     if (after.status === 'paid' && (!before || before.status !== 'paid')) {
+      const planLabel = after.planName || 'Growth';
+      const cur = String(after.currency || 'USD').toUpperCase();
+      const total = after.total || after.amount || 0;
+      // In-app notification (idempotent) + SMS to the owner.
+      await notifyOwnerOnboardingStep({
+        ownerId: after.ownerId,
+        dedupeKey: `plan_receipt_${invoiceId}`,
+        title: `Plan activated: ${planLabel}`,
+        detail: `Your ${planLabel} subscription payment of ${cur} ${total} was received. Receipt ${invoiceId} has been emailed to you.`,
+        link: '/owner/plan',
+        skipEmail: true,
+      }).catch((e) => functions.logger.warn('plan receipt in-app failed', e?.message));
+      if (ownerContact?.phone) {
+        await sendEventSms(
+          'SMS: Plan receipt',
+          ownerContact.phone,
+          `Propithub: Your ${planLabel} plan is active. Payment of ${cur} ${total} received (Receipt ${invoiceId}). Thank you!`
+        ).catch((e) => functions.logger.warn('plan receipt sms failed', e?.message));
+      }
+      if (!ownerEmail) return;
       await sendInvoiceEmail(ownerEmail, `Propithub Platform Receipt: Invoice ${invoiceId} Settled`, {
         invoiceId,
         title: `Propithub SaaS Subscription Receipt — ${after.planName || 'Growth'} Plan`,
         recipientName: after.ownerName || 'Property Owner',
         amount: after.total || after.amount || 0,
-        currency: '$',
+        currency: String(after.currency || 'USD').toUpperCase(),
         status: 'PAID',
         dueDate: after.dueDate || '',
         paidAt: after.paidAt || new Date().toISOString(),

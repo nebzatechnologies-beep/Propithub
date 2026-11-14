@@ -271,6 +271,8 @@ export interface TenantRentalHistory {
 
 export interface TenantRecord {
   id: string;
+  /** Owners who removed this tenant from their dashboard (the tenant's login is untouched). */
+  removedOwnerIds?: string[];
   name: string;
   phone: string;
   email: string;

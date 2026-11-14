@@ -110,7 +110,7 @@ export function usePlanLimits(explicitOwnerId?: string) {
     userFromState?.ownerId ||
     (isSubordinate
       ? state.propertyManagers?.find((m: any) => m.id === user?.id || (user?.email && m.email?.toLowerCase() === user.email.toLowerCase()))?.ownerId ||
-        state.staff?.find((s: any) => s.id === user?.id || (user?.email && s.email?.toLowerCase() === user.email.toLowerCase()))?.ownerId
+      state.staff?.find((s: any) => s.id === user?.id || (user?.email && s.email?.toLowerCase() === user.email.toLowerCase()))?.ownerId
       : undefined);
 
   const resolvedOwnerId = subordinateParentId || user?.id || userFromState?.id || '';
@@ -128,8 +128,8 @@ export function usePlanLimits(explicitOwnerId?: string) {
     (inv) =>
       inv.status === 'paid' &&
       ((resolvedOwnerId && inv.ownerId === resolvedOwnerId) ||
-       (ownerUserFromState?.id && inv.ownerId === ownerUserFromState.id) ||
-       (ownerUserFromState?.email && inv.ownerEmail?.toLowerCase() === ownerUserFromState.email.toLowerCase()))
+        (ownerUserFromState?.id && inv.ownerId === ownerUserFromState.id) ||
+        (ownerUserFromState?.email && inv.ownerEmail?.toLowerCase() === ownerUserFromState.email.toLowerCase()))
   );
 
   const latestPaidInvoice = myPaidInvoices.length > 0
@@ -142,22 +142,10 @@ export function usePlanLimits(explicitOwnerId?: string) {
     (!latestPaidInvoice.periodEnd || new Date(latestPaidInvoice.periodEnd).getTime() > Date.now())
   );
 
-  // Align active/trial/expired resolution across Web & Mobile:
-  // `owners/{uid}` (`ownerSettings`) is updated by both Superadmin overrides (MasterUsersPage) and checkout,
-  // while `platformInvoices` covers paid invoice history if `ownerSettings` hasn't hydrated yet.
-  const isExplicitlyInactive =
-    ownerSettings?.planStatus === 'expired' || ownerSettings?.planStatus === 'past_due';
-  const isOwnerSettingsExpired = Boolean(
-    ownerSettings?.planStatus === 'active' &&
-    ownerSettings?.subscriptionEndsAt &&
-    new Date(ownerSettings.subscriptionEndsAt).getTime() <= Date.now()
-  );
-  const isOwnerSettingsActive = Boolean(
-    ownerSettings?.planStatus === 'active' && !isOwnerSettingsExpired
-  );
   const hasActivePaidSubscription = Boolean(
-    !isExplicitlyInactive &&
-    (isOwnerSettingsActive || (isPaidInvoiceUnexpired && !isOwnerSettingsExpired && ownerSettings?.planStatus !== 'trialing'))
+    hasPaidInvoice &&
+    isPaidInvoiceUnexpired &&
+    (ownerSettings?.planStatus === 'active' || !ownerSettings?.subscriptionEndsAt || new Date(ownerSettings.subscriptionEndsAt).getTime() > Date.now())
   );
 
   const cachedTrialDays = loadCachedTrialDays();
@@ -177,17 +165,19 @@ export function usePlanLimits(explicitOwnerId?: string) {
     : (isTrial ? dynamicTrialDays : 0);
 
   const isSubscriptionExpired = Boolean(
-    isOwnerSettingsExpired ||
+    (ownerSettings?.planStatus === 'active' &&
+      ownerSettings?.subscriptionEndsAt &&
+      new Date(ownerSettings.subscriptionEndsAt).getTime() <= Date.now()) ||
     (hasPaidInvoice && !isPaidInvoiceUnexpired)
   );
 
   const isExpired = !hasActivePaidSubscription && (
     ownerSettings
       ? ownerSettings.planStatus === 'expired' ||
-        ownerSettings.planStatus === 'past_due' ||
-        (dynamicTrialDays === 0 && ownerSettings.planStatus !== 'active') ||
-        (Boolean(ownerSettings.trialEndsAt) && new Date(ownerSettings.trialEndsAt!).getTime() <= Date.now()) ||
-        isSubscriptionExpired
+      ownerSettings.planStatus === 'past_due' ||
+      (dynamicTrialDays === 0 && ownerSettings.planStatus !== 'active') ||
+      (Boolean(ownerSettings.trialEndsAt) && new Date(ownerSettings.trialEndsAt!).getTime() <= Date.now()) ||
+      isSubscriptionExpired
       : (hasPaidInvoice ? false : dynamicTrialDays === 0)
   );
 
@@ -215,16 +205,16 @@ export function usePlanLimits(explicitOwnerId?: string) {
   const unitsUsed = resolvedOwnerId ? state.units.filter((u) => u.ownerId === resolvedOwnerId).length : 0;
   const tenantsUsed = resolvedOwnerId
     ? state.tenants.filter((t) => {
-        if (t.ownerId !== resolvedOwnerId) return false;
-        const hasAssignedUnit = Boolean(t.unit && t.unit !== 'Unassigned' && t.unit !== 'Pending');
-        const hasActiveAg = (state.agreements || []).some(
-          (a) => a.ownerId === resolvedOwnerId && a.status === 'active' && (a.tenantId === t.id || (t.email && a.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
-        );
-        const hasAcceptedReq = (state.tenancyRequests || []).some(
-          (r) => r.ownerId === resolvedOwnerId && r.status === 'accepted' && (r.tenantId === t.id || (t.email && r.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
-        );
-        return hasAssignedUnit || hasActiveAg || hasAcceptedReq;
-      }).length
+      if (t.ownerId !== resolvedOwnerId) return false;
+      const hasAssignedUnit = Boolean(t.unit && t.unit !== 'Unassigned' && t.unit !== 'Pending');
+      const hasActiveAg = (state.agreements || []).some(
+        (a) => a.ownerId === resolvedOwnerId && a.status === 'active' && (a.tenantId === t.id || (t.email && a.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
+      );
+      const hasAcceptedReq = (state.tenancyRequests || []).some(
+        (r) => r.ownerId === resolvedOwnerId && r.status === 'accepted' && (r.tenantId === t.id || (t.email && r.tenantEmail?.toLowerCase() === t.email.toLowerCase()))
+      );
+      return hasAssignedUnit || hasActiveAg || hasAcceptedReq;
+    }).length
     : 0;
   const managersUsed = resolvedOwnerId ? (state.propertyManagers || []).filter((m: any) => m.ownerId === resolvedOwnerId).length : 0;
   const staffUsed = resolvedOwnerId ? (state.staff || []).filter((s: any) => s.ownerId === resolvedOwnerId).length : 0;
@@ -294,8 +284,8 @@ export function usePlanLimits(explicitOwnerId?: string) {
 
   const maxPopularBoostDays = currentPlan?.popularBoostDays ?? (
     currentPlan?.id === 'growth' ? 7 :
-    currentPlan?.id === 'enterprise' ? 30 :
-    (currentPlan?.id === 'free_trial' || currentPlan?.isTrialOnly) ? 3 : 0
+      currentPlan?.id === 'enterprise' ? 30 :
+        (currentPlan?.id === 'free_trial' || currentPlan?.isTrialOnly) ? 3 : 0
   );
 
   const popularBoostDaysUsed = (state.units || [])

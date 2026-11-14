@@ -49,7 +49,80 @@ export const MaintenancePage: React.FC = () => {
     email: string;
     password: string;
     role: string;
+    phone?: string;
+    emailStatus?: 'delivered' | 'failed';
+    birdStatus?: string;
+    emailError?: string;
   } | null>(null);
+  const [isResendingInvite, setIsResendingInvite] = useState(false);
+
+  const shareCredentials = async (person: any, kind: 'staff' | 'manager', mode: 'copy') => {
+    let pw: string = person.tempPassword || '';
+    if (!pw) {
+      // No saved password: set a fresh one so the details we share actually work.
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let rand = '';
+      for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+      pw = `${kind === 'staff' ? 'Staff' : 'Manager'}#${rand}`;
+      const r = await provisionUser({
+        name: person.name, email: person.email, password: pw, role: kind,
+        phone: person.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
+      });
+      if (!r.success) { showToast(r.error || 'Could not prepare the credentials.'); return; }
+      try { await saveStaff({ ...person, tempPassword: pw }); } catch { /* best effort */ }
+    }
+    const text = `Propithub ${kind === 'staff' ? 'Staff' : 'Manager'} Access\nHello ${person.name},\nLogin: https://propithub.web.app/login\nEmail: ${person.email}\nPassword: ${pw}\nPlease change your password after signing in.`;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Credentials copied. Paste them into WhatsApp or any chat.');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); showToast('Credentials copied.'); } catch { showToast(text); }
+      document.body.removeChild(ta);
+    }
+  };
+
+  const mailInviteToStaff = async (s: any) => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    let rand = '';
+    for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+    const pw = `Staff#${rand}`;
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: s.name, email: s.email, password: pw, role: 'staff',
+      phone: s.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not send the invite.'); return; }
+    try { await saveStaff({ ...s, tempPassword: pw }); } catch { /* record update is best effort */ }
+    setStaffCredentialsModal({
+      isOpen: true, name: s.name, email: s.email, password: pw, role: s.role, phone: s.phone || '',
+      emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError,
+    });
+    showToast(r.emailStatus === 'failed'
+      ? `Invite email to ${s.email} failed${r.emailError ? ` (${r.emailError})` : ''}. Use Copy Credentials.`
+      : `Invite emailed to ${s.email} (${r.birdStatus || 'accepted'}).`);
+  };
+  const resendStaffInvite = async () => {
+    if (!staffCredentialsModal || !staffCredentialsModal.password) {
+      showToast('No saved password for this person. Add them again to send a fresh invite.');
+      return;
+    }
+    setIsResendingInvite(true);
+    const r = await provisionUser({
+      name: staffCredentialsModal.name,
+      email: staffCredentialsModal.email,
+      password: staffCredentialsModal.password,
+      role: 'staff',
+      phone: staffCredentialsModal.phone || '',
+      ownerId,
+      ownerName: user?.displayName || 'Property Owner',
+    });
+    setIsResendingInvite(false);
+    if (!r.success) { showToast(r.error || 'Could not resend the invite.'); return; }
+    setStaffCredentialsModal((m) => m ? { ...m, emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError } : m);
+  };
 
   const generateRandomStaffPassword = () => {
     const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
@@ -189,8 +262,14 @@ export const MaintenancePage: React.FC = () => {
       email: staffEmail,
       password: passwordToUse,
       role: newStaff.role,
+      phone: newStaffPhone.trim(),
+      emailStatus: res.emailStatus,
+      birdStatus: res.birdStatus,
+      emailError: res.emailError,
     });
-    showToast(`${name} onboarded with login credentials.`);
+    showToast(res.emailStatus === 'failed'
+      ? `${name} was added, but the invite email could not be sent${res.emailError ? ` (${res.emailError})` : ''}. Share the credentials shown.`
+      : `${name} onboarded. Email to ${staffEmail}: ${res.birdStatus || 'accepted'}.`);
   };
 
   const handleRemoveStaff = async (id: string, name: string) => {
@@ -447,7 +526,18 @@ export const MaintenancePage: React.FC = () => {
                     })()}</span>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
-                    {s.tempPassword && (
+                    <button
+                      type="button"
+                      className="btn brass small"
+                      disabled={isResendingInvite}
+                      onClick={() => mailInviteToStaff(s)}
+                    >
+                      ✉ Mail invite
+                    </button>
+                    <button type="button" className="btn secondary small" onClick={() => shareCredentials(s, 'staff', 'copy')}>
+                      Copy credentials
+                    </button>
+                                        {s.tempPassword && (
                       <button
                         type="button"
                         className="btn secondary small"
@@ -459,6 +549,7 @@ export const MaintenancePage: React.FC = () => {
                             email: s.email,
                             password: s.tempPassword || '',
                             role: s.role,
+                            phone: s.phone || '',
                           });
                         }}
                       >
@@ -985,8 +1076,22 @@ export const MaintenancePage: React.FC = () => {
             </div>
             <div className="modal-body" style={{ padding: '20px' }}>
               <p style={{ fontSize: '13px', color: 'var(--ink)', marginBottom: '16px', lineHeight: 1.5 }}>
-                Share these login details with <b>{staffCredentialsModal.name}</b> ({staffCredentialsModal.role}). They can sign in immediately at the portal to access their maintenance queue.
+                Login details for <b>{staffCredentialsModal.name}</b> ({staffCredentialsModal.role}).
               </p>
+              <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px', fontSize: '13px', lineHeight: 1.5,
+                background: staffCredentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+                border: `1px solid ${staffCredentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.35)' : 'rgba(16,185,129,0.35)'}` }}>
+                {staffCredentialsModal.emailStatus === undefined
+                  ? 'Press "Resend invite email" to email these credentials to the staff member.'
+                  : staffCredentialsModal.emailStatus === 'failed'
+                    ? <>The invite email could not be delivered{staffCredentialsModal.emailError ? ` (${staffCredentialsModal.emailError})` : ''}. Share the details below manually or resend.</>
+                    : <>Credentials emailed to <b>{staffCredentialsModal.email}</b> (status: {staffCredentialsModal.birdStatus || 'accepted'}). Ask them to check spam if it is not in the inbox.</>}
+                <div style={{ marginTop: '8px' }}>
+                  <button type="button" className="btn secondary small" disabled={isResendingInvite} onClick={resendStaffInvite}>
+                    {isResendingInvite ? 'Sending…' : 'Resend invite email'}
+                  </button>
+                </div>
+              </div>
 
               <div style={{ background: 'var(--surface-sunken)', border: '1px solid var(--line)', borderRadius: '8px', padding: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '13px' }}>

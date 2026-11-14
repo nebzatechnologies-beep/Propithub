@@ -116,7 +116,8 @@ service cloud.firestore {
 
     // User Claim Requests (triggers Cloud Function for role claims)
     match /userClaimRequests/{claimId} {
-      allow read, write: if isAuthenticated();
+      allow write: if isAuthenticated();
+      allow read: if isSuperAdmin();
     }
 
     // Tenants Directory
@@ -234,7 +235,10 @@ service cloud.firestore {
     // Platform Invoices (Superadmin <-> Owner SaaS billing)
     match /platformInvoices/{invoiceId} {
       allow read: if isAuthenticated();
-      allow write: if isSuperAdmin();
+      // Owners record their own plan purchase; only the platform admin can edit or delete invoices.
+      allow create: if isSuperAdmin() ||
+        (isOwner() && request.resource.data.ownerId == request.auth.uid);
+      allow update, delete: if isSuperAdmin();
     }
 
     // Tenant Payout Profiles
