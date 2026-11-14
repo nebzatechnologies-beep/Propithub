@@ -28,6 +28,8 @@ import { RentalInvoiceDocument } from '../components/RentalInvoiceDocument';
 import { MobileRentalInvoiceDocument } from '../components/MobileRentalInvoiceDocument';
 import { pickSingleImage } from '../lib/nativePicker';
 import { useMobileTheme } from '../context/MobileThemeContext';
+import { httpsCallable } from 'firebase/functions';
+import { functions, isFirebaseConfigured } from '../lib/firebase';
 import { TourTarget } from '../context/MobileTourContext';
 import { getCleanAddressText } from '../lib/addressUtils';
 import { resolveEffectiveUnitStatus, isDepositPayment } from '../lib/portfolioReconcile';
@@ -927,6 +929,14 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   const [rejectReason, setRejectReason] = useState('');
   const [showRejectInput, setShowRejectInput] = useState(false);
 
+  // One-time repair per session: payments/proofs a tenant submitted without an owner stamp are re-attached to this owner.
+  useEffect(() => {
+    if (!isFirebaseConfigured || !user?.id || user?.role !== 'owner') return;
+    httpsCallable<unknown, { fixed: number }>(functions, 'repairMyTenantRecords')().catch((e) =>
+      console.warn('repairMyTenantRecords failed', e)
+    );
+  }, [user?.id, user?.role]);
+
   // Payment Methods Configuration State
   // Priority: ownerSettings[user.id].paymentMethods (Firestore-synced) > state.paymentMethods (legacy fallback)
   const [methodsConfig, setMethodsConfig] = useState<MobilePaymentMethodsConfig>(() => {
@@ -1271,12 +1281,13 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
 
 
-  const handleApproveProof = () => {
+  const handleApproveProof = async () => {
     if (!reviewingPayment) return;
-    confirmOfflinePayment(reviewingPayment.id);
+    const ok = await confirmOfflinePayment(reviewingPayment.id);
+    if (!ok) return;
     setReviewingPayment(null);
     setShowRejectInput(false);
-    Alert.alert('Payment Approved ✓', `Payment #${reviewingPayment.referenceNo} verified and recorded to ledger.`);
+    Alert.alert('Payment Approved ✓', `Payment #${reviewingPayment.referenceNo || 'Proof'} verified and recorded to ledger.`);
   };
 
   const handleRejectProof = () => {
@@ -4344,42 +4355,55 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            <View style={[styles.proofSummaryBox, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4', borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#BBF7D0' }]}>
-              <Text style={[styles.proofSummaryAmount, { color: isDark ? '#34D399' : '#15803D' }]}>
-                {reviewingPayment ? format(reviewingPayment.amount, reviewingPayment.currency || viewCurrency) : ''}
-              </Text>
-              <Text style={[styles.proofSummaryRail, { color: isDark ? '#6EE7B7' : '#166534' }]}>{reviewingPayment?.method}</Text>
-            </View>
+            <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+              <View style={[styles.proofSummaryBox, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4', borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#BBF7D0' }]}>
+                <Text style={[styles.proofSummaryAmount, { color: isDark ? '#34D399' : '#15803D' }]}>
+                  {reviewingPayment ? format(reviewingPayment.amount, reviewingPayment.currency || viewCurrency) : ''}
+                </Text>
+                <Text style={[styles.proofSummaryRail, { color: isDark ? '#6EE7B7' : '#166534' }]}>{reviewingPayment?.method}</Text>
+              </View>
 
-            <View style={[styles.modalFieldBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line, padding: 10, borderRadius: 8, borderWidth: 1 }]}>
-              <Text style={[styles.modalFieldLabel, { color: colors.inkSoft }]}>Transaction UTR / Reference</Text>
-              <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.referenceNo}</Text>
-            </View>
-
-            <View style={[styles.modalFieldBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line, padding: 10, borderRadius: 8, borderWidth: 1 }]}>
-              <Text style={[styles.modalFieldLabel, { color: colors.inkSoft }]}>Date Submitted</Text>
-              <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.date}</Text>
-            </View>
-
-            {reviewingPayment?.notes && (
               <View style={[styles.modalFieldBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line, padding: 10, borderRadius: 8, borderWidth: 1 }]}>
-                <Text style={[styles.modalFieldLabel, { color: colors.inkSoft }]}>Payer Remarks</Text>
-                <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.notes}</Text>
+                <Text style={[styles.modalFieldLabel, { color: colors.inkSoft }]}>Transaction UTR / Reference</Text>
+                <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.referenceNo || 'Screenshot Proof Provided'}</Text>
               </View>
-            )}
 
-            {showRejectInput && (
-              <View style={{ marginTop: 12 }}>
-                <Text style={styles.rejectLabel}>Reason for Rejection</Text>
-                <TextInput
-                  style={[styles.rejectInput, isDark && { backgroundColor: 'rgba(239, 68, 68, 0.15)', color: colors.text, borderColor: 'rgba(239, 68, 68, 0.3)' }]}
-                  value={rejectReason}
-                  onChangeText={setRejectReason}
-                  placeholder="e.g. Transaction reference not reflected in bank statement"
-                  placeholderTextColor={colors.inkSoft}
-                />
+              {reviewingPayment?.proofScreenshot ? (
+                <View style={[styles.modalFieldBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line, padding: 10, borderRadius: 8, borderWidth: 1 }]}>
+                  <Text style={[styles.modalFieldLabel, { color: colors.inkSoft, marginBottom: 6 }]}>Payment Screenshot</Text>
+                  <Image
+                    source={{ uri: reviewingPayment.proofScreenshot }}
+                    style={{ width: '100%', height: 200, borderRadius: 8, backgroundColor: '#FFFFFF' }}
+                    resizeMode="contain"
+                  />
+                </View>
+              ) : null}
+
+              <View style={[styles.modalFieldBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line, padding: 10, borderRadius: 8, borderWidth: 1 }]}>
+                <Text style={[styles.modalFieldLabel, { color: colors.inkSoft }]}>Date Submitted</Text>
+                <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.date}</Text>
               </View>
-            )}
+
+              {reviewingPayment?.notes && (
+                <View style={[styles.modalFieldBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line, padding: 10, borderRadius: 8, borderWidth: 1 }]}>
+                  <Text style={[styles.modalFieldLabel, { color: colors.inkSoft }]}>Payer Remarks</Text>
+                  <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.notes}</Text>
+                </View>
+              )}
+
+              {showRejectInput && (
+                <View style={{ marginTop: 12 }}>
+                  <Text style={styles.rejectLabel}>Reason for Rejection</Text>
+                  <TextInput
+                    style={[styles.rejectInput, isDark && { backgroundColor: 'rgba(239, 68, 68, 0.15)', color: colors.text, borderColor: 'rgba(239, 68, 68, 0.3)' }]}
+                    value={rejectReason}
+                    onChangeText={setRejectReason}
+                    placeholder="e.g. Transaction reference not reflected in bank statement"
+                    placeholderTextColor={colors.inkSoft}
+                  />
+                </View>
+              )}
+            </ScrollView>
 
             <View style={styles.modalActionsRow}>
               {showRejectInput ? (

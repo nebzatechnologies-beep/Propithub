@@ -386,6 +386,7 @@ export interface MobilePaymentTransaction {
   method: 'UPI' | 'Credit/Debit Card' | 'NetBanking' | 'Cash Handover' | 'NEFT/IMPS' | 'EASEBUZZ' | 'Bank Transfer' | 'Cash' | 'Cheque' | string;
   type: 'rent' | 'deposit' | 'utility' | 'deposit_refund' | 'task_fee' | 'late_fee';
   referenceNo?: string;
+  proofScreenshot?: string;
   cashClaimId?: string;
   settlementId?: string;
   notes?: string;

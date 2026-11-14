@@ -12,6 +12,7 @@ import { Wrench, Plus, UserPlus } from 'lucide-react';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
 import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
+import { copyToClipboard } from '../../lib/clipboard';
 
 export const MaintenancePage: React.FC = () => {
   const { state, updateState, createOwnerMaintenanceTicket, saveTicket, saveStaff, deleteStaff, saveNotification, showToast } = useAppData();
@@ -56,33 +57,6 @@ export const MaintenancePage: React.FC = () => {
   } | null>(null);
   const [isResendingInvite, setIsResendingInvite] = useState(false);
 
-  const shareCredentials = async (person: any, kind: 'staff' | 'manager', mode: 'copy') => {
-    let pw: string = person.tempPassword || '';
-    if (!pw) {
-      // No saved password: set a fresh one so the details we share actually work.
-      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
-      let rand = '';
-      for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
-      pw = `${kind === 'staff' ? 'Staff' : 'Manager'}#${rand}`;
-      const r = await provisionUser({
-        name: person.name, email: person.email, password: pw, role: kind,
-        phone: person.phone || '', ownerId, ownerName: user?.displayName || 'Property Owner',
-      });
-      if (!r.success) { showToast(r.error || 'Could not prepare the credentials.'); return; }
-      try { await saveStaff({ ...person, tempPassword: pw }); } catch { /* best effort */ }
-    }
-    const text = `Propithub ${kind === 'staff' ? 'Staff' : 'Manager'} Access\nHello ${person.name},\nLogin: https://propithub.web.app/login\nEmail: ${person.email}\nPassword: ${pw}\nPlease change your password after signing in.`;
-    try {
-      await navigator.clipboard.writeText(text);
-      showToast('Credentials copied. Paste them into WhatsApp or any chat.');
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = text; document.body.appendChild(ta); ta.select();
-      try { document.execCommand('copy'); showToast('Credentials copied.'); } catch { showToast(text); }
-      document.body.removeChild(ta);
-    }
-  };
-
   const mailInviteToStaff = async (s: any) => {
     const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
     let rand = '';
@@ -105,15 +79,19 @@ export const MaintenancePage: React.FC = () => {
       : `Invite emailed to ${s.email} (${r.birdStatus || 'accepted'}).`);
   };
   const resendStaffInvite = async () => {
-    if (!staffCredentialsModal || !staffCredentialsModal.password) {
-      showToast('No saved password for this person. Add them again to send a fresh invite.');
-      return;
+    if (!staffCredentialsModal) return;
+    let pwToUse = staffCredentialsModal.password;
+    if (!pwToUse) {
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let rand = '';
+      for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+      pwToUse = `Staff#${rand}`;
     }
     setIsResendingInvite(true);
     const r = await provisionUser({
       name: staffCredentialsModal.name,
       email: staffCredentialsModal.email,
-      password: staffCredentialsModal.password,
+      password: pwToUse,
       role: 'staff',
       phone: staffCredentialsModal.phone || '',
       ownerId,
@@ -121,7 +99,7 @@ export const MaintenancePage: React.FC = () => {
     });
     setIsResendingInvite(false);
     if (!r.success) { showToast(r.error || 'Could not resend the invite.'); return; }
-    setStaffCredentialsModal((m) => m ? { ...m, emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError } : m);
+    setStaffCredentialsModal((m) => m ? { ...m, password: pwToUse, emailStatus: r.emailStatus, birdStatus: r.birdStatus, emailError: r.emailError } : m);
   };
 
   const generateRandomStaffPassword = () => {
@@ -534,28 +512,23 @@ export const MaintenancePage: React.FC = () => {
                     >
                       ✉ Mail invite
                     </button>
-                    <button type="button" className="btn secondary small" onClick={() => shareCredentials(s, 'staff', 'copy')}>
-                      Copy credentials
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => {
+                        setStaffCredentialsModal({
+                          isOpen: true,
+                          name: s.name,
+                          email: s.email,
+                          password: s.tempPassword || '',
+                          role: s.role,
+                          phone: s.phone || '',
+                        });
+                      }}
+                    >
+                      <Key size={12} /> Credentials
                     </button>
-                                        {s.tempPassword && (
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                        onClick={() => {
-                          setStaffCredentialsModal({
-                            isOpen: true,
-                            name: s.name,
-                            email: s.email,
-                            password: s.tempPassword || '',
-                            role: s.role,
-                            phone: s.phone || '',
-                          });
-                        }}
-                      >
-                        <Key size={12} /> Credentials
-                      </button>
-                    )}
                     <button
                       type="button"
                       className="btn secondary small"
@@ -1081,14 +1054,18 @@ export const MaintenancePage: React.FC = () => {
               <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px', fontSize: '13px', lineHeight: 1.5,
                 background: staffCredentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
                 border: `1px solid ${staffCredentialsModal.emailStatus === 'failed' ? 'rgba(239,68,68,0.35)' : 'rgba(16,185,129,0.35)'}` }}>
-                {staffCredentialsModal.emailStatus === undefined
-                  ? 'Press "Resend invite email" to email these credentials to the staff member.'
-                  : staffCredentialsModal.emailStatus === 'failed'
-                    ? <>The invite email could not be delivered{staffCredentialsModal.emailError ? ` (${staffCredentialsModal.emailError})` : ''}. Share the details below manually or resend.</>
-                    : <>Credentials emailed to <b>{staffCredentialsModal.email}</b> (status: {staffCredentialsModal.birdStatus || 'accepted'}). Ask them to check spam if it is not in the inbox.</>}
+                {!staffCredentialsModal.password
+                  ? 'No temporary password is stored on file. Generate a new temporary password below to view, copy, or email it.'
+                  : staffCredentialsModal.emailStatus === undefined
+                    ? 'Press "Resend invite email" to email these credentials to the staff member.'
+                    : staffCredentialsModal.emailStatus === 'failed'
+                      ? <>The invite email could not be delivered{staffCredentialsModal.emailError ? ` (${staffCredentialsModal.emailError})` : ''}. Share the details below manually or resend.</>
+                      : <>Credentials emailed to <b>{staffCredentialsModal.email}</b> (status: {staffCredentialsModal.birdStatus || 'accepted'}). Ask them to check spam if it is not in the inbox.</>}
                 <div style={{ marginTop: '8px' }}>
                   <button type="button" className="btn secondary small" disabled={isResendingInvite} onClick={resendStaffInvite}>
-                    {isResendingInvite ? 'Sending…' : 'Resend invite email'}
+                    {isResendingInvite
+                      ? (staffCredentialsModal.password ? 'Sending…' : 'Generating…')
+                      : (staffCredentialsModal.password ? 'Resend invite email' : 'Generate New Password & Email')}
                   </button>
                 </div>
               </div>
@@ -1104,9 +1081,13 @@ export const MaintenancePage: React.FC = () => {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '13px' }}>
                   <span style={{ color: 'var(--ink-soft)' }}>Password:</span>
-                  <span style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '14px', background: 'var(--line-strong)', padding: '2px 8px', borderRadius: '4px' }}>
-                    {staffCredentialsModal.password}
-                  </span>
+                  {staffCredentialsModal.password ? (
+                    <span style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '14px', background: 'var(--line-strong)', padding: '2px 8px', borderRadius: '4px' }}>
+                      {staffCredentialsModal.password}
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--ink-soft)', fontStyle: 'italic' }}>Not stored (click above to generate)</span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                   <span style={{ color: 'var(--ink-soft)' }}>Role:</span>
@@ -1118,13 +1099,18 @@ export const MaintenancePage: React.FC = () => {
                 <button
                   type="button"
                   className="btn secondary"
+                  disabled={!staffCredentialsModal.password}
                   style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                  onClick={() => {
+                  onClick={async () => {
                     const text = `PropHub Staff Access Credentials:\nURL: ${window.location.origin}/login\nEmail: ${staffCredentialsModal.email}\nPassword: ${staffCredentialsModal.password}\nRole: ${staffCredentialsModal.role}`;
-                    navigator.clipboard.writeText(text);
-                    setCopiedStaffCredentials(true);
-                    showToast('Staff credentials copied to clipboard!');
-                    setTimeout(() => setCopiedStaffCredentials(false), 3000);
+                    const ok = await copyToClipboard(text);
+                    if (ok) {
+                      setCopiedStaffCredentials(true);
+                      showToast('Staff credentials copied to clipboard!');
+                      setTimeout(() => setCopiedStaffCredentials(false), 3000);
+                    } else {
+                      showToast('Clipboard copy was blocked by the browser. Please copy the email and password above manually.');
+                    }
                   }}
                 >
                   {copiedStaffCredentials ? <Check size={14} style={{ color: '#10b981' }} /> : <Copy size={14} />}

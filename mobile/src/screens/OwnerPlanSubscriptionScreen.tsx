@@ -26,6 +26,7 @@ import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { usePlanLimits } from '../hooks/usePlanLimits';
+import { isIndiaOwner, sortGatewaysByRegion } from '../lib/gatewayDefaults';
 import { MobilePlan, MobilePlatformInvoice, ListingBoostPlan, DEFAULT_BOOST_PLANS } from '../types';
 import { doc, setDoc } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../lib/firebase';
@@ -179,15 +180,21 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       });
     }
 
-    return list;
-  }, [state.platformGateways]);
+    return sortGatewaysByRegion(list, isIndiaOwner(user as any, state.properties as any));
+  }, [state.platformGateways, user, state.properties]);
 
-  // Keep selectedGateway in sync
+  // Keep selectedGateway in sync with regional default
+  const regionalDefaultGateway = availableGateways[0]?.key;
   React.useEffect(() => {
-    if (availableGateways.length > 0 && !availableGateways.some((gw) => gw.key === selectedGateway)) {
-      setSelectedGateway(availableGateways[0].key);
+    if (regionalDefaultGateway && !availableGateways.some((gw) => gw.key === selectedGateway)) {
+      setSelectedGateway(regionalDefaultGateway);
     }
-  }, [availableGateways, selectedGateway]);
+  }, [availableGateways, regionalDefaultGateway, selectedGateway]);
+  React.useEffect(() => {
+    if (regionalDefaultGateway) {
+      setSelectedGateway(regionalDefaultGateway);
+    }
+  }, [regionalDefaultGateway]);
 
   // Commercial plans from state (excluding archived / trial-only) - sorted ascending by price
   const commercialPlans = useMemo(() => {
@@ -1525,9 +1532,9 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                     bp.isPopular && { borderWidth: 1.5 },
                   ]}
                 >
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <View style={{ flex: 1, marginRight: 8 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                    <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <Text style={[styles.tierName, { color: colors.navy, fontSize: 15 }]}>{bp.name}</Text>
                         {bp.isPopular && (
                           <View style={{ backgroundColor: '#F59E0B', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 }}>
@@ -1540,7 +1547,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                       </Text>
                     </View>
 
-                    <Text style={[styles.tierPricing, { fontSize: 20 }]}>
+                    <Text style={[styles.tierPricing, { fontSize: 20, flexShrink: 0 }]}>
                       ${bp.price}
                       <Text style={{ fontSize: 11, color: colors.inkSoft, fontWeight: '600' }}> USD</Text>
                     </Text>

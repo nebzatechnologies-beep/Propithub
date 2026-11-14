@@ -643,8 +643,15 @@ export const OwnerMessagesScreen: React.FC<OwnerMessagesScreenProps> = ({
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={[styles.tabContainer, { backgroundColor: isDark ? '#1E293B' : '#E2E8F0' }]}
-        style={{ marginBottom: 12 }}
+        contentContainerStyle={[styles.tabContainer, { flexGrow: 1 }]}
+        style={{
+          flexGrow: 0,
+          flexShrink: 0,
+          marginBottom: 12,
+          backgroundColor: isDark ? '#1E293B' : '#E2E8F0',
+          borderRadius: 10,
+          overflow: 'hidden',
+        }}
       >
         {(['published', 'scheduled', 'draft', 'archived'] as const).map((tab) => {
           const isSelected = activeTab === tab;
@@ -1394,11 +1401,11 @@ const createStyles = (colors: any, isDark: boolean) =>
       flexDirection: 'row',
       borderRadius: 10,
       padding: 3,
-      gap: 4,
+      gap: 2,
     },
     tabButton: {
-      paddingVertical: 7,
-      paddingHorizontal: 13,
+      paddingVertical: 6,
+      paddingHorizontal: 8,
       alignItems: 'center',
       justifyContent: 'center',
       borderRadius: 8,
@@ -1407,7 +1414,7 @@ const createStyles = (colors: any, isDark: boolean) =>
       borderWidth: 1,
     },
     tabText: {
-      fontSize: 11.5,
+      fontSize: 10.5,
       fontWeight: '600',
       color: colors.inkSoft,
     },

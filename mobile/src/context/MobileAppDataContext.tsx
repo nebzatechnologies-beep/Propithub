@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { reconcilePortfolio } from '../lib/portfolioReconcile';
 import { normalizeCurrencyCode } from '../lib/currencyService';
-import { Platform } from 'react-native';
+import { Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { collection, doc, onSnapshot, setDoc, deleteDoc, getDocs, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -231,7 +231,7 @@ interface MobileAppDataContextType {
   updateLateFeeSettings: (settings: Partial<MobileLateFeeSettings>, ownerId?: string) => Promise<void>;
   savePayment: (payment: MobilePaymentTransaction) => void;
   recordPayment: (payment: MobilePaymentTransaction) => void;
-  confirmOfflinePayment: (paymentId: string) => void;
+  confirmOfflinePayment: (paymentId: string) => Promise<boolean>;
   rejectOfflinePayment: (paymentId: string, reason: string) => void;
   savePaymentMethods: (methods: MobilePaymentMethodsConfig, ownerId?: string) => void;
   saveAnnouncement: (announcement: MobileAnnouncement) => void;
@@ -267,8 +267,8 @@ interface MobileAppDataContextType {
   submitCashClaim: (claimData: any) => Promise<string>;
   saveTenant: (tenant: MobileTenantRecord, password?: string) => Promise<string | void>;
   addTenant: (tenant: MobileTenantRecord, password?: string) => Promise<string | void>;
-  addStaff: (member: MobileStaffMember, password?: string) => Promise<string | void>;
-  saveManager: (manager: MobilePropertyManager, password?: string) => Promise<string | void>;
+  addStaff: (member: MobileStaffMember, password?: string) => Promise<{ uid: string; emailStatus?: 'sent' | 'failed'; birdStatus?: string; emailError?: string }>;
+  saveManager: (manager: MobilePropertyManager, password?: string) => Promise<{ uid: string; emailStatus?: 'sent' | 'failed'; birdStatus?: string; emailError?: string }>;
   deleteManager: (managerId: string) => void;
   reassignManagerProperty: (managerId: string, propertyId: string | null) => Promise<void>;
   recordManagerPayout: (payout: MobileManagerPayout) => void;
@@ -3946,24 +3946,52 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     }));
   };
 
-  const addStaff = async (member: MobileStaffMember, password?: string): Promise<string | void> => {
+  const addStaff = async (
+    member: MobileStaffMember,
+    password?: string
+  ): Promise<{ uid: string; emailStatus?: 'sent' | 'failed'; birdStatus?: string; emailError?: string }> => {
     const ownerIdToSet = member.ownerId || (user?.role === 'owner' ? user.id : user?.ownerId) || '';
     let uid = member.id;
     const cleanEmail = (member.email || '').trim().toLowerCase();
+    let provisionedServerSide = false;
+    let emailStatus: 'sent' | 'failed' | undefined;
+    let birdStatus: string | undefined;
+    let emailError: string | undefined;
 
     if (cleanEmail && isFirebaseConfigured) {
       const pass = password || 'Staff@123';
       try {
-        const createdUid = await createSecondaryAuthUser(cleanEmail, pass);
-        if (createdUid) {
-          uid = createdUid;
+        const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
+          name: (member.name || '').trim(),
+          email: cleanEmail,
+          password: pass,
+          role: 'staff',
+          phone: (member.phone || '').trim(),
+          ownerId: ownerIdToSet,
+          ownerName: user?.displayName || 'Property Owner',
+        });
+        if (res?.data?.uid) {
+          uid = res.data.uid;
+          provisionedServerSide = true;
+          emailStatus = res.data.emailStatus;
+          birdStatus = res.data.birdStatus;
+          emailError = res.data.emailError;
         }
       } catch (err: any) {
-        console.warn('Firebase secondary user creation for staff:', err?.message || err);
+        console.warn('provisionTeamMember for staff failed, falling back to client auth:', err?.message || err);
+        try {
+          const createdUid = await createSecondaryAuthUser(cleanEmail, pass);
+          if (createdUid) {
+            uid = createdUid;
+          }
+        } catch (fallbackErr: any) {
+          console.warn('Firebase secondary user creation for staff:', fallbackErr?.message || fallbackErr);
+        }
       }
     }
 
     const memberToSave: MobileStaffMember = { ...member, id: uid, ownerId: ownerIdToSet };
+    delete (memberToSave as any).tempPassword;
 
     if (cleanEmail && isFirebaseConfigured) {
       const staffProfile: MobileUserProfile = {
@@ -3978,13 +4006,15 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         createdAt: new Date().toISOString(),
       };
       setDoc(doc(db, 'users', uid), staffProfile, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'userClaimRequests', uid), {
-        uid,
-        role: 'staff',
-        ownerId: ownerIdToSet || null,
-        requestedAt: new Date().toISOString(),
-        processed: false,
-      }).catch(console.warn);
+      if (!provisionedServerSide) {
+        setDoc(doc(db, 'userClaimRequests', uid), {
+          uid,
+          role: 'staff',
+          ownerId: ownerIdToSet || null,
+          requestedAt: new Date().toISOString(),
+          processed: false,
+        }).catch(console.warn);
+      }
     }
 
     if (isFirebaseConfigured) {
@@ -3994,27 +4024,55 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       ...prev,
       staff: [memberToSave, ...prev.staff.filter((s) => s.id !== memberToSave.id)],
     }));
-    return uid;
+    return { uid, emailStatus, birdStatus, emailError };
   };
 
-  const saveManager = async (manager: MobilePropertyManager, password?: string): Promise<string | void> => {
+  const saveManager = async (
+    manager: MobilePropertyManager,
+    password?: string
+  ): Promise<{ uid: string; emailStatus?: 'sent' | 'failed'; birdStatus?: string; emailError?: string }> => {
     const ownerIdToSet = manager.ownerId || (user?.role === 'owner' ? user.id : user?.ownerId) || '';
     let uid = manager.id;
     const cleanEmail = (manager.email || '').trim().toLowerCase();
+    let provisionedServerSide = false;
+    let emailStatus: 'sent' | 'failed' | undefined;
+    let birdStatus: string | undefined;
+    let emailError: string | undefined;
 
     if (cleanEmail && isFirebaseConfigured) {
       const pass = password || 'Manager@123';
       try {
-        const createdUid = await createSecondaryAuthUser(cleanEmail, pass);
-        if (createdUid) {
-          uid = createdUid;
+        const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
+          name: (manager.name || '').trim(),
+          email: cleanEmail,
+          password: pass,
+          role: 'manager',
+          phone: (manager.phone || '').trim(),
+          ownerId: ownerIdToSet,
+          ownerName: manager.ownerName || user?.displayName || 'Property Owner',
+        });
+        if (res?.data?.uid) {
+          uid = res.data.uid;
+          provisionedServerSide = true;
+          emailStatus = res.data.emailStatus;
+          birdStatus = res.data.birdStatus;
+          emailError = res.data.emailError;
         }
       } catch (err: any) {
-        console.warn('Firebase secondary user creation for manager:', err?.message || err);
+        console.warn('provisionTeamMember for manager failed, falling back to client auth:', err?.message || err);
+        try {
+          const createdUid = await createSecondaryAuthUser(cleanEmail, pass);
+          if (createdUid) {
+            uid = createdUid;
+          }
+        } catch (fallbackErr: any) {
+          console.warn('Firebase secondary user creation for manager:', fallbackErr?.message || fallbackErr);
+        }
       }
     }
 
     const managerToSave: MobilePropertyManager = { ...manager, id: uid, ownerId: ownerIdToSet };
+    delete (managerToSave as any).tempPassword;
     const assignedPropId = managerToSave.propertyId || managerToSave.assignedProperties?.[0];
 
     if (isFirebaseConfigured) {
@@ -4031,13 +4089,15 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         status: 'active',
         createdAt: new Date().toISOString(),
       }), { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'userClaimRequests', managerToSave.id), {
-        uid: managerToSave.id,
-        role: 'manager',
-        ownerId: ownerIdToSet || null,
-        requestedAt: new Date().toISOString(),
-        processed: false,
-      }).catch(console.warn);
+      if (!provisionedServerSide) {
+        setDoc(doc(db, 'userClaimRequests', managerToSave.id), {
+          uid: managerToSave.id,
+          role: 'manager',
+          ownerId: ownerIdToSet || null,
+          requestedAt: new Date().toISOString(),
+          processed: false,
+        }).catch(console.warn);
+      }
       if (assignedPropId) {
         setDoc(doc(db, 'properties', assignedPropId), { assignedManagerId: managerToSave.id }, { merge: true }).catch(console.warn);
       }
@@ -4049,7 +4109,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         ? prev.properties.map((p) => (p.id === assignedPropId ? { ...p, assignedManagerId: managerToSave.id } : p))
         : prev.properties,
     }));
-    return uid;
+    return { uid, emailStatus, birdStatus, emailError };
   };
 
   const reassignManagerProperty = async (managerId: string, propertyId: string | null) => {
@@ -4178,7 +4238,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     }));
   };
 
-  const confirmOfflinePayment = (paymentId: string) => {
+  const confirmOfflinePayment = async (paymentId: string): Promise<boolean> => {
     const now = new Date().toISOString();
     const targetPayment = rawState.payments.find((p) => p.id === paymentId);
     const notif: MobileInAppNotification = {
@@ -4193,11 +4253,36 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     };
 
     if (isFirebaseConfigured && targetPayment?.id) {
-      setDoc(doc(db, 'payments', targetPayment.id), { status: 'paid' }, { merge: true }).catch(console.warn);
-      if (targetPayment.invoiceId) {
-        setDoc(doc(db, 'invoices', targetPayment.invoiceId), { status: 'paid', paidAt: now }, { merge: true }).catch(console.warn);
+      try {
+        await setDoc(
+          doc(db, 'payments', targetPayment.id),
+          {
+            status: 'paid',
+            audit: {
+              ...((targetPayment as any).audit || {}),
+              confirmedBy: user?.id || 'owner',
+              confirmedByName: user?.displayName || 'Property Owner',
+              confirmedAt: now,
+            },
+          },
+          { merge: true }
+        );
+        if (targetPayment.invoiceId) {
+          await setDoc(
+            doc(db, 'invoices', targetPayment.invoiceId),
+            { status: 'paid', paidAt: now },
+            { merge: true }
+          );
+        }
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      } catch (err: any) {
+        console.error('Could not persist payment confirmation:', err);
+        Alert.alert(
+          'Save Failed',
+          `Could not save the confirmation: ${err?.message || err}. Please try again.`
+        );
+        return false;
       }
-      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
     }
 
     setState((prev) => ({
@@ -4208,6 +4293,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       ),
       notifications: [notif, ...prev.notifications],
     }));
+    return true;
   };
 
   const rejectOfflinePayment = (paymentId: string, reason: string) => {

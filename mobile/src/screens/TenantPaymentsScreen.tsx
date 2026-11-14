@@ -12,7 +12,10 @@ import {
   Alert,
   RefreshControl,
   Linking,
+  Image,
 } from 'react-native';
+import { pickSingleImage } from '../lib/nativePicker';
+import { uploadOrCompressDocument } from '../lib/imageUploader';
 import { Ionicons, Feather, FontAwesome5 } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { Header } from '../components/Header';
@@ -106,6 +109,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
   const [targetInvoiceForPay, setTargetInvoiceForPay] = useState<MobileInvoice | null>(null);
   const [payMethod, setPayMethod] = useState<string>('razorpay');
   const [offlineUtr, setOfflineUtr] = useState('');
+  const [proofScreenshot, setProofScreenshot] = useState<{ uri: string; name: string; base64?: string } | null>(null);
   const [cashRecipientName, setCashRecipientName] = useState(activeAgreement?.ownerName || 'Property Landlord');
   const [cashHandoverDate, setCashHandoverDate] = useState(new Date().toISOString().split('T')[0]);
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
@@ -1224,6 +1228,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
     }
     setTargetInvoiceForPay(target);
     setOfflineUtr('');
+    setProofScreenshot(null);
     if (availableGateways.length > 0 && !availableGateways.some((g) => g.key === payMethod)) {
       setPayMethod(availableGateways[0].key);
     }
@@ -1361,13 +1366,11 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
   const handleConfirmPayment = async () => {
     if (!targetInvoiceForPay) return;
 
-    if (payMethod === 'bank' && !offlineUtr.trim()) {
-      Alert.alert('Reference Required', 'Please enter your bank UTR or IMPS reference number.');
-      return;
-    }
-
-    if (payMethod === 'upi' && !offlineUtr.trim()) {
-      Alert.alert('UPI Reference Required', 'Please complete the transfer in your UPI app and enter the 12-digit UTR / reference number.');
+    if ((payMethod === 'bank' || payMethod === 'upi') && !offlineUtr.trim() && !proofScreenshot) {
+      Alert.alert(
+        'Payment Proof Required',
+        'Please upload a payment screenshot or enter your UTR / reference number.'
+      );
       return;
     }
 
@@ -1450,12 +1453,45 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
     };
 
     // Helper: Finalize offline proof (Bank / Cash / Direct UPI)
-    const finalizeOfflinePayment = (resolvedMethodLabel: string) => {
+    const finalizeOfflinePayment = async (resolvedMethodLabel: string) => {
       const txnId = `TXN-${Date.now().toString().slice(-6)}`;
+      const ownerIdEff =
+        targetInvoiceForPay.ownerId || activeAgreement?.ownerId || resolvedOwnerId || '';
+      const resolvedRef =
+        payMethod === 'bank' || payMethod === 'upi'
+          ? offlineUtr.trim() || (proofScreenshot ? 'SCREENSHOT_PROOF' : txnId)
+          : txnId;
+
+      let proofData: string | undefined;
+      if (proofScreenshot) {
+        const rawInput = proofScreenshot.base64
+          ? proofScreenshot.base64.startsWith('data:')
+            ? proofScreenshot.base64
+            : `data:image/jpeg;base64,${proofScreenshot.base64}`
+          : proofScreenshot.uri;
+        try {
+          proofData = await uploadOrCompressDocument(
+            rawInput,
+            `invoices/${txnId}/${Date.now()}_proof.jpg`
+          );
+        } catch (uploadErr) {
+          console.warn('Proof screenshot upload failed:', uploadErr);
+          proofData = rawInput;
+        }
+        if (proofData && proofData.startsWith('data:') && proofData.length > 700_000) {
+          setIsSubmittingPayment(false);
+          Alert.alert(
+            'Upload Failed',
+            'Could not upload your payment screenshot. Please try a smaller image or enter a UTR reference.'
+          );
+          return;
+        }
+      }
+
       const paymentRecord: MobilePaymentTransaction = {
         id: txnId,
         invoiceId: targetInvoiceForPay.id,
-        ownerId: targetInvoiceForPay.ownerId || activeAgreement?.ownerId || '',
+        ownerId: ownerIdEff,
         tenant: targetInvoiceForPay.tenant || tenantName,
         tenantId: targetInvoiceForPay.tenantId || user.id,
         unit: targetInvoiceForPay.unit || activeUnit?.unitNumber || '',
@@ -1467,21 +1503,35 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
         method: resolvedMethodLabel,
         type: isDepositInv ? 'deposit' : 'rent',
         status: 'pending_confirmation',
-        referenceNo: (payMethod === 'bank' || payMethod === 'upi') ? offlineUtr.trim() : txnId,
-      };
+        referenceNo: resolvedRef,
+        ...(proofData ? { proofScreenshot: proofData } : {}),
+      } as any;
 
       recordPayment(paymentRecord);
       saveInvoice({
         ...targetInvoiceForPay,
+        ownerId: ownerIdEff,
         status: 'pending_confirmation' as any,
         paymentMethodUsed: payMethod === 'bank' ? 'NEFT/IMPS' : payMethod === 'upi' ? 'UPI' : 'CASH',
-      });
+        ...(proofData ? { proofScreenshot: proofData } : {}),
+      } as any);
+
+      const proofDesc =
+        payMethod === 'bank'
+          ? offlineUtr.trim()
+            ? `Bank UTR (${offlineUtr.trim()})`
+            : 'Bank transfer screenshot'
+          : payMethod === 'upi'
+            ? offlineUtr.trim()
+              ? `UPI Reference (${offlineUtr.trim()})`
+              : 'UPI payment screenshot'
+            : 'Cash handover voucher';
 
       logCommunication({
         type: 'PAYMENT_PROOF_SUBMITTED',
         category: 'rent',
         title: `Payment Proof Submitted: Unit ${targetInvoiceForPay.unit}`,
-        body: `${tenantName} submitted ${payMethod === 'bank' ? `Bank UTR (${offlineUtr.trim()})` : payMethod === 'upi' ? `UPI Reference (${offlineUtr.trim()})` : 'Cash handover voucher'} for Unit ${targetInvoiceForPay.unit}. Please review and verify.`,
+        body: `${tenantName} submitted ${proofDesc} for Unit ${targetInvoiceForPay.unit}. Please review and verify.`,
         channels: ['in_app', 'email'],
         recipientId: targetInvoiceForPay.ownerId || '',
         recipientName: 'Property Owner',
@@ -1500,10 +1550,11 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
       setIsSubmittingPayment(false);
       setShowPayModal(false);
       setTargetInvoiceForPay(null);
+      setProofScreenshot(null);
 
       Alert.alert(
         'Payment Submitted for Verification ⚡',
-        `${payMethod === 'cash' ? 'Cash handover voucher' : (payMethod === 'upi' ? 'UPI payment reference (' : 'Bank UTR transfer (') + offlineUtr.trim() + ')'} submitted. Landlord will verify and confirm.`
+        `${proofDesc} submitted. Landlord will verify and confirm.`
       );
     };
 
@@ -1511,19 +1562,19 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
 
     // 1. Offline Manual: Bank Wire
     if (payMethod === 'bank') {
-      finalizeOfflinePayment('NEFT/IMPS');
+      await finalizeOfflinePayment('NEFT/IMPS');
       return;
     }
 
     // 2. Offline Manual: Cash Handover
     if (payMethod === 'cash') {
-      finalizeOfflinePayment('Cash Handover');
+      await finalizeOfflinePayment('Cash Handover');
       return;
     }
 
     // 3. Direct UPI Transfer
     if (payMethod === 'upi') {
-      finalizeOfflinePayment('UPI Direct');
+      await finalizeOfflinePayment('UPI Direct');
       return;
     }
 
@@ -2830,7 +2881,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: 480 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <ScrollView style={{ maxHeight: '72%' }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={styles.modalBody}>
                 <Text style={[styles.modalInputLabel, { color: colors.ink }]}>Select Payment Gateway / Method</Text>
 
@@ -2931,12 +2982,37 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                             Payee: {ownerMethods.upi.merchantName}
                           </Text>
                         ) : null}
+                        {ownerMethods.upi?.qrImage ? (
+                          <View
+                            style={{
+                              alignItems: 'center',
+                              marginTop: 12,
+                              marginBottom: 4,
+                              padding: 12,
+                              backgroundColor: '#FFFFFF',
+                              borderRadius: 12,
+                              borderWidth: 1,
+                              borderColor: colors.line,
+                              alignSelf: 'center',
+                              maxWidth: '100%',
+                            }}
+                          >
+                            <Image
+                              source={{ uri: ownerMethods.upi.qrImage }}
+                              style={{ width: 200, height: 200, maxWidth: '100%' }}
+                              resizeMode="contain"
+                            />
+                            <Text style={{ fontSize: 11, color: '#64748B', marginTop: 6, fontWeight: '600' }}>
+                              Scan with GPay, PhonePe, or Paytm
+                            </Text>
+                          </View>
+                        ) : null}
                         <TouchableOpacity
                           style={{
                             marginTop: 10,
                             marginBottom: 8,
                             backgroundColor: '#059669',
-                            paddingVertical: 9,
+                            paddingVertical: 10,
                             paddingHorizontal: 14,
                             borderRadius: 8,
                             flexDirection: 'row',
@@ -2951,18 +3027,80 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                           }}
                         >
                           <Feather name="external-link" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
-                          <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>Open UPI App (GPay / PhonePe / Paytm)</Text>
+                          <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>Open UPI App</Text>
                         </TouchableOpacity>
                       </>
                     ) : (
                       <Text style={[styles.detailBoxSub, { color: colors.inkSoft }]}>Open GPay / PhonePe / Paytm and scan or enter the landlord's UPI ID.</Text>
                     )}
-                    <Text style={[styles.modalInputLabel, { color: colors.ink, marginTop: 10 }]}>Transaction UTR / UPI Reference Number</Text>
+
+                    {/* Upload Payment Screenshot (Recommended / Easy Proof) */}
+                    <Text style={[styles.modalInputLabel, { color: colors.ink, marginTop: 10 }]}>
+                      Upload Payment Screenshot
+                    </Text>
+                    {proofScreenshot ? (
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: colors.line,
+                          backgroundColor: colors.surface,
+                          marginBottom: 10,
+                        }}
+                      >
+                        <Image
+                          source={{ uri: proofScreenshot.uri }}
+                          style={{ width: 48, height: 48, borderRadius: 6 }}
+                          resizeMode="cover"
+                        />
+                        <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, fontWeight: '600', color: colors.navy }}>
+                          {proofScreenshot.name}
+                        </Text>
+                        <TouchableOpacity onPress={() => setProofScreenshot(null)}>
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#EF4444' }}>Remove</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <TouchableOpacity
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 8,
+                          paddingVertical: 11,
+                          paddingHorizontal: 12,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderStyle: 'dashed',
+                          borderColor: '#059669',
+                          backgroundColor: colors.surface,
+                          marginBottom: 10,
+                        }}
+                        onPress={async () => {
+                          const picked = await pickSingleImage({ quality: 0.75 });
+                          if (picked) setProofScreenshot(picked);
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Feather name="upload" size={15} color="#059669" />
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: '#059669' }}>
+                          Upload Screenshot
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    <Text style={[styles.modalInputLabel, { color: colors.ink }]}>
+                      UTR / Reference Number {proofScreenshot ? '(Optional)' : '(Optional if screenshot uploaded)'}
+                    </Text>
                     <TextInput
                       style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.line, color: colors.navy }]}
                       value={offlineUtr}
                       onChangeText={setOfflineUtr}
-                      placeholder="e.g. 12-digit UPI Ref / UTR"
+                      placeholder="e.g. 12-digit UPI Ref / UTR (optional)"
                       placeholderTextColor={colors.inkSoft}
                     />
                   </View>
@@ -2982,12 +3120,73 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                         </Text>
                       </>
                     ) : null}
-                    <Text style={[styles.modalInputLabel, { color: colors.ink }]}>Transaction UTR / Reference Number</Text>
+
+                    <Text style={[styles.modalInputLabel, { color: colors.ink, marginTop: 10 }]}>
+                      Upload Payment Screenshot
+                    </Text>
+                    {proofScreenshot ? (
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: colors.line,
+                          backgroundColor: colors.surface,
+                          marginBottom: 10,
+                        }}
+                      >
+                        <Image
+                          source={{ uri: proofScreenshot.uri }}
+                          style={{ width: 48, height: 48, borderRadius: 6 }}
+                          resizeMode="cover"
+                        />
+                        <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, fontWeight: '600', color: colors.navy }}>
+                          {proofScreenshot.name}
+                        </Text>
+                        <TouchableOpacity onPress={() => setProofScreenshot(null)}>
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#EF4444' }}>Remove</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <TouchableOpacity
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 8,
+                          paddingVertical: 11,
+                          paddingHorizontal: 12,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderStyle: 'dashed',
+                          borderColor: '#059669',
+                          backgroundColor: colors.surface,
+                          marginBottom: 10,
+                        }}
+                        onPress={async () => {
+                          const picked = await pickSingleImage({ quality: 0.75 });
+                          if (picked) setProofScreenshot(picked);
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Feather name="upload" size={15} color="#059669" />
+                        <Text style={{ fontSize: 13, fontWeight: '700', color: '#059669' }}>
+                          Upload Screenshot
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    <Text style={[styles.modalInputLabel, { color: colors.ink }]}>
+                      UTR / Reference Number {proofScreenshot ? '(Optional)' : '(Optional if screenshot uploaded)'}
+                    </Text>
                     <TextInput
                       style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.line, color: colors.navy }]}
                       value={offlineUtr}
                       onChangeText={setOfflineUtr}
-                      placeholder="e.g. UTR1234567890"
+                      placeholder="e.g. UTR1234567890 (optional)"
                       placeholderTextColor={colors.inkSoft}
                     />
                   </View>

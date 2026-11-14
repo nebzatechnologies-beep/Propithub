@@ -11,8 +11,12 @@ import {
   Alert,
   Modal,
   TextInput,
+  Share,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../lib/firebase';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAppData } from '../context/MobileAppDataContext';
@@ -74,7 +78,66 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
 
   // Credentials Generated Modal
   const [credentialsModalVisible, setCredentialsModalVisible] = useState(false);
-  const [newCreds, setNewCreds] = useState<{ name: string; email: string; pass: string; role: string } | null>(null);
+  const [newCreds, setNewCreds] = useState<{
+    name: string;
+    email: string;
+    pass: string;
+    role: string;
+    phone?: string;
+    emailStatus?: 'sent' | 'failed';
+    birdStatus?: string;
+    emailError?: string;
+  } | null>(null);
+  const [isResendingInvite, setIsResendingInvite] = useState(false);
+
+  const handleGenerateOrResendStaffInvite = async () => {
+    if (!newCreds) return;
+    let pwToUse = newCreds.pass;
+    if (!pwToUse) {
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let rand = '';
+      for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+      pwToUse = `Staff#${rand}`;
+    }
+    setIsResendingInvite(true);
+    try {
+      const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
+        name: newCreds.name,
+        email: newCreds.email.trim().toLowerCase(),
+        password: pwToUse,
+        role: 'staff',
+        phone: newCreds.phone || '',
+        ownerId,
+        ownerName: user?.displayName || 'Property Owner',
+      });
+      const emailStatus = res?.data?.emailStatus;
+      const birdStatus = res?.data?.birdStatus;
+      const emailError = res?.data?.emailError;
+      setNewCreds((c) => (c ? { ...c, pass: pwToUse, emailStatus, birdStatus, emailError } : c));
+      if (emailStatus === 'failed') {
+        Alert.alert(
+          'Password Ready (Email Failed)',
+          `Password is active, but the invite email could not be delivered${emailError ? ` (${emailError})` : ''}. Use Share Login Credentials below.`
+        );
+      } else {
+        Alert.alert('Invite Sent', `Credentials emailed to ${newCreds.email}.`);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Could not provision technician credentials.');
+    } finally {
+      setIsResendingInvite(false);
+    }
+  };
+
+  const handleShareStaffCredentials = async () => {
+    if (!newCreds || !newCreds.pass) return;
+    const msg = `🎉 Propithub Technician Account\n\nHello ${newCreds.name},\nRole: ${newCreds.role}\nEmail: ${newCreds.email}\nTemporary Password: ${newCreds.pass}\n\nPlease log in to the Propithub Mobile App.`;
+    try {
+      await Share.share({ message: msg });
+    } catch {
+      Alert.alert('Credentials Ready', 'Share sheet was cancelled.');
+    }
+  };
 
   const openAssignModal = (tck: MobileTicket) => {
     setTicketToAssign(tck);
@@ -118,7 +181,7 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
     Alert.alert('Work Order Resolved', `Ticket #${ticketId} marked as completed.`);
   };
 
-  const handleOnboardTech = () => {
+  const handleOnboardTech = async () => {
     if (!newTechName.trim() || !newTechPhone.trim()) {
       Alert.alert('Missing Info', 'Please enter technician name and phone number.');
       return;
@@ -141,15 +204,25 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
       ownerId,
     };
 
-    addStaff(newStaff, genPass);
+    const provRes = await addStaff(newStaff, genPass);
     setOnboardModalVisible(false);
     setNewCreds({
       name: newStaff.name,
       email: genEmail,
       pass: genPass,
       role: resolvedRole,
+      phone: newTechPhone.trim(),
+      emailStatus: provRes?.emailStatus,
+      birdStatus: provRes?.birdStatus,
+      emailError: provRes?.emailError,
     });
     setCredentialsModalVisible(true);
+    if (provRes?.emailStatus === 'failed') {
+      Alert.alert(
+        'Technician Added (Email Failed)',
+        `Account is active, but the invite email could not be delivered${provRes.emailError ? ` (${provRes.emailError})` : ''}. Share the credentials shown.`
+      );
+    }
 
     setNewTechName('');
     setNewTechPhone('');
@@ -346,6 +419,31 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
                   <View style={[styles.techFooter, { borderTopColor: colors.line }]}>
                     <Text style={[styles.techStats, { color: colors.inkSoft }]}>Active Work: {st.activeTickets ?? 0} jobs</Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <TouchableOpacity
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 4,
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
+                          borderRadius: 6,
+                          backgroundColor: isDark ? 'rgba(59, 130, 246, 0.15)' : '#EFF6FF',
+                        }}
+                        onPress={() => {
+                          setNewCreds({
+                            name: st.name || 'Technician',
+                            email: st.email || '',
+                            pass: (st as any).tempPassword || '',
+                            role: st.role || 'General Maintenance',
+                            phone: st.phone || '',
+                          });
+                          setCredentialsModalVisible(true);
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Feather name="key" size={12} color="#2563EB" />
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#2563EB' }}>Credentials</Text>
+                      </TouchableOpacity>
                       <View style={styles.onlineBadge}>
                         <Text style={styles.onlineBadgeText}>{(st.status || 'Active').toUpperCase()}</Text>
                       </View>
@@ -538,9 +636,9 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
       {/* CREDENTIALS CONFIRMATION MODAL */}
       <Modal visible={credentialsModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { maxHeight: 360, backgroundColor: colors.surface }]}>
+          <View style={[styles.modalCard, { maxHeight: 460, backgroundColor: colors.surface }]}>
             <View style={styles.modalTop}>
-              <Text style={[styles.modalTitle, { color: colors.navy }]}>Technician Provisioned ✓</Text>
+              <Text style={[styles.modalTitle, { color: colors.navy }]}>Technician Credentials</Text>
               <TouchableOpacity onPress={() => setCredentialsModalVisible(false)}>
                 <Ionicons name="close" size={22} color={colors.inkSoft} />
               </TouchableOpacity>
@@ -552,23 +650,48 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
 
               <View style={styles.credRow}>
                 <Text style={styles.credKey}>Email / Login:</Text>
-                <Text style={styles.credVal}>{newCreds?.email}</Text>
+                <Text style={styles.credVal}>{newCreds?.email || 'Not set'}</Text>
               </View>
               <View style={styles.credRow}>
                 <Text style={styles.credKey}>Password:</Text>
-                <Text style={styles.credVal}>{newCreds?.pass}</Text>
+                <Text style={styles.credVal}>{newCreds?.pass || 'Not stored (for security)'}</Text>
               </View>
             </View>
 
             <TouchableOpacity
-              style={styles.submitBtnGreen}
-              onPress={() => {
-                setCredentialsModalVisible(false);
-                Alert.alert('Credentials Ready', 'Login credentials copied. Share them directly with the technician.');
-              }}
+              style={[
+                styles.submitBtnGreen,
+                { backgroundColor: '#1E293B', opacity: isResendingInvite ? 0.6 : 1 },
+              ]}
+              onPress={handleGenerateOrResendStaffInvite}
+              disabled={isResendingInvite}
               activeOpacity={0.85}
             >
-              <Text style={styles.submitBtnText}>Done</Text>
+              {isResendingInvite ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.submitBtnText}>
+                  {newCreds?.pass ? 'Resend Invite Email' : 'Generate New Password & Email'}
+                </Text>
+              )}
+            </TouchableOpacity>
+
+            {Boolean(newCreds?.pass) && (
+              <TouchableOpacity
+                style={styles.submitBtnGreen}
+                onPress={handleShareStaffCredentials}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.submitBtnText}>Share Login Credentials</Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity
+              style={[styles.submitBtnGreen, { backgroundColor: colors.surfaceSunken }]}
+              onPress={() => setCredentialsModalVisible(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.submitBtnText, { color: colors.navy }]}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>

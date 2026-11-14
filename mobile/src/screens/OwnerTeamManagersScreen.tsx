@@ -14,6 +14,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../lib/firebase';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { ScreenContainer } from '../components/ScreenContainer';
@@ -77,7 +79,12 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
     email: string;
     pass: string;
     propertyName?: string;
+    phone?: string;
+    emailStatus?: 'sent' | 'failed';
+    birdStatus?: string;
+    emailError?: string;
   } | null>(null);
+  const [isResendingInvite, setIsResendingInvite] = useState(false);
 
   // Assign / Unassign Property Modal State
   const [reassignModalManager, setReassignModalManager] = useState<MobilePropertyManager | null>(null);
@@ -222,7 +229,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
 
     setIsSavingManager(true);
     try {
-      await saveManager(newManager, cleanPass);
+      const provRes = await saveManager(newManager, cleanPass);
       setShowAddModal(false);
       setName('');
       setEmail('');
@@ -237,7 +244,17 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
         email: cleanEmail,
         pass: cleanPass,
         propertyName: assignedProp?.name || 'All Properties',
+        phone: cleanPhone,
+        emailStatus: provRes?.emailStatus,
+        birdStatus: provRes?.birdStatus,
+        emailError: provRes?.emailError,
       });
+      if (provRes?.emailStatus === 'failed') {
+        Alert.alert(
+          'Manager Added (Email Failed)',
+          `Account is active, but the invite email could not be delivered${provRes.emailError ? ` (${provRes.emailError})` : ''}. Share the credentials shown.`
+        );
+      }
     } catch (err: any) {
       Alert.alert(
         'Provisioning Failed',
@@ -249,12 +266,53 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
   };
 
   const handleShareCredentials = async () => {
-    if (!credentialsModal) return;
+    if (!credentialsModal || !credentialsModal.pass) return;
     const msg = `🎉 Propithub Property Manager Account\n\nHello ${credentialsModal.name},\nYour property management account has been created.\n\nEmail: ${credentialsModal.email}\nTemporary Password: ${credentialsModal.pass}\nAssigned Portfolio: ${credentialsModal.propertyName || 'Portfolio'}\n\nPlease download and log in to the Propithub Mobile App.`;
     try {
       await Share.share({ message: msg });
     } catch {
-      Alert.alert('Credentials Shared', 'Login credentials copied to clipboard.');
+      Alert.alert('Credentials Ready', 'Share sheet was cancelled.');
+    }
+  };
+
+  const handleGenerateOrResendManagerInvite = async () => {
+    if (!credentialsModal) return;
+    let pwToUse = credentialsModal.pass;
+    if (!pwToUse) {
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let rand = '';
+      for (let i = 0; i < 6; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+      pwToUse = `Manager#${rand}`;
+    }
+    setIsResendingInvite(true);
+    try {
+      const res: any = await httpsCallable<any, any>(functions, 'provisionTeamMember')({
+        name: credentialsModal.name,
+        email: credentialsModal.email.trim().toLowerCase(),
+        password: pwToUse,
+        role: 'manager',
+        phone: credentialsModal.phone || '',
+        ownerId,
+        ownerName: user?.displayName || 'Property Owner',
+      });
+      const emailStatus = res?.data?.emailStatus;
+      const birdStatus = res?.data?.birdStatus;
+      const emailError = res?.data?.emailError;
+      setCredentialsModal((m) =>
+        m ? { ...m, pass: pwToUse, emailStatus, birdStatus, emailError } : m
+      );
+      if (emailStatus === 'failed') {
+        Alert.alert(
+          'Password Ready (Email Failed)',
+          `Password is active, but the invite email could not be delivered${emailError ? ` (${emailError})` : ''}. Use Share Login Credentials below.`
+        );
+      } else {
+        Alert.alert('Invite Sent', `Credentials emailed to ${credentialsModal.email}.`);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Could not provision manager credentials.');
+    } finally {
+      setIsResendingInvite(false);
     }
   };
 
@@ -528,6 +586,24 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                       </TouchableOpacity>
 
                       <TouchableOpacity
+                        style={styles.reassignBtn}
+                        onPress={() =>
+                          setCredentialsModal({
+                            visible: true,
+                            name: manager.name,
+                            email: manager.email,
+                            pass: manager.tempPassword || '',
+                            propertyName: assignedProp?.name || 'All Properties',
+                            phone: manager.phone || '',
+                          })
+                        }
+                        activeOpacity={0.8}
+                      >
+                        <Feather name="key" size={12} color="#2563EB" style={{ marginRight: 4 }} />
+                        <Text style={styles.reassignBtnText}>Credentials</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
                         style={styles.payBtn}
                         onPress={() => {
                           setPayingManager(manager);
@@ -765,7 +841,9 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
               </View>
               <View style={styles.credsRow}>
                 <Text style={styles.credsKey}>Password:</Text>
-                <Text style={styles.credsValBold}>{credentialsModal?.pass}</Text>
+                <Text style={styles.credsValBold}>
+                  {credentialsModal?.pass || 'Not stored (for security)'}
+                </Text>
               </View>
               <View style={styles.credsRow}>
                 <Text style={styles.credsKey}>Portfolio:</Text>
@@ -774,13 +852,36 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
             </View>
 
             <TouchableOpacity
-              style={styles.shareCredsBtn}
-              onPress={handleShareCredentials}
+              style={[
+                styles.shareCredsBtn,
+                { backgroundColor: '#1E293B', marginBottom: 8, opacity: isResendingInvite ? 0.6 : 1 },
+              ]}
+              onPress={handleGenerateOrResendManagerInvite}
+              disabled={isResendingInvite}
               activeOpacity={0.88}
             >
-              <Feather name="share-2" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.shareCredsBtnText}>Share Login Credentials</Text>
+              {isResendingInvite ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Feather name="mail" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.shareCredsBtnText}>
+                    {credentialsModal?.pass ? 'Resend Invite Email' : 'Generate New Password & Email'}
+                  </Text>
+                </>
+              )}
             </TouchableOpacity>
+
+            {Boolean(credentialsModal?.pass) && (
+              <TouchableOpacity
+                style={styles.shareCredsBtn}
+                onPress={handleShareCredentials}
+                activeOpacity={0.88}
+              >
+                <Feather name="share-2" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={styles.shareCredsBtnText}>Share Login Credentials</Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity
               style={styles.doneBtn}
