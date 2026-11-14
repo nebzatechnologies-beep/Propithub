@@ -1340,7 +1340,9 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
             currency: propCurrency,
             referenceNo: offlineDepositRef || 'OFFLINE-DEP',
             notes: `Security deposit collected offline as confirmed during invitation dispatch (${newReq.id}).`,
-          };
+            // Recorded before the tenant has accepted: the server must not announce a "paid" deposit yet.
+            suppressNotify: true,
+          } as MobilePaymentTransaction;
           savePayment(depTx);
         }
 
