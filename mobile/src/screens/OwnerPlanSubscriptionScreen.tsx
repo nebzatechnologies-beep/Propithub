@@ -315,7 +315,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
     if (Platform.OS === 'ios') {
       Alert.alert(
         'Enterprise Plan Management',
-        'Owner subscription plans are provisioned at the organization account level. Please visit your Propithub Web Dashboard at propithub.app to manage billing and invoices.',
+        'Subscription plans cannot be changed in the iOS app. Your plan is managed at the organization account level.',
         [{ text: 'OK', onPress: () => setIsChangeModalOpen(false) }]
       );
       return;
@@ -614,7 +614,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
     if (Platform.OS === 'ios') {
       Alert.alert(
         'Enterprise Plan Management',
-        'Spotlight Pass purchases and billing add-ons are managed at the organization account level. Please visit your Propithub Web Dashboard at propithub.app to purchase boosts.',
+        'Add-ons cannot be purchased in the iOS app. They are managed at the organization account level.',
         [{ text: 'OK', onPress: () => setBuyingBoostPlan(null) }]
       );
       return;
@@ -873,7 +873,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
     if (Platform.OS === 'ios') {
       Alert.alert(
         'Enterprise Plan Management',
-        'Owner billing methods are managed centrally via your Propithub Web Dashboard at propithub.app.',
+        'Billing methods cannot be changed in the iOS app. They are managed at the organization account level.',
         [{ text: 'OK', onPress: () => setIsChangePaymentMethodOpen(false) }]
       );
       return;
@@ -1804,7 +1804,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                     <Text style={{ fontSize: 13, fontWeight: '700', color: '#0369A1' }}>Multiplatform Organization Plan</Text>
                   </View>
                   <Text style={{ fontSize: 11.5, color: '#0C4A6E', lineHeight: 17 }}>
-                    Propithub Owner subscriptions are managed centrally via your enterprise web portal at propithub.app.
+                    Owner subscriptions are managed at the organization account level.
                   </Text>
                 </View>
               ) : (
@@ -2057,7 +2057,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                     <Text style={{ fontSize: 13, fontWeight: '700', color: '#0369A1' }}>Enterprise Billing Portal</Text>
                   </View>
                   <Text style={{ fontSize: 11.5, color: isDark ? '#CBD5E1' : '#0C4A6E', lineHeight: 17 }}>
-                    Owner billing methods and recurring mandates are managed centrally via your web portal at propithub.app.
+                    Owner billing methods are managed at the organization account level.
                   </Text>
                 </View>
               ) : (
@@ -2398,7 +2398,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                   <Text style={{ fontSize: 13, fontWeight: '700', color: '#0369A1' }}>Organization Add-On Management</Text>
                 </View>
                 <Text style={{ fontSize: 11.5, color: isDark ? '#CBD5E1' : '#0C4A6E', lineHeight: 17 }}>
-                  Spotlight Pass purchases are managed via your Propithub Web Dashboard at propithub.app.
+                  Spotlight Pass purchases are not available in this app.
                 </Text>
               </View>
             ) : (

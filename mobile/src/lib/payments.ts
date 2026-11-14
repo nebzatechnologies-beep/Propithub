@@ -108,7 +108,7 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
       name: params.name || 'Propithub Real Estate',
       description: params.description || `Payment Ref: ${params.paymentRecordId}`,
       order_id: serverOrderId || undefined,
-      image: 'https://propithub.app/icon.png',
+      image: 'https://propithub.web.app/logo192.png',
       handler: async (response: any) => {
         // Perform server signature verification if order was created via cloud function
         if (serverOrderId && response.razorpay_signature && isFirebaseConfigured) {

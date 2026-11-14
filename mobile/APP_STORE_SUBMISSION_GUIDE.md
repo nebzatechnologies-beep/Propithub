@@ -41,7 +41,7 @@ This document contains official test credentials and compliance notes to be past
 
 2. **Guideline 3.1.1 — Business / Enterprise SaaS Multiplatform Subscriptions**:
    - Propithub is an enterprise B2B property management tool.
-   - For iOS devices, credit card input for organizational SaaS plans is directed to the multiplatform organization dashboard (`propithub.app`), fully respecting Apple StoreKit digital services boundaries while enabling multiplatform enterprise subscriptions.
+   - The iOS app does not sell or change subscriptions and contains no link or call to action to purchase elsewhere. Owner plans are provisioned at the organization account level outside the app. Rent payments made by tenants are for real-world rental housing, not digital goods.
 
 3. **Guideline 5.1.1(v) — Account Deletion**:
    - In-app self-service account deletion is accessible under **Account Settings > Security & Privacy > Request Permanent Account Deletion**.
