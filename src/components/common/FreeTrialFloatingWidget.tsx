@@ -115,7 +115,7 @@ export const FreeTrialFloatingWidget: React.FC = () => {
             position: 'absolute',
             ...(isNearTop ? { top: '48px' } : { bottom: '48px' }),
             ...(isNearLeft ? { left: 0 } : { right: 0 }),
-            width: '320px',
+            width: 'min(320px, calc(100vw - 24px))',
             backgroundColor: 'var(--surface)',
             color: 'var(--ink)',
             borderRadius: '16px',

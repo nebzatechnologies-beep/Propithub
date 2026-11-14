@@ -24,6 +24,7 @@ import {
   QrCode,
   Receipt,
   ShieldCheck,
+  Upload,
   X,
 } from 'lucide-react';
 import { Agreement, Invoice, PaymentTransaction, TenantRecord, DepositSettlement } from '../../types';
@@ -4973,22 +4974,45 @@ export const PaymentsHistoryPage: React.FC = () => {
                                 {m.upi?.merchantName ? ` (${m.upi.merchantName})` : ''}
                               </p>
                               {m.upi?.qrImage ? (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '6px' }}>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    textAlign: 'center',
+                                    gap: '10px',
+                                    marginTop: '10px',
+                                    padding: '16px',
+                                    background: 'var(--surface)',
+                                    borderRadius: '10px',
+                                    border: '1px solid var(--line)',
+                                  }}
+                                >
                                   <img
                                     src={m.upi.qrImage}
                                     alt="Landlord UPI QR"
-                                    style={{ width: '120px', height: '120px', objectFit: 'contain', border: '1px solid var(--line)', borderRadius: '6px', background: 'var(--surface)', padding: '4px' }}
+                                    style={{
+                                      width: '220px',
+                                      height: '220px',
+                                      maxWidth: '100%',
+                                      objectFit: 'contain',
+                                      border: '1px solid var(--line)',
+                                      borderRadius: '12px',
+                                      background: '#FFFFFF',
+                                      padding: '10px',
+                                      boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+                                    }}
                                   />
-                                  <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600, color: 'var(--ink)', marginBottom: '4px' }}>
-                                      <QrCode size={14} /> Landlord's Official Payment QR
+                                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)', maxWidth: '300px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px', fontWeight: 700, color: 'var(--ink)', marginBottom: '3px' }}>
+                                      <QrCode size={15} /> Landlord's Official Payment QR
                                     </div>
                                     Scan with any UPI app (Google Pay, PhonePe, Paytm) to transfer directly to the landlord's account.
                                   </div>
                                 </div>
                               ) : upiPayLink ? (
                                 <p className="hint" style={{ margin: '6px 0 0 0', fontSize: '11.5px', color: 'var(--ink-soft)' }}>
-                                  Open your UPI app and transfer exactly {effectiveCurrency}{effectiveAmount.toLocaleString('en-IN')} to <code>{m.upi.upiId}</code>, then submit the 12-digit UTR below.
+                                  Open your UPI app and transfer exactly {effectiveCurrency}{effectiveAmount.toLocaleString('en-IN')} to <code>{m.upi.upiId}</code>, then upload your payment screenshot or enter the UTR below.
                                 </p>
                               ) : null}
                             </div>
@@ -5060,33 +5084,20 @@ export const PaymentsHistoryPage: React.FC = () => {
                       )}
                     </div>
 
-                    {/* Offline Remittance Proof & UTR Inputs (For UPI / Bank only) */}
+                    {/* Offline Remittance Proof & Optional UTR (For UPI / Bank only) */}
                     {(selectedMethod === 'upi' || selectedMethod === 'bank') && (
-                      <div style={{ marginTop: '14px', padding: '12px 14px', background: '#FFFDF5', border: '1px solid #FEF08A', borderRadius: 'var(--radius)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                          <AlertCircle size={14} color="#CA8A04" />
-                          <b style={{ fontSize: '12.5px', color: '#854D0E' }}>Bank / UPI Remittance Reference Required</b>
+                      <div style={{ marginTop: '14px', padding: '14px 16px', background: 'var(--surface-sunken, #F8FAFC)', border: '1px solid var(--line)', borderRadius: 'var(--radius)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                          <Upload size={15} color="var(--primary)" />
+                          <b style={{ fontSize: '13px', color: 'var(--ink)' }}>Submit Payment Proof</b>
                         </div>
-                        <p className="hint" style={{ fontSize: '11.5px', marginBottom: '10px', color: '#713F12' }}>
-                          This submission marks the payment as <b>Pending Verification</b> until confirmed by your landlord.
+                        <p className="hint" style={{ fontSize: '11.5px', marginBottom: '12px', color: 'var(--ink-soft)' }}>
+                          Upload a screenshot of your payment (or enter the transaction reference). This marks the invoice as <b>Pending Verification</b> until confirmed by your landlord.
                         </p>
 
-                        <div className="field" style={{ marginBottom: '10px' }}>
+                        <div className="field" style={{ marginBottom: '12px' }}>
                           <label style={{ fontSize: '12px', fontWeight: 600 }}>
-                            Transaction Reference / 12-digit UTR <span style={{ color: 'var(--danger)' }}>*</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={offlineRef}
-                            onChange={(e) => setOfflineRef(e.target.value)}
-                            placeholder="e.g. 12-digit UPI UTR or IMPS Ref"
-                            required
-                          />
-                        </div>
-
-                        <div className="field" style={{ marginBottom: '10px' }}>
-                          <label style={{ fontSize: '12px', fontWeight: 600 }}>
-                            Upload Transfer Screenshot / Receipt (Optional)
+                            Upload Payment Screenshot / Receipt
                           </label>
                           <input
                             type="file"
@@ -5124,7 +5135,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                               <img
                                 src={offlineProofUrl}
                                 alt="Proof Preview"
-                                style={{ width: '52px', height: '52px', objectFit: 'cover', borderRadius: '4px', border: '1px solid var(--line)' }}
+                                style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '6px', border: '1px solid var(--line)' }}
                               />
                               <button
                                 type="button"
@@ -5138,8 +5149,20 @@ export const PaymentsHistoryPage: React.FC = () => {
                           )}
                         </div>
 
+                        <div className="field" style={{ marginBottom: '10px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 600 }}>
+                            Transaction Reference / UTR <span style={{ color: 'var(--ink-soft)', fontWeight: 400 }}>(Optional)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={offlineRef}
+                            onChange={(e) => setOfflineRef(e.target.value)}
+                            placeholder="e.g. 12-digit UPI UTR or IMPS Ref (optional)"
+                          />
+                        </div>
+
                         <div className="field" style={{ margin: 0 }}>
-                          <label style={{ fontSize: '12px', fontWeight: 600 }}>Payment Remarks / Note</label>
+                          <label style={{ fontSize: '12px', fontWeight: 600 }}>Payment Remarks / Note <span style={{ color: 'var(--ink-soft)', fontWeight: 400 }}>(Optional)</span></label>
                           <input
                             type="text"
                             value={offlineNotes}
@@ -5186,7 +5209,7 @@ export const PaymentsHistoryPage: React.FC = () => {
                     isProcessing ||
                     availableGateways.length === 0 ||
                     (selectedMethod === 'cash' && !offlineRef.trim()) ||
-                    ((selectedMethod === 'upi' || selectedMethod === 'bank') && !offlineRef.trim()) ||
+                    ((selectedMethod === 'upi' || selectedMethod === 'bank') && !offlineRef.trim() && !offlineProofUrl) ||
                     !hasMethodCredentials(selectedMethod)
                   }
                 >
@@ -5350,7 +5373,12 @@ export const PaymentsHistoryPage: React.FC = () => {
                 <button
                   type="button"
                   className="btn secondary small"
-                  onClick={() => downloadSingleInvoicePDF(selectedInvoiceForReceipt)}
+                  onClick={() => {
+                    const os = state.ownerSettings[selectedInvoiceForReceipt.ownerId];
+                    const isDep = selectedInvoiceForReceipt.invoiceType === 'deposit' || selectedInvoiceForReceipt.type === 'deposit';
+                    const tmpl = isDep ? (os?.depositTemplate || os?.invoiceTemplate) : os?.invoiceTemplate;
+                    downloadSingleInvoicePDF(selectedInvoiceForReceipt, tmpl);
+                  }}
                   style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                   <Download size={14} /> Download PDF

@@ -123,7 +123,7 @@ export const GlobalSearch: React.FC = () => {
         { id: 'page-owner-finances', category: 'Pages', title: 'Transactions & Rent Invoices', subtitle: 'Rent collections, payment ledgers, and payout records', link: '/owner/payments', icon: <CreditCard size={16} /> },
         { id: 'page-owner-announcements', category: 'Pages', title: 'Announcements & Notices', subtitle: 'Post notices to all properties, specific buildings, or residents', link: '/owner/messages', icon: <Radio size={16} /> },
         { id: 'page-owner-maintenance', category: 'Pages', title: 'Maintenance & Tickets', subtitle: 'Repair requests, staff assignment, and work order dispatch', link: '/owner/maintenance', icon: <Wrench size={16} /> },
-        { id: 'page-owner-team', category: 'Pages', title: 'Staff & Team Directory', subtitle: 'Property managers and maintenance staff assigned to portfolio', link: '/owner/team', icon: <UserCheck size={16} /> },
+        { id: 'page-owner-team', category: 'Pages', title: 'Managers', subtitle: 'Property managers and maintenance staff assigned to portfolio', link: '/owner/team', icon: <UserCheck size={16} /> },
         { id: 'page-owner-helpdesk', category: 'Pages', title: 'Platform Helpdesk', subtitle: 'Submit priority support tickets to Propithub engineering', link: '/owner/helpdesk', icon: <HelpCircle size={16} /> },
         { id: 'page-owner-plan', category: 'Pages', title: 'Subscription Plan', subtitle: 'Portfolio tier package, unit quotas, and billing status', link: '/owner/plan', icon: <Sparkles size={16} /> },
         { id: 'page-owner-reputation', category: 'Pages', title: 'Reviews & Ratings', subtitle: 'Tenant feedback ratings and verified reviews', link: '/owner/reviews', icon: <Award size={16} /> },

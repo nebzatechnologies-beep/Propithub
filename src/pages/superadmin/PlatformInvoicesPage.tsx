@@ -17,6 +17,7 @@ import {
   Percent,
 } from 'lucide-react';
 import { PlatformInvoiceStudioModal } from '../../components/invoices/PlatformInvoiceStudioModal';
+import { PlatformInvoiceDocument } from '../../components/invoices/PlatformInvoiceDocument';
 import { downloadBulkPlatformInvoicesPDF, exportPlatformInvoicesCSV, downloadSinglePlatformInvoicePDF } from '../../lib/pdf';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
@@ -294,10 +295,15 @@ export const PlatformInvoicesPage: React.FC = () => {
       issueDate: getTodayDateString(),
       dueDate: formDueDate,
       notes: formNotes || 'Platform SaaS subscription',
+      issuerName: tmplIssuerName || state.platformInvoiceTemplate?.issuerName,
+      issuerAddress: tmplIssuerAddress || state.platformInvoiceTemplate?.issuerAddress,
+      issuerEmail: tmplIssuerEmail || state.platformInvoiceTemplate?.issuerEmail,
+      issuerPhone: tmplIssuerPhone || state.platformInvoiceTemplate?.issuerPhone,
       issuerTaxNo: tmplIssuerTaxNo || state.platformInvoiceTemplate?.issuerTaxNo,
       termsAndConditions: tmplTerms || state.platformInvoiceTemplate?.termsAndConditions || 'Standard platform subscription terms apply.',
       includeTerms: tmplIncludeTerms,
       signatoryName: tmplSignatory || state.platformInvoiceTemplate?.signatoryName || 'Platform Administrator',
+      signatoryRole: tmplSignatoryRole || state.platformInvoiceTemplate?.signatoryRole || 'Authorized Officer',
     };
 
     await savePlatformInvoice(newInv);
@@ -338,10 +344,15 @@ export const PlatformInvoicesPage: React.FC = () => {
       issueDate: getTodayDateString(),
       dueDate: formDueDate,
       notes: formNotes || 'Platform SaaS subscription',
+      issuerName: tmplIssuerName || state.platformInvoiceTemplate?.issuerName,
+      issuerAddress: tmplIssuerAddress || state.platformInvoiceTemplate?.issuerAddress,
+      issuerEmail: tmplIssuerEmail || state.platformInvoiceTemplate?.issuerEmail,
+      issuerPhone: tmplIssuerPhone || state.platformInvoiceTemplate?.issuerPhone,
       issuerTaxNo: tmplIssuerTaxNo || state.platformInvoiceTemplate?.issuerTaxNo,
       termsAndConditions: tmplTerms || state.platformInvoiceTemplate?.termsAndConditions || 'Standard platform subscription terms apply.',
       includeTerms: tmplIncludeTerms,
       signatoryName: tmplSignatory || state.platformInvoiceTemplate?.signatoryName || 'Platform Administrator',
+      signatoryRole: tmplSignatoryRole || state.platformInvoiceTemplate?.signatoryRole || 'Authorized Officer',
     };
     setStudioInvoice(draftInv);
     setStudioMode('preview');
@@ -673,7 +684,8 @@ export const PlatformInvoicesPage: React.FC = () => {
 
             <div className="panel-body" style={{ padding: 0 }}>
               <div className="desktop-table-container">
-                <table className="table" style={{ margin: 0, width: '100%' }}>
+                <div className="table-wrap">
+                  <table className="table" style={{ margin: 0, width: '100%' }}>
                   <thead>
                     <tr>
                       <th style={{ width: '110px' }}>Invoice</th>
@@ -800,6 +812,7 @@ export const PlatformInvoicesPage: React.FC = () => {
                     )}
                   </tbody>
                 </table>
+                </div>
               </div>
             </div>
           </div>
@@ -1082,220 +1095,38 @@ export const PlatformInvoicesPage: React.FC = () => {
                   <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Sample subscription billing</span>
                 </div>
 
-                <div
-                  className="invoice-sheet invoice-template-preview-sheet"
-                  style={{
-                    background: '#FFFFFF',
-                    border: '1px solid #E5E7EB',
-                    borderRadius: '8px',
-                    padding: '28px 30px',
-                    boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
-                    fontSize: '12.5px',
-                    color: '#111827',
-                    fontFamily: "'Inter', sans-serif",
-                  }}
-                >
-                  {/* Header */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px', marginBottom: '18px' }}>
-                    <div>
-                      <div style={{ fontSize: '16px', fontWeight: 800, color: '#111827' }}>
-                        {tmplIssuerName || 'Propithub SaaS Technologies Inc.'}
-                      </div>
-                      <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '2px', lineHeight: '1.4' }}>
-                        {tmplIssuerAddress ? <>{tmplIssuerAddress}<br /></> : null}
-                        {tmplIssuerEmail ? <>{tmplIssuerEmail}<br /></> : null}
-                        {tmplIssuerPhone ? <>{tmplIssuerPhone}<br /></> : null}
-                        {tmplIssuerTaxNo ? <div style={{ color: '#059669', fontWeight: 600 }}>{tmplIssuerTaxNo}</div> : null}
-                        {!tmplIssuerAddress && !tmplIssuerEmail && !tmplIssuerPhone && !tmplIssuerTaxNo && 'Your address, email & phone'}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '15px', fontWeight: 800, color: '#111827' }}>TAX INVOICE</div>
-                      <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '2px' }}>
-                        PLATFORM SUBSCRIPTION RECEIPT<br />
-                        No. PI-2026-0042<br />
-                        {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
-                      </div>
-                      <div style={{ marginTop: '6px' }}>
-                        <span className="badge green" style={{ fontSize: '10.5px', textTransform: 'uppercase' }}>
-                          PAID & RECONCILED
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Two-Column Bill To & Timeline */}
-                  {(() => {
-                    const samplePrice = 79;
-                    const sampleTax = tmplTaxPercent > 0 ? Math.round((samplePrice * tmplTaxPercent) / 100) : 0;
-                    const sampleTotal = samplePrice + sampleTax;
-
-                    return (
-                      <>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '18px', fontSize: '12px' }}>
-                          <div>
-                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
-                              BILL TO (SUBSCRIBER)
-                            </div>
-                            <b style={{ color: '#111827' }}>Apex Estates Ltd · Owner Account</b>
-                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
-                              Plan: Growth Tier (USD 79/mo)
-                            </div>
-                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
-                              Phone: +1 415-555-0199 · Email: owner@apexestates.com
-                            </div>
-                          </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
-                              INVOICE SCHEDULE & TIMELINE
-                            </div>
-                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
-                              Issue Date: {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
-                            </div>
-                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
-                              Payment Due Date: {new Date(Date.now() + 7 * 86400000).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
-                            </div>
-                            <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
-                              Billing Cycle: Monthly Platform Cloud Plan
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Line Items Table */}
-                        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
-                          <thead>
-                            <tr style={{ borderBottom: '1px solid #E5E7EB', color: '#9CA3AF', fontSize: '10px', textTransform: 'uppercase' }}>
-                              <th style={{ textAlign: 'left', padding: '6px 0', fontWeight: 700 }}>Description / Item Details</th>
-                              <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 700 }}>Amount (USD)</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-                              <td style={{ padding: '8px 0', fontWeight: 600, color: '#111827' }}>
-                                Growth Plan Cloud License — Monthly SaaS subscription
-                              </td>
-                              <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827' }}>
-                                ${samplePrice.toFixed(2)}
-                              </td>
-                            </tr>
-                            {tmplTaxPercent > 0 && (
-                              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-                                <td style={{ padding: '8px 0', color: '#6B7280' }}>
-                                  {tmplTaxLabel || 'Tax'} {tmplTaxPercent}%
-                                </td>
-                                <td style={{ padding: '8px 0', textAlign: 'right', color: '#6B7280' }}>
-                                  ${sampleTax.toFixed(2)}
-                                </td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-
-                        {/* Totals */}
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '18px' }}>
-                          <div style={{ width: '220px', fontSize: '12px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', color: '#6B7280' }}>
-                              <span>Subtotal:</span>
-                              <span>${samplePrice.toFixed(2)}</span>
-                            </div>
-                            {tmplTaxPercent > 0 && (
-                              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', color: '#6B7280' }}>
-                                <span>{tmplTaxLabel || 'Tax'}:</span>
-                                <span>${sampleTax.toFixed(2)}</span>
-                              </div>
-                            )}
-                            <div
-                              style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                padding: '6px 0',
-                                borderTop: '1px solid #111827',
-                                fontWeight: 800,
-                                fontSize: '13.5px',
-                                color: '#111827',
-                                marginTop: '4px',
-                              }}
-                            >
-                              <span>Grand Total:</span>
-                              <span>${sampleTotal.toFixed(2)}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Remittance Box */}
-                        {(tmplBankName || tmplAccountNumber) && (
-                          <div
-                            style={{
-                              background: '#F9FAFB',
-                              border: '1px solid #E5E7EB',
-                              borderRadius: '6px',
-                              padding: '10px 14px',
-                              marginBottom: '16px',
-                              fontSize: '11px',
-                              lineHeight: '1.5',
-                            }}
-                          >
-                            <div style={{ fontWeight: 700, color: '#059669', fontSize: '10px', textTransform: 'uppercase', marginBottom: '3px' }}>
-                              OFFICIAL SETTLEMENT BANK & REMITTANCE DETAILS:
-                            </div>
-                            <div>
-                              Bank: <b>{tmplBankName || '—'}</b> · Beneficiary: <b>{tmplAccountName || '—'}</b>
-                            </div>
-                            <div>
-                              A/C No: <b>{tmplAccountNumber || '—'}</b> · SWIFT / Routing: <b>{tmplSwift || '—'}</b>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Terms & Conditions Clauses */}
-                        {tmplIncludeTerms && tmplTerms && (
-                          <div
-                            style={{
-                              borderTop: '1px solid #F3F4F6',
-                              paddingTop: '12px',
-                              marginBottom: '16px',
-                              fontSize: '10.5px',
-                              color: '#6B7280',
-                              lineHeight: '1.45',
-                            }}
-                          >
-                            <div style={{ fontWeight: 700, color: '#111827', textTransform: 'uppercase', fontSize: '10px', marginBottom: '4px' }}>
-                              SUBSCRIPTION TERMS & CONDITIONS:
-                            </div>
-                            {tmplTerms.split('\n').filter(Boolean).map((t, idx) => (
-                              <div key={idx} style={{ marginBottom: '2px' }}>{t}</div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Signatory Footer */}
-                        <div
-                          style={{
-                            borderTop: '1px solid #E5E7EB',
-                            paddingTop: '12px',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'flex-end',
-                            fontSize: '10.5px',
-                            color: '#6B7280',
-                          }}
-                        >
-                          <div>
-                            <div>{tmplNotes || 'Thank you for choosing Propithub for your real estate portfolio operations.'}</div>
-                            <div style={{ marginTop: '2px', color: '#9CA3AF' }}>Propithub Real Estate Cloud Operating Platform</div>
-                          </div>
-                          <div style={{ textAlign: 'right', minWidth: '160px' }}>
-                            <div style={{ fontWeight: 600, color: '#111827' }}>
-                              {tmplSignatory || 'Platform Administrator'}
-                            </div>
-                            <div style={{ fontSize: '9.5px', color: '#9CA3AF' }}>
-                              {tmplSignatoryRole || 'Authorized Financial Signatory'}
-                            </div>
-                          </div>
-                        </div>
-                      </>
-                    );
-                  })()}
+                <div className="invoice-sheet invoice-template-preview-sheet">
+                  <PlatformInvoiceDocument
+                    invoice={{
+                      id: 'PI-2026-0042',
+                      ownerName: 'Apex Estates Ltd · Owner Account',
+                      ownerEmail: 'owner@apexestates.com',
+                      ownerId: 'usr-owner-sample',
+                      planName: 'Growth',
+                      amount: 79,
+                      tax: tmplTaxPercent > 0 ? Math.round((79 * tmplTaxPercent) / 100) : 0,
+                      total: 79 + (tmplTaxPercent > 0 ? Math.round((79 * tmplTaxPercent) / 100) : 0),
+                      currency: 'USD',
+                      status: 'paid',
+                      issueDate: new Date().toISOString().split('T')[0],
+                      dueDate: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+                      notes: 'Growth Plan Cloud License — Monthly SaaS subscription',
+                    }}
+                    template={{
+                      issuerName: tmplIssuerName || 'Propithub SaaS Technologies Inc.',
+                      issuerAddress: tmplIssuerAddress,
+                      issuerEmail: tmplIssuerEmail,
+                      issuerPhone: tmplIssuerPhone,
+                      issuerTaxNo: tmplIssuerTaxNo,
+                      taxLabel: tmplTaxLabel,
+                      taxPercent: tmplTaxPercent,
+                      includeTerms: tmplIncludeTerms,
+                      termsAndConditions: tmplIncludeTerms ? tmplTerms : '',
+                      notes: tmplNotes,
+                      signatoryName: tmplSignatory,
+                      signatoryRole: tmplSignatoryRole,
+                    }}
+                  />
                 </div>
               </div>
             )}

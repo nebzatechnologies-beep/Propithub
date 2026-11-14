@@ -256,7 +256,7 @@ export function normalizeCurrencyCode(curr: string | undefined | null): string {
     'A$': 'AUD',
     '﷼': 'SAR',
     '¥': 'JPY',
-    'Fr': 'CHF',
+    'FR': 'CHF',
   };
   if (symbolMap[clean]) return symbolMap[clean];
   if (clean.length === 3 && /^[A-Z]{3}$/.test(clean)) return clean;
@@ -264,6 +264,7 @@ export function normalizeCurrencyCode(curr: string | undefined | null): string {
   if (curr.includes('₹')) return 'INR';
   if (curr.includes('€')) return 'EUR';
   if (curr.includes('£')) return 'GBP';
+  if (curr.includes('د.إ') || clean === 'AED') return 'AED';
   if (curr.includes('$') && !curr.includes('CA') && !curr.includes('A') && !curr.includes('S')) return 'USD';
   return clean || 'USD';
 }
@@ -300,7 +301,7 @@ export function formatCurrencyAmount(
 ): string {
   const num = typeof amount === 'number' && !isNaN(amount) ? amount : (Number(amount) || 0);
   let code = normalizeCurrencyCode(currencyCode || 'USD');
-  if (code === 'LOCAL') code = DEFAULT_CURRENCY;
+  if (code === 'LOCAL') code = 'USD';
   const meta = GLOBAL_CURRENCIES.find((c) => c.code === code);
   const symbol = meta?.symbol || code;
 
@@ -320,7 +321,8 @@ export function formatCurrencyAmount(
     formattedNumber = Number(num || 0).toFixed(minDec);
   }
 
-  const symbolPrefix = symbol.length > 1 && !symbol.endsWith(' ') ? `${symbol} ` : symbol;
+  const needsSpace = (symbol.length > 1 || /[\u0600-\u06FF]/.test(symbol)) && !symbol.endsWith(' ');
+  const symbolPrefix = needsSpace ? `${symbol} ` : symbol;
   return `${symbolPrefix}${formattedNumber}`;
 }
 

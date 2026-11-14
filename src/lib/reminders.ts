@@ -575,6 +575,176 @@ export const getTenantReminders = (state: AppState, user: UserProfile | null): D
 };
 
 /**
+ * Helper to determine if an invoice or payment belongs to a tenant or unit that has vacated.
+ * Excludes:
+ * 1. Concluded move-outs (settled, refund_completed, tenantConfirmedReceipt, or settlement pending/scheduled)
+ * 2. Units marked vacant or currently occupied by a different tenant
+ * 3. Lease agreements that are terminated, expired, or cancelled
+ * 4. Tenant records marked vacated/inactive or where the unit is no longer leased
+ */
+export const isInvoiceForVacatedTenancy = (
+  inv: Partial<Invoice> & { unitId?: string; agreementId?: string; tenantEmail?: string },
+  state: AppState,
+  myUnits: Unit[] = []
+): boolean => {
+  const invUnit = (inv.unit || inv.unitId || '').trim().toLowerCase();
+  const invTenantId = inv.tenantId || '';
+  const invTenantName = (inv.tenant || '').trim().toLowerCase();
+  const invTenantEmail = (inv.tenantEmail || '').trim().toLowerCase();
+  const cleanInvUnit = invUnit.replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+
+  // If the invoice belongs to an active lease agreement, it is never for a vacated tenancy
+  const hasActiveAgreement = (state.agreements || []).some(
+    (a) =>
+      (a.status === 'active' || a.status === 'pending_deposit') &&
+      (a.id === (inv.leaseAgreementId || inv.agreementId) ||
+        ((!inv.propertyId || !a.propertyId || a.propertyId === inv.propertyId) &&
+          (a.unit.trim().toLowerCase() === invUnit ||
+            a.unit.trim().toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanInvUnit)))
+  );
+  if (hasActiveAgreement) return false;
+
+  // 1. Move-Out checks
+  const isMoveOutVacated = (state.moveouts || []).some((m) => {
+    if (inv.propertyId && (m as any).propertyId && inv.propertyId !== (m as any).propertyId) {
+      return false;
+    }
+    const mUnit = (m.unit || (m as any).unitId || '').trim().toLowerCase();
+    const cleanMUnit = mUnit.replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+    const mTenantId = m.tenantId || '';
+    const mTenantName = ((m as any).tenantName || m.tenant || '').trim().toLowerCase();
+    const mTenantEmail = ((m as any).tenantEmail || '').trim().toLowerCase();
+
+    const unitMatches = Boolean(
+      (invUnit && mUnit && (invUnit === mUnit || invUnit.includes(mUnit) || mUnit.includes(invUnit))) ||
+      (cleanInvUnit && cleanMUnit && cleanInvUnit === cleanMUnit)
+    );
+    const tenantMatches = Boolean(
+      (invTenantId && mTenantId && invTenantId === mTenantId) ||
+      (invTenantName && mTenantName && (invTenantName === mTenantName || invTenantName.includes(mTenantName) || mTenantName.includes(invTenantName))) ||
+      (invTenantEmail && mTenantEmail && invTenantEmail === mTenantEmail)
+    );
+
+    if (!unitMatches && !tenantMatches) return false;
+
+    return (
+      m.status === 'settled' ||
+      m.status === 'refund_completed' ||
+      Boolean((m as any).tenantConfirmedReceipt) ||
+      ['settlement_pending', 'refund_scheduled', 'awaiting_tenant_approval'].includes(m.status)
+    );
+  });
+  if (isMoveOutVacated) return true;
+
+  // 1b. Deposit Settlement checks
+  const isSettlementVacated = (state.depositSettlements || []).some((s) => {
+    if (inv.propertyId && s.propertyId && inv.propertyId !== s.propertyId) {
+      return false;
+    }
+    const sUnit = (s.unit || '').trim().toLowerCase();
+    const cleanSUnit = sUnit.replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+    const sTenantId = s.tenantId || '';
+    const sTenantName = (s.tenantName || '').trim().toLowerCase();
+    const unitMatches = Boolean(
+      (invUnit && sUnit && (invUnit === sUnit || invUnit.includes(sUnit) || sUnit.includes(invUnit))) ||
+      (cleanInvUnit && cleanSUnit && cleanInvUnit === cleanSUnit)
+    );
+    const tenantMatches = Boolean(
+      (invTenantId && sTenantId && invTenantId === sTenantId) ||
+      (invTenantName && sTenantName && invTenantName === sTenantName)
+    );
+    if (!unitMatches && !tenantMatches) return false;
+    return (
+      s.status === 'refunded' ||
+      s.status === 'approved' ||
+      (s.status as string) === 'settled' ||
+      Boolean(s.tenantConfirmedReceipt) ||
+      Boolean(s.disbursedAt)
+    );
+  });
+  if (isSettlementVacated) return true;
+
+  // 2. Unit Occupancy checks (scoped by propertyId when present)
+  const findMatchingUnit = (list: Unit[]) =>
+    list.find((u) => {
+      if (inv.propertyId && u.propertyId && inv.propertyId !== u.propertyId) return false;
+      const uNum = (u.unitNumber || u.id || '').trim().toLowerCase();
+      const cleanUNum = uNum.replace(/^(unit|apt|flat|#)\s*/i, '').trim();
+      return uNum === invUnit || u.id === inv.unit || u.id === inv.unitId || (Boolean(cleanInvUnit) && cleanUNum === cleanInvUnit);
+    });
+  const matchingUnit = findMatchingUnit(myUnits) || findMatchingUnit(state.units || []);
+
+  if (matchingUnit) {
+    if (matchingUnit.status === 'vacant') return true;
+    if (invTenantId && matchingUnit.currentTenantId && matchingUnit.currentTenantId !== invTenantId) {
+      return true;
+    }
+    if (
+      invTenantName &&
+      matchingUnit.tenant &&
+      matchingUnit.tenant.trim().toLowerCase() !== invTenantName &&
+      matchingUnit.tenant.trim().toLowerCase() !== invTenantEmail
+    ) {
+      return true;
+    }
+  }
+
+  // 3. Lease Agreement checks
+  const linkedAgId = inv.leaseAgreementId || inv.agreementId;
+  if (linkedAgId) {
+    const linkedAg = (state.agreements || []).find((a) => a.id === linkedAgId);
+    if (linkedAg && (linkedAg.status === 'terminated' || (linkedAg.status as string) === 'expired' || (linkedAg.status as string) === 'cancelled')) {
+      return true;
+    }
+  }
+
+  if (invUnit) {
+    const tenantAgreements = (state.agreements || []).filter((a) => {
+      if (inv.propertyId && a.propertyId && inv.propertyId !== a.propertyId) return false;
+      const aUnit = (a.unit || '').trim().toLowerCase();
+      const unitMatches = aUnit === invUnit || aUnit.includes(invUnit) || invUnit.includes(aUnit);
+      const tenantMatches =
+        (invTenantId && a.tenantId === invTenantId) ||
+        (invTenantName && a.tenant?.trim().toLowerCase() === invTenantName) ||
+        (invTenantEmail && a.tenantEmail?.trim().toLowerCase() === invTenantEmail);
+      return unitMatches && tenantMatches;
+    });
+
+    if (tenantAgreements.length > 0) {
+      const hasActiveLease = tenantAgreements.some(
+        (a) => a.status === 'active' || a.status === 'pending_deposit'
+      );
+      if (!hasActiveLease) return true;
+    }
+  }
+
+  // 4. Tenant Record status check
+  const tenantRec = (state.tenants || []).find(
+    (t) =>
+      (invTenantId && t.id === invTenantId) ||
+      (invTenantEmail && t.email?.trim().toLowerCase() === invTenantEmail) ||
+      (invTenantName && t.name?.trim().toLowerCase() === invTenantName)
+  );
+  if (tenantRec) {
+    if ((tenantRec as any).status === 'vacated' || (tenantRec as any).status === 'inactive') {
+      return true;
+    }
+    if (
+      tenantRec.unitsRented &&
+      tenantRec.unitsRented.length > 0 &&
+      invUnit &&
+      !tenantRec.unitsRented.some((u) => u.trim().toLowerCase() === invUnit || u.trim().toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim() === cleanInvUnit) &&
+      tenantRec.unit &&
+      tenantRec.unit.trim().toLowerCase() !== invUnit
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
  * Compute real-time reminders for Owner Dashboard
  */
 export const getOwnerReminders = (
@@ -607,47 +777,60 @@ export const getOwnerReminders = (
 
   const reminders: DashboardReminder[] = [];
 
-  // 1. Overdue Tenant Payments (Urgent)
+  // 1. Overdue Tenant Invoices & Payments (Urgent, excluding vacated tenancies)
+  const overdueInvoices = (state.invoices || []).filter((inv) => {
+    if (inv.status !== 'overdue') return false;
+    if (inv.ownerId && inv.ownerId !== ownerId) return false;
+    const unitObj = myUnits.find(
+      (u) => (!inv.propertyId || u.propertyId === inv.propertyId) && (u.id === inv.unit || u.unitNumber === inv.unit)
+    );
+    const prop = myProperties.find((pr) => pr.id === (inv.propertyId || unitObj?.propertyId));
+    if (!prop) return false;
+    if (isInvoiceForVacatedTenancy(inv, state, myUnits)) return false;
+    return matchesFilter(prop.id, inv.currency || unitObj?.currency || prop.currency);
+  });
+
+  const overdueInvoiceIds = new Set(overdueInvoices.map((inv) => inv.id));
+
   const overduePayments = (state.payments || []).filter((p) => {
     if (p.status !== 'overdue') return false;
-    const unitObj = myUnits.find((u) => u.id === p.unit || u.unitNumber === p.unit);
+    if (p.invoiceId && overdueInvoiceIds.has(p.invoiceId)) return false;
+    const unitObj = myUnits.find(
+      (u) => (!p.propertyId || u.propertyId === p.propertyId) && (u.id === p.unit || u.unitNumber === p.unit)
+    );
     const prop = myProperties.find((pr) => pr.id === (p.propertyId || unitObj?.propertyId));
     if (!prop) return false;
     if (p.ownerId && p.ownerId !== ownerId) return false;
-
-    // Exclude payments for units where move-out is concluded, deposit settled, or unit is vacant
-    const isMoveOutSettled =
-      (state.moveouts || []).some(
-        (m) =>
-          (m.status === 'refund_completed' || m.status === 'settled') &&
-          (m.unit === p.unit || (m as any).unitId === p.unit) &&
-          (!p.propertyId || !((m as any).propertyId) || (m as any).propertyId === p.propertyId)
-      ) ||
-      (state.depositSettlements || []).some(
-        (s) =>
-          (s.status === 'refunded' || (s.status as string) === 'settled') &&
-          s.unit === p.unit &&
-          (!p.propertyId || !s.propertyId || s.propertyId === p.propertyId)
-      );
-    if (isMoveOutSettled) return false;
-
-    // Exclude if unit is currently vacant
-    if (unitObj && unitObj.status === 'vacant') return false;
-
+    if (isInvoiceForVacatedTenancy(p as any, state, myUnits)) return false;
     return matchesFilter(prop.id, unitObj?.currency || prop.currency);
   });
 
-  if (overduePayments.length > 0) {
+  const totalOverdueCount = overdueInvoices.length + overduePayments.length;
+  if (totalOverdueCount > 0) {
     // Group overdue amounts by currency
     const overdueSummaryMap: Record<string, { total: number; symbol: string; count: number }> = {};
+    overdueInvoices.forEach((inv) => {
+      const unitObj = myUnits.find(
+        (u) => (!inv.propertyId || u.propertyId === inv.propertyId) && (u.id === inv.unit || u.unitNumber === inv.unit)
+      );
+      const prop = myProperties.find((pr) => pr.id === (inv.propertyId || unitObj?.propertyId));
+      const curr = resolveCurrency(inv.currency || unitObj?.currency || prop?.currency);
+      if (!overdueSummaryMap[curr.code]) {
+        overdueSummaryMap[curr.code] = { total: 0, symbol: curr.symbol, count: 0 };
+      }
+      overdueSummaryMap[curr.code].total += inv.total || inv.amount || 0;
+      overdueSummaryMap[curr.code].count += 1;
+    });
     overduePayments.forEach((p) => {
-      const unitObj = myUnits.find((u) => u.id === p.unit || u.unitNumber === p.unit);
+      const unitObj = myUnits.find(
+        (u) => (!p.propertyId || u.propertyId === p.propertyId) && (u.id === p.unit || u.unitNumber === p.unit)
+      );
       const prop = myProperties.find((pr) => pr.id === (p.propertyId || unitObj?.propertyId));
       const curr = resolveCurrency(unitObj?.currency || prop?.currency);
       if (!overdueSummaryMap[curr.code]) {
         overdueSummaryMap[curr.code] = { total: 0, symbol: curr.symbol, count: 0 };
       }
-      overdueSummaryMap[curr.code].total += p.amount;
+      overdueSummaryMap[curr.code].total += p.amount || 0;
       overdueSummaryMap[curr.code].count += 1;
     });
 
@@ -657,7 +840,7 @@ export const getOwnerReminders = (
 
     reminders.push({
       id: 'owner_overdue_delinquencies',
-      title: `${overduePayments.length} Tenant Payment${overduePayments.length > 1 ? 's' : ''} Overdue`,
+      title: `${totalOverdueCount} Tenant Payment${totalOverdueCount > 1 ? 's' : ''} Overdue`,
       description: `Outstanding overdue balance across portfolio totals ${breakdownStr}. Send 1-click payment reminders to delinquent tenants.`,
       severity: 'urgent',
       icon: 'alert-triangle',
@@ -780,10 +963,11 @@ export const getOwnerReminders = (
 
   // 7. Upcoming Rent Scheduled in next 5 days
   const upcomingInvoices = (state.invoices || []).filter((inv) => {
-    if (inv.status === 'paid' || inv.status === 'cancelled') return false;
+    if (inv.status === 'paid' || inv.status === 'cancelled' || inv.status === 'void') return false;
     if (inv.ownerId && inv.ownerId !== ownerId) return false;
     const prop = myProperties.find((pr) => pr.id === inv.propertyId);
     if (!prop) return false;
+    if (isInvoiceForVacatedTenancy(inv, state, myUnits)) return false;
     if (!matchesFilter(prop.id, prop.currency)) return false;
     const days = getDaysDifference(inv.due);
     return days !== null && days >= 0 && days <= 5;

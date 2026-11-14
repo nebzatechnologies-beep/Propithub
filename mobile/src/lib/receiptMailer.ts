@@ -176,6 +176,41 @@ export async function dispatchSubscriptionReceiptEmail(options: DispatchSubscrip
       currencySymbol = '$',
     } = options;
 
+    const payload = {
+      ownerEmail,
+      ownerName,
+      ownerId,
+      amount,
+      currency: currencySymbol,
+      paymentMethod,
+      transactionId,
+      invoiceId: invoice.id,
+      paidDate: invoice.paidAt ? invoice.paidAt.split('T')[0] : new Date().toISOString().split('T')[0],
+      paymentType: 'subscription',
+      planName,
+      billingCycle,
+    };
+
+    let result: { success: boolean; ownerDelivery?: any } = {
+      success: true,
+      ownerDelivery: { status: ownerEmail ? 'pending' : 'skipped' },
+    };
+
+    if (isFirebaseConfigured && ownerEmail) {
+      try {
+        const sendFn = httpsCallable<any, any>(functions, 'sendPaymentReceiptEmail');
+        const res = await sendFn(payload);
+        if (res.data) {
+          result = {
+            success: Boolean(res.data.success),
+            ownerDelivery: res.data.ownerDelivery,
+          };
+        }
+      } catch (fnErr: any) {
+        console.warn('[ReceiptMailer] Cloud Function sendPaymentReceiptEmail for subscription unconfigured:', fnErr?.message);
+      }
+    }
+
     const commLogId = `COMM-SUB-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const logEntry: MobileCommunicationLog = {
       id: commLogId,
@@ -197,7 +232,7 @@ export async function dispatchSubscriptionReceiptEmail(options: DispatchSubscrip
       ownerName,
       relatedEntityId: invoice.id,
       deliveryStatus: {
-        email: ownerEmail ? 'delivered' : 'skipped',
+        email: ownerEmail ? (result.ownerDelivery?.status || 'delivered') : 'skipped',
         inApp: 'delivered',
       },
       createdAt: new Date().toISOString(),
@@ -207,7 +242,7 @@ export async function dispatchSubscriptionReceiptEmail(options: DispatchSubscrip
       await setDoc(doc(db, 'communicationLogs', commLogId), logEntry).catch(console.warn);
     }
 
-    return { success: true, ownerDelivery: { status: ownerEmail ? 'delivered' : 'skipped' } };
+    return result;
   } catch (err: any) {
     console.error('[ReceiptMailer] Subscription receipt error:', err);
     return { success: false, error: err?.message || 'Failed to dispatch subscription receipt' };

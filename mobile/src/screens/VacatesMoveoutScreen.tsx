@@ -25,14 +25,12 @@ import { useMobileTheme } from '../context/MobileThemeContext';
 interface VacatesMoveoutScreenProps {
   onProfilePress?: () => void;
   onInspectPress?: (moveOutId?: string) => void;
-  onFileDisputePress?: () => void;
   onNavigate?: (screenKey: string) => void;
 }
 
 export const VacatesMoveoutScreen: React.FC<VacatesMoveoutScreenProps> = ({
   onProfilePress,
   onInspectPress,
-  onFileDisputePress,
   onNavigate,
 }) => {
   const { state, updateMoveOut, addMoveOut, createDepositSettlement } = useMobileAppData();
@@ -1115,22 +1113,6 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   initiateBtnText: {
     color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  disputeDeskBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    gap: 6,
-  },
-  disputeDeskText: {
-    color: '#DC2626',
     fontSize: 12,
     fontWeight: '700',
   },

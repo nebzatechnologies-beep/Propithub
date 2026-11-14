@@ -6,6 +6,9 @@ import { parseAddressString, sanitizeCountry } from '../lib/addressUtils';
 interface GooglePlacesAddressPickerProps {
   onAddressSelect: (address: PropertyAddress) => void;
   initialValue?: string;
+  variant?: 'default' | 'hero';
+  placeholder?: string;
+  onQueryChange?: (value: string) => void;
 }
 
 interface ExtendedAddressItem extends PropertyAddress {
@@ -15,8 +18,15 @@ interface ExtendedAddressItem extends PropertyAddress {
 export const GooglePlacesAddressPicker: React.FC<GooglePlacesAddressPickerProps> = ({
   onAddressSelect,
   initialValue = '',
+  variant = 'default',
+  placeholder,
+  onQueryChange,
 }) => {
   const [query, setQuery] = useState(initialValue);
+
+  useEffect(() => {
+    setQuery(initialValue);
+  }, [initialValue]);
   const [suggestions, setSuggestions] = useState<ExtendedAddressItem[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -182,6 +192,7 @@ export const GooglePlacesAddressPicker: React.FC<GooglePlacesAddressPickerProps>
   const handleInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setQuery(val);
+    onQueryChange?.(val);
     activeQueryRef.current = val;
 
     if (!val.trim()) {
@@ -205,13 +216,21 @@ export const GooglePlacesAddressPicker: React.FC<GooglePlacesAddressPickerProps>
           if (results.length > 0) {
             setSuggestions(results);
             setIsOpen(true);
+          } else if (variant === 'hero') {
+            setSuggestions([]);
+            setIsOpen(false);
           } else {
             fallbackLocalSuggestions(val);
           }
         }
       } catch {
         if (activeQueryRef.current === val) {
-          fallbackLocalSuggestions(val);
+          if (variant === 'hero') {
+            setSuggestions([]);
+            setIsOpen(false);
+          } else {
+            fallbackLocalSuggestions(val);
+          }
         }
       } finally {
         if (activeQueryRef.current === val) {
@@ -379,7 +398,7 @@ export const GooglePlacesAddressPicker: React.FC<GooglePlacesAddressPickerProps>
   };
 
   return (
-    <div className="search-wrap" ref={containerRef} style={{ position: 'relative' }}>
+    <div className={variant === 'hero' ? undefined : 'search-wrap'} ref={containerRef} style={{ position: 'relative', width: '100%' }}>
       <div style={{ position: 'relative' }}>
         <input
           type="text"
@@ -388,26 +407,29 @@ export const GooglePlacesAddressPicker: React.FC<GooglePlacesAddressPickerProps>
           onFocus={() => {
             if (query.trim() && suggestions.length > 0) setIsOpen(true);
           }}
-          placeholder="Search street address, city or landmark (Google Maps Places)..."
-          style={{ paddingLeft: '32px' }}
+          placeholder={placeholder || 'Search street address, city or landmark (Google Maps Places)...'}
+          autoComplete="off"
+          style={variant === 'hero' ? { width: '100%' } : { paddingLeft: '32px' }}
         />
-        <MapPin
-          size={16}
-          style={{
-            position: 'absolute',
-            left: '10px',
-            top: '50%',
-            transform: 'translateY(-50%)',
-            color: 'var(--ink-soft, #64748b)',
-          }}
-        />
+        {variant !== 'hero' && (
+          <MapPin
+            size={16}
+            style={{
+              position: 'absolute',
+              left: '10px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              color: 'var(--ink-soft, #64748b)',
+            }}
+          />
+        )}
         {isLoading && (
           <Loader2
             size={15}
             className="spin"
             style={{
               position: 'absolute',
-              right: '12px',
+              right: variant === 'hero' ? '4px' : '12px',
               top: '50%',
               transform: 'translateY(-50%)',
               color: 'var(--ink-soft, #64748b)',
@@ -421,13 +443,14 @@ export const GooglePlacesAddressPicker: React.FC<GooglePlacesAddressPickerProps>
           className="search-results show"
           style={{
             position: 'absolute',
+            left: 0,
             zIndex: 1000,
-            width: '100%',
+            width: variant === 'hero' ? 'max(100%, 300px)' : '100%',
             background: 'var(--surface, #ffffff)',
             border: '1px solid var(--line-strong, #cbd5e1)',
             borderRadius: 'var(--radius, 8px)',
             boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-            marginTop: '4px',
+            marginTop: variant === 'hero' ? '10px' : '4px',
             maxHeight: '260px',
             overflowY: 'auto',
           }}

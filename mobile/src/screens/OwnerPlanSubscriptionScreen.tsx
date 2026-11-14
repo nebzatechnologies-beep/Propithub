@@ -1,22 +1,26 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
-  StatusBar,
   Modal,
   Alert,
   ActivityIndicator,
   TextInput,
   Platform,
+  KeyboardAvoidingView,
+  Share,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { ScreenContainer } from '../components/ScreenContainer';
 import { PropithubIcon, PropithubLogo } from '../components/PropithubLogo';
+import { MobilePlatformInvoiceDocument, buildPlatformInvoiceHtml } from '../components/MobilePlatformInvoiceDocument';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
@@ -25,6 +29,7 @@ import { usePlanLimits } from '../hooks/usePlanLimits';
 import { MobilePlan, MobilePlatformInvoice, ListingBoostPlan, DEFAULT_BOOST_PLANS } from '../types';
 import { doc, setDoc } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../lib/firebase';
+import { dispatchSubscriptionReceiptEmail } from '../lib/receiptMailer';
 import {
   launchStripePayment,
   launchRazorpayPayment,
@@ -73,17 +78,19 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
   const [isGatewayDropdownOpen, setIsGatewayDropdownOpen] = useState(false);
   const [isNewGatewayDropdownOpen, setIsNewGatewayDropdownOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<MobilePlatformInvoice | null>(null);
-  const [mandateCardName, setMandateCardName] = useState(user?.displayName || 'Owner');
-  const [mandateCardNumber, setMandateCardNumber] = useState('');
-  const [mandateCardExpiry, setMandateCardExpiry] = useState('');
-  const [mandateCardCvv, setMandateCardCvv] = useState('');
   const [mandateRzpSubMode, setMandateRzpSubMode] = useState<'card' | 'upi'>('card');
   const [mandateUpiId, setMandateUpiId] = useState('');
-  const [mandateBankName, setMandateBankName] = useState('HDFC Bank');
+  const [mandateBankName] = useState('HDFC Bank');
   const [mandateAccountNum, setMandateAccountNum] = useState('');
   const [mandatePaypalEmail, setMandatePaypalEmail] = useState(user?.email || '');
   const [mandateConsentChecked, setMandateConsentChecked] = useState(true);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 600);
+  }, []);
 
   // Listing Boost / Spotlight Pass State
   const [buyingBoostPlan, setBuyingBoostPlan] = useState<ListingBoostPlan | null>(null);
@@ -417,6 +424,23 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
         setIsProcessing(false);
         setIsChangeModalOpen(false);
 
+        if (effectivePrice > 0 && user?.email) {
+          dispatchSubscriptionReceiptEmail({
+            invoice: newInvoice,
+            ownerEmail: user.email,
+            ownerName: user.displayName || 'Property Owner',
+            ownerId,
+            planName: targetPlanObj.name,
+            billingCycle,
+            amount: effectivePrice,
+            transactionId: subId,
+            paymentMethod: paymentMethodName,
+            currencySymbol: '$',
+          }).catch((emailErr) => {
+            console.warn('[OwnerPlanSubscriptionScreen] Subscription receipt email dispatch:', emailErr);
+          });
+        }
+
         Alert.alert(
           'Subscription Activated! 🎉',
           `Successfully subscribed to ${targetPlanObj.name} plan via ${paymentMethodName}.\n\nYour operational workspace is now fully unlocked!`,
@@ -580,6 +604,15 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       return;
     }
 
+    if (Platform.OS === 'ios') {
+      Alert.alert(
+        'Enterprise Plan Management',
+        'Spotlight Pass purchases and billing add-ons are managed at the organization account level. Please visit your Propithub Web Dashboard at propithub.app to purchase boosts.',
+        [{ text: 'OK', onPress: () => setBuyingBoostPlan(null) }]
+      );
+      return;
+    }
+
     setIsProcessingBoost(true);
     const boostPlan = buyingBoostPlan;
     const planPrice = Number(boostPlan.price) || 0;
@@ -644,6 +677,23 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
           });
         }
 
+        if (user?.email) {
+          dispatchSubscriptionReceiptEmail({
+            invoice: newInvoice,
+            ownerEmail: user.email,
+            ownerName: user.displayName || 'Property Owner',
+            ownerId: ownerId || '',
+            planName: `Spotlight Pass: ${boostPlan.name} (${boostPlan.days} Days)`,
+            billingCycle: 'monthly',
+            amount: planPrice,
+            transactionId: boostTxnId,
+            paymentMethod: boostGateway.toUpperCase(),
+            currencySymbol: '$',
+          }).catch((emailErr) => {
+            console.warn('[OwnerPlanSubscriptionScreen] Boost receipt email dispatch:', emailErr);
+          });
+        }
+
         Alert.alert(
           'Spotlight Pass Activated! 🔥',
           `"${boostPlan.name}" is now active! All your available listings are featured at the top of search for ${boostPlan.days} days.`
@@ -656,17 +706,16 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       }
     };
 
-    if (planPrice === 0) {
-      await applyBoostActivation();
-      return;
-    }
-
     try {
       if (boostGateway === 'easebuzz') {
-        const ebKey = state.platformGateways.easebuzz?.merchantKey || '';
-        const ebSalt = state.platformGateways.easebuzz?.salt || '';
-        if (!ebKey || !ebSalt) {
-          await applyBoostActivation();
+        const ebKey = state.platformGateways?.easebuzz?.merchantKey?.trim() || '';
+        const ebSalt = state.platformGateways?.easebuzz?.salt?.trim() || '';
+        if (!ebKey || !ebSalt || ebKey === 'LIVE_EBZ_PROD') {
+          setIsProcessingBoost(false);
+          Alert.alert(
+            'Gateway Configuration Required',
+            'Easebuzz Merchant Key and Salt must be configured in Platform Gateway Settings before purchasing a Spotlight Pass.'
+          );
           return;
         }
         await launchEasebuzzPayment({
@@ -689,9 +738,13 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       }
 
       if (boostGateway === 'razorpay') {
-        const rzpKey = state.platformGateways.razorpay?.keyId || '';
-        if (!rzpKey) {
-          await applyBoostActivation();
+        const rzpKey = state.platformGateways?.razorpay?.keyId?.trim() || '';
+        if (!rzpKey || rzpKey === 'rzp_test_sample') {
+          setIsProcessingBoost(false);
+          Alert.alert(
+            'Gateway Configuration Required',
+            'Razorpay Key ID must be configured in Platform Gateway Settings before purchasing a Spotlight Pass.'
+          );
           return;
         }
         await launchRazorpayPayment({
@@ -718,9 +771,13 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       }
 
       if (boostGateway === 'stripe') {
-        const stripePub = state.platformGateways.stripe?.pubKey || '';
-        if (!stripePub) {
-          await applyBoostActivation();
+        const stripePub = state.platformGateways?.stripe?.pubKey?.trim() || '';
+        if (!stripePub || stripePub === 'pk_test_sample') {
+          setIsProcessingBoost(false);
+          Alert.alert(
+            'Gateway Configuration Required',
+            'Stripe Publishable Key must be configured in Platform Gateway Settings before purchasing a Spotlight Pass.'
+          );
           return;
         }
         await launchStripePayment({
@@ -742,9 +799,13 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       }
 
       if (boostGateway === 'paypal') {
-        const paypalClientId = state.platformGateways.paypal?.clientId || '';
-        if (!paypalClientId) {
-          await applyBoostActivation();
+        const paypalClientId = state.platformGateways?.paypal?.clientId?.trim() || '';
+        if (!paypalClientId || paypalClientId === 'paypal_test_sample') {
+          setIsProcessingBoost(false);
+          Alert.alert(
+            'Gateway Configuration Required',
+            'PayPal Client ID must be configured in Platform Gateway Settings before purchasing a Spotlight Pass.'
+          );
           return;
         }
         await launchPayPalPayment({
@@ -764,10 +825,218 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
         return;
       }
 
-      await applyBoostActivation();
+      setIsProcessingBoost(false);
+      Alert.alert(
+        'Gateway Configuration Required',
+        'Please select a configured payment gateway before purchasing a Spotlight Pass.'
+      );
     } catch (err: any) {
       setIsProcessingBoost(false);
       Alert.alert('Payment Error', err?.message || 'Transaction could not be processed.');
+    }
+  };
+
+  const isGatewayConfigured = useCallback(
+    (gwKey: 'stripe' | 'razorpay' | 'paypal' | 'easebuzz'): boolean => {
+      const g = state.platformGateways;
+      if (gwKey === 'stripe') {
+        const k = g?.stripe?.pubKey?.trim() || '';
+        return Boolean(k && k !== 'pk_test_sample');
+      }
+      if (gwKey === 'razorpay') {
+        const k = g?.razorpay?.keyId?.trim() || '';
+        return Boolean(k && k !== 'rzp_test_sample');
+      }
+      if (gwKey === 'easebuzz') {
+        const k = g?.easebuzz?.merchantKey?.trim() || '';
+        const s = g?.easebuzz?.salt?.trim() || '';
+        return Boolean(k && s && k !== 'LIVE_EBZ_PROD');
+      }
+      if (gwKey === 'paypal') {
+        const k = g?.paypal?.clientId?.trim() || '';
+        return Boolean(k && k !== 'paypal_test_sample');
+      }
+      return false;
+    },
+    [state.platformGateways]
+  );
+
+  const handleAuthorizeLiveGatewayMandate = async () => {
+    if (!ownerId) return;
+    if (Platform.OS === 'ios') {
+      Alert.alert(
+        'Enterprise Plan Management',
+        'Owner billing methods are managed centrally via your Propithub Web Dashboard at propithub.app.',
+        [{ text: 'OK', onPress: () => setIsChangePaymentMethodOpen(false) }]
+      );
+      return;
+    }
+    if (!mandateConsentChecked) {
+      Alert.alert('Consent Required', 'Please check the mandate authorization checkbox to proceed.');
+      return;
+    }
+    if (!isGatewayConfigured(selectedNewGateway)) {
+      Alert.alert(
+        'Gateway Configuration Required',
+        `Live credentials for ${selectedNewGateway.toUpperCase()} are not configured in Platform Gateway Settings. Please configure live keys first.`
+      );
+      return;
+    }
+
+    const g = state.platformGateways;
+    const mandateTxnId = `MANDATE-${selectedNewGateway.toUpperCase()}-${Date.now()}`;
+    setIsProcessing(true);
+
+    const finalizeMandate = async (mandateToken: string, displayDetails: string) => {
+      try {
+        await updateOwnerAutopay(ownerId, {
+          activeGateway: selectedNewGateway,
+          mandateId: mandateToken,
+          status: 'active',
+          autoRenew: true,
+          displayDetails,
+          updatedAt: new Date().toISOString(),
+        });
+        Alert.alert(
+          'Payment Method Verified ✓',
+          `Active billing method switched to ${displayDetails}. Previous mandate cancelled.`
+        );
+        setIsChangePaymentMethodOpen(false);
+      } catch (err: any) {
+        Alert.alert('Error', err?.message || 'Failed to update billing method.');
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+
+    if (selectedNewGateway === 'stripe') {
+      await launchStripePayment({
+        publishableKey: g?.stripe?.pubKey?.trim() || '',
+        amount: 1,
+        currency: 'USD',
+        paymentRecordId: mandateTxnId,
+        customerName: user?.displayName || 'Property Owner',
+        customerEmail: user?.email || '',
+        ownerId,
+        role: 'owner',
+        onSuccess: (res) => finalizeMandate(res.paymentIntentId, 'Stripe Verified Card'),
+        onError: (err) => {
+          setIsProcessing(false);
+          Alert.alert('Stripe Authorization Notice', err);
+        },
+      });
+      return;
+    }
+
+    if (selectedNewGateway === 'razorpay') {
+      const upiDisplay = mandateRzpSubMode === 'upi' && mandateUpiId.trim()
+        ? `Razorpay UPI (${mandateUpiId.trim()})`
+        : 'Razorpay Verified Method';
+      await launchRazorpayPayment({
+        keyId: g?.razorpay?.keyId?.trim() || '',
+        amount: 1,
+        currency: 'INR',
+        name: 'Propithub Autopay Mandate',
+        description: 'Verify recurring subscription payment method',
+        paymentRecordId: mandateTxnId,
+        customerName: user?.displayName || 'Property Owner',
+        customerEmail: user?.email || '',
+        customerPhone: user?.phone || '',
+        ownerId,
+        role: 'owner',
+        onSuccess: (res) => finalizeMandate(res.paymentId, upiDisplay),
+        onError: (err) => {
+          setIsProcessing(false);
+          Alert.alert('Razorpay Authorization Notice', err);
+        },
+      });
+      return;
+    }
+
+    if (selectedNewGateway === 'easebuzz') {
+      const acctSuffix = mandateAccountNum.replace(/\D/g, '').slice(-4);
+      const ebDisplay = acctSuffix ? `Easebuzz e-NACH (${mandateBankName} •••• ${acctSuffix})` : 'Easebuzz Verified e-NACH';
+      await launchEasebuzzPayment({
+        merchantKey: g?.easebuzz?.merchantKey?.trim() || '',
+        salt: g?.easebuzz?.salt?.trim() || '',
+        amount: 1,
+        currency: 'INR',
+        name: 'Propithub e-NACH Mandate',
+        description: 'Verify recurring subscription payment method',
+        paymentRecordId: mandateTxnId,
+        customerName: user?.displayName || 'Property Owner',
+        customerEmail: user?.email || '',
+        customerPhone: user?.phone || '',
+        ownerId,
+        onSuccess: (res) => finalizeMandate(res.paymentId || res.txnid, ebDisplay),
+        onError: (err) => {
+          setIsProcessing(false);
+          Alert.alert('Easebuzz Authorization Notice', err);
+        },
+      });
+      return;
+    }
+
+    if (selectedNewGateway === 'paypal') {
+      const ppEmail = (mandatePaypalEmail || user?.email || '').trim();
+      await launchPayPalPayment({
+        clientId: g?.paypal?.clientId?.trim() || '',
+        amount: 1,
+        currency: 'USD',
+        name: 'Propithub PayPal Mandate',
+        description: 'Verify recurring subscription payment method',
+        paymentRecordId: mandateTxnId,
+        customerEmail: ppEmail,
+        ownerId,
+        onSuccess: (res) => finalizeMandate(res.paymentId, ppEmail ? `PayPal (${ppEmail})` : 'PayPal Verified Account'),
+        onError: (err) => {
+          setIsProcessing(false);
+          Alert.alert('PayPal Authorization Notice', err);
+        },
+      });
+      return;
+    }
+
+    setIsProcessing(false);
+  };
+
+  const handleDownloadInvoicePdf = async (inv: MobilePlatformInvoice) => {
+    try {
+      const html = buildPlatformInvoiceHtml(inv, state.platformInvoiceTemplate);
+      if (Platform.OS === 'web') {
+        await Print.printAsync({ html });
+        return;
+      }
+      const { uri } = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: `Platform Invoice ${inv.id}`,
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        Alert.alert('PDF Generated', `Invoice saved to: ${uri}`);
+      }
+    } catch (err: any) {
+      Alert.alert('PDF Error', err?.message || 'Unable to generate invoice PDF.');
+    }
+  };
+
+  const handleShareInvoiceSummary = async (inv: MobilePlatformInvoice) => {
+    const settledStr = new Date(inv.paidAt || inv.issueDate).toLocaleDateString();
+    const summary =
+      `Propithub Platform Receipt\n` +
+      `Invoice: ${inv.id}\n` +
+      `Plan: ${inv.planName} (${inv.billingCycle || 'monthly'})\n` +
+      `Amount: $${inv.total.toFixed(2)} ${inv.currency || 'USD'}\n` +
+      `Status: ${inv.status.toUpperCase()}\n` +
+      `Method: ${inv.paymentMethod || 'Online Gateway'}\n` +
+      `Ref: ${inv.transactionRef || 'N/A'}\n` +
+      `Date: ${settledStr}`;
+    try {
+      await Share.share({ message: summary, title: `Propithub Receipt ${inv.id}` });
+    } catch (err: any) {
+      Alert.alert('Share Error', err?.message || 'Could not share receipt summary.');
     }
   };
 
@@ -775,22 +1044,23 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
 
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.surface }]}>
-      {/* Screen Status Bar */}
-      <ScreenStatusBar />
-
-      {/* Screen Header */}
-      <Header
-        title="Subscription"
-        onNotificationPress={() => onNavigate?.('notifications_center')}
-        onProfilePress={onProfilePress}
-      />
-
-      <ScrollView
-        style={[styles.scroll, { backgroundColor: colors.background }]}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+    <ScreenContainer
+      scrollable
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      backgroundColor={colors.surface}
+      contentContainerStyle={[styles.content, { backgroundColor: colors.background }]}
+      header={
+        <>
+          <ScreenStatusBar />
+          <Header
+            title="Subscription"
+            onNotificationPress={() => onNavigate?.('notifications_center')}
+            onProfilePress={onProfilePress}
+          />
+        </>
+      }
+    >
         {/* 15-Day Dropout Permanent Deletion Warning Banner */}
         {isInitialTrialDropout && (
           <View
@@ -1355,11 +1625,51 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                           </Text>
                         )}
                       </View>
-                      <Text style={[styles.invoiceDate, { color: colors.inkSoft }]}>
-                        {isPaid && inv.paidAt
-                          ? `Paid on ${new Date(inv.paidAt).toLocaleDateString()}`
-                          : `Issued: ${new Date(inv.issueDate).toLocaleDateString()}`}
-                      </Text>
+                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                        <Text style={[styles.invoiceDate, { color: colors.inkSoft }]}>
+                          {isPaid && inv.paidAt
+                            ? `Paid on ${new Date(inv.paidAt).toLocaleDateString()}`
+                            : `Issued: ${new Date(inv.issueDate).toLocaleDateString()}`}
+                        </Text>
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                          <TouchableOpacity
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 4,
+                              paddingHorizontal: 8,
+                              paddingVertical: 4,
+                              borderRadius: 6,
+                              backgroundColor: colors.surfaceSunken,
+                              borderWidth: 1,
+                              borderColor: colors.line,
+                            }}
+                            onPress={() => handleDownloadInvoicePdf(inv)}
+                            activeOpacity={0.75}
+                          >
+                            <Feather name="download" size={11} color={colors.navy} />
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy }}>PDF</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 4,
+                              paddingHorizontal: 8,
+                              paddingVertical: 4,
+                              borderRadius: 6,
+                              backgroundColor: colors.surfaceSunken,
+                              borderWidth: 1,
+                              borderColor: colors.line,
+                            }}
+                            onPress={() => handleShareInvoiceSummary(inv)}
+                            activeOpacity={0.75}
+                          >
+                            <Feather name="share-2" size={11} color={colors.navy} />
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy }}>Share</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
                     </View>
                   </TouchableOpacity>
                 );
@@ -1367,10 +1677,16 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
             )}
           </>
         )}
-      </ScrollView>
 
       {/* ─── Change / Upgrade Plan Modal ────────────────────────────────────── */}
-      <Modal visible={isChangeModalOpen} transparent animationType="slide">
+      <Modal
+        visible={isChangeModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isProcessing) setIsChangeModalOpen(false);
+        }}
+      >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface, borderTopColor: colors.line }]}>
             <View style={[styles.modalHeader, { borderBottomColor: colors.line }]}>
@@ -1618,7 +1934,12 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
       </Modal>
 
       {/* ─── Receipt Modal ─────────────────────────────────────────────────── */}
-      <Modal visible={!!selectedInvoice} transparent animationType="fade">
+      <Modal
+        visible={!!selectedInvoice}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedInvoice(null)}
+      >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface, borderTopColor: colors.line }]}>
             {selectedInvoice && (
@@ -1634,38 +1955,53 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                   </TouchableOpacity>
                 </View>
 
-                <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
-                  <View style={[styles.receiptBox, { backgroundColor: isDark ? '#1E293B' : '#F8FAFC', borderColor: colors.line }]}>
-                    <Text style={[styles.receiptSectionTitle, { color: colors.inkSoft }]}>Customer Details</Text>
-                    <Text style={[styles.receiptTextBold, { color: colors.navy }]}>{selectedInvoice.ownerName}</Text>
-                    <Text style={[styles.receiptText, { color: isDark ? '#CBD5E1' : '#334155' }]}>{selectedInvoice.ownerEmail}</Text>
-                    <Text style={[styles.receiptTextMuted, { color: colors.inkSoft }]}>ID: {selectedInvoice.ownerId}</Text>
-                  </View>
-
-                  <View style={[styles.receiptBox, { backgroundColor: isDark ? '#1E293B' : '#F8FAFC', borderColor: colors.line }]}>
-                    <Text style={[styles.receiptSectionTitle, { color: colors.inkSoft }]}>Line Item</Text>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={[styles.receiptTextBold, { color: colors.navy }]}>
-                        Propithub SaaS Subscription ({selectedInvoice.planName} Tier)
-                      </Text>
-                      <Text style={[styles.receiptTextBold, { color: colors.navy }]}>${selectedInvoice.amount.toFixed(2)}</Text>
-                    </View>
-                    <Text style={[styles.receiptTextMuted, { color: colors.inkSoft }]}>{selectedInvoice.notes}</Text>
-                  </View>
-
-                  <View style={[styles.receiptBox, { backgroundColor: isDark ? '#1E293B' : '#F8FAFC', borderColor: colors.line }]}>
-                    <Text style={[styles.receiptSectionTitle, { color: colors.inkSoft }]}>Settlement Details</Text>
-                    <Text style={[styles.receiptText, { color: isDark ? '#CBD5E1' : '#334155' }]}>
-                      Method: <Text style={{ color: isDark ? '#F8FAFC' : '#0F172A', fontWeight: '700' }}>{selectedInvoice.paymentMethod}</Text>
-                    </Text>
-                    <Text style={[styles.receiptText, { color: isDark ? '#CBD5E1' : '#334155' }]}>
-                      Transaction Ref: <Text style={{ fontFamily: 'monospace', color: '#16A34A' }}>{selectedInvoice.transactionRef}</Text>
-                    </Text>
-                    <Text style={[styles.receiptText, { color: isDark ? '#CBD5E1' : '#334155' }]}>
-                      Settled Date: {new Date(selectedInvoice.paidAt || selectedInvoice.issueDate).toLocaleString()}
-                    </Text>
-                  </View>
+                <ScrollView style={{ maxHeight: 480 }} showsVerticalScrollIndicator={false}>
+                  <MobilePlatformInvoiceDocument
+                    invoice={selectedInvoice}
+                    template={state.platformInvoiceTemplate}
+                  />
                 </ScrollView>
+
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      paddingVertical: 11,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      backgroundColor: colors.surfaceSunken,
+                    }}
+                    onPress={() => handleDownloadInvoicePdf(selectedInvoice)}
+                    activeOpacity={0.8}
+                  >
+                    <Feather name="download" size={14} color={colors.navy} />
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>PDF</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      paddingVertical: 11,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      backgroundColor: colors.surfaceSunken,
+                    }}
+                    onPress={() => handleShareInvoiceSummary(selectedInvoice)}
+                    activeOpacity={0.8}
+                  >
+                    <Feather name="share-2" size={14} color={colors.navy} />
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>Share</Text>
+                  </TouchableOpacity>
+                </View>
 
                 <TouchableOpacity
                   style={styles.closeReceiptBtn}
@@ -1685,13 +2021,19 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
         visible={isChangePaymentMethodOpen}
         transparent
         animationType="slide"
-        onRequestClose={() => setIsChangePaymentMethodOpen(false)}
+        onRequestClose={() => {
+          if (!isProcessing) setIsChangePaymentMethodOpen(false);
+        }}
       >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+        <KeyboardAvoidingView
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+        >
           <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, maxHeight: '85%' }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <Text style={{ fontSize: 16, fontWeight: '700', color: colors.navy }}>Change Subscription Billing Method</Text>
-              <TouchableOpacity onPress={() => setIsChangePaymentMethodOpen(false)}>
+              <TouchableOpacity onPress={() => { if (!isProcessing) setIsChangePaymentMethodOpen(false); }}>
                 <Feather name="x" size={20} color={colors.inkSoft} />
               </TouchableOpacity>
             </View>
@@ -1701,358 +2043,239 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                 Select a payment method. Propithub automatically cancels your previous mandate so you are never double-billed.
               </Text>
 
-              {/* Dropdown trigger */}
-              <TouchableOpacity
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: 12,
-                  borderRadius: 8,
-                  borderWidth: 1,
-                  borderColor: colors.line,
-                  backgroundColor: colors.surfaceSunken,
-                  marginBottom: isNewGatewayDropdownOpen ? 4 : 12,
-                }}
-                onPress={() => setIsNewGatewayDropdownOpen((prev) => !prev)}
-                activeOpacity={0.8}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <Feather
-                    name={(availableGateways.find((gw) => gw.key === selectedNewGateway)?.icon as any) || 'credit-card'}
-                    size={18}
-                    color={colors.navy}
-                  />
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>
-                    {availableGateways.find((gw) => gw.key === selectedNewGateway)?.title || 'Select Gateway'}
+              {Platform.OS === 'ios' ? (
+                <View style={{ padding: 14, backgroundColor: isDark ? '#1E293B' : '#F0F9FF', borderRadius: 10, borderWidth: 1, borderColor: '#BAE6FD', marginBottom: 14 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                    <Feather name="shield" size={16} color="#0284C7" style={{ marginRight: 6 }} />
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#0369A1' }}>Enterprise Billing Portal</Text>
+                  </View>
+                  <Text style={{ fontSize: 11.5, color: isDark ? '#CBD5E1' : '#0C4A6E', lineHeight: 17 }}>
+                    Owner billing methods and recurring mandates are managed centrally via your web portal at propithub.app.
                   </Text>
                 </View>
-                <Feather name={isNewGatewayDropdownOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
-              </TouchableOpacity>
+              ) : (
+                <>
+                  {/* Dropdown trigger */}
+                  <TouchableOpacity
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: 12,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      backgroundColor: colors.surfaceSunken,
+                      marginBottom: isNewGatewayDropdownOpen ? 4 : 12,
+                    }}
+                    onPress={() => setIsNewGatewayDropdownOpen((prev) => !prev)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                      <Feather
+                        name={(availableGateways.find((gw) => gw.key === selectedNewGateway)?.icon as any) || 'credit-card'}
+                        size={18}
+                        color={colors.navy}
+                      />
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>
+                        {availableGateways.find((gw) => gw.key === selectedNewGateway)?.title || 'Select Gateway'}
+                      </Text>
+                    </View>
+                    <Feather name={isNewGatewayDropdownOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.inkSoft} />
+                  </TouchableOpacity>
 
-              {/* Dropdown options */}
-              {isNewGatewayDropdownOpen && (
-                <View
-                  style={{
-                    marginBottom: 12,
-                    borderRadius: 8,
-                    borderWidth: 1,
-                    borderColor: colors.line,
-                    backgroundColor: colors.surface,
-                    overflow: 'hidden',
-                  }}
-                >
-                  {availableGateways.map((gw) => {
-                    const isSelected = selectedNewGateway === gw.key;
-                    return (
-                      <TouchableOpacity
-                        key={gw.key}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: 12,
-                          backgroundColor: isSelected ? 'rgba(197, 160, 89, 0.12)' : colors.surface,
-                          borderBottomWidth: 1,
-                          borderBottomColor: colors.line,
-                        }}
-                        onPress={() => {
-                          setSelectedNewGateway(gw.key);
-                          setIsNewGatewayDropdownOpen(false);
-                        }}
-                      >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                          <Feather name={gw.icon as any} size={16} color={isSelected ? colors.brass : colors.inkSoft} />
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ fontSize: 13, fontWeight: isSelected ? '700' : '500', color: colors.navy }}>{gw.title}</Text>
-                            <Text style={{ fontSize: 11, color: colors.inkSoft }}>{gw.description}</Text>
-                          </View>
-                        </View>
-                        {isSelected && <Ionicons name="checkmark" size={18} color={colors.brass} />}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              )}
-
-              {/* Interactive Mandate Input Form */}
-              <View style={{ backgroundColor: colors.surfaceSunken, borderRadius: 10, padding: 14, marginVertical: 10, borderWidth: 1, borderColor: colors.line }}>
-                {selectedNewGateway === 'stripe' && (
-                  <View style={{ gap: 10 }}>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy, textTransform: 'uppercase' }}>
-                      Credit / Debit Card
-                    </Text>
-                    <TextInput
-                      style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                      placeholder="Name on Card"
-                      placeholderTextColor={colors.inkSoft}
-                      value={mandateCardName}
-                      onChangeText={setMandateCardName}
-                    />
-                    <TextInput
-                      style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink, letterSpacing: 1 }}
-                      placeholder="Card Number"
-                      placeholderTextColor={colors.inkSoft}
-                      keyboardType="numeric"
-                      maxLength={19}
-                      value={mandateCardNumber}
-                      onChangeText={(val) => {
-                        const raw = val.replace(/\D/g, '').slice(0, 16);
-                        const formatted = raw.match(/.{1,4}/g)?.join(' ') || raw;
-                        setMandateCardNumber(formatted);
+                  {/* Dropdown options */}
+                  {isNewGatewayDropdownOpen && (
+                    <View
+                      style={{
+                        marginBottom: 12,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: colors.line,
+                        backgroundColor: colors.surface,
+                        overflow: 'hidden',
                       }}
-                    />
-                    <View style={{ flexDirection: 'row', gap: 10 }}>
-                      <TextInput
-                        style={{ flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                        placeholder="MM/YY"
-                        placeholderTextColor={colors.inkSoft}
-                        maxLength={5}
-                        value={mandateCardExpiry}
-                        onChangeText={(val) => {
-                          let clean = val.replace(/\D/g, '').slice(0, 4);
-                          if (clean.length >= 3) clean = `${clean.slice(0, 2)}/${clean.slice(2)}`;
-                          setMandateCardExpiry(clean);
-                        }}
-                      />
-                      <TextInput
-                        style={{ flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                        placeholder="CVV"
-                        placeholderTextColor={colors.inkSoft}
-                        secureTextEntry
-                        keyboardType="numeric"
-                        maxLength={4}
-                        value={mandateCardCvv}
-                        onChangeText={(val) => setMandateCardCvv(val.replace(/\D/g, '').slice(0, 4))}
-                      />
+                    >
+                      {availableGateways.map((gw) => {
+                        const isSelected = selectedNewGateway === gw.key;
+                        return (
+                          <TouchableOpacity
+                            key={gw.key}
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: 12,
+                              backgroundColor: isSelected ? 'rgba(197, 160, 89, 0.12)' : colors.surface,
+                              borderBottomWidth: 1,
+                              borderBottomColor: colors.line,
+                            }}
+                            onPress={() => {
+                              setSelectedNewGateway(gw.key);
+                              setIsNewGatewayDropdownOpen(false);
+                            }}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                              <Feather name={gw.icon as any} size={16} color={isSelected ? colors.brass : colors.inkSoft} />
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 13, fontWeight: isSelected ? '700' : '500', color: colors.navy }}>{gw.title}</Text>
+                                <Text style={{ fontSize: 11, color: colors.inkSoft }}>{gw.description}</Text>
+                              </View>
+                            </View>
+                            {isSelected && <Ionicons name="checkmark" size={18} color={colors.brass} />}
+                          </TouchableOpacity>
+                        );
+                      })}
                     </View>
-                  </View>
-                )}
+                  )}
 
-                {selectedNewGateway === 'razorpay' && (
-                  <View style={{ gap: 10 }}>
-                    <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <TouchableOpacity
-                        style={{
-                          flex: 1,
-                          paddingVertical: 7,
-                          borderRadius: 6,
-                          alignItems: 'center',
-                          backgroundColor: mandateRzpSubMode === 'card' ? '#ECFDF5' : colors.surface,
-                          borderWidth: 1,
-                          borderColor: mandateRzpSubMode === 'card' ? '#10B981' : colors.line,
-                        }}
-                        onPress={() => setMandateRzpSubMode('card')}
-                      >
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: mandateRzpSubMode === 'card' ? '#065F46' : colors.inkSoft }}>Debit / Credit Card</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={{
-                          flex: 1,
-                          paddingVertical: 7,
-                          borderRadius: 6,
-                          alignItems: 'center',
-                          backgroundColor: mandateRzpSubMode === 'upi' ? '#ECFDF5' : colors.surface,
-                          borderWidth: 1,
-                          borderColor: mandateRzpSubMode === 'upi' ? '#10B981' : colors.line,
-                        }}
-                        onPress={() => setMandateRzpSubMode('upi')}
-                      >
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: mandateRzpSubMode === 'upi' ? '#065F46' : colors.inkSoft }}>UPI AutoPay</Text>
-                      </TouchableOpacity>
-                    </View>
+                  {/* Gateway SDK Info / Optional Prefill */}
+                  <View style={{ backgroundColor: colors.surfaceSunken, borderRadius: 10, padding: 14, marginVertical: 10, borderWidth: 1, borderColor: colors.line }}>
+                    {selectedNewGateway === 'stripe' && (
+                      <Text style={{ fontSize: 12, color: colors.ink, lineHeight: 18 }}>
+                        Card details are collected securely inside Stripe's PCI-DSS checkout sheet when you authorize.
+                      </Text>
+                    )}
 
-                    {mandateRzpSubMode === 'upi' ? (
-                      <View style={{ gap: 6 }}>
-                        <TextInput
-                          style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                          placeholder="UPI ID (e.g. owner@okhdfcbank)"
-                          placeholderTextColor={colors.inkSoft}
-                          autoCapitalize="none"
-                          value={mandateUpiId}
-                          onChangeText={setMandateUpiId}
-                        />
+                    {selectedNewGateway === 'razorpay' && (
+                      <View style={{ gap: 10 }}>
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                          <TouchableOpacity
+                            style={{
+                              flex: 1,
+                              paddingVertical: 7,
+                              borderRadius: 6,
+                              alignItems: 'center',
+                              backgroundColor: mandateRzpSubMode === 'card' ? '#ECFDF5' : colors.surface,
+                              borderWidth: 1,
+                              borderColor: mandateRzpSubMode === 'card' ? '#10B981' : colors.line,
+                            }}
+                            onPress={() => setMandateRzpSubMode('card')}
+                          >
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: mandateRzpSubMode === 'card' ? '#065F46' : colors.inkSoft }}>Debit / Credit Card</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={{
+                              flex: 1,
+                              paddingVertical: 7,
+                              borderRadius: 6,
+                              alignItems: 'center',
+                              backgroundColor: mandateRzpSubMode === 'upi' ? '#ECFDF5' : colors.surface,
+                              borderWidth: 1,
+                              borderColor: mandateRzpSubMode === 'upi' ? '#10B981' : colors.line,
+                            }}
+                            onPress={() => setMandateRzpSubMode('upi')}
+                          >
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: mandateRzpSubMode === 'upi' ? '#065F46' : colors.inkSoft }}>UPI AutoPay</Text>
+                          </TouchableOpacity>
+                        </View>
+                        {mandateRzpSubMode === 'upi' ? (
+                          <TextInput
+                            style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
+                            placeholder="Optional UPI ID (e.g. owner@okhdfcbank)"
+                            placeholderTextColor={colors.inkSoft}
+                            autoCapitalize="none"
+                            value={mandateUpiId}
+                            onChangeText={setMandateUpiId}
+                          />
+                        ) : (
+                          <Text style={{ fontSize: 12, color: colors.ink, lineHeight: 18 }}>
+                            Card details are verified directly via Razorpay's live checkout sheet.
+                          </Text>
+                        )}
                       </View>
-                    ) : (
+                    )}
+
+                    {selectedNewGateway === 'easebuzz' && (
                       <View style={{ gap: 8 }}>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy }}>e-NACH NetBanking ({mandateBankName})</Text>
                         <TextInput
                           style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                          placeholder="Card Number"
+                          placeholder="Optional Account Number Label"
                           placeholderTextColor={colors.inkSoft}
                           keyboardType="numeric"
-                          maxLength={19}
-                          value={mandateCardNumber}
-                          onChangeText={setMandateCardNumber}
+                          value={mandateAccountNum}
+                          onChangeText={setMandateAccountNum}
                         />
-                        <View style={{ flexDirection: 'row', gap: 8 }}>
-                          <TextInput
-                            style={{ flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                            placeholder="MM/YY"
-                            placeholderTextColor={colors.inkSoft}
-                            maxLength={5}
-                            value={mandateCardExpiry}
-                            onChangeText={setMandateCardExpiry}
-                          />
-                          <TextInput
-                            style={{ flex: 1, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                            placeholder="CVV"
-                            placeholderTextColor={colors.inkSoft}
-                            secureTextEntry
-                            maxLength={4}
-                            value={mandateCardCvv}
-                            onChangeText={(val) => setMandateCardCvv(val.replace(/\D/g, '').slice(0, 4))}
-                          />
-                        </View>
+                      </View>
+                    )}
+
+                    {selectedNewGateway === 'paypal' && (
+                      <View style={{ gap: 8 }}>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy }}>PayPal Account Email</Text>
+                        <TextInput
+                          style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
+                          placeholder="owner@example.com"
+                          placeholderTextColor={colors.inkSoft}
+                          autoCapitalize="none"
+                          keyboardType="email-address"
+                          value={mandatePaypalEmail}
+                          onChangeText={setMandatePaypalEmail}
+                        />
                       </View>
                     )}
                   </View>
-                )}
 
-                {selectedNewGateway === 'easebuzz' && (
-                  <View style={{ gap: 8 }}>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy }}>e-NACH NetBanking</Text>
-                    <TextInput
-                      style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                      placeholder="Savings Account Number"
-                      placeholderTextColor={colors.inkSoft}
-                      keyboardType="numeric"
-                      value={mandateAccountNum}
-                      onChangeText={setMandateAccountNum}
+                  {!isGatewayConfigured(selectedNewGateway) && (
+                    <View
+                      style={{
+                        backgroundColor: isDark ? 'rgba(239, 68, 68, 0.14)' : '#FEF2F2',
+                        borderWidth: 1,
+                        borderColor: '#FCA5A5',
+                        borderRadius: 8,
+                        padding: 10,
+                        marginBottom: 10,
+                      }}
+                    >
+                      <Text style={{ fontSize: 11.5, color: isDark ? '#FCA5A5' : '#B91C1C', lineHeight: 16 }}>
+                        Live {selectedNewGateway.toUpperCase()} credentials are not configured in Platform Gateway Settings. Configure gateway keys to authorize a billing method.
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Consent Toggle */}
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginVertical: 8 }}
+                    onPress={() => setMandateConsentChecked(!mandateConsentChecked)}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name={mandateConsentChecked ? 'checkbox' : 'square-outline'}
+                      size={18}
+                      color={mandateConsentChecked ? '#10B981' : colors.inkSoft}
+                      style={{ marginTop: 2 }}
                     />
-                  </View>
-                )}
+                    <Text style={{ flex: 1, fontSize: 11, color: colors.ink, lineHeight: 16 }}>
+                      I authorize Propithub to register an automated recurring subscription mandate on this payment instrument via the selected live gateway.
+                    </Text>
+                  </TouchableOpacity>
 
-                {selectedNewGateway === 'paypal' && (
-                  <View style={{ gap: 8 }}>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy }}>PayPal Account Email</Text>
-                    <TextInput
-                      style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 6, padding: 10, fontSize: 13, color: colors.ink }}
-                      placeholder="owner@example.com"
-                      placeholderTextColor={colors.inkSoft}
-                      autoCapitalize="none"
-                      value={mandatePaypalEmail}
-                      onChangeText={setMandatePaypalEmail}
-                    />
-                  </View>
-                )}
-              </View>
-
-              {/* Consent Toggle */}
-              <TouchableOpacity
-                style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginVertical: 8 }}
-                onPress={() => setMandateConsentChecked(!mandateConsentChecked)}
-                activeOpacity={0.8}
-              >
-                <Ionicons
-                  name={mandateConsentChecked ? 'checkbox' : 'square-outline'}
-                  size={18}
-                  color={mandateConsentChecked ? '#10B981' : colors.inkSoft}
-                  style={{ marginTop: 2 }}
-                />
-                <Text style={{ flex: 1, fontSize: 11, color: colors.ink, lineHeight: 16 }}>
-                  I authorize Propithub to register an automated recurring subscription mandate on this payment instrument to renew my active plan upon expiration.
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={{
-                  backgroundColor: colors.brass,
-                  paddingVertical: 12,
-                  borderRadius: 8,
-                  alignItems: 'center',
-                  marginTop: 8,
-                  marginBottom: 10,
-                }}
-                disabled={isProcessing}
-                onPress={async () => {
-                  if (!ownerId) return;
-
-                  if (!mandateConsentChecked) {
-                    Alert.alert('Consent Required', 'Please check the mandate authorization checkbox to proceed.');
-                    return;
-                  }
-
-                  let displayDetails = `${selectedNewGateway.toUpperCase()} Active Card`;
-                  let token = `mandate_${selectedNewGateway}_${Date.now()}`;
-                  const cleanCard = mandateCardNumber.replace(/\s+/g, '');
-
-                  if (selectedNewGateway === 'stripe') {
-                    if (!cleanCard || cleanCard.length < 15) {
-                      Alert.alert('Invalid Card', 'Please enter a valid 16-digit card number.');
-                      return;
-                    }
-                    if (!mandateCardExpiry || !mandateCardExpiry.includes('/')) {
-                      Alert.alert('Invalid Expiry', 'Please enter card expiry (MM/YY).');
-                      return;
-                    }
-                    if (!mandateCardCvv || mandateCardCvv.length < 3) {
-                      Alert.alert('Invalid CVV', 'Please enter a valid 3-digit CVV.');
-                      return;
-                    }
-                    const last4 = cleanCard.slice(-4);
-                    const brand = cleanCard.startsWith('4') ? 'Visa' : cleanCard.startsWith('5') ? 'Mastercard' : 'Card';
-                    displayDetails = `${brand} ending in •••• ${last4}`;
-                    token = `pm_owner_${last4}_${Date.now()}`;
-                  } else if (selectedNewGateway === 'razorpay') {
-                    if (mandateRzpSubMode === 'upi') {
-                      if (!mandateUpiId || !mandateUpiId.includes('@')) {
-                        Alert.alert('Invalid UPI', 'Please enter a valid UPI ID (e.g. owner@okhdfcbank).');
-                        return;
-                      }
-                      displayDetails = `UPI AutoPay (${mandateUpiId.trim()})`;
-                      token = `rzp_upi_${Date.now()}`;
-                    } else {
-                      if (!cleanCard || cleanCard.length < 15) {
-                        Alert.alert('Invalid Card', 'Please enter a valid card number.');
-                        return;
-                      }
-                      const last4 = cleanCard.slice(-4);
-                      displayDetails = `Card ending in •••• ${last4}`;
-                      token = `rzp_card_${last4}_${Date.now()}`;
-                    }
-                  } else if (selectedNewGateway === 'easebuzz') {
-                    if (!mandateAccountNum || mandateAccountNum.length < 6) {
-                      Alert.alert('Invalid Account', 'Please enter your bank account number.');
-                      return;
-                    }
-                    const last4 = mandateAccountNum.slice(-4);
-                    displayDetails = `e-NACH (${mandateBankName} •••• ${last4})`;
-                    token = `eb_nach_${last4}_${Date.now()}`;
-                  } else if (selectedNewGateway === 'paypal') {
-                    if (!mandatePaypalEmail || !mandatePaypalEmail.includes('@')) {
-                      Alert.alert('Invalid Email', 'Please enter your PayPal billing email.');
-                      return;
-                    }
-                    displayDetails = `PayPal (${mandatePaypalEmail.trim()})`;
-                    token = `B-${Date.now().toString(36).toUpperCase()}`;
-                  }
-
-                  setIsProcessing(true);
-                  try {
-                    await updateOwnerAutopay(ownerId, {
-                      activeGateway: selectedNewGateway,
-                      mandateId: token,
-                      status: 'active',
-                      autoRenew: true,
-                      displayDetails,
-                      updatedAt: new Date().toISOString(),
-                    });
-                    Alert.alert('Payment Method Switched', `✓ Active billing method switched to ${displayDetails}. Old mandate cancelled.`);
-                    setIsChangePaymentMethodOpen(false);
-                  } catch (err: any) {
-                    Alert.alert('Error', err?.message || 'Failed to switch payment method.');
-                  } finally {
-                    setIsProcessing(false);
-                  }
-                }}
-              >
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#FFFFFF' }}>
-                  {isProcessing ? 'Authorizing...' : 'Authorize'}
-                </Text>
-              </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: isGatewayConfigured(selectedNewGateway) ? colors.brass : colors.inkMuted,
+                      paddingVertical: 12,
+                      borderRadius: 8,
+                      alignItems: 'center',
+                      marginTop: 8,
+                      marginBottom: 10,
+                      opacity: isProcessing || !isGatewayConfigured(selectedNewGateway) ? 0.65 : 1,
+                    }}
+                    disabled={isProcessing || !isGatewayConfigured(selectedNewGateway)}
+                    onPress={handleAuthorizeLiveGatewayMandate}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#FFFFFF' }}>
+                      {isProcessing
+                        ? 'Connecting to Gateway...'
+                        : isGatewayConfigured(selectedNewGateway)
+                          ? `Authorize via ${availableGateways.find((gw) => gw.key === selectedNewGateway)?.shortTitle || selectedNewGateway}`
+                          : 'Gateway Keys Required'}
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ─── POPULAR BOOST / SPOTLIGHT PASS CHECKOUT MODAL ─── */}
@@ -2160,56 +2383,70 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
               </View>
             </View>
 
-            {/* Payment Method Selector */}
-            <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Select Payment Method
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
-              {[
-                { key: 'stripe', label: 'Stripe', icon: 'credit-card' },
-                { key: 'razorpay', label: 'Razorpay', icon: 'zap' },
-                { key: 'easebuzz', label: 'Easebuzz', icon: 'shield' },
-                { key: 'paypal', label: 'PayPal', icon: 'dollar-sign' },
-              ].map((gw) => {
-                const isSelected = boostGateway === gw.key;
-                return (
-                  <TouchableOpacity
-                    key={gw.key}
-                    style={{
-                      flex: 1,
-                      paddingVertical: 10,
-                      paddingHorizontal: 4,
-                      borderRadius: 8,
-                      borderWidth: 1.5,
-                      borderColor: isSelected ? '#D97706' : colors.line,
-                      backgroundColor: isSelected ? 'rgba(217, 119, 6, 0.08)' : colors.surfaceSunken,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                    onPress={() => setBoostGateway(gw.key as any)}
-                    disabled={isProcessingBoost}
-                    activeOpacity={0.8}
-                  >
-                    <Feather
-                      name={gw.icon as any}
-                      size={15}
-                      color={isSelected ? '#D97706' : colors.inkSoft}
-                      style={{ marginBottom: 4 }}
-                    />
-                    <Text
-                      style={{
-                        fontSize: 10.5,
-                        fontWeight: isSelected ? '700' : '500',
-                        color: isSelected ? '#D97706' : colors.ink,
-                      }}
-                      numberOfLines={1}
-                    >
-                      {gw.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* Payment Method Selector (iOS compliant notice) */}
+            {Platform.OS === 'ios' ? (
+              <View style={{ padding: 14, backgroundColor: isDark ? '#1E293B' : '#F0F9FF', borderRadius: 10, borderWidth: 1, borderColor: '#BAE6FD', marginBottom: 16 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                  <Feather name="shield" size={16} color="#0284C7" style={{ marginRight: 6 }} />
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#0369A1' }}>Organization Add-On Management</Text>
+                </View>
+                <Text style={{ fontSize: 11.5, color: isDark ? '#CBD5E1' : '#0C4A6E', lineHeight: 17 }}>
+                  Spotlight Pass purchases are managed via your Propithub Web Dashboard at propithub.app.
+                </Text>
+              </View>
+            ) : (
+              <>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Select Payment Method
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
+                  {[
+                    { key: 'stripe', label: 'Stripe', icon: 'credit-card' },
+                    { key: 'razorpay', label: 'Razorpay', icon: 'zap' },
+                    { key: 'easebuzz', label: 'Easebuzz', icon: 'shield' },
+                    { key: 'paypal', label: 'PayPal', icon: 'dollar-sign' },
+                  ].map((gw) => {
+                    const isSelected = boostGateway === gw.key;
+                    return (
+                      <TouchableOpacity
+                        key={gw.key}
+                        style={{
+                          flex: 1,
+                          paddingVertical: 10,
+                          paddingHorizontal: 4,
+                          borderRadius: 8,
+                          borderWidth: 1.5,
+                          borderColor: isSelected ? '#D97706' : colors.line,
+                          backgroundColor: isSelected ? 'rgba(217, 119, 6, 0.08)' : colors.surfaceSunken,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        onPress={() => setBoostGateway(gw.key as any)}
+                        disabled={isProcessingBoost}
+                        activeOpacity={0.8}
+                      >
+                        <Feather
+                          name={gw.icon as any}
+                          size={15}
+                          color={isSelected ? '#D97706' : colors.inkSoft}
+                          style={{ marginBottom: 4 }}
+                        />
+                        <Text
+                          style={{
+                            fontSize: 10.5,
+                            fontWeight: isSelected ? '700' : '500',
+                            color: isSelected ? '#D97706' : colors.ink,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {gw.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            )}
 
             {/* Action Buttons */}
             <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -2257,7 +2494,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </ScreenContainer>
   );
 };
 

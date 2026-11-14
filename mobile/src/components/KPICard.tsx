@@ -27,7 +27,14 @@ export const KPICard: React.FC<KPICardProps> = ({
         },
       ]}
     >
-      <Text style={[styles.label, { color: colors.inkSoft }]}>{label.toUpperCase()}</Text>
+      <Text
+        style={[styles.label, { color: colors.inkSoft }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.75}
+      >
+        {label.toUpperCase()}
+      </Text>
       <Text
         style={[
           styles.value,
@@ -35,10 +42,22 @@ export const KPICard: React.FC<KPICardProps> = ({
             color: accent === 'primary' ? colors.navy : (colors as any)[accent] || colors.navy,
           },
         ]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.65}
       >
         {value}
       </Text>
-      {subtext && <Text style={[styles.subtext, { color: colors.inkSoft }]}>{subtext}</Text>}
+      {subtext ? (
+        <Text
+          style={[styles.subtext, { color: colors.inkSoft }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.75}
+        >
+          {subtext}
+        </Text>
+      ) : null}
     </View>
   );
 };
@@ -49,6 +68,7 @@ const styles = StyleSheet.create({
     padding: 14,
     borderWidth: 1,
     flex: 1,
+    minWidth: 0,
   },
   label: {
     fontSize: 9.5,

@@ -16,7 +16,6 @@ import {
   MobilePaymentTransaction,
   MobileTicket,
   MobileMoveOut,
-  MobileDispute,
   MobileStaffMember,
   MobileInAppNotification,
   MobilePlanUsage,
@@ -30,6 +29,7 @@ import {
   MobileTenantReview,
   MobilePlan,
   MobilePlatformInvoice,
+  MobilePlatformInvoiceTemplateConfig,
   MobileOwnerSettings,
   MobilePlatformGateways,
   MobileUserProfile,
@@ -127,7 +127,6 @@ export interface MobileAppState {
   payments: MobilePaymentTransaction[];
   tickets: MobileTicket[];
   moveOuts: MobileMoveOut[];
-  disputes: MobileDispute[];
   staff: MobileStaffMember[];
   propertyManagers: MobilePropertyManager[];
   managerPayouts: MobileManagerPayout[];
@@ -142,6 +141,7 @@ export interface MobileAppState {
   plans: MobilePlan[];
   boostPlans: ListingBoostPlan[];
   platformInvoices: MobilePlatformInvoice[];
+  platformInvoiceTemplate?: MobilePlatformInvoiceTemplateConfig;
   ownerSettings: Record<string, MobileOwnerSettings>;
   platformGateways: MobilePlatformGateways;
   defaultTrialDays: number;
@@ -173,7 +173,6 @@ const INITIAL_STATE: MobileAppState = {
   payments: [],
   tickets: [],
   moveOuts: [],
-  disputes: [],
   staff: [],
   propertyManagers: [],
   managerPayouts: [],
@@ -224,7 +223,9 @@ interface MobileAppDataContextType {
       lateFeeApplied?: number;
       lateFeeCalculation?: string;
       finalTotal?: number;
-    }
+      transactionId?: string;
+    },
+    transactionId?: string
   ) => void;
   waiveInvoiceLateFee: (invoiceId: string, reason?: string) => Promise<void>;
   updateLateFeeSettings: (settings: Partial<MobileLateFeeSettings>, ownerId?: string) => Promise<void>;
@@ -248,16 +249,22 @@ interface MobileAppDataContextType {
   saveMoveOut: (moveout: MobileMoveOut) => void;
   addMoveOut: (moveout: MobileMoveOut) => void;
   updateMoveOut: (moveOutId: string, updates: Partial<MobileMoveOut>) => void;
-  createDepositSettlement: (settlement: Partial<MobileMoveOut>) => void;
+  createDepositSettlement: (settlement: Partial<MobileMoveOut> & Partial<MobileDepositSettlement>) => void;
+  completeDepositPayout: (
+    settlementId: string,
+    payoutDetails?: { method?: string; referenceNo?: string; notes?: string }
+  ) => Promise<void>;
   saveDepositSettlement: (settlement: MobileDepositSettlement) => Promise<void>;
-  respondToDepositSettlement: (settlementId: string, status: 'approved' | 'rejected', notes?: string, payoutDetails?: any) => Promise<void>;
+  respondToDepositSettlement: (
+    settlementId: string,
+    status: 'approved' | 'rejected' | 'contested',
+    notes?: string,
+    payoutDetails?: any
+  ) => Promise<void>;
   confirmRefundReceipt: (claimOrMoveOutOrSettleId: string) => Promise<void>;
   confirmCashClaim: (claimOrMoveOutId: string) => void;
   rejectCashClaim: (claimOrMoveOutId: string, reason?: string) => void;
-  submitCashClaim: (claimData: any) => void;
-  saveDispute: (dispute: MobileDispute) => void;
-  updateDispute: (disputeId: string, updates: Partial<MobileDispute>) => void;
-  resolveDispute: (disputeId: string, resolution: string) => void;
+  submitCashClaim: (claimData: any) => Promise<string>;
   saveTenant: (tenant: MobileTenantRecord, password?: string) => Promise<string | void>;
   addTenant: (tenant: MobileTenantRecord, password?: string) => Promise<string | void>;
   addStaff: (member: MobileStaffMember, password?: string) => Promise<string | void>;
@@ -358,7 +365,22 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubReviews = onSnapshot(collection(db, 'reviews'), (snap) => {
       const items: MobileTenantReview[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileTenantReview));
+      snap.forEach((d) => {
+        const raw = d.data() as any;
+        const ownerVal = raw.owner || raw.ownerName || 'Property Owner';
+        const byVal = raw.by || raw.tenantName || 'Verified Resident';
+        const textVal = raw.text || raw.comment || '';
+        items.push({
+          ...raw,
+          id: d.id,
+          owner: ownerVal,
+          ownerName: raw.ownerName || ownerVal,
+          by: byVal,
+          tenantName: raw.tenantName || byVal,
+          text: textVal,
+          comment: raw.comment || textVal,
+        } as MobileTenantReview);
+      });
       setState((prev) => ({ ...prev, reviews: items }));
     }, (err) => handleSyncError('reviews', err));
 
@@ -684,6 +706,12 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       setState((prev) => ({ ...prev, platformInvoices: items }));
     }, (err) => handleSyncError('platformInvoices', err));
 
+    const unsubPlatformTemplate = onSnapshot(doc(db, 'platformConfig', 'invoiceTemplate'), (snap) => {
+      if (snap.exists()) {
+        setState((prev) => ({ ...prev, platformInvoiceTemplate: snap.data() as MobilePlatformInvoiceTemplateConfig }));
+      }
+    }, (err) => handleSyncError('platformInvoiceTemplate', err));
+
     const unsubOwners = onSnapshot(collection(db, 'owners'), (snap) => {
       const ownerMap: Record<string, MobileOwnerSettings> = {};
       snap.forEach((d) => {
@@ -758,6 +786,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubNotifications();
       unsubPlatformSupport();
       unsubPlatformInvoices();
+      unsubPlatformTemplate();
       unsubOwners();
       unsubUsers();
       unsubCommLogs();
@@ -1082,7 +1111,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         payments: [],
         tickets: [],
         moveOuts: [],
-        disputes: [],
         staff: [],
         propertyManagers: [],
         managerPayouts: [],
@@ -1157,12 +1185,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         return false;
       });
 
-      const disputes = (rawState.disputes || []).filter((d) => {
-        if (d.ownerId === myOwnerId) return true;
-        if (d.propertyId && myPropertyIds.has(d.propertyId)) return true;
-        return false;
-      });
-
       const staff = (rawState.staff || []).filter((s) => s.ownerId === myOwnerId);
       const staffIds = new Set(staff.map((s) => s.id));
 
@@ -1233,7 +1255,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         payments,
         tickets,
         moveOuts,
-        disputes,
         staff,
         propertyManagers,
         managerPayouts,
@@ -1434,12 +1455,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         return false;
       });
 
-      const disputes = (rawState.disputes || []).filter((d) => {
-        if (d.tenantId && myTenantIds.has(d.tenantId)) return true;
-        if (d.raisedById === myTenantUserId || (d as any).raisedBy === myTenantUserId || (d as any).userId === myTenantUserId) return true;
-        return false;
-      });
-
       const cashClaims = (rawState.cashClaims || []).filter((c) => {
         if (c.tenantId && myTenantIds.has(c.tenantId)) return true;
         if (c.claimedBy === myTenantUserId) return true;
@@ -1543,7 +1558,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         payments,
         tickets,
         moveOuts,
-        disputes,
         staff: [],
         propertyManagers: [],
         managerPayouts: [],
@@ -1601,7 +1615,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       const payments = (rawState.payments || []).filter((p) => p.propertyId && myPropertyIds.has(p.propertyId));
       const tickets = (rawState.tickets || []).filter((t) => t.propertyId && myPropertyIds.has(t.propertyId));
       const moveOuts = (rawState.moveOuts || []).filter((m) => m.propertyId && myPropertyIds.has(m.propertyId));
-      const disputes = (rawState.disputes || []).filter((d) => d.propertyId && myPropertyIds.has(d.propertyId));
       const staff = (rawState.staff || []).filter((s) => effectiveOwnerId && s.ownerId === effectiveOwnerId);
       const managerPayouts = (rawState.managerPayouts || []).filter(
         (mp) => mp.managerId === currentUserId || (effectiveOwnerId && mp.ownerId === effectiveOwnerId)
@@ -1663,7 +1676,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         payments,
         tickets,
         moveOuts,
-        disputes,
         staff,
         propertyManagers: (rawState.propertyManagers || []).filter(
           (pm) => pm.id === currentUserId || (effectiveOwnerId && pm.ownerId === effectiveOwnerId)
@@ -1748,7 +1760,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         payments: [],
         tickets,
         moveOuts: [],
-        disputes: [],
         staff: staffMember,
         propertyManagers: [],
         managerPayouts: [],
@@ -2150,78 +2161,237 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       lateFeeApplied?: number;
       lateFeeCalculation?: string;
       finalTotal?: number;
-    }
+      transactionId?: string;
+    },
+    transactionId?: string
   ) => {
-    const target = state.invoices.find((i) => i.id === invoiceId);
+    const invTarget = rawState.invoices.find((i) => i.id === invoiceId) || state.invoices.find((i) => i.id === invoiceId);
     const assignedReceipt = receiptNumber || `RCP-${Date.now().toString().slice(-6)}`;
+    const now = new Date().toISOString();
     const isDepositInvoice =
-      (target as any)?.type === 'deposit' ||
-      target?.invoiceType === 'deposit' ||
+      (invTarget as any)?.type === 'deposit' ||
+      invTarget?.invoiceType === 'deposit' ||
       invoiceId.startsWith('INV-DEP');
 
-    const effectiveTotal = additionalMetadata?.finalTotal ?? (target?.total || 0);
-    const effectiveLateFee = additionalMetadata?.lateFeeApplied ?? (target?.lateFeeApplied || 0);
-    const effectiveLateFeeCalc = additionalMetadata?.lateFeeCalculation ?? target?.lateFeeCalculation;
+    const effectiveLateFee = additionalMetadata?.lateFeeApplied ?? (invTarget?.lateFeeApplied || 0);
+    const effectiveLateFeeCalc = additionalMetadata?.lateFeeCalculation ?? invTarget?.lateFeeCalculation;
+    const computedBaseTotal = invTarget
+      ? (typeof invTarget.amount === 'number' && invTarget.amount > 0
+          ? invTarget.amount + (invTarget.tax || 0) + effectiveLateFee
+          : (invTarget.total || 0) + (additionalMetadata?.lateFeeApplied && !invTarget.lateFeeApplied ? effectiveLateFee : 0))
+      : 0;
+    const effectiveTotal = additionalMetadata?.finalTotal ?? computedBaseTotal;
 
-    setState((prev) => {
-      const invTarget = prev.invoices.find((i) => i.id === invoiceId) || target;
-      const targetUnitNum = invTarget?.unit || target?.unit || '';
-      const targetTenantId = invTarget?.tenantId || target?.tenantId || user?.id || '';
-      const targetPropId = invTarget?.propertyId || target?.propertyId || '';
+    const targetUnitNum = invTarget?.unit || '';
+    const targetTenantId = invTarget?.tenantId || user?.id || '';
+    const targetPropId = invTarget?.propertyId || '';
+    const explicitTxnId = transactionId || additionalMetadata?.transactionId;
 
-      const existingTxn = prev.payments.find((p) => p.invoiceId === invoiceId || (receiptNumber && p.id === receiptNumber));
-      const resolvedTxnId = existingTxn ? existingTxn.id : (receiptNumber?.startsWith('TXN-') ? receiptNumber : `TXN-${Date.now().toString().slice(-6)}`);
+    const existingTxn = rawState.payments.find(
+      (p) =>
+        p.invoiceId === invoiceId ||
+        (explicitTxnId && p.id === explicitTxnId) ||
+        (receiptNumber && p.id === receiptNumber)
+    );
+    const resolvedTxnId =
+      explicitTxnId ||
+      existingTxn?.id ||
+      (receiptNumber?.startsWith('TXN-') ? receiptNumber : `TXN-${Date.now().toString().slice(-6)}`);
 
-      const updatedTxn: MobilePaymentTransaction = {
-        ...(existingTxn || {}),
-        id: resolvedTxnId,
-        invoiceId: target?.id || invoiceId,
-        ownerId: target?.ownerId || existingTxn?.ownerId || '',
-        tenant: target?.tenant || existingTxn?.tenant || 'Resident',
-        tenantId: targetTenantId || existingTxn?.tenantId,
-        unit: targetUnitNum || existingTxn?.unit || 'Unit',
-        propertyName: invTarget?.propertyName || target?.propertyName || existingTxn?.propertyName,
-        amount: effectiveTotal,
-        currency: target?.currency || existingTxn?.currency || DEFAULT_CURRENCY_SYMBOL,
-        date: new Date().toISOString().split('T')[0],
-        dueDate: target?.due || existingTxn?.dueDate || '',
-        status: 'paid',
-        method: paymentMethod as any,
-        type: isDepositInvoice ? 'deposit' : 'rent',
-        referenceNo: existingTxn?.referenceNo || `REF/${Date.now().toString().slice(-8)}`,
-        notes: isDepositInvoice
-          ? `Security deposit paid via ${paymentMethod}`
-          : effectiveLateFee > 0
-          ? `Paid via ${paymentMethod} (Includes late fee penalty of ${effectiveLateFee})`
-          : `Paid via ${paymentMethod}`,
-      };
+    const updatedTxn: MobilePaymentTransaction = {
+      ...(existingTxn || {}),
+      id: resolvedTxnId,
+      invoiceId: invTarget?.id || invoiceId,
+      ownerId: invTarget?.ownerId || existingTxn?.ownerId || '',
+      tenant: invTarget?.tenant || existingTxn?.tenant || 'Resident',
+      tenantId: targetTenantId || existingTxn?.tenantId,
+      unit: targetUnitNum || existingTxn?.unit || 'Unit',
+      propertyName: invTarget?.propertyName || existingTxn?.propertyName,
+      propertyId: targetPropId || existingTxn?.propertyId,
+      amount: effectiveTotal,
+      currency: invTarget?.currency || existingTxn?.currency || DEFAULT_CURRENCY_SYMBOL,
+      date: now.split('T')[0],
+      dueDate: invTarget?.due || existingTxn?.dueDate || '',
+      status: 'paid',
+      method: paymentMethod as any,
+      type: isDepositInvoice ? 'deposit' : 'rent',
+      referenceNo: existingTxn?.referenceNo || `REF/${Date.now().toString().slice(-8)}`,
+      notes: isDepositInvoice
+        ? `Security deposit paid via ${paymentMethod}`
+        : effectiveLateFee > 0
+        ? `Paid via ${paymentMethod} (Includes late fee penalty of ${effectiveLateFee})`
+        : `Paid via ${paymentMethod}`,
+    };
 
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'invoices', invoiceId), {
-          status: 'paid',
-          paidAt: new Date().toISOString(),
-          paymentMethodUsed: paymentMethod,
-          receiptNumber: assignedReceipt,
-          total: effectiveTotal,
-          amount: invTarget?.amount || effectiveTotal,
-          invoiceType: isDepositInvoice ? 'deposit' : 'rent',
-          type: isDepositInvoice ? 'deposit' : 'rent',
-          unit: targetUnitNum,
-          propertyId: targetPropId,
-          tenantId: targetTenantId,
-          leaseAgreementId: invTarget?.leaseAgreementId || target?.leaseAgreementId,
-          lateFeeApplied: effectiveLateFee,
-          ...(effectiveLateFeeCalc ? { lateFeeCalculation: effectiveLateFeeCalc } : {}),
-        }, { merge: true }).catch(console.warn);
-        setDoc(doc(db, 'payments', updatedTxn.id), updatedTxn, { merge: true }).catch(console.warn);
+    const invoiceUpdatePayload = cleanFirestoreObject({
+      status: 'paid' as const,
+      paidAt: now,
+      paymentMethodUsed: paymentMethod,
+      receiptNumber: assignedReceipt,
+      total: effectiveTotal,
+      amount: invTarget?.amount || effectiveTotal,
+      invoiceType: isDepositInvoice ? 'deposit' : 'rent',
+      type: isDepositInvoice ? 'deposit' : 'rent',
+      unit: targetUnitNum,
+      propertyId: targetPropId,
+      tenantId: targetTenantId,
+      leaseAgreementId: invTarget?.leaseAgreementId,
+      lateFeeApplied: effectiveLateFee,
+      ...(effectiveLateFeeCalc ? { lateFeeCalculation: effectiveLateFeeCalc } : {}),
+    });
+
+    // Side effects computed outside setState updater
+    let activatedAg: MobileAgreement | undefined;
+    const updatedAgreementIds = new Set<string>();
+    let targetUnitToPersist: MobileUnit | undefined;
+    let propertyOccUpdate: { id: string; occupied: number } | undefined;
+    let m1RentInvoice: MobileInvoice | undefined;
+    const newNotifs: MobileInAppNotification[] = [];
+
+    if (isDepositInvoice) {
+      const matchedAgs = rawState.agreements.filter((a) => {
+        const aUnit = (a.unit || '').toLowerCase().trim();
+        const invTargetUnit = (invTarget?.unit || '').toLowerCase().trim();
+        const matchDep =
+          a.depositInvoiceId === invoiceId ||
+          (invTarget?.leaseAgreementId && a.id === invTarget.leaseAgreementId) ||
+          (invTarget &&
+            aUnit &&
+            invTargetUnit &&
+            aUnit === invTargetUnit &&
+            (!invTarget.propertyId || !a.propertyId || a.propertyId === invTarget.propertyId));
+        return Boolean(matchDep && a.status !== 'terminated' && a.status !== 'cancelled');
+      });
+
+      matchedAgs.forEach((a) => {
+        updatedAgreementIds.add(a.id);
+        if (!activatedAg) {
+          activatedAg = { ...a, depositStatus: 'paid', status: 'active' };
+        }
+      });
+
+      const uNum = activatedAg?.unit || targetUnitNum;
+      const cleanUNum = (uNum || '').toLowerCase().trim();
+      const propId = activatedAg?.propertyId || targetPropId;
+
+      const matchedUnit = rawState.units.find((u) => {
+        const uNumClean = (u.unitNumber || '').toLowerCase().trim();
+        const uIdClean = (u.id || '').toLowerCase().trim();
+        return (
+          cleanUNum &&
+          (uNumClean === cleanUNum || uIdClean === cleanUNum) &&
+          (!propId || !u.propertyId || u.propertyId === propId)
+        );
+      });
+
+      if (matchedUnit) {
+        targetUnitToPersist = {
+          ...matchedUnit,
+          status: 'occupied',
+          tenant: activatedAg?.tenant || invTarget?.tenant || matchedUnit.tenant,
+          currentTenantId: activatedAg?.tenantId || invTarget?.tenantId || matchedUnit.currentTenantId,
+        };
       }
 
+      if (propId) {
+        const occCount = rawState.units.filter((u) => {
+          if (u.propertyId !== propId) return false;
+          if (targetUnitToPersist && u.id === targetUnitToPersist.id) return true;
+          return u.status === 'occupied';
+        }).length;
+        propertyOccUpdate = { id: propId, occupied: occCount };
+      }
+
+      const cleanAgId = (activatedAg?.id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+      const canonicalRentId = `INV-RENT-${cleanAgId}-M1`;
+      const hasRentInv = rawState.invoices.some(
+        (inv) => inv.id === canonicalRentId || (activatedAg?.id && inv.leaseAgreementId === activatedAg.id && inv.type === 'rent')
+      );
+
+      if (!hasRentInv && activatedAg && activatedAg.rent > 0) {
+        const nextMonthDate = new Date();
+        nextMonthDate.setDate(1);
+        nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
+        const rentDueDate = nextMonthDate.toISOString().split('T')[0];
+
+        m1RentInvoice = {
+          id: canonicalRentId,
+          ownerId: activatedAg.ownerId,
+          propertyId: activatedAg.propertyId,
+          tenant: activatedAg.tenant,
+          tenantId: activatedAg.tenantId,
+          unit: activatedAg.unit,
+          propertyName: activatedAg.propertyName,
+          amount: activatedAg.rent,
+          tax: 0,
+          total: activatedAg.rent,
+          due: rentDueDate,
+          status: 'sent',
+          currency: activatedAg.currency || DEFAULT_CURRENCY_SYMBOL,
+          type: 'rent',
+          invoiceType: 'rent',
+          leaseAgreementId: activatedAg.id,
+          items: [{ description: `Monthly Rent - Unit ${activatedAg.unit}`, amount: activatedAg.rent }],
+          createdAt: now,
+        };
+      }
+
+      const ownerRecipient = activatedAg?.ownerId || invTarget?.ownerId || '';
+      newNotifs.push({
+        id: `notif-dep-act-${Date.now()}`,
+        userId: ownerRecipient || undefined,
+        ownerId: ownerRecipient || undefined,
+        title: 'Deposit Paid — Lease Active! 🏡',
+        body: `Security deposit of ${formatCurrencyAmount(effectiveTotal, invTarget?.currency)} settled for Unit ${uNum}. Lease is now fully active!`,
+        category: 'leases',
+        isRead: false,
+        createdAt: now,
+      });
+    } else if (invTarget?.ownerId) {
+      newNotifs.push({
+        id: `notif-pay-${Date.now()}`,
+        userId: invTarget.ownerId,
+        ownerId: invTarget.ownerId,
+        title: 'Payment Received ✓',
+        body: `Payment of ${formatCurrencyAmount(effectiveTotal, invTarget.currency)} received for Unit ${targetUnitNum || 'Unit'} via ${paymentMethod}.`,
+        category: 'bills',
+        isRead: false,
+        createdAt: now,
+        relatedEntityId: invoiceId,
+      });
+    }
+
+    if (isFirebaseConfigured) {
+      setDoc(doc(db, 'invoices', invoiceId), invoiceUpdatePayload, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'payments', updatedTxn.id), cleanFirestoreObject(updatedTxn), { merge: true }).catch(console.warn);
+      updatedAgreementIds.forEach((agId) => {
+        setDoc(doc(db, 'agreements', agId), { status: 'active', depositStatus: 'paid' }, { merge: true }).catch(console.warn);
+      });
+      if (targetUnitToPersist) {
+        setDoc(doc(db, 'units', targetUnitToPersist.id), cleanFirestoreObject({
+          status: 'occupied',
+          tenant: targetUnitToPersist.tenant,
+          currentTenantId: targetUnitToPersist.currentTenantId,
+        }), { merge: true }).catch(console.warn);
+      }
+      if (propertyOccUpdate) {
+        setDoc(doc(db, 'properties', propertyOccUpdate.id), { occupied: propertyOccUpdate.occupied }, { merge: true }).catch(console.warn);
+      }
+      if (m1RentInvoice) {
+        setDoc(doc(db, 'invoices', m1RentInvoice.id), cleanFirestoreObject(m1RentInvoice), { merge: true }).catch(console.warn);
+      }
+      newNotifs.forEach((n) => {
+        setDoc(doc(db, 'notifications', n.id), cleanFirestoreObject(n), { merge: true }).catch(console.warn);
+      });
+    }
+
+    setState((prev) => {
       let updatedInvoices = prev.invoices.map((inv) => {
         if (inv.id === invoiceId) {
           return {
             ...inv,
             status: 'paid' as const,
-            paidAt: new Date().toISOString(),
+            paidAt: now,
             paymentMethodUsed: paymentMethod,
             receiptNumber: assignedReceipt,
             total: effectiveTotal,
@@ -2233,159 +2403,28 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         }
         return inv;
       });
-
-      let updatedAgreements = prev.agreements;
-      let updatedUnits = prev.units;
-      let updatedProperties = prev.properties;
-      const newNotifs: MobileInAppNotification[] = [];
-
-      if (isDepositInvoice) {
-        let activatedAgId = '';
-        updatedAgreements = prev.agreements.map((a) => {
-          const aUnit = (a.unit || '').toLowerCase().trim();
-          const invTargetUnit = (invTarget?.unit || '').toLowerCase().trim();
-          const targetUnitStr = (target?.unit || '').toLowerCase().trim();
-
-          const matchDep =
-            a.depositInvoiceId === invoiceId ||
-            (invTarget?.leaseAgreementId && a.id === invTarget.leaseAgreementId) ||
-            (target?.leaseAgreementId && a.id === target.leaseAgreementId) ||
-            (invTarget &&
-              aUnit &&
-              invTargetUnit &&
-              aUnit === invTargetUnit &&
-              (!invTarget.propertyId || !a.propertyId || a.propertyId === invTarget.propertyId)) ||
-            (target &&
-              aUnit &&
-              targetUnitStr &&
-              aUnit === targetUnitStr &&
-              (!target.propertyId || !a.propertyId || a.propertyId === target.propertyId));
-
-          if (matchDep) {
-            if (a.status === 'pending_deposit') {
-              activatedAgId = a.id;
-              return {
-                ...a,
-                depositStatus: 'paid' as const,
-                status: 'active' as const,
-              };
-            } else {
-              return {
-                ...a,
-                depositStatus: 'paid' as const,
-              };
-            }
-          }
-          return a;
-        });
-
-        const targetAg = updatedAgreements.find((a) => a.id === activatedAgId);
-        const uNum = targetAg?.unit || invTarget?.unit || target?.unit || '';
-        const cleanUNum = (uNum || '').toLowerCase().trim();
-        const propId = targetAg?.propertyId || invTarget?.propertyId || target?.propertyId || '';
-
-        // Persist activated agreement to Firestore immediately so Web updates instantly
-        if (isFirebaseConfigured && targetAg) {
-          setDoc(doc(db, 'agreements', targetAg.id), {
-            status: 'active',
-            depositStatus: 'paid',
-          }, { merge: true }).catch(console.warn);
-        }
-
-        updatedUnits = prev.units.map((u) => {
-          const uNumClean = (u.unitNumber || '').toLowerCase().trim();
-          const uIdClean = (u.id || '').toLowerCase().trim();
-          const matchUnit =
-            cleanUNum &&
-            (uNumClean === cleanUNum || uIdClean === cleanUNum) &&
-            (!propId || !u.propertyId || u.propertyId === propId);
-
-          if (matchUnit) {
-            return {
-              ...u,
-              status: 'occupied' as const,
-              tenant: targetAg?.tenant || invTarget?.tenant || target?.tenant || u.tenant,
-              currentTenantId: targetAg?.tenantId || invTarget?.tenantId || target?.tenantId || u.currentTenantId,
-            };
-          }
-          return u;
-        });
-
-        const targetUnit = updatedUnits.find((u) => {
-          const uNumClean = (u.unitNumber || '').toLowerCase().trim();
-          const uIdClean = (u.id || '').toLowerCase().trim();
-          return (
-            cleanUNum &&
-            (uNumClean === cleanUNum || uIdClean === cleanUNum) &&
-            (!propId || !u.propertyId || u.propertyId === propId)
-          );
-        });
-
-        // Persist occupied unit to Firestore immediately
-        if (isFirebaseConfigured && targetUnit) {
-          setDoc(doc(db, 'units', targetUnit.id), {
-            status: 'occupied',
-            tenant: targetAg?.tenant || invTarget?.tenant || target?.tenant || targetUnit.tenant,
-            currentTenantId: targetAg?.tenantId || invTarget?.tenantId || target?.tenantId || targetUnit.currentTenantId,
-          }, { merge: true }).catch(console.warn);
-        }
-
-        if (propId) {
-          updatedProperties = prev.properties.map((p) => {
-            if (p.id === propId) {
-              const occCount = updatedUnits.filter((u) => u.propertyId === propId && u.status === 'occupied').length;
-              return { ...p, occupied: occCount };
-            }
-            return p;
-          });
-        }
-
-        const cleanAgId = (targetAg?.id || '').replace(/[^a-zA-Z0-9_-]/g, '');
-        const canonicalRentId = `INV-RENT-${cleanAgId}-M1`;
-        const hasRentInv = updatedInvoices.some((inv) => inv.id === canonicalRentId || (inv.leaseAgreementId === targetAg?.id && inv.type === 'rent'));
-
-        if (!hasRentInv && targetAg && targetAg.rent > 0) {
-          const nextMonthDate = new Date();
-          nextMonthDate.setDate(1);
-          nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
-          const rentDueDate = nextMonthDate.toISOString().split('T')[0];
-
-          const m1RentInvoice: MobileInvoice = {
-            id: canonicalRentId,
-            ownerId: targetAg.ownerId,
-            propertyId: targetAg.propertyId,
-            tenant: targetAg.tenant,
-            tenantId: targetAg.tenantId,
-            unit: targetAg.unit,
-            propertyName: targetAg.propertyName,
-            amount: targetAg.rent,
-            tax: 0,
-            total: targetAg.rent,
-            due: rentDueDate,
-            status: 'sent',
-            currency: targetAg.currency || DEFAULT_CURRENCY_SYMBOL,
-            type: 'rent',
-            invoiceType: 'rent',
-            leaseAgreementId: targetAg.id,
-            items: [{ description: `Monthly Rent - Unit ${targetAg.unit}`, amount: targetAg.rent }],
-            createdAt: new Date().toISOString(),
-          };
-          updatedInvoices = [m1RentInvoice, ...updatedInvoices];
-
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'invoices', m1RentInvoice.id), m1RentInvoice, { merge: true }).catch(console.warn);
-          }
-        }
-
-        newNotifs.push({
-          id: `notif-dep-act-${Date.now()}`,
-          title: 'Deposit Paid — Lease Active! 🏡',
-          body: `Security deposit of ${formatCurrencyAmount(target?.total || 0, target?.currency)} settled for Unit ${uNum}. Lease is now fully active!`,
-          category: 'leases',
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        });
+      if (m1RentInvoice) {
+        updatedInvoices = [m1RentInvoice, ...updatedInvoices.filter((i) => i.id !== m1RentInvoice!.id)];
       }
+
+      const updatedAgreements =
+        updatedAgreementIds.size > 0
+          ? prev.agreements.map((a) =>
+              updatedAgreementIds.has(a.id)
+                ? { ...a, depositStatus: 'paid' as const, status: 'active' as const }
+                : a
+            )
+          : prev.agreements;
+
+      const updatedUnits = targetUnitToPersist
+        ? prev.units.map((u) => (u.id === targetUnitToPersist!.id ? targetUnitToPersist! : u))
+        : prev.units;
+
+      const updatedProperties = propertyOccUpdate
+        ? prev.properties.map((p) =>
+            p.id === propertyOccUpdate!.id ? { ...p, occupied: propertyOccUpdate!.occupied } : p
+          )
+        : prev.properties;
 
       return {
         ...prev,
@@ -2428,6 +2467,9 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         isRead: false,
         createdAt: new Date().toISOString(),
       };
+      if (isFirebaseConfigured) {
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      }
       setState((prev) => ({
         ...prev,
         notifications: [notif, ...(prev.notifications || [])],
@@ -2488,26 +2530,27 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   const saveTicket = (ticket: MobileTicket) => {
     const ownerIdToSet = ticket.ownerId || (user?.role === 'owner' ? user.id : user?.ownerId) || '';
     const ticketToSave: MobileTicket = { ...ticket, ownerId: ownerIdToSet };
+    const notif: MobileInAppNotification = {
+      id: `notif-tck-${Date.now()}`,
+      userId: ownerIdToSet || undefined,
+      title: `Repair Request: ${ticketToSave.category}`,
+      body: `${ticketToSave.unit} reported: ${ticketToSave.issue}`,
+      category: 'repairs',
+      isRead: false,
+      createdAt: new Date().toISOString(),
+      relatedEntityId: ticketToSave.id,
+      recipientId: ownerIdToSet,
+      ownerId: ownerIdToSet,
+    };
     if (isFirebaseConfigured) {
-      setDoc(doc(db, 'tickets', ticketToSave.id), ticketToSave, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'tickets', ticketToSave.id), cleanFirestoreObject(ticketToSave), { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
     }
     setState((prev) => {
       const exists = prev.tickets.some((t) => t.id === ticketToSave.id);
       const updated = exists
         ? prev.tickets.map((t) => (t.id === ticketToSave.id ? ticketToSave : t))
         : [ticketToSave, ...prev.tickets];
-
-      const notif: MobileInAppNotification = {
-        id: `notif-tck-${Date.now()}`,
-        title: `Repair Request: ${ticketToSave.category}`,
-        body: `${ticketToSave.unit} reported: ${ticketToSave.issue}`,
-        category: 'repairs',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-        relatedEntityId: ticketToSave.id,
-        recipientId: ownerIdToSet,
-        ownerId: ownerIdToSet,
-      };
 
       return {
         ...prev,
@@ -2723,66 +2766,366 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   };
 
-  const createDepositSettlement = (settlement: Partial<MobileMoveOut>) => {
-    const isSettled = settlement.status === 'settled' || settlement.status === 'refund_completed';
+  const persistMoveOutSideEffects = (
+    sideEffects: Partial<ReturnType<typeof applyMoveOutSettlementState>>,
+    baseState: MobileAppState
+  ) => {
+    if (!isFirebaseConfigured || !sideEffects) return;
+    sideEffects.units?.forEach((u) => {
+      const prevU = baseState.units.find((ou) => ou.id === u.id);
+      if (prevU && prevU.status !== u.status) {
+        setDoc(doc(db, 'units', u.id), cleanFirestoreObject({
+          status: u.status,
+          tenant: u.tenant ?? null,
+          currentTenantId: u.currentTenantId ?? null,
+        }), { merge: true }).catch(console.warn);
+      }
+    });
+    sideEffects.agreements?.forEach((a) => {
+      const prevA = baseState.agreements.find((oa) => oa.id === a.id);
+      if (prevA && (prevA.status !== a.status || prevA.depositStatus !== a.depositStatus)) {
+        setDoc(doc(db, 'agreements', a.id), cleanFirestoreObject({
+          status: a.status,
+          depositStatus: a.depositStatus,
+        }), { merge: true }).catch(console.warn);
+      }
+    });
+    sideEffects.tenants?.forEach((t) => {
+      const prevT = baseState.tenants.find((ot) => ot.id === t.id);
+      if (prevT && (prevT.unit !== t.unit || (prevT.unitsRented?.length || 0) !== (t.unitsRented?.length || 0))) {
+        setDoc(doc(db, 'tenants', t.id), cleanFirestoreObject(t), { merge: true }).catch(console.warn);
+      }
+    });
+    sideEffects.properties?.forEach((p) => {
+      const prevP = baseState.properties.find((op) => op.id === p.id);
+      if (prevP && prevP.occupied !== p.occupied) {
+        setDoc(doc(db, 'properties', p.id), { occupied: p.occupied }, { merge: true }).catch(console.warn);
+      }
+    });
+    sideEffects.invoices?.forEach((inv) => {
+      const prevI = baseState.invoices.find((oi) => oi.id === inv.id);
+      if (prevI && prevI.status !== inv.status) {
+        setDoc(doc(db, 'invoices', inv.id), cleanFirestoreObject({
+          status: inv.status,
+          notes: (inv as any).notes,
+        }), { merge: true }).catch(console.warn);
+      }
+    });
+    sideEffects.tenancyRequests?.forEach((r) => {
+      const prevR = baseState.tenancyRequests.find((or) => or.id === r.id);
+      if (prevR && prevR.status !== r.status) {
+        setDoc(doc(db, 'tenancyRequests', r.id), { status: r.status }, { merge: true }).catch(console.warn);
+      }
+    });
+  };
+
+  const createDepositSettlement = (settlement: Partial<MobileMoveOut> & Partial<MobileDepositSettlement>) => {
+    const isSettled = (settlement.status as string) === 'settled' || settlement.status === 'refund_completed' || (settlement.status as string) === 'refunded';
     const moveOutStatus = isSettled ? 'refund_completed' : 'refund_scheduled';
     const settlementStatus = isSettled ? 'refunded' : 'awaiting_tenant_approval';
-    if (isFirebaseConfigured && settlement.id) {
-      setDoc(doc(db, 'moveouts', settlement.id), cleanFirestoreObject({ ...settlement, status: moveOutStatus }), { merge: true }).catch(console.warn);
-      const settleDocId = settlement.id.startsWith('DEP-SETTLE-') ? settlement.id : `DEP-SETTLE-${settlement.id}`;
-      const settlePayload = {
-        id: settleDocId,
-        moveOutId: settlement.id,
-        agreementId: settlement.agreementId || '',
-        unit: settlement.unit,
-        propertyId: settlement.propertyId,
-        tenantId: settlement.tenantId,
-        tenantName: settlement.tenantName,
-        currency: normalizeCurrencyCode(settlement.currency || 'USD'),
-        grossDepositHeld: (settlement as any).deposit || (settlement as any).grossDepositHeld || 0,
-        totalDeductions: settlement.totalDeductions || 0,
-        netRefundableAmount: settlement.netRefundAmount,
-        status: settlementStatus,
-        deductions: (settlement.inspectionChecklist || [])
-          .filter((c) => c.deduction > 0)
-          .map((c, i) => ({
-            id: `ded-${i}`,
-            title: `${c.room} - ${c.item}`,
-            amount: c.deduction,
-            category: 'repair_damage',
-          })),
-        createdAt: new Date().toISOString(),
-      };
+    const now = new Date().toISOString();
+
+    const matchedMo = rawState.moveOuts.find(
+      (m) => m.id === settlement.id || m.id === settlement.moveOutId || (settlement.unit && m.unit === settlement.unit && (!settlement.propertyId || m.propertyId === settlement.propertyId))
+    );
+    const matchedAg = rawState.agreements.find(
+      (a) =>
+        (settlement.agreementId && a.id === settlement.agreementId) ||
+        (matchedMo?.agreementId && a.id === matchedMo.agreementId) ||
+        (settlement.unit && a.unit === settlement.unit && (!settlement.propertyId || !a.propertyId || a.propertyId === settlement.propertyId) && a.status !== 'terminated')
+    );
+    const matchedTenant = rawState.tenants.find(
+      (t) =>
+        t.id === (settlement.tenantId || matchedMo?.tenantId || matchedAg?.tenantId) ||
+        (settlement.tenantEmail && t.email?.toLowerCase() === settlement.tenantEmail.toLowerCase())
+    );
+
+    const resolvedOwnerId =
+      settlement.ownerId ||
+      matchedMo?.ownerId ||
+      matchedAg?.ownerId ||
+      matchedTenant?.ownerId ||
+      (user?.role === 'owner' ? user.id : user?.ownerId) ||
+      '';
+    const resolvedUnit = settlement.unit || matchedMo?.unit || matchedAg?.unit || '';
+    const resolvedPropId = settlement.propertyId || matchedMo?.propertyId || matchedAg?.propertyId || '';
+    const resolvedTenantId = settlement.tenantId || matchedMo?.tenantId || matchedAg?.tenantId || matchedTenant?.id || '';
+    const resolvedTenantName = settlement.tenantName || matchedMo?.tenantName || matchedAg?.tenant || matchedTenant?.name || 'Resident';
+    const resolvedTenantEmail = settlement.tenantEmail || (matchedMo as any)?.tenantEmail || matchedAg?.tenantEmail || matchedTenant?.email || '';
+    const resolvedAgreementId = settlement.agreementId || matchedMo?.agreementId || matchedAg?.id || '';
+    const resolvedCurrency = normalizeCurrencyCode(settlement.currency || matchedMo?.currency || matchedAg?.currency || 'USD');
+    const resolvedGross = (settlement as any).grossDepositHeld ?? (settlement as any).depositHeld ?? (settlement as any).deposit ?? matchedMo?.depositHeld ?? matchedMo?.deposit ?? matchedAg?.deposit ?? 0;
+    const resolvedTotalDeductions = settlement.totalDeductions ?? matchedMo?.totalDeductions ?? 0;
+    const resolvedNetRefund = (settlement as any).netRefundableAmount ?? settlement.netRefundAmount ?? Math.max(0, resolvedGross - resolvedTotalDeductions);
+
+    const baseId = settlement.id || matchedMo?.id || `MO-${Date.now()}`;
+    const settleDocId = baseId.startsWith('DEP-SETTLE-') ? baseId : `DEP-SETTLE-${baseId}`;
+    const resolvedMoveOutId = settlement.moveOutId || matchedMo?.id || (baseId.startsWith('DEP-SETTLE-') ? baseId.replace(/^DEP-SETTLE-/, '') : baseId);
+
+    const settlePayload: MobileDepositSettlement = {
+      id: settleDocId,
+      moveOutId: resolvedMoveOutId,
+      agreementId: resolvedAgreementId,
+      ownerId: resolvedOwnerId,
+      unit: resolvedUnit,
+      propertyId: resolvedPropId,
+      propertyName: settlement.propertyName || matchedMo?.propertyName || matchedAg?.propertyName,
+      tenantId: resolvedTenantId,
+      tenantName: resolvedTenantName,
+      tenantEmail: resolvedTenantEmail || undefined,
+      currency: resolvedCurrency,
+      grossDepositHeld: resolvedGross,
+      totalDeductions: resolvedTotalDeductions,
+      netRefundableAmount: resolvedNetRefund,
+      status: settlementStatus as any,
+      deductions:
+        settlement.deductions && settlement.deductions.length > 0
+          ? settlement.deductions
+          : (settlement.inspectionChecklist || matchedMo?.inspectionChecklist || [])
+              .filter((c) => c.deduction > 0)
+              .map((c, i) => ({
+                id: `ded-${i}`,
+                title: `${c.room} - ${c.item}`,
+                amount: c.deduction,
+                category: 'repair_damage',
+              })),
+      createdAt: settlement.createdAt || now,
+      ...({ updatedAt: now } as any),
+      ...(isSettled ? { disbursedAt: now } : {}),
+    };
+
+    const nextDepStatus = isSettled ? 'refunded' : 'settlement_pending';
+    const sideEffects: Partial<ReturnType<typeof applyMoveOutSettlementState>> = isSettled
+      ? applyMoveOutSettlementState(rawState, matchedMo || ({ ...settlement, unit: resolvedUnit, propertyId: resolvedPropId, tenantId: resolvedTenantId, tenantName: resolvedTenantName, agreementId: resolvedAgreementId } as any), settlement)
+      : {};
+
+    const notif: MobileInAppNotification = {
+      id: `notif-settle-${Date.now()}`,
+      userId: resolvedTenantId || undefined,
+      ownerId: resolvedOwnerId || undefined,
+      title: isSettled ? 'Deposit Settlement Finalized ✓' : 'Deposit Settlement Statement Ready',
+      body: isSettled
+        ? `Move-out settlement for Unit ${resolvedUnit} completed (${formatCurrencyAmount(resolvedNetRefund, resolvedCurrency)}). Unit is now vacant and ready for leasing.`
+        : `Inspection completed for Unit ${resolvedUnit}. Net refundable deposit: ${formatCurrencyAmount(resolvedNetRefund, resolvedCurrency)}. Please review and claim.`,
+      category: 'leases',
+      isRead: false,
+      createdAt: now,
+      relatedEntityId: settleDocId,
+    };
+
+    if (isFirebaseConfigured) {
+      setDoc(
+        doc(db, 'moveouts', resolvedMoveOutId),
+        cleanFirestoreObject({
+          ...settlement,
+          id: resolvedMoveOutId,
+          ownerId: resolvedOwnerId,
+          agreementId: resolvedAgreementId,
+          unit: resolvedUnit,
+          propertyId: resolvedPropId,
+          tenantId: resolvedTenantId,
+          tenantName: resolvedTenantName,
+          currency: resolvedCurrency,
+          depositHeld: resolvedGross,
+          totalDeductions: resolvedTotalDeductions,
+          netRefundAmount: resolvedNetRefund,
+          status: moveOutStatus,
+          settlementStatus,
+          ...(isSettled ? { settledAt: now } : {}),
+        }),
+        { merge: true }
+      ).catch(console.warn);
+
       setDoc(doc(db, 'depositSettlements', settleDocId), cleanFirestoreObject(settlePayload), { merge: true }).catch(console.warn);
-      if (settlement.id !== settleDocId) {
+      if (settlement.id && settlement.id !== settleDocId && settlement.id.startsWith('DEP-SETTLE-')) {
         deleteDoc(doc(db, 'depositSettlements', settlement.id)).catch(() => {});
       }
+      if (!isSettled && resolvedAgreementId) {
+        setDoc(doc(db, 'agreements', resolvedAgreementId), { depositStatus: nextDepStatus }, { merge: true }).catch(console.warn);
+      }
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      if (isSettled) {
+        persistMoveOutSideEffects(sideEffects, rawState);
+      }
     }
-    setState((prev) => {
-      const target = prev.moveOuts.find((m) => m.id === settlement.id);
-      const updatedMoveOuts = prev.moveOuts.map((m) =>
-        m.id === settlement.id ? { ...m, ...settlement, status: moveOutStatus as any } : m
-      );
-      const sideEffects = isSettled ? applyMoveOutSettlementState(prev, target, settlement) : {};
 
-      const notif: MobileInAppNotification = {
-        id: `notif-settle-${Date.now()}`,
-        title: isSettled ? 'Deposit Settlement Finalized ✓' : 'Settlement Voucher Prepared',
-        body: isSettled
-          ? `Move-out settlement for Unit ${settlement.unit || target?.unit || ''} completed. Unit is now vacant and ready for leasing.`
-          : `Inspection completed for Unit ${settlement.unit || target?.unit || ''}. Deductions calculated and settlement statement generated.`,
-        category: 'leases',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
+    if (resolvedTenantId) {
+      logCommunication({
+        type: isSettled ? 'deposit_settlement_completed' : 'deposit_settlement_created',
+        category: 'deposit',
+        title: notif.title,
+        body: notif.body,
+        channels: ['in_app', 'email'],
+        recipientId: resolvedTenantId,
+        recipientName: resolvedTenantName,
+        recipientRole: 'tenant',
+        recipientContact: { email: resolvedTenantEmail || undefined },
+        senderId: resolvedOwnerId || 'system',
+        senderName: 'Property Owner',
+        senderRole: 'owner',
+        ownerId: resolvedOwnerId,
+        unitNumber: resolvedUnit,
+        relatedEntityId: settleDocId,
+        deliveryStatus: { inApp: 'delivered' },
+      }).catch(console.warn);
+    }
+
+    setState((prev) => {
+      const updatedMoveOuts = prev.moveOuts.map((m) =>
+        m.id === resolvedMoveOutId || m.id === settlement.id
+          ? { ...m, ...(settlement as any), ownerId: resolvedOwnerId, agreementId: resolvedAgreementId, status: moveOutStatus as any, settlementStatus: settlementStatus as any }
+          : m
+      );
+      const updatedAgreements =
+        !isSettled && resolvedAgreementId
+          ? prev.agreements.map((a) => (a.id === resolvedAgreementId ? { ...a, depositStatus: nextDepStatus as any } : a))
+          : (sideEffects.agreements || prev.agreements);
+      const updatedSettlements = [
+        settlePayload,
+        ...prev.depositSettlements.filter((s) => s.id !== settleDocId && s.id !== settlement.id),
+      ];
 
       return {
         ...prev,
         moveOuts: updatedMoveOuts,
+        depositSettlements: updatedSettlements,
         ...sideEffects,
+        agreements: updatedAgreements,
         notifications: [notif, ...prev.notifications],
       };
     });
+  };
+
+  const completeDepositPayout = async (
+    settlementId: string,
+    payoutDetails?: { method?: string; referenceNo?: string; notes?: string }
+  ): Promise<void> => {
+    const strippedId = settlementId.replace(/^DEP-SETTLE-/, '');
+    const now = new Date().toISOString();
+    const matchedSettle = rawState.depositSettlements.find(
+      (s) => s.id === settlementId || s.id === strippedId || s.id === `DEP-SETTLE-${strippedId}`
+    );
+    const matchedMo = rawState.moveOuts.find(
+      (m) =>
+        m.id === settlementId ||
+        m.id === strippedId ||
+        (matchedSettle && (m.id === matchedSettle.moveOutId || m.unit === matchedSettle.unit))
+    );
+
+    const targetUnit = matchedSettle?.unit || matchedMo?.unit || '';
+    const targetPropId = matchedSettle?.propertyId || matchedMo?.propertyId || '';
+    const targetTenantId = matchedSettle?.tenantId || matchedMo?.tenantId || '';
+    const targetTenantName = matchedSettle?.tenantName || matchedMo?.tenantName || 'Resident';
+    const targetOwnerId = matchedSettle?.ownerId || matchedMo?.ownerId || (user?.role === 'owner' ? user.id : user?.ownerId) || '';
+    const targetCurrency = normalizeCurrencyCode(matchedSettle?.currency || matchedMo?.currency || 'USD');
+    const refundAmount = matchedSettle?.netRefundableAmount ?? matchedMo?.netRefundAmount ?? 0;
+    const payoutMethod = payoutDetails?.method || matchedSettle?.disbursementMethod || 'Bank Transfer';
+
+    const updatedSettle: MobileDepositSettlement | undefined = matchedSettle
+      ? {
+          ...matchedSettle,
+          status: 'refunded',
+          disbursedAt: now,
+          disbursementMethod: payoutMethod,
+          ...({ ...(payoutDetails?.referenceNo || (matchedSettle as any).payoutRef ? { payoutRef: payoutDetails?.referenceNo || (matchedSettle as any).payoutRef } : {}), updatedAt: now } as any),
+        }
+      : undefined;
+
+    const updatedMo: MobileMoveOut | undefined = matchedMo
+      ? {
+          ...matchedMo,
+          status: 'refund_completed',
+          settledAt: now,
+          settlementStatus: 'refunded',
+        }
+      : undefined;
+
+    const refundTxn: MobilePaymentTransaction | undefined =
+      refundAmount > 0
+        ? {
+            id: `TXN-DEP-REF-${Date.now().toString().slice(-6)}`,
+            ownerId: targetOwnerId,
+            tenant: targetTenantName,
+            tenantId: targetTenantId,
+            unit: targetUnit,
+            propertyId: targetPropId,
+            propertyName: matchedSettle?.propertyName || matchedMo?.propertyName,
+            amount: refundAmount,
+            currency: targetCurrency,
+            date: now.split('T')[0],
+            status: 'paid',
+            direction: 'outflow',
+            method: payoutMethod as any,
+            type: 'deposit_refund',
+            referenceNo: payoutDetails?.referenceNo || `REF-DEP-${Date.now().toString().slice(-6)}`,
+            notes: payoutDetails?.notes || `Deposit refund disbursed for Unit ${targetUnit}`,
+          }
+        : undefined;
+
+    const sideEffects = applyMoveOutSettlementState(
+      rawState,
+      matchedMo || ({ unit: targetUnit, propertyId: targetPropId, tenantId: targetTenantId, tenantName: targetTenantName, agreementId: matchedSettle?.agreementId } as any)
+    );
+
+    const tenantNotif: MobileInAppNotification = {
+      id: `notif-payout-${Date.now()}`,
+      userId: targetTenantId || undefined,
+      ownerId: targetOwnerId || undefined,
+      title: 'Deposit Refund Disbursed ✓',
+      body: `Security deposit refund of ${formatCurrencyAmount(refundAmount, targetCurrency)} for Unit ${targetUnit} has been disbursed via ${payoutMethod}.`,
+      category: 'bills',
+      isRead: false,
+      createdAt: now,
+      relatedEntityId: matchedSettle?.id || matchedMo?.id || settlementId,
+    };
+
+    if (isFirebaseConfigured) {
+      if (updatedSettle) {
+        await setDoc(doc(db, 'depositSettlements', updatedSettle.id), cleanFirestoreObject(updatedSettle), { merge: true }).catch(console.warn);
+      }
+      if (updatedMo) {
+        await setDoc(doc(db, 'moveouts', updatedMo.id), cleanFirestoreObject(updatedMo), { merge: true }).catch(console.warn);
+      }
+      if (refundTxn) {
+        await setDoc(doc(db, 'payments', refundTxn.id), cleanFirestoreObject(refundTxn), { merge: true }).catch(console.warn);
+      }
+      persistMoveOutSideEffects(sideEffects, rawState);
+      await setDoc(doc(db, 'notifications', tenantNotif.id), cleanFirestoreObject(tenantNotif), { merge: true }).catch(console.warn);
+    }
+
+    if (targetTenantId) {
+      logCommunication({
+        type: 'deposit_refund_disbursed',
+        category: 'deposit',
+        title: tenantNotif.title,
+        body: tenantNotif.body,
+        channels: ['in_app', 'email', 'sms'],
+        recipientId: targetTenantId,
+        recipientName: targetTenantName,
+        recipientRole: 'tenant',
+        recipientContact: { email: matchedSettle?.tenantEmail },
+        senderId: targetOwnerId || 'system',
+        senderName: 'Property Owner',
+        senderRole: 'owner',
+        ownerId: targetOwnerId,
+        unitNumber: targetUnit,
+        relatedEntityId: updatedSettle?.id || updatedMo?.id,
+        deliveryStatus: { inApp: 'delivered' },
+      }).catch(console.warn);
+    }
+
+    setState((prev) => ({
+      ...prev,
+      depositSettlements: updatedSettle
+        ? prev.depositSettlements.map((s) => (s.id === updatedSettle.id ? updatedSettle : s))
+        : prev.depositSettlements,
+      moveOuts: updatedMo
+        ? prev.moveOuts.map((m) => (m.id === updatedMo.id ? updatedMo : m))
+        : prev.moveOuts,
+      payments: refundTxn ? [refundTxn, ...prev.payments] : prev.payments,
+      ...sideEffects,
+      notifications: [tenantNotif, ...prev.notifications],
+    }));
   };
 
   const saveDepositSettlement = async (settlement: MobileDepositSettlement) => {
@@ -2806,39 +3149,96 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const respondToDepositSettlement = async (
     settlementId: string,
-    status: 'approved' | 'rejected',
+    status: 'approved' | 'rejected' | 'contested',
     notes?: string,
     payoutDetails?: any
   ) => {
-    const strippedId = settlementId.replace('DEP-SETTLE-', '');
-    const matched = rawState.depositSettlements.find((s) => s.id === settlementId || s.id === strippedId);
-    const matchedMo = rawState.moveOuts.find((m) => m.id === settlementId || m.id === strippedId || (matched && m.unit === matched.unit));
+    const strippedId = settlementId.replace(/^DEP-SETTLE-/, '');
+    const now = new Date().toISOString();
+    const matched = rawState.depositSettlements.find((s) => s.id === settlementId || s.id === strippedId || s.id === `DEP-SETTLE-${strippedId}`);
+    const matchedMo = rawState.moveOuts.find(
+      (m) =>
+        m.id === settlementId ||
+        m.id === strippedId ||
+        (matched && (m.id === matched.moveOutId || m.unit === matched.unit))
+    );
+
+    const isApproved = status === 'approved';
+    const isContestedOrRejected = status === 'rejected' || status === 'contested';
 
     const updatedSettlement: Partial<MobileDepositSettlement> = {
       status,
       chosenPayoutDetails: payoutDetails || matched?.chosenPayoutDetails,
-      rejectionReason: status === 'rejected' ? notes : undefined,
-      revisionNotes: status === 'rejected' ? notes : undefined,
+      rejectionReason: isContestedOrRejected ? notes : undefined,
+      revisionNotes: isContestedOrRejected ? notes : undefined,
+      ...({ updatedAt: now } as any),
     };
 
     const updatedMoveOut: Partial<MobileMoveOut> = {
-      status: status === 'approved' ? 'refund_scheduled' : 'disputed',
-      settlementStatus: status === 'approved' ? 'approved' : 'rejected',
-      tenantApprovedSettlement: status === 'approved',
-      tenantDisputeRaised: status === 'rejected',
+      status: isApproved ? 'refund_scheduled' : 'disputed',
+      settlementStatus: status,
+      tenantApprovedSettlement: isApproved,
+      tenantDisputeRaised: isContestedOrRejected,
       chosenPayoutDetails: payoutDetails || matchedMo?.chosenPayoutDetails,
     };
 
+    const targetOwnerId = matched?.ownerId || matchedMo?.ownerId || '';
+    const targetUnit = matched?.unit || matchedMo?.unit || '';
+    const targetTenantName = matched?.tenantName || matchedMo?.tenantName || user?.displayName || 'Resident';
+
+    const ownerNotif: MobileInAppNotification | null = targetOwnerId
+      ? {
+          id: `notif-settle-resp-${Date.now()}`,
+          userId: targetOwnerId,
+          ownerId: targetOwnerId,
+          title: isApproved ? `Settlement Approved: Unit ${targetUnit}` : `Settlement ${status === 'contested' ? 'Contested' : 'Rejected'}: Unit ${targetUnit}`,
+          body: isApproved
+            ? `${targetTenantName} approved the deposit settlement for Unit ${targetUnit}. Ready for refund disbursement.`
+            : `${targetTenantName} ${status === 'contested' ? 'contested' : 'rejected'} the deposit settlement for Unit ${targetUnit}.${notes ? ` Reason: "${notes}"` : ''}`,
+          category: 'leases',
+          isRead: false,
+          createdAt: now,
+          relatedEntityId: matched?.id || settlementId,
+        }
+      : null;
+
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'depositSettlements', settlementId), cleanFirestoreObject(updatedSettlement), { merge: true });
-        await setDoc(doc(db, 'depositSettlements', strippedId), cleanFirestoreObject(updatedSettlement), { merge: true });
+        const settleDocKey = matched?.id || settlementId;
+        await setDoc(doc(db, 'depositSettlements', settleDocKey), cleanFirestoreObject(updatedSettlement), { merge: true });
+        if (strippedId && strippedId !== settleDocKey) {
+          await setDoc(doc(db, 'depositSettlements', strippedId), cleanFirestoreObject(updatedSettlement), { merge: true });
+        }
         if (matchedMo) {
           await setDoc(doc(db, 'moveouts', matchedMo.id), cleanFirestoreObject(updatedMoveOut), { merge: true });
+        }
+        if (ownerNotif) {
+          await setDoc(doc(db, 'notifications', ownerNotif.id), cleanFirestoreObject(ownerNotif), { merge: true });
         }
       } catch (err) {
         console.warn('Firestore respondToDepositSettlement error:', err);
       }
+    }
+
+    if (targetOwnerId && ownerNotif) {
+      logCommunication({
+        type: isApproved ? 'deposit_settlement_approved' : 'deposit_settlement_contested',
+        category: 'deposit',
+        title: ownerNotif.title,
+        body: ownerNotif.body,
+        channels: ['in_app', 'email'],
+        recipientId: targetOwnerId,
+        recipientName: 'Property Owner',
+        recipientRole: 'owner',
+        recipientContact: {},
+        senderId: matched?.tenantId || matchedMo?.tenantId || user?.id || 'tenant',
+        senderName: targetTenantName,
+        senderRole: 'system',
+        ownerId: targetOwnerId,
+        unitNumber: targetUnit,
+        relatedEntityId: matched?.id || settlementId,
+        deliveryStatus: { inApp: 'delivered' },
+      }).catch(console.warn);
     }
 
     setState((prev) => ({
@@ -2853,284 +3253,342 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
           ? { ...m, ...updatedMoveOut }
           : m
       ),
+      notifications: ownerNotif ? [ownerNotif, ...prev.notifications] : prev.notifications,
     }));
   };
 
   const confirmRefundReceipt = async (claimOrMoveOutOrSettleId: string) => {
-    const strippedId = claimOrMoveOutOrSettleId.replace('DEP-SETTLE-', '');
+    const strippedId = claimOrMoveOutOrSettleId.replace(/^DEP-SETTLE-/, '');
     const now = new Date().toISOString();
 
-    setState((prev) => {
-      const matchedSettle = prev.depositSettlements.find(
-        (s) => s.id === claimOrMoveOutOrSettleId || s.id === strippedId || s.id === `DEP-SETTLE-${strippedId}`
-      );
-      const matchedMo = prev.moveOuts.find(
-        (m) =>
-          m.id === claimOrMoveOutOrSettleId ||
-          m.id === strippedId ||
-          (matchedSettle && (m.unit === matchedSettle.unit || m.id === matchedSettle.moveOutId))
-      );
+    const matchedSettle = rawState.depositSettlements.find(
+      (s) => s.id === claimOrMoveOutOrSettleId || s.id === strippedId || s.id === `DEP-SETTLE-${strippedId}`
+    );
+    const matchedMo = rawState.moveOuts.find(
+      (m) =>
+        m.id === claimOrMoveOutOrSettleId ||
+        m.id === strippedId ||
+        (matchedSettle && (m.unit === matchedSettle.unit || m.id === matchedSettle.moveOutId))
+    );
 
-      const targetUnit = matchedMo?.unit || matchedSettle?.unit;
-      const targetPropId = matchedMo?.propertyId || matchedSettle?.propertyId;
-      const targetTenantId = matchedMo?.tenantId || matchedSettle?.tenantId;
-      const targetTenantName = matchedMo?.tenantName || matchedSettle?.tenantName;
+    const targetUnit = matchedMo?.unit || matchedSettle?.unit;
+    const targetPropId = matchedMo?.propertyId || matchedSettle?.propertyId;
+    const targetTenantId = matchedMo?.tenantId || matchedSettle?.tenantId;
+    const targetTenantName = matchedMo?.tenantName || matchedSettle?.tenantName;
+    const targetOwnerId = matchedSettle?.ownerId || matchedMo?.ownerId || '';
 
-      const updatedSettlements = prev.depositSettlements.map((s) => {
-        if (s.id === claimOrMoveOutOrSettleId || s.id === strippedId || s.id === `DEP-SETTLE-${strippedId}` || (targetUnit && s.unit === targetUnit)) {
+    const settlementsToPersist: MobileDepositSettlement[] = [];
+    const updatedSettlements = rawState.depositSettlements.map((s) => {
+      if (
+        s.id === claimOrMoveOutOrSettleId ||
+        s.id === strippedId ||
+        s.id === `DEP-SETTLE-${strippedId}` ||
+        (targetUnit && s.unit === targetUnit)
+      ) {
+        const upSettle: MobileDepositSettlement = {
+          ...s,
+          status: 'refunded',
+          tenantConfirmedReceipt: true,
+          tenantConfirmedAt: now,
+        };
+        settlementsToPersist.push(upSettle);
+        return upSettle;
+      }
+      return s;
+    });
+
+    const moveOutsToPersist: MobileMoveOut[] = [];
+    const updatedMoveOuts = rawState.moveOuts.map((m) => {
+      if (
+        m.id === matchedMo?.id ||
+        m.id === claimOrMoveOutOrSettleId ||
+        m.id === strippedId ||
+        (targetUnit && m.unit === targetUnit)
+      ) {
+        const upMo: MobileMoveOut = {
+          ...m,
+          status: 'refund_completed',
+          settledAt: now,
+          tenantConfirmedReceipt: true,
+          tenantConfirmedAt: now,
+        };
+        moveOutsToPersist.push(upMo);
+        return upMo;
+      }
+      return m;
+    });
+
+    const sideEffects = applyMoveOutSettlementState(
+      rawState,
+      matchedMo || ({ unit: targetUnit, propertyId: targetPropId, tenantId: targetTenantId, tenantName: targetTenantName, agreementId: matchedSettle?.agreementId } as any)
+    );
+
+    const notif: MobileInAppNotification = {
+      id: `notif-ref-conf-${Date.now()}`,
+      userId: targetOwnerId || targetTenantId || undefined,
+      ownerId: targetOwnerId || undefined,
+      title: 'Deposit Refund Confirmed ✓',
+      body: `Deposit refund receipt confirmed for Unit ${targetUnit || ''}. Tenancy has concluded and obligations cleared.`,
+      category: 'bills',
+      isRead: false,
+      createdAt: now,
+      relatedEntityId: matchedSettle?.id || matchedMo?.id || claimOrMoveOutOrSettleId,
+    };
+
+    if (isFirebaseConfigured) {
+      settlementsToPersist.forEach((upSettle) => {
+        setDoc(doc(db, 'depositSettlements', upSettle.id), cleanFirestoreObject(upSettle), { merge: true }).catch(console.warn);
+      });
+      moveOutsToPersist.forEach((upMo) => {
+        setDoc(doc(db, 'moveouts', upMo.id), cleanFirestoreObject(upMo), { merge: true }).catch(console.warn);
+      });
+      persistMoveOutSideEffects(sideEffects, rawState);
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
+
+    setState((prev) => ({
+      ...prev,
+      depositSettlements: updatedSettlements,
+      moveOuts: updatedMoveOuts,
+      ...sideEffects,
+      notifications: [notif, ...prev.notifications],
+    }));
+  };
+
+  const confirmCashClaim = (claimOrMoveOutId: string) => {
+    const now = new Date().toISOString();
+    const targetClaim = (rawState.cashClaims || []).find((c) => c.id === claimOrMoveOutId);
+    let updatedCashClaims = rawState.cashClaims || [];
+    let updatedPayments = rawState.payments;
+    let updatedInvoices = rawState.invoices;
+    let updatedSettlements = rawState.depositSettlements;
+
+    let confirmedClaimToPersist: MobileCashHandoverClaim | undefined;
+    let txnToPersist: MobilePaymentTransaction | undefined;
+    let txnStatusUpdateId: string | undefined;
+    let invPaidUpdateId: string | undefined;
+    const settlementsToPersist: MobileDepositSettlement[] = [];
+    const moveOutsToPersist: MobileMoveOut[] = [];
+
+    if (targetClaim) {
+      const confirmedClaim: MobileCashHandoverClaim = {
+        ...targetClaim,
+        status: 'confirmed',
+        confirmedAt: now,
+        confirmedByName: 'Property Owner',
+      };
+      confirmedClaimToPersist = confirmedClaim;
+      updatedCashClaims = updatedCashClaims.map((c) => (c.id === claimOrMoveOutId ? confirmedClaim : c));
+
+      // Reconcile or create payment transaction
+      const existingTxn = rawState.payments.find(
+        (p) =>
+          p.cashClaimId === claimOrMoveOutId ||
+          (p.tenantId === targetClaim.tenantId &&
+            (!targetClaim.propertyId || !p.propertyId || p.propertyId === targetClaim.propertyId) &&
+            p.unit === targetClaim.unit &&
+            p.status === 'pending_confirmation')
+      );
+      if (existingTxn) {
+        updatedPayments = rawState.payments.map((p) =>
+          p.id === existingTxn.id ? { ...p, status: 'paid' as const, method: 'Cash Handover' } : p
+        );
+        txnStatusUpdateId = existingTxn.id;
+      } else {
+        const newTxn: MobilePaymentTransaction = {
+          id: `TXN-CSH-${Date.now().toString().slice(-6)}`,
+          ownerId: targetClaim.ownerId,
+          tenant: targetClaim.tenantName,
+          tenantId: targetClaim.tenantId,
+          unit: targetClaim.unit,
+          unitId: targetClaim.unit,
+          propertyId: targetClaim.propertyId,
+          propertyName: targetClaim.propertyName || 'Property Premises',
+          amount: targetClaim.amount,
+          currency: targetClaim.currency || DEFAULT_CURRENCY_SYMBOL,
+          date: targetClaim.handoverDate || now.split('T')[0],
+          status: 'paid',
+          direction: targetClaim.direction || 'inflow',
+          method: 'Cash Handover',
+          type: (targetClaim.type as any) || 'rent',
+          cashClaimId: targetClaim.id,
+          notes: `Confirmed cash handover. Location: ${targetClaim.handoverLocation || 'On-Site'}. Ref #${targetClaim.id}`,
+        };
+        updatedPayments = [newTxn, ...rawState.payments];
+        txnToPersist = newTxn;
+      }
+
+      // Mark any matching unpaid invoice as paid
+      const matchingInv = targetClaim.invoiceId
+        ? rawState.invoices.find((inv) => inv.id === targetClaim.invoiceId)
+        : rawState.invoices.find(
+            (inv) =>
+              inv.tenantId === targetClaim.tenantId &&
+              (!targetClaim.propertyId || !inv.propertyId || inv.propertyId === targetClaim.propertyId) &&
+              inv.unit === targetClaim.unit &&
+              inv.status !== 'paid'
+          );
+      if (matchingInv) {
+        updatedInvoices = rawState.invoices.map((inv) =>
+          inv.id === matchingInv.id
+            ? {
+                ...inv,
+                status: 'paid' as const,
+                paidAt: now,
+                paymentMethodUsed: 'Cash Handover',
+                receiptNumber: `RCP-CSH-${Date.now().toString().slice(-6)}`,
+              }
+            : inv
+        );
+        invPaidUpdateId = matchingInv.id;
+      }
+    }
+
+    const isDepositRefund =
+      targetClaim?.type === 'deposit_refund' ||
+      targetClaim?.direction === 'outflow' ||
+      Boolean(targetClaim?.settlementId) ||
+      Boolean(targetClaim?.moveOutId);
+
+    const targetSettle = isDepositRefund
+      ? rawState.depositSettlements.find(
+          (s) =>
+            (targetClaim?.settlementId &&
+              (s.id === targetClaim.settlementId ||
+                s.id === `DEP-SETTLE-${targetClaim.settlementId}` ||
+                s.id.replace(/^DEP-SETTLE-/i, '') === targetClaim.settlementId.replace(/^DEP-SETTLE-/i, ''))) ||
+            (targetClaim?.moveOutId && (s.id === `DEP-SETTLE-${targetClaim.moveOutId}` || (s as any).moveOutId === targetClaim.moveOutId)) ||
+            (targetClaim && s.cashClaimId === targetClaim.id) ||
+            (targetClaim?.unit && s.unit === targetClaim.unit && s.status !== 'refunded')
+        )
+      : undefined;
+
+    if (targetSettle) {
+      updatedSettlements = rawState.depositSettlements.map((s) => {
+        if (s.id === targetSettle.id) {
           const upSettle: MobileDepositSettlement = {
             ...s,
             status: 'refunded',
             tenantConfirmedReceipt: true,
             tenantConfirmedAt: now,
           };
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'depositSettlements', s.id), cleanFirestoreObject(upSettle), { merge: true }).catch(console.warn);
-          }
+          settlementsToPersist.push(upSettle);
           return upSettle;
         }
         return s;
       });
+    }
 
-      const updatedMoveOuts = prev.moveOuts.map((m) => {
-        if (m.id === matchedMo?.id || m.id === claimOrMoveOutOrSettleId || m.id === strippedId || (targetUnit && m.unit === targetUnit)) {
-          const upMo: MobileMoveOut = {
-            ...m,
-            status: 'refund_completed',
-            settledAt: now,
-            tenantConfirmedReceipt: true,
-            tenantConfirmedAt: now,
-          };
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'moveouts', m.id), cleanFirestoreObject(upMo), { merge: true }).catch(console.warn);
-          }
-          return upMo;
-        }
-        return m;
-      });
+    const targetMoveOut = rawState.moveOuts.find(
+      (m) =>
+        m.id === claimOrMoveOutId ||
+        m.id === claimOrMoveOutId.replace(/^DEP-SETTLE-/i, '') ||
+        (targetClaim?.moveOutId && (m.id === targetClaim.moveOutId || m.id === targetClaim.moveOutId.replace(/^DEP-SETTLE-/i, ''))) ||
+        (targetSettle && (m.id === targetSettle.id.replace(/^DEP-SETTLE-/i, '') || m.id === (targetSettle as any).moveOutId)) ||
+        (targetClaim?.unit && m.unit === targetClaim.unit && m.status !== 'refund_completed') ||
+        m.cashRefundHandover
+    );
 
-      const sideEffects = applyMoveOutSettlementState(
-        prev,
-        matchedMo || ({ unit: targetUnit, propertyId: targetPropId, tenantId: targetTenantId, tenantName: targetTenantName } as any)
-      );
-
-      const notif: MobileInAppNotification = {
-        id: `notif-ref-conf-${Date.now()}`,
-        title: 'Deposit Refund Confirmed ✓',
-        body: `Deposit refund receipt confirmed for Unit ${targetUnit || ''}. Tenancy has concluded and obligations cleared.`,
-        category: 'bills',
-        isRead: false,
-        createdAt: now,
-      };
-
-      return {
-        ...prev,
-        depositSettlements: updatedSettlements,
-        moveOuts: updatedMoveOuts,
-        ...sideEffects,
-        notifications: [notif, ...prev.notifications],
-      };
-    });
-  };
-
-  const confirmCashClaim = (claimOrMoveOutId: string) => {
-    setState((prev) => {
-      const now = new Date().toISOString();
-      const targetClaim = (prev.cashClaims || []).find((c) => c.id === claimOrMoveOutId);
-      let updatedCashClaims = prev.cashClaims || [];
-      let updatedPayments = prev.payments;
-      let updatedInvoices = prev.invoices;
-      let updatedSettlements = prev.depositSettlements;
-
-      if (targetClaim) {
-        const confirmedClaim: MobileCashHandoverClaim = {
-          ...targetClaim,
-          status: 'confirmed',
-          confirmedAt: now,
-          confirmedByName: 'Property Owner',
+    const updatedMoveOuts = rawState.moveOuts.map((m) => {
+      if (m.id === claimOrMoveOutId || (targetMoveOut && m.id === targetMoveOut.id)) {
+        const upMo: MobileMoveOut = {
+          ...m,
+          status: 'refund_completed' as const,
+          settledAt: now,
+          tenantConfirmedReceipt: true,
+          tenantConfirmedAt: now,
+          cashRefundHandover: m.cashRefundHandover
+            ? { ...m.cashRefundHandover, status: 'confirmed' as const }
+            : undefined,
         };
-        updatedCashClaims = updatedCashClaims.map((c) => (c.id === claimOrMoveOutId ? confirmedClaim : c));
-
-        if (isFirebaseConfigured) {
-          setDoc(doc(db, 'cashClaims', claimOrMoveOutId), cleanFirestoreObject(confirmedClaim), { merge: true }).catch(console.warn);
-        }
-
-        // Reconcile or create payment transaction
-        const existingTxn = prev.payments.find(
-          (p) =>
-            p.cashClaimId === claimOrMoveOutId ||
-            (p.tenantId === targetClaim.tenantId &&
-              (!targetClaim.propertyId || !p.propertyId || p.propertyId === targetClaim.propertyId) &&
-              p.unit === targetClaim.unit &&
-              p.status === 'pending_confirmation')
-        );
-        if (existingTxn) {
-          updatedPayments = prev.payments.map((p) =>
-            p.id === existingTxn.id ? { ...p, status: 'paid' as const, method: 'Cash Handover' } : p
-          );
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'payments', existingTxn.id), cleanFirestoreObject({ status: 'paid' }), { merge: true }).catch(console.warn);
-          }
-        } else {
-          const newTxn: MobilePaymentTransaction = {
-            id: `TXN-CSH-${Date.now().toString().slice(-6)}`,
-            ownerId: targetClaim.ownerId,
-            tenant: targetClaim.tenantName,
-            tenantId: targetClaim.tenantId,
-            unit: targetClaim.unit,
-            unitId: targetClaim.unit,
-            propertyId: targetClaim.propertyId,
-            propertyName: targetClaim.propertyName || 'Property Premises',
-            amount: targetClaim.amount,
-            currency: targetClaim.currency || DEFAULT_CURRENCY_SYMBOL,
-            date: targetClaim.handoverDate || now.split('T')[0],
-            status: 'paid',
-            direction: targetClaim.direction || 'inflow',
-            method: 'Cash Handover',
-            type: (targetClaim.type as any) || 'rent',
-            cashClaimId: targetClaim.id,
-            notes: `Confirmed cash handover. Location: ${targetClaim.handoverLocation || 'On-Site'}. Ref #${targetClaim.id}`,
-          };
-          updatedPayments = [newTxn, ...prev.payments];
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'payments', newTxn.id), cleanFirestoreObject(newTxn), { merge: true }).catch(console.warn);
-          }
-        }
-
-        // Mark any matching unpaid invoice as paid
-        const matchingInv = targetClaim.invoiceId
-          ? prev.invoices.find((inv) => inv.id === targetClaim.invoiceId)
-          : prev.invoices.find(
-              (inv) =>
-                inv.tenantId === targetClaim.tenantId &&
-                (!targetClaim.propertyId || !inv.propertyId || inv.propertyId === targetClaim.propertyId) &&
-                inv.unit === targetClaim.unit &&
-                inv.status !== 'paid'
-            );
-        if (matchingInv) {
-          updatedInvoices = prev.invoices.map((inv) =>
-            inv.id === matchingInv.id
-              ? {
-                  ...inv,
-                  status: 'paid' as const,
-                  paidAt: now,
-                  paymentMethodUsed: 'Cash Handover',
-                  receiptNumber: `RCP-CSH-${Date.now().toString().slice(-6)}`,
-                }
-              : inv
-          );
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'invoices', matchingInv.id), cleanFirestoreObject({
-              status: 'paid',
-              paidAt: now,
-              paymentMethodUsed: 'Cash Handover',
-            }), { merge: true }).catch(console.warn);
-          }
-        }
+        moveOutsToPersist.push(upMo);
+        return upMo;
       }
-
-      // Check if it's linked to Move-Out cash refund or deposit settlement
-      const isDepositRefund =
-        targetClaim?.type === 'deposit_refund' ||
-        targetClaim?.direction === 'outflow' ||
-        Boolean(targetClaim?.settlementId) ||
-        Boolean(targetClaim?.moveOutId);
-
-      const targetSettle = isDepositRefund
-        ? prev.depositSettlements.find(
-            (s) =>
-              (targetClaim?.settlementId && (s.id === targetClaim.settlementId || s.id === `DEP-SETTLE-${targetClaim.settlementId}` || s.id.replace(/^DEP-SETTLE-/i, '') === targetClaim.settlementId.replace(/^DEP-SETTLE-/i, ''))) ||
-              (targetClaim?.moveOutId && (s.id === `DEP-SETTLE-${targetClaim.moveOutId}` || (s as any).moveOutId === targetClaim.moveOutId)) ||
-              (targetClaim && s.cashClaimId === targetClaim.id) ||
-              (targetClaim?.unit && s.unit === targetClaim.unit && s.status !== 'refunded')
-          )
-        : undefined;
-
-      if (targetSettle) {
-        updatedSettlements = prev.depositSettlements.map((s) => {
-          if (s.id === targetSettle.id) {
-            const upSettle: MobileDepositSettlement = {
-              ...s,
-              status: 'refunded',
-              tenantConfirmedReceipt: true,
-              tenantConfirmedAt: now,
-            };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'depositSettlements', s.id), cleanFirestoreObject(upSettle), { merge: true }).catch(console.warn);
-            }
-            return upSettle;
-          }
-          return s;
-        });
-      }
-
-      const targetMoveOut = prev.moveOuts.find(
-        (m) =>
-          m.id === claimOrMoveOutId ||
-          m.id === claimOrMoveOutId.replace(/^DEP-SETTLE-/i, '') ||
-          (targetClaim?.moveOutId && (m.id === targetClaim.moveOutId || m.id === targetClaim.moveOutId.replace(/^DEP-SETTLE-/i, ''))) ||
-          (targetSettle && (m.id === targetSettle.id.replace(/^DEP-SETTLE-/i, '') || m.id === (targetSettle as any).moveOutId)) ||
-          (targetClaim?.unit && m.unit === targetClaim.unit && m.status !== 'refund_completed') ||
-          m.cashRefundHandover
-      );
-
-      const updatedMoveOuts = prev.moveOuts.map((m) => {
-        if (m.id === claimOrMoveOutId || (targetMoveOut && m.id === targetMoveOut.id)) {
-          const upMo = {
-            ...m,
-            status: 'refund_completed' as const,
-            settledAt: now,
-            tenantConfirmedReceipt: true,
-            tenantConfirmedAt: now,
-            cashRefundHandover: m.cashRefundHandover
-              ? { ...m.cashRefundHandover, status: 'confirmed' as const }
-              : undefined,
-          };
-          if (isFirebaseConfigured) {
-            setDoc(doc(db, 'moveouts', m.id), cleanFirestoreObject(upMo), { merge: true }).catch(console.warn);
-          }
-          return upMo;
-        }
-        return m;
-      });
-
-      const sideEffects = applyMoveOutSettlementState(prev, targetMoveOut);
-
-      const notif: MobileInAppNotification = {
-        id: `notif-csh-${Date.now()}`,
-        title: 'Cash Handover Verified & Settled ✓',
-        body: `Cash payment receipt of ${formatCurrencyAmount(targetClaim?.amount || targetMoveOut?.netRefundAmount || 0, targetClaim?.currency || targetMoveOut?.currency)} has been verified and settled in ledger.`,
-        category: 'bills',
-        isRead: false,
-        createdAt: now,
-      };
-
-      return {
-        ...prev,
-        cashClaims: updatedCashClaims,
-        payments: updatedPayments,
-        invoices: updatedInvoices,
-        depositSettlements: updatedSettlements,
-        moveOuts: updatedMoveOuts,
-        ...sideEffects,
-        notifications: [notif, ...prev.notifications],
-      };
+      return m;
     });
+
+    const sideEffects = isDepositRefund ? applyMoveOutSettlementState(rawState, targetMoveOut) : {};
+
+    const notif: MobileInAppNotification = {
+      id: `notif-csh-${Date.now()}`,
+      userId: targetClaim?.ownerId || targetMoveOut?.ownerId || undefined,
+      ownerId: targetClaim?.ownerId || targetMoveOut?.ownerId || undefined,
+      title: 'Cash Handover Verified & Settled ✓',
+      body: `Cash payment receipt of ${formatCurrencyAmount(targetClaim?.amount || targetMoveOut?.netRefundAmount || 0, targetClaim?.currency || targetMoveOut?.currency)} has been verified and settled in ledger.`,
+      category: 'bills',
+      isRead: false,
+      createdAt: now,
+    };
+
+    if (isFirebaseConfigured) {
+      if (confirmedClaimToPersist) {
+        setDoc(doc(db, 'cashClaims', claimOrMoveOutId), cleanFirestoreObject(confirmedClaimToPersist), { merge: true }).catch(console.warn);
+      }
+      if (txnStatusUpdateId) {
+        setDoc(doc(db, 'payments', txnStatusUpdateId), cleanFirestoreObject({ status: 'paid', method: 'Cash Handover' }), { merge: true }).catch(console.warn);
+      }
+      if (txnToPersist) {
+        setDoc(doc(db, 'payments', txnToPersist.id), cleanFirestoreObject(txnToPersist), { merge: true }).catch(console.warn);
+      }
+      if (invPaidUpdateId) {
+        setDoc(doc(db, 'invoices', invPaidUpdateId), cleanFirestoreObject({ status: 'paid', paidAt: now, paymentMethodUsed: 'Cash Handover' }), { merge: true }).catch(console.warn);
+      }
+      settlementsToPersist.forEach((upSettle) => {
+        setDoc(doc(db, 'depositSettlements', upSettle.id), cleanFirestoreObject(upSettle), { merge: true }).catch(console.warn);
+      });
+      moveOutsToPersist.forEach((upMo) => {
+        setDoc(doc(db, 'moveouts', upMo.id), cleanFirestoreObject(upMo), { merge: true }).catch(console.warn);
+      });
+      if (isDepositRefund) {
+        persistMoveOutSideEffects(sideEffects, rawState);
+      }
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
+
+    setState((prev) => ({
+      ...prev,
+      cashClaims: updatedCashClaims,
+      payments: updatedPayments,
+      invoices: updatedInvoices,
+      depositSettlements: updatedSettlements,
+      moveOuts: updatedMoveOuts,
+      ...sideEffects,
+      notifications: [notif, ...prev.notifications],
+    }));
   };
 
   const rejectCashClaim = (claimOrMoveOutId: string, reason?: string) => {
+    const now = new Date().toISOString();
+    const targetClaim = (rawState.cashClaims || []).find((c) => c.id === claimOrMoveOutId);
+    const notif: MobileInAppNotification = {
+      id: `notif-csh-rej-${Date.now()}`,
+      userId: targetClaim?.claimedBy || targetClaim?.tenantId || targetClaim?.ownerId || undefined,
+      ownerId: targetClaim?.ownerId || undefined,
+      title: 'Cash Claim Declined',
+      body: `Cash claim for Unit ${targetClaim?.unit || claimOrMoveOutId} declined: "${reason || 'Not received'}".`,
+      category: 'bills',
+      isRead: false,
+      createdAt: now,
+    };
+
+    if (isFirebaseConfigured) {
+      setDoc(
+        doc(db, 'cashClaims', claimOrMoveOutId),
+        {
+          status: 'rejected',
+          rejectionReason: reason || 'Cash handover not received',
+        },
+        { merge: true }
+      ).catch(console.warn);
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
+
     setState((prev) => {
       const updatedCashClaims = (prev.cashClaims || []).map((c) =>
         c.id === claimOrMoveOutId
           ? { ...c, status: 'rejected' as const, rejectionReason: reason || 'Cash handover not received' }
           : c
       );
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'cashClaims', claimOrMoveOutId), {
-          status: 'rejected',
-          rejectionReason: reason || 'Cash handover not received',
-        }, { merge: true }).catch(console.warn);
-      }
 
       const updatedPayments = prev.payments.map((p) =>
         p.cashClaimId === claimOrMoveOutId || p.id === claimOrMoveOutId
@@ -3139,7 +3597,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       );
 
       const updatedMoveOuts = prev.moveOuts.map((m) => {
-        if (m.id === claimOrMoveOutId || m.cashRefundHandover) {
+        if (m.id === claimOrMoveOutId || (targetClaim?.moveOutId && m.id === targetClaim.moveOutId) || m.cashRefundHandover) {
           return {
             ...m,
             status: 'disputed' as const,
@@ -3151,15 +3609,6 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         return m;
       });
 
-      const notif: MobileInAppNotification = {
-        id: `notif-csh-rej-${Date.now()}`,
-        title: 'Cash Claim Declined',
-        body: `Cash claim for Unit ${claimOrMoveOutId} declined: "${reason || 'Not received'}".`,
-        category: 'bills',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
-
       return {
         ...prev,
         cashClaims: updatedCashClaims,
@@ -3170,46 +3619,176 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   };
 
-  const submitCashClaim = (claimData: any) => {
-    setState((prev) => {
-      const newClaim: MobileCashHandoverClaim = {
-        id: claimData.id || `CSH-${Date.now().toString().slice(-6)}`,
-        direction: claimData.direction || 'inflow',
-        type: claimData.type || 'rent',
-        amount: claimData.amount || 0,
-        currency: claimData.currency || DEFAULT_CURRENCY_SYMBOL,
-        ownerId: claimData.ownerId || '',
-        tenantId: claimData.tenantId || '',
-        tenantName: claimData.tenantName || 'Resident',
-        unit: claimData.unit || 'Unit',
-        propertyName: claimData.propertyName,
-        propertyId: claimData.propertyId,
-        invoiceId: claimData.invoiceId,
-        claimedBy: claimData.claimedBy || '',
-        claimedByRole: claimData.claimedByRole || 'owner',
-        claimedByName: claimData.claimedByName || 'Property Owner',
-        claimedAt: new Date().toISOString(),
-        handoverDate: claimData.handoverDate || new Date().toISOString().split('T')[0],
-        handoverLocation: claimData.handoverLocation || 'On-Site Handover',
-        notes: claimData.notes,
-        status: 'pending_confirmation',
-      };
+  const submitCashClaim = async (claimData: any): Promise<string> => {
+    const numericAmount = Number(claimData?.amount);
+    if (!numericAmount || isNaN(numericAmount) || numericAmount <= 0) {
+      console.warn('[CashClaim] Handover amount must be greater than zero.');
+      return '';
+    }
 
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'cashClaims', newClaim.id), newClaim, { merge: true }).catch(console.warn);
+    // Check for duplicate pending claim for the same invoice or settlement
+    if (claimData.invoiceId) {
+      const hasPending = (rawState.cashClaims || []).some(
+        (c) => c.invoiceId === claimData.invoiceId && c.status === 'pending_confirmation'
+      );
+      if (hasPending) {
+        console.warn('[CashClaim] A cash handover claim is already pending confirmation for this invoice.');
+        return '';
       }
+    }
+    if (claimData.settlementId) {
+      const hasPending = (rawState.cashClaims || []).some(
+        (c) => c.settlementId === claimData.settlementId && c.status === 'pending_confirmation'
+      );
+      if (hasPending) {
+        console.warn('[CashClaim] A cash handover claim is already pending confirmation for this deposit settlement.');
+        return '';
+      }
+    }
 
+    // Server-side validation via callable Cloud Function
+    if (isFirebaseConfigured && user?.id) {
+      try {
+        const valFn = httpsCallable<any, any>(functions, 'validateCashClaim');
+        await valFn({
+          amount: numericAmount,
+          invoiceId: claimData.invoiceId,
+          settlementId: claimData.settlementId,
+          direction: claimData.direction || 'inflow',
+          claimedBy: claimData.claimedBy || user.id,
+        });
+      } catch (err: any) {
+        const code = err?.code;
+        if (code === 'already-exists' || code === 'invalid-argument' || code === 'failed-precondition') {
+          console.warn('[CashClaim] Server validation failed:', err?.message);
+          return '';
+        }
+        console.warn('validateCashClaim server notice, continuing with client-verified claim:', err);
+      }
+    }
+
+    const claimId = claimData.id || `CSH-${Date.now().toString().slice(-6)}`;
+    const now = new Date().toISOString();
+    const normalizedCurrency = normalizeCurrencyCode(claimData.currency || DEFAULT_CURRENCY_SYMBOL);
+    const txnId = `TXN-${claimId}`;
+
+    const newClaim: MobileCashHandoverClaim = {
+      id: claimId,
+      direction: claimData.direction || 'inflow',
+      type: claimData.type || 'rent',
+      amount: numericAmount,
+      currency: normalizedCurrency,
+      ownerId: claimData.ownerId || '',
+      tenantId: claimData.tenantId || '',
+      tenantName: claimData.tenantName || 'Resident',
+      unit: claimData.unit || 'Unit',
+      propertyName: claimData.propertyName,
+      propertyId: claimData.propertyId,
+      invoiceId: claimData.invoiceId,
+      settlementId: claimData.settlementId,
+      moveOutId: claimData.moveOutId,
+      transactionId: txnId,
+      claimedBy: claimData.claimedBy || user?.id || '',
+      claimedByRole: claimData.claimedByRole || (user?.role === 'tenant' ? 'tenant' : 'owner'),
+      claimedByName: claimData.claimedByName || user?.displayName || 'Property Owner',
+      claimedAt: now,
+      handoverDate: claimData.handoverDate || now.split('T')[0],
+      handoverLocation: claimData.handoverLocation || 'On-Site Handover',
+      notes: claimData.notes,
+      status: 'pending_confirmation',
+    };
+
+    const newTxn: MobilePaymentTransaction = {
+      id: txnId,
+      ownerId: newClaim.ownerId,
+      tenant: newClaim.tenantName,
+      tenantId: newClaim.tenantId,
+      unit: newClaim.unit,
+      propertyId: newClaim.propertyId,
+      propertyName: newClaim.propertyName,
+      amount: numericAmount,
+      currency: normalizedCurrency,
+      date: newClaim.handoverDate,
+      dueDate: newClaim.handoverDate,
+      direction: newClaim.direction,
+      status: 'pending_confirmation',
+      method: 'Cash (Handover)' as any,
+      type: (newClaim.type === 'deposit_refund' ? 'deposit_refund' : newClaim.type === 'deposit' ? 'deposit' : 'rent') as any,
+      invoiceId: newClaim.invoiceId,
+      cashClaimId: claimId,
+      notes: newClaim.notes,
+    };
+
+    const targetInvoice = claimData.invoiceId
+      ? rawState.invoices.find((i) => i.id === claimData.invoiceId)
+      : undefined;
+    const invUpdatePayload = targetInvoice
+      ? {
+          status: 'pending_confirmation' as const,
+          paymentMethodUsed: 'Cash (Handover)',
+          paymentProofNotes: claimData.notes || undefined,
+          paymentProofDate: now,
+        }
+      : null;
+
+    const targetSettlement = (claimData.settlementId || claimData.moveOutId || claimData.unit)
+      ? rawState.depositSettlements.find(
+          (s) =>
+            (claimData.settlementId &&
+              (s.id === claimData.settlementId ||
+                s.id === `DEP-SETTLE-${claimData.settlementId}` ||
+                s.id.replace(/^DEP-SETTLE-/i, '') === (claimData.settlementId || '').replace(/^DEP-SETTLE-/i, ''))) ||
+            (claimData.moveOutId &&
+              (s.id === `DEP-SETTLE-${claimData.moveOutId}` || (s as any).moveOutId === claimData.moveOutId || s.id.replace(/^DEP-SETTLE-/i, '') === claimData.moveOutId)) ||
+            (claimData.unit && (s.unit || '').toLowerCase().trim() === claimData.unit.toLowerCase().trim() && s.status !== 'refunded')
+        )
+      : undefined;
+
+    const recipientUserId = newClaim.direction === 'outflow' ? newClaim.tenantId : newClaim.ownerId;
+    const notif: MobileInAppNotification = {
+      id: `notif-csh-sub-${Date.now()}`,
+      userId: recipientUserId || undefined,
+      ownerId: newClaim.ownerId || undefined,
+      title: 'Cash Handover Confirmation Needed',
+      body: `${newClaim.claimedByName} recorded a cash ${newClaim.direction === 'outflow' ? 'refund' : 'payment'} of ${formatCurrencyAmount(numericAmount, normalizedCurrency)} for Unit ${newClaim.unit}. Please verify receipt.`,
+      category: 'bills',
+      isRead: false,
+      createdAt: now,
+      relatedEntityId: claimId,
+    };
+
+    if (isFirebaseConfigured) {
+      setDoc(doc(db, 'cashClaims', newClaim.id), cleanFirestoreObject(newClaim), { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'payments', newTxn.id), cleanFirestoreObject(newTxn), { merge: true }).catch(console.warn);
+      if (targetInvoice && invUpdatePayload) {
+        setDoc(doc(db, 'invoices', targetInvoice.id), cleanFirestoreObject(invUpdatePayload), { merge: true }).catch(console.warn);
+      }
+      if (targetSettlement) {
+        setDoc(
+          doc(db, 'depositSettlements', targetSettlement.id),
+          cleanFirestoreObject({
+            status: 'awaiting_tenant_cash_confirmation',
+            disbursementMethod: 'cash_handover',
+            cashClaimId: claimId,
+          }),
+          { merge: true }
+        ).catch(console.warn);
+      }
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
+
+    setState((prev) => {
       const updatedMoveOuts = prev.moveOuts.map((m) => {
-        if (m.id === claimData.moveOutId || m.unit === claimData.unit) {
+        if (m.id === claimData.moveOutId || (claimData.unit && m.unit === claimData.unit)) {
           return {
             ...m,
             cashRefundHandover: {
-              claimedByName: claimData.claimedByName || 'Property Owner',
-              amount: claimData.amount || m.netRefundAmount,
-              currency: claimData.currency || m.currency,
-              handoverDate: claimData.handoverDate || new Date().toISOString().split('T')[0],
-              handoverLocation: claimData.handoverLocation || 'On-Site',
-              notes: claimData.notes,
+              claimedByName: newClaim.claimedByName,
+              amount: numericAmount || m.netRefundAmount,
+              currency: normalizedCurrency || m.currency,
+              handoverDate: newClaim.handoverDate,
+              handoverLocation: newClaim.handoverLocation,
+              notes: newClaim.notes,
               status: 'pending_confirmation' as const,
             },
           };
@@ -3220,60 +3799,23 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       return {
         ...prev,
         cashClaims: [newClaim, ...(prev.cashClaims || [])],
+        payments: [newTxn, ...prev.payments.filter((p) => p.id !== txnId)],
+        invoices: targetInvoice && invUpdatePayload
+          ? prev.invoices.map((i) => (i.id === targetInvoice.id ? { ...i, ...invUpdatePayload } : i))
+          : prev.invoices,
+        depositSettlements: targetSettlement
+          ? prev.depositSettlements.map((s) =>
+              s.id === targetSettlement.id
+                ? { ...s, status: 'awaiting_tenant_cash_confirmation' as any, disbursementMethod: 'cash_handover', cashClaimId: claimId }
+                : s
+            )
+          : prev.depositSettlements,
         moveOuts: updatedMoveOuts,
+        notifications: [notif, ...prev.notifications],
       };
     });
-  };
 
-  const saveDispute = (dispute: MobileDispute) => {
-    const ownerIdToSet = dispute.ownerId || (user?.role === 'owner' ? user.id : user?.ownerId) || '';
-    const disputeToSave: MobileDispute = { ...dispute, ownerId: ownerIdToSet };
-    if (isFirebaseConfigured) {
-      setDoc(doc(db, 'disputes', disputeToSave.id), disputeToSave, { merge: true }).catch(console.warn);
-    }
-    setState((prev) => {
-      const exists = prev.disputes.some((d) => d.id === disputeToSave.id);
-      const updated = exists
-        ? prev.disputes.map((d) => (d.id === disputeToSave.id ? disputeToSave : d))
-        : [disputeToSave, ...prev.disputes];
-
-      const notif: MobileInAppNotification = {
-        id: `notif-dsp-${Date.now()}`,
-        title: `Formal Dispute Filed: ${disputeToSave.category}`,
-        body: `${disputeToSave.raisedByName} filed dispute for ${formatCurrencyAmount(disputeToSave.amountDisputed, disputeToSave.currency)}`,
-        category: 'leases',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-        relatedEntityId: disputeToSave.id,
-        recipientId: ownerIdToSet,
-        ownerId: ownerIdToSet,
-      };
-
-      return { ...prev, disputes: updated, notifications: [notif, ...prev.notifications] };
-    });
-  };
-
-  const resolveDispute = (disputeId: string, resolution: string) => {
-    if (isFirebaseConfigured) {
-      setDoc(doc(db, 'disputes', disputeId), {
-        status: 'resolved',
-        managerResolution: resolution,
-        resolvedAt: new Date().toISOString(),
-      }, { merge: true }).catch(console.warn);
-    }
-    setState((prev) => ({
-      ...prev,
-      disputes: prev.disputes.map((d) =>
-        d.id === disputeId
-          ? {
-              ...d,
-              status: 'resolved' as const,
-              managerResolution: resolution,
-              resolvedAt: new Date().toISOString(),
-            }
-          : d
-      ),
-    }));
+    return claimId;
   };
 
   const saveTenant = async (tenant: MobileTenantRecord, password?: string): Promise<string | void> => {
@@ -3388,34 +3930,19 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const updateMoveOut = (moveOutId: string, updates: Partial<MobileMoveOut>) => {
+    const isSettled = updates.status === 'settled' || updates.status === 'refund_completed';
+    const target = rawState.moveOuts.find((m) => m.id === moveOutId);
+    const sideEffects = isSettled ? applyMoveOutSettlementState(rawState, target, updates) : {};
     if (isFirebaseConfigured) {
-      setDoc(doc(db, 'moveouts', moveOutId), updates, { merge: true }).catch(console.warn);
-    }
-    setState((prev) => {
-      const target = prev.moveOuts.find((m) => m.id === moveOutId);
-      const updatedMoveOuts = prev.moveOuts.map((m) => (m.id === moveOutId ? { ...m, ...updates } : m));
-      if (updates.status === 'settled') {
-        const sideEffects = applyMoveOutSettlementState(prev, target, updates);
-        return {
-          ...prev,
-          moveOuts: updatedMoveOuts,
-          ...sideEffects,
-        };
+      setDoc(doc(db, 'moveouts', moveOutId), cleanFirestoreObject(updates), { merge: true }).catch(console.warn);
+      if (isSettled) {
+        persistMoveOutSideEffects(sideEffects, rawState);
       }
-      return {
-        ...prev,
-        moveOuts: updatedMoveOuts,
-      };
-    });
-  };
-
-  const updateDispute = (disputeId: string, updates: Partial<MobileDispute>) => {
-    if (isFirebaseConfigured) {
-      setDoc(doc(db, 'disputes', disputeId), updates, { merge: true }).catch(console.warn);
     }
     setState((prev) => ({
       ...prev,
-      disputes: prev.disputes.map((d) => (d.id === disputeId ? { ...d, ...updates } : d)),
+      moveOuts: prev.moveOuts.map((m) => (m.id === moveOutId ? { ...m, ...updates } : m)),
+      ...sideEffects,
     }));
   };
 
@@ -3488,10 +4015,11 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     const managerToSave: MobilePropertyManager = { ...manager, id: uid, ownerId: ownerIdToSet };
+    const assignedPropId = managerToSave.propertyId || managerToSave.assignedProperties?.[0];
 
     if (isFirebaseConfigured) {
-      setDoc(doc(db, 'propertyManagers', managerToSave.id), managerToSave, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'users', managerToSave.id), {
+      setDoc(doc(db, 'propertyManagers', managerToSave.id), cleanFirestoreObject(managerToSave), { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'users', managerToSave.id), cleanFirestoreObject({
         id: managerToSave.id,
         displayName: managerToSave.name,
         email: managerToSave.email,
@@ -3502,7 +4030,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         propertyId: managerToSave.propertyId,
         status: 'active',
         createdAt: new Date().toISOString(),
-      }, { merge: true }).catch(console.warn);
+      }), { merge: true }).catch(console.warn);
       setDoc(doc(db, 'userClaimRequests', managerToSave.id), {
         uid: managerToSave.id,
         role: 'manager',
@@ -3510,10 +4038,16 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         requestedAt: new Date().toISOString(),
         processed: false,
       }).catch(console.warn);
+      if (assignedPropId) {
+        setDoc(doc(db, 'properties', assignedPropId), { assignedManagerId: managerToSave.id }, { merge: true }).catch(console.warn);
+      }
     }
     setState((prev) => ({
       ...prev,
       propertyManagers: [managerToSave, ...prev.propertyManagers.filter((m) => m.id !== managerToSave.id)],
+      properties: assignedPropId
+        ? prev.properties.map((p) => (p.id === assignedPropId ? { ...p, assignedManagerId: managerToSave.id } : p))
+        : prev.properties,
     }));
     return uid;
   };
@@ -3645,68 +4179,67 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const confirmOfflinePayment = (paymentId: string) => {
-    setState((prev) => {
-      const targetPayment = prev.payments.find((p) => p.id === paymentId);
-      const updatedPayments = prev.payments.map((p) =>
-        p.id === paymentId ? { ...p, status: 'paid' as const } : p
-      );
-      const updatedInvoices = prev.invoices.map((inv) =>
-        inv.id === targetPayment?.invoiceId ? { ...inv, status: 'paid' as const, paidAt: new Date().toISOString() } : inv
-      );
-      const notif: MobileInAppNotification = {
-        id: `notif-${Date.now()}`,
-        title: 'Payment Verified ✓',
-        body: `Offline payment of ${formatCurrencyAmount(targetPayment?.amount || 0, targetPayment?.currency)} for Unit ${targetPayment?.unit} has been approved.`,
-        category: 'bills',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
+    const now = new Date().toISOString();
+    const targetPayment = rawState.payments.find((p) => p.id === paymentId);
+    const notif: MobileInAppNotification = {
+      id: `notif-${Date.now()}`,
+      userId: targetPayment?.tenantId || undefined,
+      ownerId: targetPayment?.ownerId || undefined,
+      title: 'Payment Verified ✓',
+      body: `Offline payment of ${formatCurrencyAmount(targetPayment?.amount || 0, targetPayment?.currency)} for Unit ${targetPayment?.unit} has been approved.`,
+      category: 'bills',
+      isRead: false,
+      createdAt: now,
+    };
 
-      if (isFirebaseConfigured && targetPayment?.id) {
-        setDoc(doc(db, 'payments', targetPayment.id), { status: 'paid' }, { merge: true }).catch(console.warn);
-        if (targetPayment.invoiceId) {
-          setDoc(doc(db, 'invoices', targetPayment.invoiceId), { status: 'paid', paidAt: new Date().toISOString() }, { merge: true }).catch(console.warn);
-        }
+    if (isFirebaseConfigured && targetPayment?.id) {
+      setDoc(doc(db, 'payments', targetPayment.id), { status: 'paid' }, { merge: true }).catch(console.warn);
+      if (targetPayment.invoiceId) {
+        setDoc(doc(db, 'invoices', targetPayment.invoiceId), { status: 'paid', paidAt: now }, { merge: true }).catch(console.warn);
       }
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
 
-      return {
-        ...prev,
-        payments: updatedPayments,
-        invoices: updatedInvoices,
-        notifications: [notif, ...prev.notifications],
-      };
-    });
+    setState((prev) => ({
+      ...prev,
+      payments: prev.payments.map((p) => (p.id === paymentId ? { ...p, status: 'paid' as const } : p)),
+      invoices: prev.invoices.map((inv) =>
+        inv.id === targetPayment?.invoiceId ? { ...inv, status: 'paid' as const, paidAt: now } : inv
+      ),
+      notifications: [notif, ...prev.notifications],
+    }));
   };
 
   const rejectOfflinePayment = (paymentId: string, reason: string) => {
-    setState((prev) => {
-      const targetPayment = prev.payments.find((p) => p.id === paymentId);
-      const updatedPayments = prev.payments.map((p) =>
-        p.id === paymentId ? { ...p, status: 'failed' as const, notes: reason } : p
-      );
-      const updatedInvoices = prev.invoices.map((inv) =>
-        inv.id === targetPayment?.invoiceId ? { ...inv, status: 'sent' as const } : inv
-      );
-      const notif: MobileInAppNotification = {
-        id: `notif-${Date.now()}`,
-        title: 'Payment Proof Rejected',
-        body: `Payment proof for ${targetPayment?.unit} was contested: ${reason}. Please submit a valid UTR.`,
-        category: 'bills',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
+    const now = new Date().toISOString();
+    const targetPayment = rawState.payments.find((p) => p.id === paymentId);
+    const notif: MobileInAppNotification = {
+      id: `notif-${Date.now()}`,
+      userId: targetPayment?.tenantId || undefined,
+      ownerId: targetPayment?.ownerId || undefined,
+      title: 'Payment Proof Rejected',
+      body: `Payment proof for ${targetPayment?.unit} was contested: ${reason}. Please submit a valid UTR.`,
+      category: 'bills',
+      isRead: false,
+      createdAt: now,
+    };
 
-      if (isFirebaseConfigured && targetPayment?.id) {
-        setDoc(doc(db, 'payments', targetPayment.id), { status: 'failed', notes: reason }, { merge: true }).catch(console.warn);
+    if (isFirebaseConfigured && targetPayment?.id) {
+      setDoc(doc(db, 'payments', targetPayment.id), { status: 'failed', notes: reason }, { merge: true }).catch(console.warn);
+      if (targetPayment.invoiceId) {
+        setDoc(doc(db, 'invoices', targetPayment.invoiceId), { status: 'sent' }, { merge: true }).catch(console.warn);
       }
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
 
-      return {
-        ...prev,
-        payments: updatedPayments,
-        invoices: updatedInvoices,
-        notifications: [notif, ...prev.notifications],
-      };
-    });
+    setState((prev) => ({
+      ...prev,
+      payments: prev.payments.map((p) => (p.id === paymentId ? { ...p, status: 'failed' as const, notes: reason } : p)),
+      invoices: prev.invoices.map((inv) =>
+        inv.id === targetPayment?.invoiceId ? { ...inv, status: 'sent' as const } : inv
+      ),
+      notifications: [notif, ...prev.notifications],
+    }));
   };
 
   const savePaymentMethods = (methods: MobilePaymentMethodsConfig, ownerId?: string) => {
@@ -3735,25 +4268,33 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   const saveAnnouncement = (ann: MobileAnnouncement) => {
     const ownerIdToSet = ann.ownerId || (user?.role === 'owner' ? user.id : user?.ownerId) || '';
     const annToSave: MobileAnnouncement = { ...ann, ownerId: ownerIdToSet };
+    const shouldNotify = annToSave.status === 'published';
+    const notif: MobileInAppNotification | null = shouldNotify
+      ? {
+          id: `notif-ann-${Date.now()}`,
+          title: annToSave.title,
+          body: annToSave.body,
+          category: annToSave.category === 'emergency' ? 'system' : 'leases',
+          isRead: false,
+          createdAt: new Date().toISOString(),
+          ownerId: ownerIdToSet,
+          relatedEntityId: annToSave.id,
+        }
+      : null;
+
     if (isFirebaseConfigured) {
-      setDoc(doc(db, 'announcements', annToSave.id), annToSave, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'announcements', annToSave.id), cleanFirestoreObject(annToSave), { merge: true }).catch(console.warn);
+      if (notif) {
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      }
     }
     setState((prev) => {
       const exists = prev.announcements.some((a) => a.id === annToSave.id);
       const updated = exists ? prev.announcements.map((a) => (a.id === annToSave.id ? annToSave : a)) : [annToSave, ...prev.announcements];
-      const notif: MobileInAppNotification = {
-        id: `notif-${Date.now()}`,
-        title: annToSave.title,
-        body: annToSave.body,
-        category: annToSave.category === 'emergency' ? 'system' : 'leases',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-        ownerId: ownerIdToSet,
-      };
       return {
         ...prev,
         announcements: updated,
-        notifications: [notif, ...prev.notifications],
+        notifications: notif ? [notif, ...prev.notifications] : prev.notifications,
       };
     });
   };
@@ -3834,235 +4375,289 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const updateTenancyRequest = (id: string, status: 'accepted' | 'declined' | 'cancelled') => {
+    const now = new Date().toISOString();
+    const targetReq = rawState.tenancyRequests.find((r) => r.id === id);
+
     if (isFirebaseConfigured) {
-      setDoc(doc(db, 'tenancyRequests', id), { status }, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'tenancyRequests', id), cleanFirestoreObject({ status, respondedAt: now }), { merge: true }).catch(console.warn);
     }
-    setState((prev) => {
-      const targetReq = prev.tenancyRequests.find((r) => r.id === id);
-      const updatedRequests = prev.tenancyRequests.map((r) => (r.id === id ? { ...r, status } : r));
 
-      if (!targetReq) {
-        return { ...prev, tenancyRequests: updatedRequests };
-      }
-
-      const unitNum = targetReq.unitNumber || targetReq.unit || '';
-      const propId = targetReq.propertyId;
-
-      if (status === 'accepted') {
-        const agreementId = `AG-${Date.now().toString().slice(-6)}`;
-        const newAgreement: MobileAgreement = {
-          id: agreementId,
-          ownerId: targetReq.ownerId,
-          ownerName: targetReq.ownerName,
-          propertyId: targetReq.propertyId,
-          propertyName: targetReq.propertyName,
-          unit: unitNum,
-          tenant: targetReq.tenantName,
-          tenantId: targetReq.tenantId || `TEN-${Date.now().toString().slice(-4)}`,
-          tenantEmail: targetReq.tenantEmail,
-          tenantPhone: targetReq.tenantPhone,
-          start: targetReq.leaseStart || new Date().toISOString().split('T')[0],
-          end: targetReq.leaseEnd || new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0],
-          rent: targetReq.rent || 0,
-          deposit: targetReq.deposit || (targetReq.rent ? targetReq.rent * 2 : 0),
-          currency: targetReq.currency || DEFAULT_CURRENCY_SYMBOL,
-          escalationPercent: 8,
-          lockInMonths: 11,
-          noticePeriodDays: 30,
-          status: 'awaiting_tenant_upload',
-          executionMode: targetReq.agreementFileName ? 'already_executed_offline' : 'digital_dispatch',
-          initialAgreementName: targetReq.agreementFileName || 'Lease_Agreement.pdf',
-          initialAgreementUrl: targetReq.agreementFileData || targetReq.agreementFileUrl || undefined,
-          documentUrl: targetReq.agreementFileData || targetReq.agreementFileUrl || undefined,
-          requireTenantId: targetReq.requireTenantId,
-          requiredIdType: targetReq.requiredIdType,
-          requiredIdTypes: targetReq.requiredIdTypes,
-          requiredIdList: targetReq.requiredIdList,
-          createdAt: new Date().toISOString(),
-        };
-
-        if (isFirebaseConfigured) {
-          setDoc(doc(db, 'agreements', agreementId), newAgreement, { merge: true }).catch(console.warn);
-        }
-
-        const updatedUnits = prev.units.map((u) => {
-          if ((u.unitNumber === unitNum || u.id === targetReq.unitId) && (!propId || u.propertyId === propId)) {
-            const upUnit: MobileUnit = {
-              ...u,
-              status: 'reserved' as const,
-              currentTenantId: newAgreement.tenantId,
-              tenant: newAgreement.tenant,
-            };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'units', u.id), upUnit, { merge: true }).catch(console.warn);
-            }
-            return upUnit;
-          }
-          return u;
-        });
-
-        const updatedTenants = prev.tenants.map((t) => {
-          if (t.id === newAgreement.tenantId || t.email === newAgreement.tenantEmail) {
-            const currentUnits = t.unitsRented || [];
-            const nextUnits = currentUnits.includes(unitNum) ? currentUnits : [...currentUnits, unitNum];
-            const upTenant: MobileTenantRecord = {
-              ...t,
-              unit: (!t.unit || t.unit === 'Unassigned') ? unitNum : t.unit,
-              unitsRented: nextUnits,
-              propertyName: (!t.propertyName || t.propertyName === 'Unassigned') ? (targetReq.propertyName || t.propertyName) : t.propertyName,
-              propertyId: (!t.propertyId) ? (targetReq.propertyId || t.propertyId) : t.propertyId,
-              ownerId: (!t.ownerId) ? (targetReq.ownerId || t.ownerId) : t.ownerId,
-            };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'tenants', t.id), upTenant, { merge: true }).catch(console.warn);
-            }
-            return upTenant;
-          }
-          return t;
-        });
-
-        const notif: MobileInAppNotification = {
-          id: `notif-req-acc-${Date.now()}`,
-          title: 'Tenancy Offer Accepted! 🎉',
-          body: `${targetReq.tenantName} accepted the offer for Unit ${unitNum}. Unit reserved. Awaiting signed lease upload.`,
-          category: 'leases',
-          isRead: false,
-          createdAt: new Date().toISOString(),
-          relatedEntityId: agreementId,
-        };
-
-        return {
-          ...prev,
-          tenancyRequests: updatedRequests,
-          agreements: [newAgreement, ...prev.agreements],
-          units: updatedUnits,
-          tenants: updatedTenants,
-          notifications: [notif, ...prev.notifications],
-        };
-      } else if (status === 'declined' || status === 'cancelled') {
-        const updatedUnits = prev.units.map((u) => {
-          const matchUnit = (u.unitNumber.toLowerCase() === unitNum.toLowerCase() || u.id === targetReq.unitId) && (!propId || u.propertyId === propId);
-          if (matchUnit) {
-            const upUnit: MobileUnit = {
-              ...u,
-              status: 'vacant' as const,
-              currentTenantId: null,
-              tenant: null,
-            };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'units', u.id), upUnit, { merge: true }).catch(console.warn);
-            }
-            return upUnit;
-          }
-          return u;
-        });
-
-        const updatedProperties = prev.properties.map((p) => {
-          if (!propId || p.id === propId) {
-            const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
-            const upP = { ...p, occupied: occ };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'properties', p.id), { occupied: occ }, { merge: true }).catch(console.warn);
-            }
-            return upP;
-          }
-          return p;
-        });
-
-        // 1. Cancel any active or pending agreements associated with this declined request / unit
-        const cleanTargetUnit = (unitNum || '').toLowerCase().trim();
-        const updatedAgreements = prev.agreements.map((a) => {
-          const matchesReq = (a as any).tenancyRequestId === targetReq.id;
-          const aUnitClean = (a.unit || '').toLowerCase().trim();
-          const matchesUnitTenant =
-            ((cleanTargetUnit && aUnitClean === cleanTargetUnit) || (targetReq.unitId && a.unitId === targetReq.unitId)) &&
-            (a.tenantId === targetReq.tenantId || (targetReq.tenantEmail && a.tenantEmail?.toLowerCase().trim() === targetReq.tenantEmail.toLowerCase().trim()));
-          if (matchesReq || matchesUnitTenant) {
-            const cancelledAg: MobileAgreement = {
-              ...a,
-              status: 'cancelled',
-            };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'agreements', a.id), { status: 'cancelled' }, { merge: true }).catch(console.warn);
-            }
-            return cancelledAg;
-          }
-          return a;
-        });
-
-        // 2. Void any unconfirmed invoices for this unaccepted tenancy (security deposit, rent invoice)
-        const updatedInvoices = prev.invoices.map((inv) => {
-          const matchesAg = updatedAgreements.some((a) => a.status === 'cancelled' && (inv.leaseAgreementId === a.id || inv.id === a.depositInvoiceId));
-          const invUnitClean = (inv.unit || '').toLowerCase().trim();
-          const matchesUnitTenant =
-            (cleanTargetUnit && invUnitClean === cleanTargetUnit) &&
-            (inv.tenantId === targetReq.tenantId || (inv.tenant && targetReq.tenantName && inv.tenant.toLowerCase().trim() === targetReq.tenantName.toLowerCase().trim()) || (targetReq.tenantEmail && inv.tenantEmail?.toLowerCase().trim() === targetReq.tenantEmail.toLowerCase().trim())) &&
-            (inv.status === 'sent' || inv.status === 'draft' || inv.status === 'pending_confirmation');
-          if (matchesAg || matchesUnitTenant) {
-            const voidedInv: MobileInvoice = {
-              ...inv,
-              status: 'cancelled',
-            };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'invoices', inv.id), { status: 'cancelled' }, { merge: true }).catch(console.warn);
-            }
-            return voidedInv;
-          }
-          return inv;
-        });
-
-        // 3. Clear tenant directory unit assignment and owner association if unaccepted
-        const updatedTenants = prev.tenants.map((t) => {
-          if (t.id === targetReq.tenantId || (targetReq.tenantEmail && t.email?.toLowerCase().trim() === targetReq.tenantEmail.toLowerCase().trim())) {
-            const tUnitClean = (t.unit || '').toLowerCase().trim();
-            const nextUnits = (t.unitsRented || []).filter((uN) => (uN || '').toLowerCase().trim() !== cleanTargetUnit && uN !== targetReq.unitId);
-            const isMatchUnit = (cleanTargetUnit && tUnitClean === cleanTargetUnit) || t.unit === targetReq.unitId;
-            const remainingUnits = nextUnits.length > 0;
-
-            const upTenant = {
-              ...t,
-              unitsRented: nextUnits,
-              unit: isMatchUnit ? (remainingUnits ? nextUnits[0] : 'Unassigned') : t.unit,
-              ownerId: remainingUnits ? t.ownerId : (t.ownerId === targetReq.ownerId ? '' : t.ownerId),
-              propertyId: remainingUnits ? t.propertyId : (t.propertyId === targetReq.propertyId ? '' : t.propertyId),
-              propertyName: remainingUnits ? t.propertyName : 'Unassigned',
-              rent: remainingUnits ? t.rent : 0,
-              deposit: remainingUnits ? t.deposit : 0,
-            };
-            if (isFirebaseConfigured) {
-              setDoc(doc(db, 'tenants', t.id), upTenant, { merge: true }).catch(console.warn);
-            }
-            return upTenant;
-          }
-          return t;
-        });
-
-        const notif: MobileInAppNotification = {
-          id: `notif-req-dec-${Date.now()}`,
-          title: 'Tenancy Invitation Declined',
-          body: `${targetReq.tenantName} declined the invitation for Unit ${unitNum}. Unit has been returned to vacant, active lease cancelled, and pending invoices voided.`,
-          category: 'leases',
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        };
-
-        return {
-          ...prev,
-          tenancyRequests: updatedRequests,
-          units: updatedUnits,
-          properties: updatedProperties,
-          agreements: updatedAgreements,
-          invoices: updatedInvoices,
-          tenants: updatedTenants,
-          notifications: [notif, ...prev.notifications],
-        };
-      }
-
-      return {
+    if (!targetReq) {
+      setState((prev) => ({
         ...prev,
-        tenancyRequests: updatedRequests,
+        tenancyRequests: prev.tenancyRequests.map((r) => (r.id === id ? { ...r, status, respondedAt: now } : r)),
+      }));
+      return;
+    }
+
+    const unitNum = targetReq.unitNumber || targetReq.unit || '';
+    const propId = targetReq.propertyId;
+
+    if (status === 'accepted') {
+      const resolvedTenantId = targetReq.tenantId || user?.id || `TEN-${Date.now().toString().slice(-4)}`;
+      const isOfflineDepCollected = Boolean((targetReq as any).offlineDepositCollected);
+      const resolvedDepositStatus = isOfflineDepCollected
+        ? 'paid'
+        : ((targetReq as any).depositStatus || 'unpaid');
+      const resolvedDepositAmount = targetReq.deposit || (targetReq.rent ? targetReq.rent * 2 : 0);
+
+      const agreementId = `AG-${Date.now().toString().slice(-6)}`;
+      const newAgreement: MobileAgreement = {
+        id: agreementId,
+        ownerId: targetReq.ownerId,
+        ownerName: targetReq.ownerName,
+        propertyId: targetReq.propertyId,
+        propertyName: targetReq.propertyName,
+        unit: unitNum,
+        tenant: targetReq.tenantName,
+        tenantId: resolvedTenantId,
+        tenantEmail: targetReq.tenantEmail,
+        tenantPhone: targetReq.tenantPhone,
+        start: targetReq.leaseStart || now.split('T')[0],
+        end: targetReq.leaseEnd || new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0],
+        rent: targetReq.rent || 0,
+        deposit: resolvedDepositAmount,
+        depositStatus: resolvedDepositStatus as any,
+        currency: targetReq.currency || DEFAULT_CURRENCY_SYMBOL,
+        escalationPercent: 8,
+        lockInMonths: 11,
+        noticePeriodDays: 30,
+        status: 'awaiting_tenant_upload',
+        executionMode: targetReq.agreementFileName ? 'already_executed_offline' : 'digital_dispatch',
+        initialAgreementName: targetReq.agreementFileName || 'Lease_Agreement.pdf',
+        initialAgreementUrl: targetReq.agreementFileData || targetReq.agreementFileUrl || undefined,
+        documentUrl: targetReq.agreementFileData || targetReq.agreementFileUrl || undefined,
+        requireTenantId: targetReq.requireTenantId,
+        requiredIdType: targetReq.requiredIdType,
+        requiredIdTypes: targetReq.requiredIdTypes,
+        requiredIdList: targetReq.requiredIdList,
+        createdAt: now,
       };
-    });
+
+      const offlineDepTxn: MobilePaymentTransaction | null =
+        isOfflineDepCollected && resolvedDepositAmount > 0
+          ? {
+              id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
+              ownerId: targetReq.ownerId,
+              tenant: targetReq.tenantName,
+              tenantId: resolvedTenantId,
+              unit: unitNum,
+              propertyId: targetReq.propertyId,
+              propertyName: targetReq.propertyName,
+              amount: resolvedDepositAmount,
+              currency: targetReq.currency || DEFAULT_CURRENCY_SYMBOL,
+              date: now.split('T')[0],
+              status: 'paid',
+              method: 'Cash' as any,
+              type: 'deposit',
+              referenceNo: `OFFLINE-DEP-${agreementId}`,
+              notes: `Security deposit collected offline prior to tenancy acceptance (${agreementId})`,
+            }
+          : null;
+
+      const unitsToPersist: MobileUnit[] = [];
+      const updatedUnits = rawState.units.map((u) => {
+        if ((u.unitNumber === unitNum || u.id === targetReq.unitId) && (!propId || u.propertyId === propId)) {
+          const upUnit: MobileUnit = {
+            ...u,
+            status: 'reserved' as const,
+            currentTenantId: resolvedTenantId,
+            tenant: newAgreement.tenant,
+          };
+          unitsToPersist.push(upUnit);
+          return upUnit;
+        }
+        return u;
+      });
+
+      const tenantsToPersist: MobileTenantRecord[] = [];
+      const updatedTenants = rawState.tenants.map((t) => {
+        if (t.id === resolvedTenantId || (targetReq.tenantEmail && t.email?.toLowerCase() === targetReq.tenantEmail.toLowerCase())) {
+          const currentUnits = t.unitsRented || [];
+          const nextUnits = currentUnits.includes(unitNum) ? currentUnits : [...currentUnits, unitNum];
+          const upTenant: MobileTenantRecord = {
+            ...t,
+            unit: (!t.unit || t.unit === 'Unassigned') ? unitNum : t.unit,
+            unitsRented: nextUnits,
+            propertyName: (!t.propertyName || t.propertyName === 'Unassigned') ? (targetReq.propertyName || t.propertyName) : t.propertyName,
+            propertyId: (!t.propertyId) ? (targetReq.propertyId || t.propertyId) : t.propertyId,
+            ownerId: (!t.ownerId) ? (targetReq.ownerId || t.ownerId) : t.ownerId,
+          };
+          tenantsToPersist.push(upTenant);
+          return upTenant;
+        }
+        return t;
+      });
+
+      const notif: MobileInAppNotification = {
+        id: `notif-req-acc-${Date.now()}`,
+        userId: targetReq.ownerId || undefined,
+        ownerId: targetReq.ownerId || undefined,
+        title: 'Tenancy Offer Accepted! 🎉',
+        body: `${targetReq.tenantName} accepted the offer for Unit ${unitNum}. Unit reserved. Awaiting signed lease upload.`,
+        category: 'leases',
+        isRead: false,
+        createdAt: now,
+        relatedEntityId: agreementId,
+      };
+
+      if (isFirebaseConfigured) {
+        setDoc(doc(db, 'agreements', agreementId), cleanFirestoreObject(newAgreement), { merge: true }).catch(console.warn);
+        if (offlineDepTxn) {
+          setDoc(doc(db, 'payments', offlineDepTxn.id), cleanFirestoreObject(offlineDepTxn), { merge: true }).catch(console.warn);
+        }
+        unitsToPersist.forEach((upUnit) => {
+          setDoc(doc(db, 'units', upUnit.id), cleanFirestoreObject(upUnit), { merge: true }).catch(console.warn);
+        });
+        tenantsToPersist.forEach((upTenant) => {
+          setDoc(doc(db, 'tenants', upTenant.id), cleanFirestoreObject(upTenant), { merge: true }).catch(console.warn);
+        });
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      }
+
+      setState((prev) => ({
+        ...prev,
+        tenancyRequests: prev.tenancyRequests.map((r) => (r.id === id ? { ...r, status, respondedAt: now } : r)),
+        agreements: [newAgreement, ...prev.agreements],
+        payments: offlineDepTxn ? [offlineDepTxn, ...prev.payments] : prev.payments,
+        units: updatedUnits,
+        tenants: updatedTenants,
+        notifications: [notif, ...prev.notifications],
+      }));
+    } else if (status === 'declined' || status === 'cancelled') {
+      const unitsToPersist: MobileUnit[] = [];
+      const updatedUnits = rawState.units.map((u) => {
+        const matchUnit = (u.unitNumber.toLowerCase() === unitNum.toLowerCase() || u.id === targetReq.unitId) && (!propId || u.propertyId === propId);
+        if (matchUnit) {
+          const upUnit: MobileUnit = {
+            ...u,
+            status: 'vacant' as const,
+            currentTenantId: null,
+            tenant: null,
+          };
+          unitsToPersist.push(upUnit);
+          return upUnit;
+        }
+        return u;
+      });
+
+      const propsToPersist: { id: string; occupied: number }[] = [];
+      const updatedProperties = rawState.properties.map((p) => {
+        if (!propId || p.id === propId) {
+          const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
+          propsToPersist.push({ id: p.id, occupied: occ });
+          return { ...p, occupied: occ };
+        }
+        return p;
+      });
+
+      const cleanTargetUnit = (unitNum || '').toLowerCase().trim();
+      const agreementsToTerminate: string[] = [];
+      const updatedAgreements = rawState.agreements.map((a) => {
+        const matchesReq = (a as any).tenancyRequestId === targetReq.id;
+        const aUnitClean = (a.unit || '').toLowerCase().trim();
+        const matchesUnitTenant =
+          ((cleanTargetUnit && aUnitClean === cleanTargetUnit) || (targetReq.unitId && a.unitId === targetReq.unitId)) &&
+          (a.tenantId === targetReq.tenantId || (targetReq.tenantEmail && a.tenantEmail?.toLowerCase().trim() === targetReq.tenantEmail.toLowerCase().trim()));
+        if (matchesReq || matchesUnitTenant) {
+          agreementsToTerminate.push(a.id);
+          return {
+            ...a,
+            status: 'terminated' as const,
+          };
+        }
+        return a;
+      });
+
+      const invoicesToVoid: string[] = [];
+      const updatedInvoices = rawState.invoices.map((inv) => {
+        const matchesAg = updatedAgreements.some(
+          (a) => (a.status === 'terminated' || a.status === 'cancelled') && (inv.leaseAgreementId === a.id || inv.id === a.depositInvoiceId)
+        );
+        const invUnitClean = (inv.unit || '').toLowerCase().trim();
+        const matchesUnitTenant =
+          cleanTargetUnit &&
+          invUnitClean === cleanTargetUnit &&
+          (inv.tenantId === targetReq.tenantId ||
+            (inv.tenant && targetReq.tenantName && inv.tenant.toLowerCase().trim() === targetReq.tenantName.toLowerCase().trim()) ||
+            (targetReq.tenantEmail && inv.tenantEmail?.toLowerCase().trim() === targetReq.tenantEmail.toLowerCase().trim())) &&
+          (inv.status === 'sent' || inv.status === 'draft' || inv.status === 'pending_confirmation' || inv.status === 'overdue');
+        if (matchesAg || matchesUnitTenant) {
+          invoicesToVoid.push(inv.id);
+          return {
+            ...inv,
+            status: 'void' as any,
+          };
+        }
+        return inv;
+      });
+
+      const tenantsToPersist: MobileTenantRecord[] = [];
+      const updatedTenants = rawState.tenants.map((t) => {
+        if (t.id === targetReq.tenantId || (targetReq.tenantEmail && t.email?.toLowerCase().trim() === targetReq.tenantEmail.toLowerCase().trim())) {
+          const tUnitClean = (t.unit || '').toLowerCase().trim();
+          const nextUnits = (t.unitsRented || []).filter((uN) => (uN || '').toLowerCase().trim() !== cleanTargetUnit && uN !== targetReq.unitId);
+          const isMatchUnit = (cleanTargetUnit && tUnitClean === cleanTargetUnit) || t.unit === targetReq.unitId;
+          const remainingUnits = nextUnits.length > 0;
+
+          const upTenant: MobileTenantRecord = {
+            ...t,
+            unitsRented: nextUnits,
+            unit: isMatchUnit ? (remainingUnits ? nextUnits[0] : 'Unassigned') : t.unit,
+            ownerId: remainingUnits ? t.ownerId : (t.ownerId === targetReq.ownerId ? '' : t.ownerId),
+            propertyId: remainingUnits ? t.propertyId : (t.propertyId === targetReq.propertyId ? '' : t.propertyId),
+            propertyName: remainingUnits ? t.propertyName : 'Unassigned',
+            rent: remainingUnits ? t.rent : 0,
+            deposit: remainingUnits ? t.deposit : 0,
+          };
+          tenantsToPersist.push(upTenant);
+          return upTenant;
+        }
+        return t;
+      });
+
+      const notif: MobileInAppNotification = {
+        id: `notif-req-dec-${Date.now()}`,
+        userId: targetReq.ownerId || undefined,
+        ownerId: targetReq.ownerId || undefined,
+        title: status === 'cancelled' ? 'Tenancy Invitation Cancelled' : 'Tenancy Invitation Declined',
+        body: `${targetReq.tenantName} ${status === 'cancelled' ? 'cancelled' : 'declined'} the invitation for Unit ${unitNum}. Unit has been returned to vacant, pending lease terminated, and pending invoices voided.`,
+        category: 'leases',
+        isRead: false,
+        createdAt: now,
+        relatedEntityId: targetReq.id,
+      };
+
+      if (isFirebaseConfigured) {
+        unitsToPersist.forEach((upUnit) => {
+          setDoc(doc(db, 'units', upUnit.id), cleanFirestoreObject(upUnit), { merge: true }).catch(console.warn);
+        });
+        propsToPersist.forEach((p) => {
+          setDoc(doc(db, 'properties', p.id), { occupied: p.occupied }, { merge: true }).catch(console.warn);
+        });
+        agreementsToTerminate.forEach((agId) => {
+          setDoc(doc(db, 'agreements', agId), { status: 'terminated' }, { merge: true }).catch(console.warn);
+        });
+        invoicesToVoid.forEach((invId) => {
+          setDoc(doc(db, 'invoices', invId), { status: 'void' }, { merge: true }).catch(console.warn);
+        });
+        tenantsToPersist.forEach((upTenant) => {
+          setDoc(doc(db, 'tenants', upTenant.id), cleanFirestoreObject(upTenant), { merge: true }).catch(console.warn);
+        });
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      }
+
+      setState((prev) => ({
+        ...prev,
+        tenancyRequests: prev.tenancyRequests.map((r) => (r.id === id ? { ...r, status, respondedAt: now } : r)),
+        units: updatedUnits,
+        properties: updatedProperties,
+        agreements: updatedAgreements,
+        invoices: updatedInvoices,
+        tenants: updatedTenants,
+        notifications: [notif, ...prev.notifications],
+      }));
+    }
   };
 
   const submitEnquiry = async (data: Omit<MobilePropertyEnquiry, 'id' | 'createdAt' | 'status'>) => {
@@ -4137,70 +4732,217 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     signatoryName?: string,
     notes?: string
   ): Promise<string> => {
-    let depositInvoiceId = '';
-    setState((prev) => {
-      const targetAg = prev.agreements.find((a) => a.id === agreementId);
-      if (!targetAg) return prev;
+    const targetAg = rawState.agreements.find((a) => a.id === agreementId);
+    if (!targetAg) return '';
 
-      const depAmount = targetAg.deposit || (targetAg.rent * 2) || 1000;
-      depositInvoiceId = targetAg.depositInvoiceId || `INV-DEP-${targetAg.id}`;
+    const now = new Date().toISOString();
+    const approverName = signatoryName || user?.displayName || targetAg.ownerName || 'Property Owner';
+    const depAmount = targetAg.deposit || (targetAg.rent * 2) || 1000;
+    const depositInvoiceId = targetAg.depositInvoiceId || `INV-DEP-${targetAg.id}`;
 
-      const depInvoice: MobileInvoice = {
-        id: depositInvoiceId,
-        ownerId: targetAg.ownerId,
-        propertyId: targetAg.propertyId,
-        tenant: targetAg.tenant,
-        tenantId: targetAg.tenantId,
-        unit: targetAg.unit,
-        propertyName: targetAg.propertyName,
-        amount: depAmount,
-        tax: 0,
-        total: depAmount,
-        due: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
-        status: 'sent',
-        currency: targetAg.currency || DEFAULT_CURRENCY_SYMBOL,
-        type: 'deposit',
-        invoiceType: 'deposit',
-        leaseAgreementId: targetAg.id,
-        items: [{ description: `Refundable Security Deposit - Unit ${targetAg.unit}`, amount: depAmount }],
-        createdAt: new Date().toISOString(),
-      };
+    const hasPaidDepositInvoice = rawState.invoices.some(
+      (inv) =>
+        inv.status === 'paid' &&
+        ((inv.invoiceType === 'deposit' || (inv as any).type === 'deposit') &&
+          (inv.id === depositInvoiceId ||
+            inv.leaseAgreementId === targetAg.id ||
+            (inv.unit === targetAg.unit && (!targetAg.propertyId || !inv.propertyId || inv.propertyId === targetAg.propertyId))))
+    );
+    const isDepositAlreadyPaid = targetAg.depositStatus === 'paid' || hasPaidDepositInvoice;
 
+    if (isDepositAlreadyPaid) {
       const updatedAg: MobileAgreement = {
         ...targetAg,
-        status: 'pending_deposit',
-        depositInvoiceId,
-        depositStatus: 'unpaid',
+        status: 'active',
+        depositStatus: 'paid',
+        approvedBy: approverName,
+        approvedAt: now,
+        counterSignatory: approverName,
+        counterSignedAt: now,
+        ...(notes ? { approvalNotes: notes } : {}),
         rejectionReason: undefined,
         rejectedAt: undefined,
       };
 
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'agreements', targetAg.id), {
-          ...updatedAg,
-          rejectionReason: null,
-          rejectedAt: null,
-        }, { merge: true }).catch(console.warn);
-        setDoc(doc(db, 'invoices', depInvoice.id), depInvoice, { merge: true }).catch(console.warn);
+      const cleanUNum = (targetAg.unit || '').toLowerCase().trim();
+      const targetUnit = rawState.units.find(
+        (u) =>
+          cleanUNum &&
+          ((u.unitNumber || '').toLowerCase().trim() === cleanUNum || u.id.toLowerCase().trim() === cleanUNum) &&
+          (!targetAg.propertyId || !u.propertyId || u.propertyId === targetAg.propertyId)
+      );
+
+      const propId = targetAg.propertyId;
+      const occCount = propId
+        ? rawState.units.filter((u) => {
+            if (u.propertyId !== propId) return false;
+            if (targetUnit && u.id === targetUnit.id) return true;
+            return u.status === 'occupied';
+          }).length
+        : undefined;
+
+      const cleanAgId = targetAg.id.replace(/[^a-zA-Z0-9_-]/g, '');
+      const canonicalRentId = `INV-RENT-${cleanAgId}-M1`;
+      const hasRentInv = rawState.invoices.some(
+        (inv) => inv.id === canonicalRentId || (inv.leaseAgreementId === targetAg.id && inv.type === 'rent')
+      );
+
+      let m1RentInvoice: MobileInvoice | null = null;
+      if (!hasRentInv && targetAg.rent > 0) {
+        const nextMonthDate = new Date();
+        nextMonthDate.setDate(1);
+        nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
+        m1RentInvoice = {
+          id: canonicalRentId,
+          ownerId: targetAg.ownerId,
+          propertyId: targetAg.propertyId,
+          tenant: targetAg.tenant,
+          tenantId: targetAg.tenantId,
+          unit: targetAg.unit,
+          propertyName: targetAg.propertyName,
+          amount: targetAg.rent,
+          tax: 0,
+          total: targetAg.rent,
+          due: nextMonthDate.toISOString().split('T')[0],
+          status: 'sent',
+          currency: targetAg.currency || DEFAULT_CURRENCY_SYMBOL,
+          type: 'rent',
+          invoiceType: 'rent',
+          leaseAgreementId: targetAg.id,
+          items: [{ description: `Monthly Rent - Unit ${targetAg.unit}`, amount: targetAg.rent }],
+          createdAt: now,
+        };
       }
 
       const notif: MobileInAppNotification = {
         id: `notif-appr-${Date.now()}`,
-        title: 'Lease Approved! Security Deposit Requested 📄',
-        body: `Lease for Unit ${targetAg.unit} approved by landlord. Please pay the refundable security deposit of ${formatCurrencyAmount(depAmount, targetAg.currency)} (${depositInvoiceId}) to complete move-in.`,
+        userId: targetAg.tenantId || undefined,
+        ownerId: targetAg.ownerId || undefined,
+        title: 'Lease Countersigned & Active! 🏡',
+        body: `Your lease for Unit ${targetAg.unit} has been approved by ${approverName} (deposit already settled). Your residency is now active!`,
         category: 'leases',
         isRead: false,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
         relatedEntityId: targetAg.id,
       };
 
-      return {
+      if (isFirebaseConfigured) {
+        setDoc(
+          doc(db, 'agreements', targetAg.id),
+          cleanFirestoreObject({
+            ...updatedAg,
+            rejectionReason: null,
+            rejectedAt: null,
+          }),
+          { merge: true }
+        ).catch(console.warn);
+        if (targetUnit) {
+          setDoc(
+            doc(db, 'units', targetUnit.id),
+            cleanFirestoreObject({
+              status: 'occupied',
+              tenant: targetAg.tenant,
+              currentTenantId: targetAg.tenantId,
+            }),
+            { merge: true }
+          ).catch(console.warn);
+        }
+        if (propId && occCount !== undefined) {
+          setDoc(doc(db, 'properties', propId), { occupied: occCount }, { merge: true }).catch(console.warn);
+        }
+        if (m1RentInvoice) {
+          setDoc(doc(db, 'invoices', m1RentInvoice.id), cleanFirestoreObject(m1RentInvoice), { merge: true }).catch(console.warn);
+        }
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+      }
+
+      setState((prev) => ({
         ...prev,
         agreements: prev.agreements.map((a) => (a.id === agreementId ? updatedAg : a)),
-        invoices: [depInvoice, ...prev.invoices.filter((i) => i.id !== depInvoice.id)],
+        units: targetUnit
+          ? prev.units.map((u) =>
+              u.id === targetUnit.id
+                ? { ...u, status: 'occupied' as const, tenant: targetAg.tenant, currentTenantId: targetAg.tenantId }
+                : u
+            )
+          : prev.units,
+        properties:
+          propId && occCount !== undefined
+            ? prev.properties.map((p) => (p.id === propId ? { ...p, occupied: occCount } : p))
+            : prev.properties,
+        invoices: m1RentInvoice ? [m1RentInvoice, ...prev.invoices.filter((i) => i.id !== m1RentInvoice!.id)] : prev.invoices,
         notifications: [notif, ...prev.notifications],
-      };
-    });
+      }));
+      return depositInvoiceId;
+    }
+
+    const depInvoice: MobileInvoice = {
+      id: depositInvoiceId,
+      ownerId: targetAg.ownerId,
+      propertyId: targetAg.propertyId,
+      tenant: targetAg.tenant,
+      tenantId: targetAg.tenantId,
+      unit: targetAg.unit,
+      propertyName: targetAg.propertyName,
+      amount: depAmount,
+      tax: 0,
+      total: depAmount,
+      due: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
+      status: 'sent',
+      currency: targetAg.currency || DEFAULT_CURRENCY_SYMBOL,
+      type: 'deposit',
+      invoiceType: 'deposit',
+      leaseAgreementId: targetAg.id,
+      items: [{ description: `Refundable Security Deposit - Unit ${targetAg.unit}`, amount: depAmount }],
+      createdAt: now,
+    };
+
+    const updatedAg: MobileAgreement = {
+      ...targetAg,
+      status: 'pending_deposit',
+      depositInvoiceId,
+      depositStatus: 'unpaid',
+      approvedBy: approverName,
+      approvedAt: now,
+      counterSignatory: approverName,
+      counterSignedAt: now,
+      ...(notes ? { approvalNotes: notes } : {}),
+      rejectionReason: undefined,
+      rejectedAt: undefined,
+    };
+
+    const notif: MobileInAppNotification = {
+      id: `notif-appr-${Date.now()}`,
+      userId: targetAg.tenantId || undefined,
+      ownerId: targetAg.ownerId || undefined,
+      title: 'Lease Approved! Security Deposit Requested 📄',
+      body: `Lease for Unit ${targetAg.unit} approved by ${approverName}. Please pay the refundable security deposit of ${formatCurrencyAmount(depAmount, targetAg.currency)} (${depositInvoiceId}) to complete move-in.`,
+      category: 'leases',
+      isRead: false,
+      createdAt: now,
+      relatedEntityId: targetAg.id,
+    };
+
+    if (isFirebaseConfigured) {
+      setDoc(
+        doc(db, 'agreements', targetAg.id),
+        cleanFirestoreObject({
+          ...updatedAg,
+          rejectionReason: null,
+          rejectedAt: null,
+        }),
+        { merge: true }
+      ).catch(console.warn);
+      setDoc(doc(db, 'invoices', depInvoice.id), cleanFirestoreObject(depInvoice), { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
+
+    setState((prev) => ({
+      ...prev,
+      agreements: prev.agreements.map((a) => (a.id === agreementId ? updatedAg : a)),
+      invoices: [depInvoice, ...prev.invoices.filter((i) => i.id !== depInvoice.id)],
+      notifications: [notif, ...prev.notifications],
+    }));
     return depositInvoiceId;
   };
 
@@ -4208,47 +4950,53 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     agreementId: string,
     reason: string
   ): Promise<void> => {
-    setState((prev) => {
-      const targetAg = prev.agreements.find((a) => a.id === agreementId);
-      if (!targetAg) return prev;
+    const targetAg = rawState.agreements.find((a) => a.id === agreementId);
+    if (!targetAg) return;
+    const now = new Date().toISOString();
 
-      const updatedAg: MobileAgreement = {
-        ...targetAg,
-        status: 'awaiting_tenant_upload',
-        signedDocumentUrl: undefined,
-        signedDocumentName: undefined,
-        signedUploadedAt: undefined,
-        rejectionReason: reason || 'Document requires corrections or re-signing.',
-        rejectedAt: new Date().toISOString(),
-      };
+    const updatedAg: MobileAgreement = {
+      ...targetAg,
+      status: 'awaiting_tenant_upload',
+      signedDocumentUrl: undefined,
+      signedDocumentName: undefined,
+      signedUploadedAt: undefined,
+      rejectionReason: reason || 'Document requires corrections or re-signing.',
+      rejectedAt: now,
+    };
 
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'agreements', targetAg.id), {
+    const notif: MobileInAppNotification = {
+      id: `notif-rej-${Date.now()}`,
+      userId: targetAg.tenantId || undefined,
+      ownerId: targetAg.ownerId || undefined,
+      title: 'Signed Agreement Rejected by Landlord ⚠️',
+      body: `Uploaded agreement for Unit ${targetAg.unit} was rejected by your landlord. Reason: "${reason || 'Please re-upload corrected document.'}". Please re-upload your document.`,
+      category: 'leases',
+      isRead: false,
+      createdAt: now,
+      relatedEntityId: targetAg.id,
+    };
+
+    if (isFirebaseConfigured) {
+      setDoc(
+        doc(db, 'agreements', targetAg.id),
+        {
           status: 'awaiting_tenant_upload',
           signedDocumentUrl: null,
           signedDocumentName: null,
           signedUploadedAt: null,
           rejectionReason: reason || 'Document requires corrections or re-signing.',
-          rejectedAt: new Date().toISOString(),
-        }, { merge: true }).catch(console.warn);
-      }
+          rejectedAt: now,
+        },
+        { merge: true }
+      ).catch(console.warn);
+      setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true }).catch(console.warn);
+    }
 
-      const notif: MobileInAppNotification = {
-        id: `notif-rej-${Date.now()}`,
-        title: 'Signed Agreement Rejected by Landlord ⚠️',
-        body: `Uploaded agreement for Unit ${targetAg.unit} was rejected by your landlord. Reason: "${reason || 'Please re-upload corrected document.'}". Please re-upload your document.`,
-        category: 'leases',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-        relatedEntityId: targetAg.id,
-      };
-
-      return {
-        ...prev,
-        agreements: prev.agreements.map((a) => (a.id === agreementId ? updatedAg : a)),
-        notifications: [notif, ...prev.notifications],
-      };
-    });
+    setState((prev) => ({
+      ...prev,
+      agreements: prev.agreements.map((a) => (a.id === agreementId ? updatedAg : a)),
+      notifications: [notif, ...prev.notifications],
+    }));
   };
 
   const requestLeaseRenewal = async (unit: string, tenantNotes?: string, propertyId?: string) => {
@@ -4304,10 +5052,12 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     if (isFirebaseConfigured) {
       const docKey = effPropId ? `${effPropId}_${unit}` : unit;
-      setDoc(doc(db, 'renewals', docKey), renItem, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'renewals', unit), renItem, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'renewals', docKey), cleanFirestoreObject(renItem), { merge: true }).catch(console.warn);
+      if (docKey !== unit) {
+        deleteDoc(doc(db, 'renewals', unit)).catch(() => {});
+      }
       if (resolvedOwnerId) {
-        setDoc(doc(db, 'notifications', notif.id), notif).catch(console.warn);
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif)).catch(console.warn);
       }
     }
   };
@@ -4393,10 +5143,12 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     if (isFirebaseConfigured) {
       const docKey = resolvedPropId ? `${resolvedPropId}_${unit}` : unit;
-      setDoc(doc(db, 'renewals', docKey), updatedItem, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'renewals', unit), updatedItem, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'renewals', docKey), cleanFirestoreObject(updatedItem), { merge: true }).catch(console.warn);
+      if (docKey !== unit) {
+        deleteDoc(doc(db, 'renewals', unit)).catch(() => {});
+      }
       if (resolvedTenantId) {
-        setDoc(doc(db, 'notifications', notif.id), notif).catch(console.warn);
+        setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif)).catch(console.warn);
       }
     }
   };
@@ -4450,10 +5202,12 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     if (isFirebaseConfigured) {
       const docKey = effPropId ? `${effPropId}_${unit}` : unit;
-      setDoc(doc(db, 'renewals', docKey), updatedItem, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'renewals', unit), updatedItem, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'renewals', docKey), cleanFirestoreObject(updatedItem), { merge: true }).catch(console.warn);
+      if (docKey !== unit) {
+        deleteDoc(doc(db, 'renewals', unit)).catch(() => {});
+      }
       if (resolvedOwnerId) {
-        setDoc(doc(db, 'notifications', ownerNotif.id), ownerNotif).catch(console.warn);
+        setDoc(doc(db, 'notifications', ownerNotif.id), cleanFirestoreObject(ownerNotif)).catch(console.warn);
       }
     }
   };
@@ -4561,16 +5315,18 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (isFirebaseConfigured) {
         const docKey = effPropId ? `${effPropId}_${unit}` : unit;
-        setDoc(doc(db, 'renewals', docKey), updatedRenewal, { merge: true }).catch(console.warn);
-        setDoc(doc(db, 'renewals', unit), updatedRenewal, { merge: true }).catch(console.warn);
+        setDoc(doc(db, 'renewals', docKey), cleanFirestoreObject(updatedRenewal), { merge: true }).catch(console.warn);
+        if (docKey !== unit) {
+          deleteDoc(doc(db, 'renewals', unit)).catch(() => {});
+        }
         if (agreement) {
           setDoc(doc(db, 'agreements', agreement.id), { end: newEnd, rent: newRent }, { merge: true }).catch(console.warn);
         }
         if (resolvedOwnerId) {
-          setDoc(doc(db, 'notifications', ownerNotif.id), ownerNotif).catch(console.warn);
+          setDoc(doc(db, 'notifications', ownerNotif.id), cleanFirestoreObject(ownerNotif)).catch(console.warn);
         }
         if (existingRenewal.tenantId || tenantRec?.id) {
-          setDoc(doc(db, 'notifications', tenantNotif.id), tenantNotif).catch(console.warn);
+          setDoc(doc(db, 'notifications', tenantNotif.id), cleanFirestoreObject(tenantNotif)).catch(console.warn);
         }
       }
     } else {
@@ -4616,26 +5372,29 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (isFirebaseConfigured) {
         const docKey = effPropId ? `${effPropId}_${unit}` : unit;
-        setDoc(doc(db, 'renewals', docKey), updatedRenewal, { merge: true }).catch(console.warn);
-        setDoc(doc(db, 'renewals', unit), updatedRenewal, { merge: true }).catch(console.warn);
+        setDoc(doc(db, 'renewals', docKey), cleanFirestoreObject(updatedRenewal), { merge: true }).catch(console.warn);
+        if (docKey !== unit) {
+          deleteDoc(doc(db, 'renewals', unit)).catch(() => {});
+        }
         if (resolvedOwnerId) {
-          setDoc(doc(db, 'notifications', ownerNotif.id), ownerNotif).catch(console.warn);
+          setDoc(doc(db, 'notifications', ownerNotif.id), cleanFirestoreObject(ownerNotif)).catch(console.warn);
         }
         if (existingRenewal.tenantId || tenantRec?.id) {
-          setDoc(doc(db, 'notifications', tenantNotif.id), tenantNotif).catch(console.warn);
+          setDoc(doc(db, 'notifications', tenantNotif.id), cleanFirestoreObject(tenantNotif)).catch(console.warn);
         }
       }
     }
   };
 
   const approveLeaseRenewal = async (unit: string, propertyId?: string) => {
-    const existingRenewal = (state.renewals || []).find(
+    const existingRenewal = (rawState.renewals || []).find(
       (r) => r.unit === unit && (!propertyId || !r.propertyId || r.propertyId === propertyId)
     );
     if (!existingRenewal) return;
 
-    const tenantRec = state.tenants.find((t) => t.unit === unit && (!propertyId || !t.propertyId || t.propertyId === propertyId));
-    const currentAgreement = state.agreements.find(
+    const now = new Date().toISOString();
+    const tenantRec = rawState.tenants.find((t) => t.unit === unit && (!propertyId || !t.propertyId || t.propertyId === propertyId));
+    const currentAgreement = rawState.agreements.find(
       (a) => a.unit === unit && (!propertyId || !a.propertyId || a.propertyId === propertyId) && (a.status === 'active' || a.status === 'pending_approval' || a.status === 'pending_deposit')
     );
     const resolvedOwnerId = currentAgreement?.ownerId || tenantRec?.ownerId || existingRenewal.ownerId || '';
@@ -4646,10 +5405,20 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const newEnd = existingRenewal.newLeaseEnd || '';
     const effPropId = propertyId || existingRenewal.propertyId || currentAgreement?.propertyId || tenantRec?.propertyId || 'prop-1';
 
+    const renewalTermsPayload = {
+      previousRent: currentAgreement?.rent || existingRenewal.currentRent || newRent,
+      newRent,
+      percentageIncrease: existingRenewal.percentageIncrease || 0,
+      newLeaseStart: newStart,
+      newLeaseEnd: newEnd,
+      termMonths: existingRenewal.termMonths || 12,
+      renewedAt: now,
+    };
+
     const updatedRenewal: MobileRenewalItem = {
       ...existingRenewal,
       status: 'accepted',
-      ownerApprovedAt: new Date().toISOString(),
+      ownerApprovedAt: now,
     };
 
     const renewalAgId = `AG-REN-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -4677,26 +5446,37 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       lockInMonths: 11,
       noticePeriodDays: 30,
       status: 'active',
-      createdAt: new Date().toISOString(),
+      ...({ isRenewal: true, previousAgreementId: currentAgreement?.id } as any),
+      renewalTerms: renewalTermsPayload as any,
+      createdAt: now,
     };
 
-    const unitObj = state.units.find(
+    const unitObj = rawState.units.find(
       (u) => (u.unitNumber === unit || u.id === unit) && (!effPropId || !u.propertyId || u.propertyId === effPropId)
     );
 
-    const updatedTenants = state.tenants.map((t) =>
+    const updatedTenants = rawState.tenants.map((t) =>
       t.id === tenantId || (t.unit === unit && (!effPropId || t.propertyId === effPropId))
         ? { ...t, rent: newRent, leaseEnd: newEnd }
         : t
     );
 
-    const updatedUnits = state.units.map((u) =>
+    const updatedUnits = rawState.units.map((u) =>
       u.id === unitObj?.id
         ? { ...u, rent: newRent }
         : u
     );
 
-    const updatedAgreements = [...state.agreements.filter((a) => a.id !== renewalAgId), renewalAgreement];
+    const updatedAgreements = [
+      ...rawState.agreements
+        .filter((a) => a.id !== renewalAgId)
+        .map((a) =>
+          currentAgreement && a.id === currentAgreement.id
+            ? { ...a, renewalTerms: renewalTermsPayload as any }
+            : a
+        ),
+      renewalAgreement,
+    ];
 
     const tenantNotif: MobileInAppNotification = {
       id: `notif_${Date.now()}_t`,
@@ -4705,7 +5485,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       body: `Your landlord has approved and activated your lease renewal for Unit ${unit}. Extended through ${newEnd} at ${formatCurrencyAmount(newRent, renewalAgreement.currency)}/mo.`,
       category: 'leases',
       isRead: false,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
 
     setState((prev) => ({
@@ -4721,15 +5501,24 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     if (isFirebaseConfigured) {
       const docKey = effPropId ? `${effPropId}_${unit}` : unit;
-      setDoc(doc(db, 'agreements', renewalAgId), renewalAgreement, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'renewals', docKey), updatedRenewal, { merge: true }).catch(console.warn);
-      setDoc(doc(db, 'renewals', unit), updatedRenewal, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'agreements', renewalAgId), cleanFirestoreObject(renewalAgreement), { merge: true }).catch(console.warn);
+      if (currentAgreement) {
+        setDoc(
+          doc(db, 'agreements', currentAgreement.id),
+          cleanFirestoreObject({ renewalTerms: renewalTermsPayload }),
+          { merge: true }
+        ).catch(console.warn);
+      }
+      setDoc(doc(db, 'renewals', docKey), cleanFirestoreObject(updatedRenewal), { merge: true }).catch(console.warn);
+      if (docKey !== unit) {
+        deleteDoc(doc(db, 'renewals', unit)).catch(() => {});
+      }
       if (unitObj) {
         setDoc(doc(db, 'units', unitObj.id), { rent: newRent }, { merge: true }).catch(console.warn);
       }
       if (tenantId) {
         setDoc(doc(db, 'tenants', tenantId), { rent: newRent, leaseEnd: newEnd }, { merge: true }).catch(console.warn);
-        setDoc(doc(db, 'notifications', tenantNotif.id), tenantNotif).catch(console.warn);
+        setDoc(doc(db, 'notifications', tenantNotif.id), cleanFirestoreObject(tenantNotif)).catch(console.warn);
       }
     }
   };
@@ -4762,10 +5551,20 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const resolvePlatformSupportTicket = async (ticketId: string, reply?: string): Promise<void> => {
     const now = new Date().toISOString();
+    const resolutionNotes = reply || 'Resolved by Property Owner';
     setState((prev) => ({
       ...prev,
       platformSupport: (prev.platformSupport || []).map((t) =>
-        t.id === ticketId ? { ...t, status: 'resolved', resolvedAt: now, ...(reply ? { reply } : {}) } : t
+        t.id === ticketId
+          ? {
+              ...t,
+              status: 'resolved',
+              resolvedAt: now,
+              resolvedBy: 'owner',
+              resolutionNotes,
+              ...(reply ? { reply } : {}),
+            }
+          : t
       ),
     }));
 
@@ -4773,7 +5572,13 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         await setDoc(
           doc(db, 'platformSupport', ticketId),
-          { status: 'resolved', resolvedAt: now, ...(reply ? { reply } : {}) },
+          cleanFirestoreObject({
+            status: 'resolved',
+            resolvedAt: now,
+            resolvedBy: 'owner',
+            resolutionNotes,
+            ...(reply ? { reply } : {}),
+          }),
           { merge: true }
         );
       } catch (err) {
@@ -4783,20 +5588,51 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const saveReview = async (review: MobileTenantReview): Promise<void> => {
+    const now = new Date().toISOString();
+    const ownerLabel = (review as any).owner || review.ownerName || 'Property Owner';
+    const byLabel = review.by || (review as any).tenantName || 'Verified Resident';
+    const textBody = review.text || (review as any).comment || '';
+
     const fullReview: MobileTenantReview = {
       ...review,
       id: review.id || `rev-${Date.now()}`,
-      createdAt: review.createdAt || new Date().toISOString(),
+      ...({ owner: ownerLabel } as any),
+      ownerName: (review as any).ownerName || ownerLabel,
+      by: byLabel,
+      tenantName: (review as any).tenantName || byLabel,
+      text: textBody,
+      comment: (review as any).comment || textBody,
+      createdAt: review.createdAt || now,
     };
+
+    const isUpdate = (rawState.reviews || []).some((r) => r.id === fullReview.id);
+    const notif: MobileInAppNotification | null =
+      !isUpdate && fullReview.ownerId
+        ? {
+            id: `notif-rev-${Date.now()}`,
+            userId: fullReview.ownerId,
+            ownerId: fullReview.ownerId,
+            title: `New ${fullReview.rating}★ Tenant Review`,
+            body: `${byLabel} left a review${fullReview.propertyName ? ` for ${fullReview.propertyName}` : ''}: "${textBody.slice(0, 80)}${textBody.length > 80 ? '...' : ''}"`,
+            category: 'leases',
+            isRead: false,
+            createdAt: now,
+            relatedEntityId: fullReview.id,
+          }
+        : null;
 
     setState((prev) => ({
       ...prev,
       reviews: [fullReview, ...(prev.reviews || []).filter((r) => r.id !== fullReview.id)],
+      notifications: notif ? [notif, ...prev.notifications] : prev.notifications,
     }));
 
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'reviews', fullReview.id), fullReview);
+        await setDoc(doc(db, 'reviews', fullReview.id), cleanFirestoreObject(fullReview), { merge: true });
+        if (notif) {
+          await setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true });
+        }
       } catch (err) {
         console.warn('Firestore saveReview error:', err);
       }
@@ -5000,26 +5836,24 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     agreementId: string,
     autopayData: Partial<NonNullable<MobileAgreement['autopay']>>
   ): Promise<void> => {
-    setState((prev) => {
-      const targetAg = prev.agreements.find((a) => a.id === agreementId);
-      if (!targetAg) return prev;
-      const updatedAutopay = {
-        ...(targetAg.autopay || {}),
-        ...autopayData,
-        updatedAt: new Date().toISOString(),
-      };
-      const updatedAg: MobileAgreement = {
-        ...targetAg,
-        autopay: updatedAutopay as any,
-      };
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'agreements', targetAg.id), { autopay: updatedAutopay }, { merge: true }).catch(console.warn);
-      }
-      return {
-        ...prev,
-        agreements: prev.agreements.map((a) => (a.id === agreementId ? updatedAg : a)),
-      };
-    });
+    const targetAg = rawState.agreements.find((a) => a.id === agreementId);
+    if (!targetAg) return;
+    const updatedAutopay = {
+      ...(targetAg.autopay || {}),
+      ...autopayData,
+      updatedAt: new Date().toISOString(),
+    };
+    const updatedAg: MobileAgreement = {
+      ...targetAg,
+      autopay: updatedAutopay as any,
+    };
+    if (isFirebaseConfigured) {
+      setDoc(doc(db, 'agreements', targetAg.id), cleanFirestoreObject({ autopay: updatedAutopay }), { merge: true }).catch(console.warn);
+    }
+    setState((prev) => ({
+      ...prev,
+      agreements: prev.agreements.map((a) => (a.id === agreementId ? updatedAg : a)),
+    }));
   };
 
   const cancelAgreementAutopay = async (agreementId: string): Promise<void> => {
@@ -5033,41 +5867,43 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     ownerId: string,
     mandateData: Partial<NonNullable<MobileOwnerSettings['subscriptionMandate']>>
   ): Promise<void> => {
-    setState((prev) => {
-      const existingSettings = prev.ownerSettings[ownerId] || {
-        ownerId,
-        planId: '',
-        planName: '',
-        planStatus: 'active',
-        trialEndsAt: null,
-        subscriptionEndsAt: null,
-      };
-      const updatedMandate = {
-        ...(existingSettings.subscriptionMandate || {}),
-        ...mandateData,
-        updatedAt: new Date().toISOString(),
-      };
-      const updatedSettings: MobileOwnerSettings = {
-        ...existingSettings,
-        autoRenew: mandateData.autoRenew !== undefined ? mandateData.autoRenew : existingSettings.autoRenew,
-        cancelsAtPeriodEnd: mandateData.autoRenew !== undefined ? !mandateData.autoRenew : existingSettings.cancelsAtPeriodEnd,
-        subscriptionMandate: updatedMandate as any,
-      };
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'owners', ownerId), {
+    const existingSettings = rawState.ownerSettings[ownerId] || {
+      ownerId,
+      planId: '',
+      planName: '',
+      planStatus: 'active',
+      trialEndsAt: null,
+      subscriptionEndsAt: null,
+    };
+    const updatedMandate = {
+      ...(existingSettings.subscriptionMandate || {}),
+      ...mandateData,
+      updatedAt: new Date().toISOString(),
+    };
+    const updatedSettings: MobileOwnerSettings = {
+      ...existingSettings,
+      autoRenew: mandateData.autoRenew !== undefined ? mandateData.autoRenew : existingSettings.autoRenew,
+      cancelsAtPeriodEnd: mandateData.autoRenew !== undefined ? !mandateData.autoRenew : existingSettings.cancelsAtPeriodEnd,
+      subscriptionMandate: updatedMandate as any,
+    };
+    if (isFirebaseConfigured) {
+      setDoc(
+        doc(db, 'owners', ownerId),
+        cleanFirestoreObject({
           autoRenew: updatedSettings.autoRenew,
           cancelsAtPeriodEnd: updatedSettings.cancelsAtPeriodEnd,
           subscriptionMandate: updatedMandate,
-        }, { merge: true }).catch(console.warn);
-      }
-      return {
-        ...prev,
-        ownerSettings: {
-          ...prev.ownerSettings,
-          [ownerId]: updatedSettings,
-        },
-      };
-    });
+        }),
+        { merge: true }
+      ).catch(console.warn);
+    }
+    setState((prev) => ({
+      ...prev,
+      ownerSettings: {
+        ...prev.ownerSettings,
+        [ownerId]: updatedSettings,
+      },
+    }));
   };
 
   const cancelOwnerAutopay = async (ownerId: string): Promise<void> => {
@@ -5117,12 +5953,10 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         addMoveOut: saveMoveOut,
         updateMoveOut,
         createDepositSettlement,
+        completeDepositPayout,
         confirmCashClaim,
         rejectCashClaim,
         submitCashClaim,
-        saveDispute,
-        updateDispute,
-        resolveDispute,
         saveTenant,
         addTenant: saveTenant,
         addStaff,

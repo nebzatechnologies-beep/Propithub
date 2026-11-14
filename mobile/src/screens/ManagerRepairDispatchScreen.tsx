@@ -110,8 +110,28 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
 
   const myStaff = useMemo(() => {
     if (!ownerId) return [];
-    return state.staff.filter((s) => s.ownerId === ownerId);
-  }, [state.staff, ownerId]);
+    const directStaff = state.staff.filter((s) => s.ownerId === ownerId);
+    const userStaff = (state.users || [])
+      .filter(
+        (u) =>
+          u.role === 'staff' &&
+          u.ownerId === ownerId &&
+          !directStaff.some((ds) => ds.id === u.id || (ds.email && ds.email.toLowerCase() === u.email.toLowerCase()))
+      )
+      .map((u) => ({
+        id: u.id,
+        name: u.displayName || u.email.split('@')[0],
+        role: (u as any).staffRole || 'Technician',
+        ownerId: u.ownerId || ownerId,
+        ownerName: u.ownerName || '',
+        phone: u.phone || '',
+        email: u.email || '',
+        activeTickets: 0,
+        rating: (u as any).rating || 5.0,
+        completed: (u as any).completed || 0,
+      }));
+    return [...directStaff, ...userStaff] as typeof state.staff;
+  }, [state.staff, state.users, ownerId]);
 
   const hasOpenTickets = myTickets.some((t) => t.status === 'open');
 
@@ -155,7 +175,7 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
         payer: assignPayer,
         amount: feeNum,
         method: assigningTicket.payment?.method || 'Standard',
-        status: feeNum > 0 ? 'awaiting_payment' : 'none',
+        status: feeNum > 0 ? (assigningTicket.payment?.status && assigningTicket.payment.status !== 'none' ? assigningTicket.payment.status : 'awaiting_payment') : 'none',
       },
     } as Partial<MobileTicket>);
 
@@ -612,7 +632,9 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
               </View>
 
               <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Estimated Cost ({currencySymbol})</Text>
+                <Text style={styles.inputLabel}>
+                  Estimated Cost ({state.properties.find((p) => p.id === assigningTicket?.propertyId)?.currency || myProperties[0]?.currency || currencySymbol})
+                </Text>
                 <TextInput
                   style={styles.textInput}
                   value={assignFee}
@@ -742,7 +764,10 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
         visible={Boolean(limitModalType)}
         resourceType={limitModalType}
         onClose={() => setLimitModalType(null)}
-        onUpgrade={() => setLimitModalType(null)}
+        onUpgrade={() => {
+          setLimitModalType(null);
+          onNavigate?.('owner_plan_subscription');
+        }}
       />
     </SafeAreaView>
   );

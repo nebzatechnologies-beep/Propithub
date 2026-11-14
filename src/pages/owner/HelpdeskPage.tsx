@@ -156,9 +156,6 @@ export const HelpdeskPage: React.FC = () => {
           <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
             Platform Helpdesk
           </h2>
-          <p style={{ margin: '4px 0 0', color: 'var(--ink-soft)', fontSize: '14px' }}>
-
-          </p>
         </div>
 
         <button

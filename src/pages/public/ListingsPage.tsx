@@ -61,6 +61,9 @@ export const ListingsPage: React.FC = () => {
   const initialCountry = searchParams.get('country') || 'all';
   const initialBeds = searchParams.get('beds') || 'any';
   const initialMax = searchParams.get('max') || 'any';
+  const initialLat = parseFloat(searchParams.get('lat') || '');
+  const initialLng = parseFloat(searchParams.get('lng') || '');
+  const hasSearchCoords = !Number.isNaN(initialLat) && !Number.isNaN(initialLng);
 
   // Search & Filter State
   const [query, setQuery] = useState(initialQ);
@@ -164,11 +167,29 @@ export const ListingsPage: React.FC = () => {
         if (!l.furnishing.toLowerCase().includes(selectedFurnishing.toLowerCase())) return false;
       }
 
-      // 6. Keywords
+      // 6. Keywords or nearby Google Maps coordinates (within 50 km)
       if (parsedQuery.tokens.length > 0) {
         const text = `${l.city} ${l.country} ${l.displayLocation} ${l.propertyName} ${l.unitNumber} ${l.title} ${l.propertyType} ${l.furnishing} ${l.amenities.join(' ')}`.toLowerCase();
-        const matches = parsedQuery.tokens.every((t) => text.includes(t));
-        if (!matches) return false;
+        const textMatches = parsedQuery.tokens.every((t) => text.includes(t));
+        let geoMatches = false;
+        if (!textMatches && hasSearchCoords && query.trim() === initialQ.trim()) {
+          const itemLat = Number((l.rawAddress as any)?.lat);
+          const itemLng = Number((l.rawAddress as any)?.lng);
+          if (itemLat && itemLng) {
+            const R = 6371;
+            const dLat = ((itemLat - initialLat) * Math.PI) / 180;
+            const dLng = ((itemLng - initialLng) * Math.PI) / 180;
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos((initialLat * Math.PI) / 180) *
+                Math.cos((itemLat * Math.PI) / 180) *
+                Math.sin(dLng / 2) *
+                Math.sin(dLng / 2);
+            const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            geoMatches = distKm <= 50;
+          }
+        }
+        if (!textMatches && !geoMatches) return false;
       }
 
       return true;

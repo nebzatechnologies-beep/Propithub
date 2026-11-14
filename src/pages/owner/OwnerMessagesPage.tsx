@@ -39,7 +39,17 @@ import {
 import { ButtonProcessing } from '../../components/common/Spinner';
 
 export const OwnerMessagesPage: React.FC = () => {
-  const { state, updateState, saveAnnouncement, deleteAnnouncement, togglePinAnnouncement, archiveAnnouncement, logCommunication, showToast } = useAppData();
+  const {
+    state,
+    updateState,
+    saveAnnouncement,
+    deleteAnnouncement,
+    togglePinAnnouncement,
+    archiveAnnouncement,
+    saveNotification,
+    logCommunication,
+    showToast,
+  } = useAppData();
   const { user } = useAuth();
 
   // 1. Owner Identification & Scoping
@@ -345,20 +355,33 @@ export const OwnerMessagesPage: React.FC = () => {
         recipientIds = Array.from(new Set(recipientIds));
 
         if (recipientIds.length > 0) {
-          const newNotifs: InAppNotification[] = recipientIds.map((recId) => ({
-            id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            userId: recId,
-            title: `📢 Announcement: ${formTitle.trim()}`,
-            body: formBody.trim().substring(0, 160) + (formBody.trim().length > 160 ? '...' : ''),
-            link: '/tenant/dashboard',
-            isRead: false,
-            createdAt: now,
-          }));
+          const managerIdSet = new Set(
+            ((state as any).propertyManagers || state.managers || []).map((m: any) => String(m.id))
+          );
+          const staffIdSet = new Set(
+            (state.staff || []).map((s) => String(s.id))
+          );
 
-          updateState((prev) => ({
-            ...prev,
-            notifications: [...(prev.notifications || []), ...newNotifs],
-          }));
+          await Promise.all(
+            recipientIds.map((recId) => {
+              const link = managerIdSet.has(recId)
+                ? '/manager/dashboard'
+                : staffIdSet.has(recId)
+                ? '/staff/queue'
+                : '/tenant/dashboard';
+
+              const notif: InAppNotification = {
+                id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                userId: recId,
+                title: `📢 Announcement: ${formTitle.trim()}`,
+                body: formBody.trim().substring(0, 160) + (formBody.trim().length > 160 ? '...' : ''),
+                link,
+                isRead: false,
+                createdAt: now,
+              };
+              return saveNotification(notif);
+            })
+          );
         }
 
         // If external SMS or Email dispatch requested, dispatch via admin gateways
@@ -594,6 +617,10 @@ export const OwnerMessagesPage: React.FC = () => {
   // Targeted tenants for inspection modal
   const inspectedTargetTenants = useMemo(() => {
     if (!inspectedAnnouncement) return [];
+    if (inspectedAnnouncement.targetScope.mode === 'specific_people' && inspectedAnnouncement.targetScope.targetUserIds) {
+      const targetSet = new Set(inspectedAnnouncement.targetScope.targetUserIds);
+      return myTenants.filter((t) => targetSet.has(t.id));
+    }
     if (inspectedAnnouncement.targetScope.allProperties) {
       return myTenants;
     }

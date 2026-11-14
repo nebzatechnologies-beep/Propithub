@@ -1357,6 +1357,17 @@ export const ManagerPropertiesScreen: React.FC<ManagerPropertiesScreenProps> = (
               </View>
 
               <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Water Meter #</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={editWaterMeter}
+                  onChangeText={setEditWaterMeter}
+                  placeholder="Optional"
+                  placeholderTextColor={colors.inkSoft}
+                />
+              </View>
+
+              <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Furnishing</Text>
                 <View style={styles.row2}>
                   {(['Unfurnished', 'Semi-Furnished', 'Fully Furnished'] as const).map((f) => (

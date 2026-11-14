@@ -1,11 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   Modal,
   TextInput,
@@ -16,16 +15,18 @@ import {
   KeyboardAvoidingView,
   Platform,
   Linking,
+  RefreshControl,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { collection, getDocs, doc, setDoc } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from '../lib/firebase';
+import { db, isFirebaseConfigured, createSecondaryAuthUser } from '../lib/firebase';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
-import { MobileAgreement, MobileAgreementTemplate, MobileTenancyRequest, MobileRenewalItem, MobileTenantUploadedIdItem, MobileTenantRecord, MobileRequiredIdItem, MobileInvoice, MobilePropertyEnquiry } from '../types';
+import { MobileAgreement, MobileAgreementTemplate, MobileTenancyRequest, MobileRenewalItem, MobileTenantUploadedIdItem, MobileTenantRecord, MobileRequiredIdItem, MobileInvoice, MobilePropertyEnquiry, MobilePaymentTransaction } from '../types';
 import { DocumentViewerModal } from '../components/DocumentViewerModal';
 import { downloadDocument, DocumentDownloadItem } from '../lib/documentService';
 import { uploadOrCompressDocument } from '../lib/imageUploader';
@@ -88,6 +89,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     sendTenancyRequest,
     saveUnit,
     saveInvoice,
+    savePayment,
     saveTenant,
     approveSignedAgreement,
     rejectSignedAgreement,
@@ -103,15 +105,19 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const { showToast } = useMobileToast();
 
   const windowHeight = Dimensions.get('window').height;
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 450);
+  }, []);
 
   // Primary Subtab (1-to-1 Web Parity)
-  const [activeTab, setActiveTab] = useState<'agreements' | 'renewals' | 'applications' | 'library' | 'drafts' | 'enquiries'>('agreements');
+  const [activeTab, setActiveTab] = useState<'agreements' | 'renewals' | 'library' | 'drafts' | 'enquiries'>('agreements');
 
   // Filter states
   const [agreementFilter, setAgreementFilter] = useState<
-    'all' | 'active' | 'pending_approval' | 'pending_deposit' | 'awaiting_signature'
+    'all' | 'active' | 'pending_approval' | 'pending_deposit' | 'awaiting_signature' | 'terminated'
   >('all');
-  const [appFilter, setAppFilter] = useState<'all' | 'pending' | 'accepted' | 'declined'>('all');
   const [search, setSearch] = useState('');
 
   // 1. View Agreement Details Modal State
@@ -134,10 +140,15 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     propertyId?: string;
   } | null>(null);
   const [renewalPercent, setRenewalPercent] = useState<number>(8);
+  const [renewalPercentText, setRenewalPercentText] = useState<string>('8');
+  const [renewalProposedRentText, setRenewalProposedRentText] = useState<string>('');
   const [renewalDurationMonths, setRenewalDurationMonths] = useState<number>(12);
   const [renewalStartDate, setRenewalStartDate] = useState<string>('');
   const [renewalEndDate, setRenewalEndDate] = useState<string>('');
   const [renewalOwnerNotes, setRenewalOwnerNotes] = useState<string>('');
+  const [renewalFileName, setRenewalFileName] = useState<string>('');
+  const [renewalFileData, setRenewalFileData] = useState<string>('');
+  const [renewalFileSize, setRenewalFileSize] = useState<number | null>(null);
 
   // 4. Review Signed Renewal Modal State
   const [inspectingSignedRenewal, setInspectingSignedRenewal] = useState<MobileRenewalItem | null>(null);
@@ -146,7 +157,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const [showTerminateModal, setShowTerminateModal] = useState(false);
   const [selectedTerminateAg, setSelectedTerminateAg] = useState<MobileAgreement | null>(null);
   const [terminateReason, setTerminateReason] = useState('Tenant relocating for work');
-  const [vacateDate, setVacateDate] = useState('2026-11-30');
+  const [vacateDate, setVacateDate] = useState(() => new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0]);
 
   const isManager = user?.role === 'manager';
   const effectiveOwnerId = isManager
@@ -446,10 +457,11 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   const [uploadStartDate, setUploadStartDate] = useState(getNextMonthFirstDateString);
   const [uploadEndDate, setUploadEndDate] = useState(() => getOneYearLaterDateString(getNextMonthFirstDateString()));
   const [uploadExecutionMode, setUploadExecutionMode] = useState<'already_executed_offline' | 'digital_dispatch'>('digital_dispatch');
-  const [offlineDepositCollected, setOfflineDepositCollected] = useState<boolean>(true);
+  const [offlineDepositCollected, setOfflineDepositCollected] = useState<boolean>(false);
   const [offlineDepositRef, setOfflineDepositRef] = useState<string>('Cash / Bank Wire Settled');
   const [uploadFileName, setUploadFileName] = useState('');
   const [uploadFileData, setUploadFileData] = useState<string>('');
+  const [uploadFileSize, setUploadFileSize] = useState<number | null>(null);
   const [showDurationDropdown, setShowDurationDropdown] = useState(false);
   const [selectedDurationLabel, setSelectedDurationLabel] = useState('1 Year (12 Months)');
   const [uploadAgreementSource, setUploadAgreementSource] = useState<'upload' | 'library'>('upload');
@@ -688,16 +700,10 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         if (draft.start) setUploadStartDate(draft.start);
         if (draft.end) setUploadEndDate(draft.end);
         if (draft.executionMode) setUploadExecutionMode(draft.executionMode);
-        if (draft.initialAgreementName) {
-          setUploadFileName(draft.initialAgreementName);
-        } else {
-          setUploadFileName('');
-        }
-        if (draft.initialAgreementUrl) {
-          setUploadFileData(draft.initialAgreementUrl);
-        } else {
-          setUploadFileData('');
-        }
+        const draftAny = draft as any;
+        setUploadFileName(draftAny.fileName || draft.initialAgreementName || '');
+        setUploadFileData(draftAny.fileData || draft.initialAgreementUrl || '');
+        setUploadFileSize(typeof draftAny.fileSize === 'number' ? draftAny.fileSize : null);
         setShowDurationDropdown(false);
         setSelectedDurationLabel('1 Year (12 Months)');
         if (draft.requireTenantId) setUploadRequireIds(true);
@@ -728,18 +734,20 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     setUploadOfflineTenantIds({});
     setUploadFileName('');
     setUploadFileData('');
+    setUploadFileSize(null);
     setUploadSelectedTemplateId('');
+    setOfflineDepositCollected(false);
     setSelectedDurationLabel('1 Year (12 Months)');
     setShowDurationDropdown(false);
     const firstVacant = vacantUnits[0];
     if (firstVacant) {
       handleSelectUnitForUpload(firstVacant.id);
-    } else if (myUnits[0]) {
-      setUploadPropertyId(myUnits[0].propertyId || '');
-      setUploadUnitId(myUnits[0].id);
-      setUploadUnit(myUnits[0].unitNumber || myUnits[0].id);
-      setUploadRent(String(myUnits[0].rent || ''));
-      setUploadDeposit(String(myUnits[0].deposit || ''));
+    } else {
+      setUploadPropertyId(myProperties[0]?.id || '');
+      setUploadUnitId('');
+      setUploadUnit('');
+      setUploadRent('');
+      setUploadDeposit('');
     }
     setShowUploadAgreementModal(true);
   };
@@ -761,7 +769,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       ? uploadIdList.filter((item) => item.name.trim().length > 0)
       : [];
 
-    const draftAg: MobileAgreement = {
+    const draftAg: MobileAgreement & { fileData?: string; fileName?: string; fileSize?: number } = {
       id: draftId,
       ownerId: prop?.ownerId || user?.id || ownerId,
       ownerName: user?.displayName || 'Property Owner',
@@ -787,6 +795,9 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       draftStep: wizardStep,
       draftSavedAt: new Date().toISOString(),
       executionMode: uploadExecutionMode,
+      fileName: uploadFileName || undefined,
+      fileData: uploadFileData || undefined,
+      fileSize: uploadFileSize || undefined,
       initialAgreementName: uploadFileName || undefined,
       initialAgreementUrl: uploadFileData || undefined,
       requireTenantId: uploadRequireIds && validIdList.length > 0,
@@ -825,67 +836,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
   };
 
   // ----------------------------------------------------
-  // Dynamic Tenancy Requests / Applications
-  // ----------------------------------------------------
-  const displayedApplications = useMemo(() => {
-    const list = myTenancyRequests;
-    return list.filter((app) => {
-      if (appFilter !== 'all' && app.status !== appFilter) return false;
-      if (search.trim()) {
-        const q = search.toLowerCase();
-        return (
-          app.tenantName.toLowerCase().includes(q) ||
-          app.propertyName.toLowerCase().includes(q) ||
-          (app.unit && app.unit.toLowerCase().includes(q))
-        );
-      }
-      return true;
-    });
-  }, [myTenancyRequests, appFilter, search]);
-
-  const handleApproveApplication = (app: MobileTenancyRequest) => {
-    updateTenancyRequest(app.id, 'accepted');
-    const newAg: MobileAgreement = {
-      id: `AGR-${Date.now().toString().slice(-4)}`,
-      ownerId: app.ownerId || user.id || 'owner-1',
-      ownerName: app.ownerName || user.displayName || 'Property Landlord',
-      propertyId: app.propertyId,
-      propertyName: app.propertyName,
-      unit: app.unit || '101',
-      tenantId: app.tenantId || `TEN-${Date.now()}`,
-      tenant: app.tenantName,
-      tenantEmail: app.tenantEmail,
-      tenantPhone: app.tenantPhone,
-      rent: app.rent,
-      deposit: app.deposit,
-      currency: app.currency || viewCurrency,
-      start: app.leaseStart || '2026-11-01',
-      end: app.leaseEnd || '2027-10-31',
-      escalationPercent: 8,
-      lockInMonths: 11,
-      noticePeriodDays: 30,
-      status: 'awaiting_tenant_signature',
-      executionMode: 'digital_dispatch',
-      initialAgreementName: `Draft_Lease_${app.unit || '101'}.pdf`,
-      initialAgreementUrl: `https://storage.propithub.app/agreements/draft_${app.id}.pdf`,
-      createdAt: new Date().toISOString(),
-    };
-    addAgreement(newAg);
-    Alert.alert(
-      'Application Approved ✓',
-      `Application for ${app.tenantName} approved! Draft Agreement #${newAg.id} generated and dispatched for tenant signature.`
-    );
-  };
-
-  const handleDeclineApplication = (app: MobileTenancyRequest) => {
-    updateTenancyRequest(app.id, 'declined');
-    Alert.alert(
-      'Application Declined',
-      `Application for ${app.tenantName} declined. Notification dispatched to prospective resident.`
-    );
-  };
-
-  // ----------------------------------------------------
   // Agreements List with Parity Filter Chips
   // ----------------------------------------------------
   const displayedAgreements = useMemo(() => {
@@ -906,6 +856,8 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         ) {
           return false;
         }
+      } else if (agreementFilter === 'terminated') {
+        if (ag.status !== 'terminated' && ag.status !== 'cancelled') return false;
       }
 
       if (search.trim()) {
@@ -951,6 +903,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
             ownerId: ag.ownerId,
             propertyId: ag.propertyId,
             propertyName: ag.propertyName,
+            currency: ag.currency,
             currentRent: ag.rent,
             percentageIncrease: ag.escalationPercent || 8,
             proposedRent: Math.round(ag.rent * (1 + (ag.escalationPercent || 8) / 100)),
@@ -981,7 +934,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     }
 
     return list;
-  }, [state.renewals, state.agreements, search]);
+  }, [state.renewals, state.agreements, search, ownerId, myPropertyIds, myAgreements]);
 
   // ----------------------------------------------------
   // Modal Open Handlers
@@ -1004,6 +957,9 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       nextEndStr = endObj.toISOString().split('T')[0];
     }
 
+    const defaultPct = 8;
+    const defaultProposed = Math.round(effectiveRent * (1 + defaultPct / 100));
+
     setRenewalModalItem({
       unit,
       tenant: tenantName,
@@ -1012,11 +968,44 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       currency,
       propertyId,
     });
-    setRenewalPercent(8);
+    setRenewalPercent(defaultPct);
+    setRenewalPercentText(String(defaultPct));
+    setRenewalProposedRentText(effectiveRent > 0 ? String(defaultProposed) : '');
     setRenewalDurationMonths(12);
     setRenewalStartDate(nextStartStr);
     setRenewalEndDate(nextEndStr);
     setRenewalOwnerNotes('');
+    setRenewalFileName('');
+    setRenewalFileData('');
+    setRenewalFileSize(null);
+  };
+
+  const handleRenewalPercentInput = (val: string) => {
+    setRenewalPercentText(val);
+    const pct = parseFloat(val);
+    if (!Number.isNaN(pct) && renewalModalItem) {
+      setRenewalPercent(pct);
+      const nextRent = Math.round(renewalModalItem.currentRent * (1 + pct / 100));
+      setRenewalProposedRentText(String(nextRent));
+    }
+  };
+
+  const handleRenewalPresetPercent = (pct: number) => {
+    setRenewalPercent(pct);
+    setRenewalPercentText(String(pct));
+    if (renewalModalItem) {
+      setRenewalProposedRentText(String(Math.round(renewalModalItem.currentRent * (1 + pct / 100))));
+    }
+  };
+
+  const handleRenewalProposedRentInput = (val: string) => {
+    setRenewalProposedRentText(val);
+    const rentNum = parseFloat(val);
+    if (!Number.isNaN(rentNum) && renewalModalItem && renewalModalItem.currentRent > 0) {
+      const computedPct = Math.round(((rentNum - renewalModalItem.currentRent) / renewalModalItem.currentRent) * 1000) / 10;
+      setRenewalPercent(computedPct);
+      setRenewalPercentText(String(computedPct));
+    }
   };
 
   const handleRenewalDurationChange = (months: number) => {
@@ -1031,25 +1020,34 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
   const handleConfirmSendRenewal = async () => {
     if (!renewalModalItem) return;
-    const proposedRent = Math.round(renewalModalItem.currentRent * (1 + renewalPercent / 100));
+    if (!renewalStartDate.trim() || !renewalEndDate.trim() || new Date(renewalEndDate) <= new Date(renewalStartDate)) {
+      showAlert({ title: 'Invalid Dates', message: 'Please enter valid Start and End dates (End Date must be after Start Date).', type: 'warning' });
+      return;
+    }
+    const parsedProposed = parseFloat(renewalProposedRentText);
+    const proposedRent = Number.isFinite(parsedProposed) && parsedProposed > 0
+      ? Math.round(parsedProposed)
+      : Math.round(renewalModalItem.currentRent * (1 + renewalPercent / 100));
 
     await offerLeaseRenewal(renewalModalItem.unit, {
       currentRent: renewalModalItem.currentRent,
       percentageIncrease: renewalPercent,
       proposedRent,
       termMonths: renewalDurationMonths,
-      newLeaseStart: renewalStartDate,
-      newLeaseEnd: renewalEndDate,
+      newLeaseStart: renewalStartDate.trim(),
+      newLeaseEnd: renewalEndDate.trim(),
       ownerNotes: renewalOwnerNotes,
-      ownerAgreementFileName: `Renewal_Agreement_Unit_${renewalModalItem.unit}.pdf`,
-      ownerAgreementFileUrl: `https://storage.propithub.app/agreements/renewal_${renewalModalItem.unit}.pdf`,
+      ownerAgreementFileName: renewalFileName || undefined,
+      ownerAgreementFileUrl: renewalFileData || undefined,
+      ownerAgreementFileSize: renewalFileSize || undefined,
+      currency: renewalModalItem.currency || viewCurrency,
       propertyId: renewalModalItem.propertyId,
     });
 
     setRenewalModalItem(null);
     Alert.alert(
       'Renewal Offer Dispatched ✓',
-      `Renewal terms (+${renewalPercent}%: ${format(proposedRent, renewalModalItem.currency || viewCurrency)}/mo) dispatched to ${renewalModalItem.tenant} for Unit ${renewalModalItem.unit}.`
+      `Renewal terms (${renewalPercent >= 0 ? '+' : ''}${renewalPercent}%: ${format(proposedRent, renewalModalItem.currency || viewCurrency)}/mo) dispatched to ${renewalModalItem.tenant} for Unit ${renewalModalItem.unit}.`
     );
   };
 
@@ -1099,6 +1097,27 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     }
   };
 
+  const checkOverlappingLease = useCallback(
+    (unitNum: string, propId: string | undefined, startStr: string, endStr: string) => {
+      const startMs = new Date(startStr).getTime();
+      const endMs = new Date(endStr).getTime();
+      if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null;
+      return myAgreements.find((ag) => {
+        if (ag.isDraft || ag.status === 'draft' || ag.status === 'terminated' || ag.status === 'cancelled' || (ag.status as any) === 'rejected') {
+          return false;
+        }
+        const sameProp = !propId || !ag.propertyId || ag.propertyId === propId;
+        const sameUnit = ag.unit === unitNum || (ag.unitId && ag.unitId === unitNum);
+        if (!sameProp || !sameUnit) return false;
+        const agStart = new Date(ag.start).getTime();
+        const agEnd = new Date(ag.end).getTime();
+        if (Number.isNaN(agStart) || Number.isNaN(agEnd)) return false;
+        return startMs <= agEnd && endMs >= agStart;
+      }) || null;
+    },
+    [myAgreements]
+  );
+
   // Web Parity: "+ Upload agreement" Handler
   const handleDirectUploadAgreement = async () => {
     if (!uploadTenantName.trim() || !uploadUnit.trim() || !uploadRent.trim()) {
@@ -1110,8 +1129,57 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       });
       return;
     }
+
+    if (uploadAgreementSource === 'upload' && !uploadFileData) {
+      showAlert({
+        type: 'warning',
+        title: 'Agreement Document Required',
+        message: 'Please upload an agreement PDF/image or switch to "Select from Library" before submitting.',
+        primaryButtonText: 'Attach File',
+      });
+      return;
+    }
+    if (uploadAgreementSource === 'library' && !uploadFileData) {
+      showAlert({
+        type: 'warning',
+        title: 'Select a Library Document',
+        message: 'Please choose a template from your library or upload a file.',
+        primaryButtonText: 'Select Template',
+      });
+      return;
+    }
+
+    const cleanPhone = uploadTenantPhone.trim();
+    const phoneDigits = cleanPhone.replace(/\D/g, '');
+    if ((cleanPhone || isNewTenantMode) && (phoneDigits.length < 7 || phoneDigits.length > 15)) {
+      showAlert({
+        type: 'warning',
+        title: 'Invalid Phone Number',
+        message: 'Please enter a valid 7 to 15 digit phone number (with country code if applicable).',
+        primaryButtonText: 'Fix Phone',
+      });
+      return;
+    }
+
     const unitObj = myUnits.find((u) => (uploadUnitId ? u.id === uploadUnitId : (u.unitNumber === uploadUnit || u.id === uploadUnit)));
     const prop = myProperties.find((p) => p.id === (unitObj?.propertyId || uploadPropertyId)) || myProperties[0];
+
+    const overlappingAg = checkOverlappingLease(
+      unitObj?.unitNumber || uploadUnit.trim(),
+      prop?.id,
+      uploadStartDate,
+      uploadEndDate
+    );
+    if (overlappingAg) {
+      showAlert({
+        type: 'warning',
+        title: 'Overlapping Lease Dates',
+        message: `Unit ${overlappingAg.unit} already has an active/pending lease (#${overlappingAg.id}) from ${overlappingAg.start} to ${overlappingAg.end}. Please choose non-overlapping dates or terminate the existing lease first.`,
+        primaryButtonText: 'Adjust Dates',
+      });
+      return;
+    }
+
     const rentNum = parseFloat(uploadRent) || (unitObj?.rent || 0);
     const depNum = parseFloat(uploadDeposit) || (unitObj?.deposit || (rentNum > 0 ? rentNum * 2 : 0));
     const dueDayNum = parseInt(uploadDueDay, 10) || 1;
@@ -1124,8 +1192,9 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
     const cleanTenantName = uploadTenantName.trim();
     const cleanEmail = uploadTenantEmail.trim().toLowerCase();
-    const cleanPhone = uploadTenantPhone.trim();
-    const tempPassword = uploadTenantPassword.trim() || 'Tenant@123';
+    const tempPassword = uploadTenantPassword.trim() || 'Welcome@123';
+    const propCurrency = prop?.currency || viewCurrency;
+    const nowIso = new Date().toISOString();
 
     setIsSubmittingAgreement(true);
 
@@ -1142,35 +1211,67 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         resolvedTenantId = existingTenant.id;
       }
 
-      // Provision account in Firebase Auth + Firestore if new or needed
-      if ((isNewTenantMode || !resolvedTenantId || (!existingUser && !existingTenant)) && cleanEmail) {
-        try {
-          const provisionedUid = await saveTenant(
-            {
-              id: resolvedTenantId || `usr_${Date.now()}`,
-              name: cleanTenantName,
-              email: cleanEmail,
-              phone: cleanPhone,
-              unit: uploadUnit.trim(),
-              ownerId: prop?.ownerId || user?.id || ownerId,
-              propertyId: prop?.id || '',
-              propertyName: prop?.name || 'Property',
-              rent: rentNum,
-              deposit: depNum,
-              currency: prop?.currency || viewCurrency,
-              leaseStart: uploadStartDate,
-              leaseEnd: uploadEndDate,
-              status: isOfflineMode ? 'active' : 'invited',
-              rating: 5,
-              kycStatus: isOfflineMode ? 'verified' : 'pending',
-            },
-            tempPassword
-          );
-          if (provisionedUid) {
-            resolvedTenantId = provisionedUid;
+      if (isOfflineMode) {
+        // Offline Executed: Provision account + active tenant directory record immediately
+        if ((isNewTenantMode || !resolvedTenantId || (!existingUser && !existingTenant)) && cleanEmail) {
+          try {
+            const provisionedUid = await saveTenant(
+              {
+                id: resolvedTenantId || `usr_${Date.now()}`,
+                name: cleanTenantName,
+                email: cleanEmail,
+                phone: cleanPhone,
+                unit: uploadUnit.trim(),
+                ownerId: prop?.ownerId || user?.id || ownerId,
+                propertyId: prop?.id || '',
+                propertyName: prop?.name || 'Property',
+                rent: rentNum,
+                deposit: depNum,
+                currency: propCurrency,
+                leaseStart: uploadStartDate,
+                leaseEnd: uploadEndDate,
+                status: 'active',
+                rating: 5,
+                kycStatus: 'verified',
+              },
+              tempPassword
+            );
+            if (provisionedUid) {
+              resolvedTenantId = provisionedUid;
+            }
+          } catch (provErr) {
+            console.warn('[LeasingHub] User account provisioning error:', provErr);
           }
-        } catch (provErr) {
-          console.warn('[LeasingHub] User account provisioning error:', provErr);
+        }
+      } else {
+        // Digital Dispatch: Do NOT prematurely call saveTenant; create invited UserProfile only
+        if (!resolvedTenantId) {
+          resolvedTenantId = `usr_${Date.now()}`;
+        }
+        if ((isNewTenantMode || (!existingUser && !existingTenant)) && cleanEmail && isFirebaseConfigured) {
+          try {
+            const authUid = await createSecondaryAuthUser(cleanEmail, tempPassword).catch(() => null);
+            if (authUid) {
+              resolvedTenantId = authUid;
+            }
+            await setDoc(
+              doc(db, 'users', resolvedTenantId),
+              {
+                id: resolvedTenantId,
+                email: cleanEmail,
+                role: 'tenant',
+                ownerId: prop?.ownerId || user?.id || ownerId,
+                displayName: cleanTenantName,
+                phone: cleanPhone,
+                status: 'invited',
+                createdAt: nowIso,
+                tempPassword,
+              },
+              { merge: true }
+            ).catch(console.warn);
+          } catch (provErr) {
+            console.warn('[LeasingHub] Digital dispatch invite profile note:', provErr);
+          }
         }
       }
 
@@ -1181,7 +1282,12 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       if (!isOfflineMode) {
         // Digital Dispatch Workflow (Web Parity):
         // Dispatches an official MobileTenancyRequest with attached agreement & ID requirements.
-        const newReq: MobileTenancyRequest = {
+        const newReq: MobileTenancyRequest & {
+          offlineDepositCollected?: boolean;
+          offlineDepositRef?: string;
+          depositStatus?: 'paid' | 'unpaid';
+          agreementFileSize?: number;
+        } = {
           id: `req_${Date.now()}`,
           ownerId: prop?.ownerId || user?.id || '',
           ownerName: user?.displayName || 'Property Owner',
@@ -1197,22 +1303,67 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
           unitNumber: unitObj?.unitNumber || uploadUnit.trim(),
           rent: rentNum,
           deposit: depNum,
-          currency: prop?.currency || viewCurrency,
+          currency: propCurrency,
           leaseStart: uploadStartDate,
           leaseEnd: uploadEndDate,
           message: `Welcome to your new home at ${prop?.name || 'Property'}! Please review the attached lease agreement for Unit ${uploadUnit.trim()}, accept, sign physically, and upload your signed copy to finalize your move-in.`,
           agreementFileName: uploadFileName || 'Lease_Agreement.pdf',
           agreementFileData: uploadFileData || undefined,
           agreementFileUrl: uploadFileData || undefined,
+          agreementFileSize: uploadFileSize || undefined,
           requireTenantId: uploadRequireIds && validIdList.length > 0,
           requiredIdList: uploadRequireIds && validIdList.length > 0 ? validIdList : undefined,
           requiredIdTypes: uploadRequireIds && validIdList.length > 0 ? validIdList.map((i) => i.name.trim()) : undefined,
           requiredIdType: uploadRequireIds && validIdList.length > 0 ? validIdList[0].name.trim() : undefined,
+          offlineDepositCollected,
+          offlineDepositRef: offlineDepositCollected ? offlineDepositRef : undefined,
+          depositStatus: offlineDepositCollected ? 'paid' : 'unpaid',
           status: 'pending',
-          createdAt: new Date().toISOString(),
+          createdAt: nowIso,
         };
 
+        if (offlineDepositCollected && depNum > 0) {
+          const depTx: MobilePaymentTransaction = {
+            id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
+            ownerId: prop?.ownerId || user?.id || ownerId,
+            propertyId: prop?.id || '',
+            propertyName: prop?.name || 'Property',
+            tenant: cleanTenantName,
+            tenantId: resolvedTenantId,
+            unit: uploadUnit.trim(),
+            amount: depNum,
+            date: nowIso.split('T')[0],
+            dueDate: uploadStartDate,
+            status: 'paid',
+            method: (offlineDepositRef || 'Offline Cash/Wire') as any,
+            type: 'deposit',
+            currency: propCurrency,
+            referenceNo: offlineDepositRef || 'OFFLINE-DEP',
+            notes: `Security deposit collected offline as confirmed during invitation dispatch (${newReq.id}).`,
+          };
+          savePayment(depTx);
+        }
+
         sendTenancyRequest(newReq);
+        if (isFirebaseConfigured) {
+          const notifId = `notif_${Date.now()}`;
+          setDoc(
+            doc(db, 'notifications', notifId),
+            {
+              id: notifId,
+              userId: resolvedTenantId,
+              ownerId: prop?.ownerId || user?.id || ownerId,
+              title: `Tenancy Offer & Lease Agreement from ${user?.displayName || 'Property Owner'}`,
+              body: `You have received a tenancy invitation for Unit ${uploadUnit.trim()} at ${prop?.name || 'Property'} (${format(rentNum, propCurrency)}/mo). Please review and accept on your dashboard.`,
+              category: 'leases',
+              isRead: false,
+              createdAt: nowIso,
+              relatedEntityId: newReq.id,
+            },
+            { merge: true }
+          ).catch(console.warn);
+        }
+
         if (unitObj) {
           saveUnit({
             ...unitObj,
@@ -1243,6 +1394,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         setUploadOfflineTenantIds({});
         setUploadFileName('');
         setUploadFileData('');
+        setUploadFileSize(null);
         setUploadSelectedTemplateId('');
         setShowDurationDropdown(false);
         setSelectedDurationLabel('1 Year (12 Months)');
@@ -1250,14 +1402,14 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         showAlert({
           type: 'success',
           title: 'Tenancy Offer Dispatched',
-          message: `Tenancy invitation dispatched to ${cleanTenantName} for Unit ${uploadUnit.trim()}. An account was provisioned so the resident can log in immediately.`,
+          message: `Tenancy invitation dispatched to ${cleanTenantName} for Unit ${uploadUnit.trim()}. Resident can log in to review and sign.`,
           details: [
             { label: 'Resident', value: cleanTenantName, icon: 'user' },
             { label: 'Unit', value: `Unit ${uploadUnit.trim()}`, icon: 'home' },
             { label: 'Account Email', value: cleanEmail || 'Not specified', icon: 'mail' },
             { label: 'Login Password', value: tempPassword, icon: 'key' },
-            { label: 'Monthly Rent', value: `${format(Number(uploadRent) || 0, viewCurrency)}/mo`, icon: 'dollar-sign' },
-            { label: 'Status', value: 'Unit Reserved • Account Ready', icon: 'shield' },
+            { label: 'Monthly Rent', value: `${format(Number(uploadRent) || 0, propCurrency)}/mo`, icon: 'dollar-sign' },
+            { label: 'Status', value: offlineDepositCollected ? 'Unit Reserved • Deposit Recorded' : 'Unit Reserved • Invite Sent', icon: 'shield' },
           ],
           primaryButtonText: 'Done',
         });
@@ -1271,14 +1423,14 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
           name: match?.name || 'ID Verification Document',
           fileUrl: info.fileUrl,
           fileName: info.fileName,
-          uploadedAt: new Date().toISOString(),
+          uploadedAt: nowIso,
         };
       });
 
       const newAg: MobileAgreement = {
         id: newAgId,
-        ownerId: prop?.ownerId || user.id || '',
-        ownerName: user.displayName || 'Property Owner',
+        ownerId: prop?.ownerId || user?.id || '',
+        ownerName: user?.displayName || 'Property Owner',
         propertyId: prop?.id || '',
         propertyName: prop?.name || 'Property',
         unit: uploadUnit.trim(),
@@ -1290,7 +1442,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         end: uploadEndDate,
         rent: rentNum,
         deposit: depNum,
-        currency: prop?.currency || viewCurrency,
+        currency: propCurrency,
         dueDay: dueDayNum,
         escalationPercent: 8,
         lockInMonths: 11,
@@ -1310,8 +1462,8 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         tenantUploadedIds: offlineUploadedIds.length > 0 ? offlineUploadedIds : undefined,
         tenantUploadedIdUrl: offlineUploadedIds.length > 0 ? offlineUploadedIds[0].fileUrl : undefined,
         tenantUploadedIdName: offlineUploadedIds.length > 0 ? offlineUploadedIds[0].fileName : undefined,
-        tenantUploadedIdAt: offlineUploadedIds.length > 0 ? new Date().toISOString() : undefined,
-        createdAt: new Date().toISOString(),
+        tenantUploadedIdAt: offlineUploadedIds.length > 0 ? nowIso : undefined,
+        createdAt: nowIso,
       };
 
       addAgreement(newAg);
@@ -1326,38 +1478,65 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
         });
       }
 
-      // Auto-generate first-month rent invoice (Web Parity)
-      const invId = `INV-${Math.floor(1000 + Math.random() * 9000)}`;
-      const newInvoice: MobileInvoice = {
-        id: invId,
-        ownerId: prop?.ownerId || user?.id || ownerId,
-        propertyId: prop?.id || '',
-        propertyName: prop?.name || 'Property',
-        unitId: unitObj?.id || uploadUnit.trim(),
-        unit: uploadUnit.trim(),
-        tenant: cleanTenantName,
-        tenantId: resolvedTenantId,
-        amount: rentNum,
-        tax: 0,
-        total: rentNum,
-        currency: prop?.currency || viewCurrency,
-        due: uploadStartDate,
-        issueDate: new Date().toISOString().split('T')[0],
-        status: 'sent',
-        type: 'rent',
-        items: [
-          {
-            description: `First Month Rent for Unit ${uploadUnit.trim()}`,
-            amount: rentNum,
-            quantity: 1,
-          },
-        ],
-        createdAt: new Date().toISOString(),
-      };
-      try {
-        saveInvoice(newInvoice);
-      } catch (e) {
-        console.warn('Invoice generation warning:', e);
+      if (offlineDepositCollected && depNum > 0) {
+        const depTx: MobilePaymentTransaction = {
+          id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
+          ownerId: prop?.ownerId || user?.id || ownerId,
+          propertyId: prop?.id || '',
+          propertyName: prop?.name || 'Property',
+          tenant: cleanTenantName,
+          tenantId: resolvedTenantId,
+          unit: uploadUnit.trim(),
+          amount: depNum,
+          date: nowIso.split('T')[0],
+          dueDate: uploadStartDate,
+          status: 'paid',
+          method: (offlineDepositRef || 'Offline Cash/Wire') as any,
+          type: 'deposit',
+          currency: propCurrency,
+          referenceNo: offlineDepositRef || 'OFFLINE-DEP',
+          notes: `Security deposit collected offline during onboarding (${newAgId}).`,
+        };
+        savePayment(depTx);
+      }
+
+      // Auto-generate first-month rent invoice (Web Parity, skip <= 0)
+      if (rentNum > 0) {
+        const cleanAgId = newAgId.replace(/^AG-|^AGR-/, '');
+        const invId = `INV-RENT-${cleanAgId}-M1`;
+        const newInvoice: MobileInvoice = {
+          id: invId,
+          ownerId: prop?.ownerId || user?.id || ownerId,
+          propertyId: prop?.id || '',
+          propertyName: prop?.name || 'Property',
+          unitId: unitObj?.id || uploadUnit.trim(),
+          unit: uploadUnit.trim(),
+          tenant: cleanTenantName,
+          tenantId: resolvedTenantId,
+          leaseAgreementId: newAgId,
+          amount: rentNum,
+          tax: 0,
+          total: rentNum,
+          currency: propCurrency,
+          due: uploadStartDate,
+          issueDate: nowIso.split('T')[0],
+          status: 'sent',
+          type: 'rent',
+          invoiceType: 'rent',
+          items: [
+            {
+              description: `First Month Rent for Unit ${uploadUnit.trim()}`,
+              amount: rentNum,
+              quantity: 1,
+            },
+          ],
+          createdAt: nowIso,
+        };
+        try {
+          saveInvoice(newInvoice);
+        } catch (e) {
+          console.warn('Invoice generation warning:', e);
+        }
       }
 
       if (activeDraftId) {
@@ -1379,6 +1558,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       setUploadOfflineTenantIds({});
       setUploadFileName('');
       setUploadFileData('');
+      setUploadFileSize(null);
       setUploadSelectedTemplateId('');
       setShowDurationDropdown(false);
       setSelectedDurationLabel('1 Year (12 Months)');
@@ -1450,11 +1630,24 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
           onProfilePress={onProfilePress}
         />
 
-        <View style={[styles.mainContainer, { backgroundColor: colors.background }]}>
+        <KeyboardAvoidingView
+          style={[styles.mainContainer, { backgroundColor: colors.background }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+        >
           <ScrollView
             style={styles.scroll}
             contentContainerStyle={styles.content}
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={colors.primary}
+                colors={[colors.primary]}
+              />
+            }
           >
             {/* Subtab Pill Chips */}
             <TourTarget id="leasing-subtabs">
@@ -1589,13 +1782,11 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 placeholder={
                   activeTab === 'library'
                     ? 'Search agreement title or property...'
-                    : activeTab === 'applications'
-                      ? 'Search applicant or unit...'
-                      : activeTab === 'renewals'
-                        ? 'Search renewal or unit...'
-                        : activeTab === 'drafts'
-                          ? 'Search draft resident or unit...'
-                          : 'Search tenant or unit...'
+                    : activeTab === 'renewals'
+                      ? 'Search renewal or unit...'
+                      : activeTab === 'drafts'
+                        ? 'Search draft resident or unit...'
+                        : 'Search tenant or unit...'
                 }
                 placeholderTextColor={colors.inkSoft}
                 autoCapitalize="none"
@@ -1631,6 +1822,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                     { key: 'pending_approval', label: 'Pending' },
                     { key: 'pending_deposit', label: 'Deposit Due' },
                     { key: 'awaiting_signature', label: 'Signing' },
+                    { key: 'terminated', label: 'Terminated' },
                   ].map((item) => {
                     const isSelected = agreementFilter === item.key;
                     return (
@@ -1647,36 +1839,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                     );
                   })}
                 </ScrollView>
-              </View>
-            )}
-
-            {/* SubTab 3: Applications Filter Chips */}
-            {activeTab === 'applications' && (
-              <View style={styles.filterRow}>
-                {(['all', 'pending', 'accepted', 'declined'] as const).map((item) => {
-                  const isSelected = appFilter === item;
-                  const label =
-                    item === 'all'
-                      ? 'All'
-                      : item === 'pending'
-                        ? 'Pending'
-                        : item === 'accepted'
-                          ? 'Approved'
-                          : 'Declined';
-
-                  return (
-                    <TouchableOpacity
-                      key={item}
-                      style={[styles.filterChip, { backgroundColor: colors.surface, borderColor: colors.line }, isSelected && styles.filterChipActive]}
-                      onPress={() => setAppFilter(item)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.filterText, { color: colors.inkSoft }, isSelected && styles.filterTextActive]}>
-                        {label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
               </View>
             )}
 
@@ -2049,134 +2211,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   })
                 )}
               </View>
-            )}
-
-            {/* ==================================================== */}
-            {/* SUBTAB 3: APPLICATIONS / TENANCY REQUESTS            */}
-            {/* ==================================================== */}
-            {activeTab === 'applications' && (
-              displayedApplications.length === 0 ? (
-                <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                  <Feather name="user-check" size={32} color={colors.inkSoft} />
-                  <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Prospective Applications</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    No rental applications match the current status filter.
-                  </Text>
-                </View>
-              ) : (
-                displayedApplications.map((app) => {
-                  const isPending = app.status === 'pending';
-                  const isAccepted = app.status === 'accepted';
-                  const isDeclined = app.status === 'declined';
-
-                  return (
-                    <View key={app.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-                      <View style={styles.cardHeader}>
-                        <View>
-                          <Text style={styles.agreementCode}>APPLICATION #{app.id}</Text>
-                          <Text style={[styles.applicantNameTitle, { color: colors.navy }]}>{app.tenantName}</Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.statusBadge,
-                            isAccepted && styles.activeBadge,
-                            isPending && styles.pendingBadge,
-                            isDeclined && { backgroundColor: '#FEE2E2' },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.statusBadgeText,
-                              isAccepted && styles.activeBadgeText,
-                              isPending && styles.pendingBadgeText,
-                              isDeclined && { color: '#DC2626' },
-                            ]}
-                          >
-                            {app.status === 'accepted' ? 'APPROVED' : app.status.toUpperCase()}
-                          </Text>
-                        </View>
-                      </View>
-
-                      {/* Trust & Screening Badges Strip */}
-                      <View style={styles.screeningBadgesRow}>
-                        <View style={styles.trustScoreBadge}>
-                          <Feather name="shield" size={12} color="#059669" style={{ marginRight: 4 }} />
-                          <Text style={styles.trustScoreText}>Credit Score: 780 (Excellent)</Text>
-                        </View>
-                        <View style={styles.kycVerifiedBadge}>
-                          <Feather name="check" size={11} color="#2563EB" style={{ marginRight: 3 }} />
-                          <Text style={styles.kycVerifiedText}>ID & Income Verified</Text>
-                        </View>
-                      </View>
-
-                      {/* Applicant Profile Grid */}
-                      <View style={styles.applicantGrid}>
-                        <View style={styles.applicantGridCol}>
-                          <Text style={styles.appGridLabel}>Requested Unit</Text>
-                          <Text style={styles.appGridVal}>{app.propertyName} • Unit {app.unit}</Text>
-                        </View>
-                        <View style={styles.applicantGridCol}>
-                          <Text style={styles.appGridLabel}>Proposed Monthly Rent</Text>
-                          <Text style={[styles.appGridVal, { color: '#059669' }]}>
-                            {format(app.rent, app.currency || viewCurrency)}/mo
-                          </Text>
-                        </View>
-                        <View style={styles.applicantGridCol}>
-                          <Text style={styles.appGridLabel}>Target Move-In Date</Text>
-                          <Text style={styles.appGridVal}>{app.leaseStart}</Text>
-                        </View>
-                        <View style={styles.applicantGridCol}>
-                          <Text style={styles.appGridLabel}>Applicant Contact</Text>
-                          <Text style={styles.appGridVal}>{app.tenantPhone} • {app.tenantEmail}</Text>
-                        </View>
-                      </View>
-
-                      {/* Applicant Note */}
-                      <View style={styles.appNoteBox}>
-                        <Text style={styles.appNoteLabel}>APPLICANT STATEMENT & EMPLOYMENT:</Text>
-                        <Text style={styles.appNoteText}>{app.message}</Text>
-                      </View>
-
-                      {/* Action Buttons */}
-                      {isPending ? (
-                        <View style={styles.appActionRow}>
-                          <TouchableOpacity
-                            style={styles.declineAppBtn}
-                            onPress={() => handleDeclineApplication(app)}
-                            activeOpacity={0.8}
-                          >
-                            <Feather name="x" size={14} color="#DC2626" style={{ marginRight: 4 }} />
-                            <Text style={styles.declineAppBtnText}>Decline</Text>
-                          </TouchableOpacity>
-
-                          <TouchableOpacity
-                            style={styles.approveAppBtn}
-                            onPress={() => handleApproveApplication(app)}
-                            activeOpacity={0.85}
-                          >
-                            <Feather name="check" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
-                            <Text style={styles.approveAppBtnText}>Approve</Text>
-                          </TouchableOpacity>
-                        </View>
-                      ) : isAccepted ? (
-                        <View style={styles.appSettledRow}>
-                          <Feather name="check-circle" size={15} color="#059669" style={{ marginRight: 6 }} />
-                          <Text style={styles.appSettledText}>
-                            Lease dispatched. Awaiting resident signature.
-                          </Text>
-                        </View>
-                      ) : (
-                        <View style={[styles.appSettledRow, { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' }]}>
-                          <Feather name="x-circle" size={15} color="#DC2626" style={{ marginRight: 6 }} />
-                          <Text style={[styles.appSettledText, { color: '#B91C1C' }]}>
-                            Application archived as declined.
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                  );
-                })
-              )
             )}
 
             {/* ==================================================== */}
@@ -2776,13 +2810,18 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
             <View style={{ height: 120 }} />
           </ScrollView>
-        </View>
+        </KeyboardAvoidingView>
       </>)}
 
       {/* ==================================================== */}
       {/* MODAL 1: VIEW AGREEMENT DETAILS MODAL (Web Parity)   */}
       {/* ==================================================== */}
-      <Modal visible={!!viewingAgreement} transparent animationType="slide">
+      <Modal
+        visible={!!viewingAgreement}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setViewingAgreement(null)}
+      >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { maxHeight: '90%', backgroundColor: colors.surface }]}>
             <View style={styles.modalTop}>
@@ -3055,8 +3094,17 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       {/* ==================================================== */}
       {/* MODAL 2: REVIEW & APPROVE SIGNED LEASE (Web Parity)  */}
       {/* ==================================================== */}
-      <Modal visible={!!inspectingSignedAgreement} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={!!inspectingSignedAgreement}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setInspectingSignedAgreement(null)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+          style={styles.modalOverlay}
+        >
           <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
             <View style={styles.modalTop}>
               <View>
@@ -3254,14 +3302,23 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               </View>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ==================================================== */}
       {/* REJECTION MODAL FOR SIGNED LEASE                     */}
       {/* ==================================================== */}
-      <Modal visible={showRejectModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={showRejectModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRejectModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+          style={styles.modalOverlay}
+        >
           <View style={[styles.modalCard, { maxWidth: 440 }]}>
             <View style={styles.modalTop}>
               <View>
@@ -3318,14 +3375,23 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               </View>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ==================================================== */}
       {/* MODAL 3: RENEWAL OFFER MODAL (Web 1-to-1 Parity)     */}
       {/* ==================================================== */}
-      <Modal visible={!!renewalModalItem} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={!!renewalModalItem}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setRenewalModalItem(null)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+          style={styles.modalOverlay}
+        >
           <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
             <View style={styles.modalTop}>
               <View>
@@ -3339,7 +3405,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               {/* Current Contract Rent */}
               <View style={styles.currentRentStrip}>
                 <Text style={styles.currentRentLabel}>Current Contracted Rent:</Text>
@@ -3348,7 +3414,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 </Text>
               </View>
 
-              {/* Escalation Percentage Presets (Web Parity) */}
+              {/* Escalation Percentage Presets & Custom % (Web Parity) */}
               <Text style={styles.modalFieldLabel}>Escalation Percentage (%)</Text>
               <View style={styles.escalationPillsRow}>
                 {[0, 5, 8, 10, 12, 15].map((pct) => (
@@ -3358,7 +3424,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                       styles.escalationPill,
                       renewalPercent === pct && styles.escalationPillActive,
                     ]}
-                    onPress={() => setRenewalPercent(pct)}
+                    onPress={() => handleRenewalPresetPercent(pct)}
                   >
                     <Text
                       style={[
@@ -3372,6 +3438,31 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 ))}
               </View>
 
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.modalFieldLabel}>Custom Escalation (%)</Text>
+                  <TextInput
+                    style={[styles.modalInput, { backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy }]}
+                    value={renewalPercentText}
+                    onChangeText={handleRenewalPercentInput}
+                    placeholder="e.g. 8"
+                    placeholderTextColor={colors.inkSoft}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.modalFieldLabel}>New Proposed Rent ({renewalModalItem?.currency || viewCurrency})</Text>
+                  <TextInput
+                    style={[styles.modalInput, { backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy }]}
+                    value={renewalProposedRentText}
+                    onChangeText={handleRenewalProposedRentInput}
+                    placeholder="0"
+                    placeholderTextColor={colors.inkSoft}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
               {/* Dynamic Bi-Directional Calculation Preview */}
               <View style={styles.calcPreviewBox}>
                 <View style={styles.calcRow}>
@@ -3383,13 +3474,24 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 <View style={styles.calcRow}>
                   <Text style={styles.calcLabel}>Monthly Increase:</Text>
                   <Text style={[styles.calcVal, { color: '#059669' }]}>
-                    +{format(renewalModalItem ? Math.round(renewalModalItem.currentRent * (renewalPercent / 100)) : 0, renewalModalItem?.currency || viewCurrency)}
+                    +{format(
+                      Math.max(
+                        0,
+                        (parseFloat(renewalProposedRentText) || Math.round((renewalModalItem?.currentRent || 0) * (1 + renewalPercent / 100))) -
+                          (renewalModalItem?.currentRent || 0)
+                      ),
+                      renewalModalItem?.currency || viewCurrency
+                    )}
                   </Text>
                 </View>
                 <View style={styles.calcRow}>
                   <Text style={styles.calcLabel}>New Proposed Rent:</Text>
                   <Text style={[styles.calcVal, { color: '#059669', fontWeight: '800', fontSize: 13 }]}>
-                    {format(renewalModalItem ? Math.round(renewalModalItem.currentRent * (1 + renewalPercent / 100)) : 0, renewalModalItem?.currency || viewCurrency)}/mo
+                    {format(
+                      parseFloat(renewalProposedRentText) ||
+                        Math.round((renewalModalItem?.currentRent || 0) * (1 + renewalPercent / 100)),
+                      renewalModalItem?.currency || viewCurrency
+                    )}/mo
                   </Text>
                 </View>
               </View>
@@ -3418,22 +3520,84 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 ))}
               </View>
 
-              {/* Dates Preview */}
-              <View style={styles.datesGrid}>
-                <View style={styles.dateCol}>
-                  <Text style={styles.dateLabel}>New Lease Start</Text>
-                  <Text style={styles.dateVal}>{renewalStartDate}</Text>
+              {/* Editable Dates */}
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.modalFieldLabel}>New Lease Start (YYYY-MM-DD)</Text>
+                  <TextInput
+                    style={[styles.modalInput, { backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy }]}
+                    value={renewalStartDate}
+                    onChangeText={setRenewalStartDate}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor={colors.inkSoft}
+                  />
                 </View>
-                <View style={styles.dateCol}>
-                  <Text style={styles.dateLabel}>New Lease End</Text>
-                  <Text style={styles.dateVal}>{renewalEndDate}</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.modalFieldLabel}>New Lease End (YYYY-MM-DD)</Text>
+                  <TextInput
+                    style={[styles.modalInput, { backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy }]}
+                    value={renewalEndDate}
+                    onChangeText={setRenewalEndDate}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor={colors.inkSoft}
+                  />
                 </View>
               </View>
+
+              {/* Optional Renewal Addendum / Agreement PDF Picker */}
+              <Text style={styles.modalFieldLabel}>Renewal Agreement PDF (Optional)</Text>
+              <TouchableOpacity
+                style={[
+                  styles.documentFileCard,
+                  {
+                    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+                    borderColor: renewalFileData ? '#10B981' : colors.line,
+                  },
+                ]}
+                onPress={async () => {
+                  try {
+                    const picked = await pickDocument({ type: ['application/pdf', 'image/*'] });
+                    if (picked) {
+                      setRenewalFileName(picked.name);
+                      setRenewalFileSize(picked.size ? Math.round(picked.size / 1024) : null);
+                      const rawData = picked.base64 || picked.uri;
+                      try {
+                        const safeUrl = await uploadOrCompressDocument(
+                          rawData,
+                          `renewals/${Date.now()}_${picked.name}`
+                        );
+                        setRenewalFileData(safeUrl);
+                      } catch {
+                        setRenewalFileData(rawData);
+                      }
+                      showToast(`${picked.name} attached`, 'success');
+                    }
+                  } catch (err: any) {
+                    showToast(err?.message || 'Could not pick renewal PDF.', 'error');
+                  }
+                }}
+              >
+                <Feather name={renewalFileData ? 'check-circle' : 'upload-cloud'} size={16} color={renewalFileData ? '#059669' : colors.inkSoft} />
+                <Text style={{ flex: 1, marginLeft: 8, fontSize: 12, color: colors.navy }} numberOfLines={1}>
+                  {renewalFileName || 'Tap to attach renewal PDF (optional)'}
+                </Text>
+                {renewalFileData ? (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setRenewalFileName('');
+                      setRenewalFileData('');
+                      setRenewalFileSize(null);
+                    }}
+                  >
+                    <Feather name="x" size={14} color={colors.inkSoft} />
+                  </TouchableOpacity>
+                ) : null}
+              </TouchableOpacity>
 
               {/* Landlord Notes */}
               <Text style={styles.modalFieldLabel}>Owner Notes / Clause Details (Optional)</Text>
               <TextInput
-                style={[styles.modalInput, { height: 60 }]}
+                style={[styles.modalInput, { height: 60, backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy }]}
                 value={renewalOwnerNotes}
                 onChangeText={setRenewalOwnerNotes}
                 placeholder="Standard annual escalation per rental clause..."
@@ -3450,14 +3614,23 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               <Text style={styles.modalSubmitBtnText}>Dispatch Renewal Offer</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ==================================================== */}
       {/* MODAL 4: REVIEW SIGNED RENEWAL MODAL (Web Parity)    */}
       {/* ==================================================== */}
-      <Modal visible={!!inspectingSignedRenewal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={!!inspectingSignedRenewal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setInspectingSignedRenewal(null)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+          style={styles.modalOverlay}
+        >
           <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
             <View style={styles.modalTop}>
               <View>
@@ -3553,15 +3726,21 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               </TouchableOpacity>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ==================================================== */}
       {/* MODAL 5: WEB PARITY "+ Upload agreement" MODAL        */}
       {/* ==================================================== */}
-      <Modal visible={showUploadAgreementModal} transparent animationType="slide">
+      <Modal
+        visible={showUploadAgreementModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowUploadAgreementModal(false)}
+      >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
           style={styles.modalOverlay}
         >
           <View style={[styles.modalCard, { backgroundColor: colors.surface, maxHeight: '92%' }]}>
@@ -3774,7 +3953,13 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                             showToast('Please enter a valid email address.');
                             return;
                           }
-                          const pass = uploadTenantPassword.trim() || 'Tenant@123';
+                          const cleanPhoneVal = uploadTenantPhone.trim();
+                          const phoneDigitsVal = cleanPhoneVal.replace(/\D/g, '');
+                          if (!cleanPhoneVal || phoneDigitsVal.length < 7 || phoneDigitsVal.length > 15) {
+                            showToast('Please enter a valid phone number (7 to 15 digits).');
+                            return;
+                          }
+                          const pass = uploadTenantPassword.trim() || 'Welcome@123';
                           setUploadTenantPassword(pass);
                           setIsNewTenantMode(true);
                           setSelectedTenantObj({
@@ -4197,13 +4382,13 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                     <View style={styles.dropdownMenuBox}>
                       {(() => {
                         const propUnits = uploadPropertyId
-                          ? myUnits.filter((u) => u.propertyId === uploadPropertyId)
-                          : myUnits;
+                          ? vacantUnits.filter((u) => u.propertyId === uploadPropertyId)
+                          : vacantUnits;
                         if (propUnits.length === 0) {
                           return (
                             <View style={{ padding: 14 }}>
                               <Text style={{ fontSize: 13, color: colors.inkSoft, textAlign: 'center' }}>
-                                No units available for this property.
+                                No vacant units available for this property.
                               </Text>
                             </View>
                           );
@@ -4459,8 +4644,8 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                     </TouchableOpacity>
                   </View>
 
-                  {/* Offline Deposit Checkbox (Web Parity) */}
-                  {uploadExecutionMode === 'already_executed_offline' && (
+                  {/* Offline Deposit Checkbox (Digital Dispatch & Offline Modes — Web Parity) */}
+                  {(parseFloat(uploadDeposit) || 0) > 0 && (
                     <View style={styles.offlineDepositBox}>
                       <TouchableOpacity
                         style={{ flexDirection: 'row', alignItems: 'center' }}
@@ -4479,13 +4664,13 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
 
                       {offlineDepositCollected && (
                         <View style={{ marginTop: 8 }}>
-                          <Text style={{ fontSize: 11, color: '#64748B', marginBottom: 4 }}>Payment Reference / Receipt Note</Text>
+                          <Text style={{ fontSize: 11, color: colors.inkSoft, marginBottom: 4 }}>Payment Reference / Receipt Note</Text>
                           <TextInput
-                            style={[styles.modalInput, { backgroundColor: '#FFFFFF', marginBottom: 0 }]}
+                            style={[styles.modalInput, { backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy, marginBottom: 0 }]}
                             value={offlineDepositRef}
                             onChangeText={setOfflineDepositRef}
                             placeholder="e.g. Bank Wire / UPI Ref / Cash Settled"
-                            placeholderTextColor="#94A3B8"
+                            placeholderTextColor={colors.inkSoft}
                           />
                         </View>
                       )}
@@ -4546,6 +4731,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                           const picked = await pickDocument({ type: ['application/pdf', 'image/*'] });
                           if (picked) {
                             setUploadFileName(picked.name);
+                            setUploadFileSize(picked.size ? Math.round(picked.size / 1024) : null);
                             const rawData = picked.base64 || picked.uri;
                             try {
                               const safeUrl = await uploadOrCompressDocument(
@@ -5002,8 +5188,17 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
       {/* ==================================================== */}
       {/* MODAL 6: NOTICE / VACATE MODAL                       */}
       {/* ==================================================== */}
-      <Modal visible={showTerminateModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={showTerminateModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowTerminateModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+          style={styles.modalOverlay}
+        >
           <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
             <View style={styles.modalTop}>
               <View>
@@ -5024,20 +5219,20 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
             >
               <Text style={styles.modalFieldLabel}>Target Move-Out Date</Text>
               <TextInput
-                style={styles.modalInput}
+                style={[styles.modalInput, { backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy }]}
                 value={vacateDate}
                 onChangeText={setVacateDate}
                 placeholder="YYYY-MM-DD"
-                placeholderTextColor="#94A3B8"
+                placeholderTextColor={colors.inkSoft}
               />
 
               <Text style={styles.modalFieldLabel}>Reason for Notice</Text>
               <TextInput
-                style={styles.modalInput}
+                style={[styles.modalInput, { backgroundColor: isDark ? colors.surfaceSunken : '#FFFFFF', color: colors.navy }]}
                 value={terminateReason}
                 onChangeText={setTerminateReason}
                 placeholder="e.g. Relocating for employment"
-                placeholderTextColor="#94A3B8"
+                placeholderTextColor={colors.inkSoft}
               />
 
               <TouchableOpacity
@@ -5049,14 +5244,23 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               </TouchableOpacity>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ==================================================== */}
       {/* MODAL 7: UPLOAD AGREEMENT TEMPLATE MODAL             */}
       {/* ==================================================== */}
-      <Modal visible={showUploadTemplateModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={showUploadTemplateModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowUploadTemplateModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+          style={styles.modalOverlay}
+        >
           <View style={[styles.modalCard, { backgroundColor: colors.surface, maxHeight: '90%' }]}>
             <View style={styles.modalTop}>
               <View style={{ flex: 1, marginRight: 8 }}>
@@ -5225,7 +5429,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               </View>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Universal Document Inspection & Viewer Modal */}

@@ -1,5 +1,7 @@
 // Live Currency & Forex Exchange Service for Propithub Mobile
-// Fetches real-time exchange rates from public Open Exchange API with 6-hour caching & offline baseline fallbacks.
+// Fetches real-time exchange rates from public Open Exchange API with 6-hour AsyncStorage caching & offline baseline fallbacks.
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const DEFAULT_CURRENCY = '$';
 export const DEFAULT_CURRENCY_SYMBOL = '$';
@@ -32,7 +34,7 @@ export const GLOBAL_CURRENCIES: CurrencyMeta[] = [
   { code: 'INR', name: 'Indian Rupee', country: 'India', symbol: '₹', flag: '🇮🇳' },
   { code: 'EUR', name: 'Euro', country: 'European Union', symbol: '€', flag: '🇪🇺' },
   { code: 'GBP', name: 'British Pound', country: 'United Kingdom', symbol: '£', flag: '🇬🇧' },
-  { code: 'AED', name: 'UAE Dirham', country: 'United Arab Emirates', symbol: 'د.إ', flag: '🇦🇪' },
+  { code: 'AED', name: 'UAE Dirham', country: 'United Arab Emirates', symbol: 'AED', flag: '🇦🇪' },
   { code: 'SGD', name: 'Singapore Dollar', country: 'Singapore', symbol: 'S$', flag: '🇸🇬' },
   { code: 'CAD', name: 'Canadian Dollar', country: 'Canada', symbol: 'CA$', flag: '🇨🇦' },
   { code: 'AUD', name: 'Australian Dollar', country: 'Australia', symbol: 'A$', flag: '🇦🇺' },
@@ -98,9 +100,9 @@ export const GLOBAL_CURRENCIES: CurrencyMeta[] = [
 // Fallback baseline exchange rates against 1 USD (used if network is offline or API fails)
 export const BASELINE_RATES_USD: Record<string, number> = {
   USD: 1,
-  INR: 86.85,
-  EUR: 0.92,
-  GBP: 0.78,
+  INR: 94.05,
+  EUR: 0.897,
+  GBP: 0.77,
   AED: 3.6725,
   SGD: 1.34,
   CAD: 1.39,
@@ -150,7 +152,11 @@ interface CachedData {
   timeLastUpdate?: string;
 }
 
-const getStorageItem = (key: string): string | null => {
+const getStorageItem = async (key: string): Promise<string | null> => {
+  try {
+    const val = await AsyncStorage.getItem(key);
+    if (val !== null) return val;
+  } catch {}
   try {
     if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
       return (globalThis as any).localStorage.getItem(key);
@@ -159,7 +165,10 @@ const getStorageItem = (key: string): string | null => {
   return null;
 };
 
-const setStorageItem = (key: string, value: string): void => {
+const setStorageItem = async (key: string, value: string): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(key, value);
+  } catch {}
   try {
     if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
       (globalThis as any).localStorage.setItem(key, value);
@@ -174,7 +183,7 @@ const setStorageItem = (key: string, value: string): void => {
 export async function getLiveRates(): Promise<{ rates: Record<string, number>; lastUpdated: string; isLive: boolean }> {
   // 1. Check local cache
   try {
-    const cachedStr = getStorageItem(CACHE_KEY);
+    const cachedStr = await getStorageItem(CACHE_KEY);
     if (cachedStr) {
       const cached: CachedData = JSON.parse(cachedStr);
       if (Date.now() - cached.timestamp < CACHE_TTL_MS && cached.rates && Object.keys(cached.rates).length > 10) {
@@ -204,7 +213,7 @@ export async function getLiveRates(): Promise<{ rates: Record<string, number>; l
             rates: data.rates,
             timeLastUpdate: data.time_last_update_utc || new Date().toUTCString(),
           };
-          setStorageItem(CACHE_KEY, JSON.stringify(toCache));
+          await setStorageItem(CACHE_KEY, JSON.stringify(toCache));
         } catch (storageErr) {
           console.warn('Failed to cache forex rates:', storageErr);
         }
@@ -233,6 +242,7 @@ export async function getLiveRates(): Promise<{ rates: Record<string, number>; l
 export function normalizeCurrencyCode(curr: string | undefined | null): string {
   if (!curr) return 'USD';
   const clean = curr.trim().toUpperCase();
+  if (clean === 'LOCAL' || clean === 'DEFAULT') return 'LOCAL';
   const symbolMap: Record<string, string> = {
     '₹': 'INR',
     '$': 'USD',
@@ -244,7 +254,7 @@ export function normalizeCurrencyCode(curr: string | undefined | null): string {
     'A$': 'AUD',
     '﷼': 'SAR',
     '¥': 'JPY',
-    'Fr': 'CHF',
+    'FR': 'CHF',
   };
   if (symbolMap[clean]) return symbolMap[clean];
   if (clean.length === 3 && /^[A-Z]{3}$/.test(clean)) return clean;
@@ -267,7 +277,7 @@ export function convertCurrency(
   if (amount === 0 || isNaN(amount)) return 0;
   const from = normalizeCurrencyCode(fromCurrency);
   const to = normalizeCurrencyCode(toCurrency);
-  if (from === to) return amount;
+  if (from === to || to === 'LOCAL' || from === 'LOCAL') return amount;
 
   const rateFrom = rates[from] || BASELINE_RATES_USD[from] || 1;
   const rateTo = rates[to] || BASELINE_RATES_USD[to] || 1;
@@ -286,16 +296,16 @@ export function formatCurrencyAmount(
   options?: { minimumFractionDigits?: number; maximumFractionDigits?: number; compact?: boolean }
 ): string {
   const num = typeof amount === 'number' && !isNaN(amount) ? amount : (Number(amount) || 0);
-  const code = normalizeCurrencyCode(currencyCode || 'USD');
+  let code = normalizeCurrencyCode(currencyCode || 'USD');
+  if (code === 'LOCAL') code = DEFAULT_CURRENCY;
   const meta = GLOBAL_CURRENCIES.find((c) => c.code === code);
   const symbol = meta?.symbol || code;
 
   // Zero-decimal currencies
   const isNoDecimalCurr = code === 'JPY' || code === 'KRW' || code === 'VND' || code === 'CLP';
 
-  const hasDecimals = num % 1 !== 0;
-  const minDec = options?.minimumFractionDigits ?? (isNoDecimalCurr ? 0 : 0);
-  const maxDec = options?.maximumFractionDigits ?? (isNoDecimalCurr ? 0 : hasDecimals ? 2 : 0);
+  const minDec = options?.minimumFractionDigits ?? (isNoDecimalCurr ? 0 : 2);
+  const maxDec = options?.maximumFractionDigits ?? (isNoDecimalCurr ? 0 : 2);
 
   // Indian locale grouping strictly for INR, standard for others
   const locale = code === 'INR' ? 'en-IN' : 'en-US';
@@ -309,8 +319,8 @@ export function formatCurrencyAmount(
     formattedNumber = Number(num || 0).toFixed(minDec);
   }
 
-  const needsSpace = symbol.length > 1 || /[\u0600-\u06FF]/.test(symbol);
-  return needsSpace ? `${symbol} ${formattedNumber}` : `${symbol}${formattedNumber}`;
+  const symbolPrefix = symbol.length > 1 && !symbol.endsWith(' ') ? `${symbol} ` : symbol;
+  return `${symbolPrefix}${formattedNumber}`;
 }
 
 /**
@@ -319,9 +329,9 @@ export function formatCurrencyAmount(
 export function getCurrencySymbol(currencyCode?: string | null): string {
   if (!currencyCode) return '$';
   const clean = currencyCode.trim();
-  if (clean === '$' || clean.toUpperCase() === 'USD') return '$';
+  if (clean === '$' || clean.toUpperCase() === 'USD' || clean.toUpperCase() === 'LOCAL') return '$';
   const code = normalizeCurrencyCode(currencyCode);
-  if (code === 'USD') return '$';
+  if (code === 'USD' || code === 'LOCAL') return '$';
   const meta = GLOBAL_CURRENCIES.find((c) => c.code === code);
   return meta?.symbol || code || '$';
 }

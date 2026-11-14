@@ -748,7 +748,9 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
             ) : (
               filteredAgreements.map((a) => {
                 const isPendingReview =
-                  a.status === 'pending_approval' || (a.status as any) === 'awaiting_review';
+                  a.status === 'pending_approval' ||
+                  (a.status as any) === 'awaiting_review' ||
+                  (a.status as any) === 'awaiting_tenant_upload';
                 const badge = getStatusLabelAndColor(a.status);
 
                 return (
@@ -1110,7 +1112,12 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
                     {!tmpl.id.startsWith('ag_tmpl_') && (
                       <TouchableOpacity
                         style={[styles.footerBtn, { borderColor: 'rgba(239, 68, 68, 0.35)' }]}
-                        onPress={() => deleteAgreementTemplate(tmpl.id)}
+                        onPress={() =>
+                          Alert.alert('Delete Template?', `Remove "${(tmpl as any).title || (tmpl as any).name || 'this template'}" from the template library?`, [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Delete', style: 'destructive', onPress: () => deleteAgreementTemplate(tmpl.id) },
+                          ])
+                        }
                       >
                         <Text style={[styles.footerBtnText, { color: '#EF4444' }]}>Delete</Text>
                       </TouchableOpacity>
@@ -1152,7 +1159,12 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.footerBtn, { borderColor: 'rgba(239, 68, 68, 0.35)' }]}
-                      onPress={() => deleteAgreement(d.id)}
+                      onPress={() =>
+                        Alert.alert('Discard Draft?', `Discard draft agreement for Unit ${d.unit}?`, [
+                          { text: 'Cancel', style: 'cancel' },
+                          { text: 'Discard', style: 'destructive', onPress: () => deleteAgreement(d.id) },
+                        ])
+                      }
                     >
                       <Text style={[styles.footerBtnText, { color: '#EF4444' }]}>Discard</Text>
                     </TouchableOpacity>

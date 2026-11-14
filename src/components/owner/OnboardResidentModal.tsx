@@ -147,6 +147,31 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
     return isSingleUnitProperty(targetProperty);
   }, [targetProperty]);
 
+  // Shared availability check used by both vacantUnits and handlePropertyChange
+  const isUnitAvailableForLease = (u: (typeof state.units)[number]) => {
+    const hasActiveAgreement = (state.agreements || []).some(
+      (a) =>
+        (a.status === 'active' ||
+          a.status === 'signed' ||
+          a.status === 'pending_deposit' ||
+          a.status === 'awaiting_tenant_signature' ||
+          a.status === 'awaiting_tenant_upload') &&
+        (a.unitId === u.id || (a.unit === u.unitNumber && (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)))
+    );
+    const hasPendingReq = (state.tenancyRequests || []).some(
+      (r) => r.status === 'pending' && (r.unitId === u.id || (r.unitNumber === u.unitNumber && (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)))
+    );
+    const isOccupiedOrReserved =
+      u.status === 'occupied' ||
+      u.status === 'reserved' ||
+      Boolean(u.currentTenantId) ||
+      Boolean(u.tenant && u.tenant !== 'Unassigned' && u.tenant !== 'Vacant') ||
+      hasActiveAgreement ||
+      hasPendingReq;
+    if (u.id === preselectedUnitId) return !hasActiveAgreement;
+    return !isOccupiedOrReserved;
+  };
+
   // Filter available units for chosen property
   const vacantUnits = useMemo(() => {
     return state.units.filter((u) => {
@@ -155,27 +180,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       if (selectedPropertyId && selectedPropertyId !== 'all' && u.propertyId !== selectedPropertyId) {
         return false;
       }
-      const hasActiveAgreement = (state.agreements || []).some(
-        (a) =>
-          (a.status === 'active' ||
-            a.status === 'signed' ||
-            a.status === 'pending_deposit' ||
-            a.status === 'awaiting_tenant_signature' ||
-            a.status === 'awaiting_tenant_upload') &&
-          (a.unitId === u.id || (a.unit === u.unitNumber && (!a.propertyId || !u.propertyId || a.propertyId === u.propertyId)))
-      );
-      const hasPendingReq = (state.tenancyRequests || []).some(
-        (r) => r.status === 'pending' && (r.unitId === u.id || (r.unitNumber === u.unitNumber && (!r.propertyId || !u.propertyId || r.propertyId === u.propertyId)))
-      );
-      const isOccupiedOrReserved =
-        u.status === 'occupied' ||
-        u.status === 'reserved' ||
-        Boolean(u.currentTenantId) ||
-        Boolean(u.tenant && u.tenant !== 'Unassigned' && u.tenant !== 'Vacant') ||
-        hasActiveAgreement ||
-        hasPendingReq;
-      if (u.id === preselectedUnitId) return !hasActiveAgreement;
-      return !isOccupiedOrReserved;
+      return isUnitAvailableForLease(u);
     });
   }, [state.units, state.agreements, state.tenancyRequests, myProperties, selectedPropertyId, preselectedUnitId]);
 
@@ -406,7 +411,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
   // Handle Property selection change
   const handlePropertyChange = (propId: string) => {
     setSelectedPropertyId(propId);
-    const unitsInProp = state.units.filter((u) => u.propertyId === propId && (u.status === 'vacant' || u.id === preselectedUnitId));
+    const unitsInProp = state.units.filter((u) => u.propertyId === propId && isUnitAvailableForLease(u));
     if (unitsInProp.length > 0) {
       const first = unitsInProp[0];
       setSelectedUnitId(first.id);
@@ -486,7 +491,7 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
           return;
         }
         if (!selectedTenant.tempPassword || selectedTenant.tempPassword.trim().length < 6) {
-          selectedTenant.tempPassword = 'Welcome@123';
+          setSelectedTenant({ ...selectedTenant, tempPassword: 'Welcome@123' });
         }
       }
       if (isTenantLimitReached && selectedTenant.isNew && user?.role !== 'manager') {
@@ -614,7 +619,10 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
       const cleanName = selectedTenant.name.trim();
       const cleanEmail = selectedTenant.email?.trim().toLowerCase() || `${cleanName.toLowerCase().replace(/\s+/g, '')}@tenant.com`;
       const cleanPhone = selectedTenant.phone?.trim() || '';
-      const tempPassword = selectedTenant.tempPassword || 'Welcome@123';
+      const tempPassword =
+        selectedTenant.tempPassword && selectedTenant.tempPassword.trim().length >= 6
+          ? selectedTenant.tempPassword.trim()
+          : 'Welcome@123';
 
       const targetUnit = state.units.find((u) => u.id === selectedUnitId) || (isBulkMode ? bulkUnits[0] : undefined);
       const targetProperty = state.properties.find((p) => p.id === (targetUnit?.propertyId || selectedPropertyId));
@@ -891,12 +899,12 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
 
         saveAgreement(newAg);
 
-        // If offline deposit was collected, record payment transaction
-        const newPayments = [...state.payments];
+        // If offline deposit was collected, record and persist payment transaction
         if (offlineDepositCollected && deposit > 0) {
-          newPayments.unshift({
+          const depTx: PaymentTransaction = {
             id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
             ownerId,
+            propertyId: targetProperty?.id || 'prop-1',
             tenant: cleanName,
             tenantId,
             unit: unitLabel,
@@ -908,7 +916,8 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
             type: 'deposit',
             currency: propCurrency,
             notes: `Security deposit collected offline upon manual lease execution.`,
-          });
+          };
+          savePayment(depTx);
         }
 
         // Generate first month move-in rent invoice
@@ -1024,7 +1033,6 @@ export const OnboardResidentModal: React.FC<OnboardResidentModalProps> = ({
             units: updatedUnits,
             properties: updatedProperties,
             tenants: updatedTenants,
-            payments: newPayments,
             invoices: [firstMonthRentInvoice, ...prev.invoices],
           };
         });

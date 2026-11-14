@@ -83,6 +83,8 @@ export const TenantFindHomeScreen: React.FC<TenantFindHomeScreenProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBedsFilter, setSelectedBedsFilter] = useState<'any' | '0' | '1' | '2' | '3'>('any');
   const [selectedFurnishing, setSelectedFurnishing] = useState<'all' | 'Fully' | 'Semi' | 'Unfurnished'>('all');
+  const [selectedCountry, setSelectedCountry] = useState<string>('all');
+  const [maxRentFilter, setMaxRentFilter] = useState<string>('');
   const [sortBy, setSortBy] = useState<'rec' | 'lo' | 'hi'>('rec');
   const [showSavedOnly, setShowSavedOnly] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
@@ -163,6 +165,17 @@ export const TenantFindHomeScreen: React.FC<TenantFindHomeScreenProps> = ({
         if (!(u.furnishing || '').toLowerCase().includes(selectedFurnishing.toLowerCase())) return false;
       }
 
+      if (selectedCountry !== 'all') {
+        const prop = resolveProperty(u);
+        const unitCountry = ((prop as any)?.country || (prop?.address as any)?.country || '').toLowerCase();
+        if (!unitCountry.includes(selectedCountry.toLowerCase())) return false;
+      }
+
+      const maxRentNum = parseFloat(maxRentFilter);
+      if (!Number.isNaN(maxRentNum) && maxRentNum > 0) {
+        if ((Number(u.rent) || 0) > maxRentNum) return false;
+      }
+
       if (q) {
         const prop = resolveProperty(u);
         const addrRes = prop ? getCleanAddressText(prop.address) : null;
@@ -199,7 +212,7 @@ export const TenantFindHomeScreen: React.FC<TenantFindHomeScreenProps> = ({
       return [...list].sort((a, b) => popularRank(a, b) || (Number(b.rent) || 0) - (Number(a.rent) || 0));
     }
     return [...list].sort((a, b) => popularRank(a, b));
-  }, [vacantUnits, searchQuery, selectedBedsFilter, selectedFurnishing, sortBy, showSavedOnly, savedIds, state.properties]);
+  }, [vacantUnits, searchQuery, selectedBedsFilter, selectedFurnishing, selectedCountry, maxRentFilter, sortBy, showSavedOnly, savedIds, state.properties]);
 
   // Tenant's submitted enquiries (matching Web by tenantId, email, and phone)
   const myEnquiries = useMemo(() => {
@@ -377,6 +390,31 @@ export const TenantFindHomeScreen: React.FC<TenantFindHomeScreenProps> = ({
                 {sortBy === 'rec' ? 'Recommended' : sortBy === 'lo' ? 'Price: Low → High' : 'Price: High → Low'}
               </Text>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() =>
+                setSelectedCountry((prev) =>
+                  prev === 'all' ? 'India' : prev === 'India' ? 'USA' : prev === 'USA' ? 'UK' : prev === 'UK' ? 'UAE' : 'all'
+                )
+              }
+              style={[styles.filterChip, selectedCountry !== 'all' && styles.filterChipActive]}
+            >
+              <Text style={[styles.filterChipText, selectedCountry !== 'all' && styles.filterChipTextActive]}>
+                {selectedCountry === 'all' ? 'All Countries' : selectedCountry}
+              </Text>
+            </TouchableOpacity>
+
+            <View style={[styles.filterChip, { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 }]}>
+              <Text style={[styles.filterChipText, { marginRight: 4 }]}>Max Rent:</Text>
+              <TextInput
+                value={maxRentFilter}
+                onChangeText={setMaxRentFilter}
+                placeholder="Any"
+                placeholderTextColor={colors.inkSoft}
+                keyboardType="numeric"
+                style={{ minWidth: 52, fontSize: 12, color: colors.text, padding: 0 }}
+              />
+            </View>
 
             <TouchableOpacity
               onPress={() => setShowSavedOnly(!showSavedOnly)}

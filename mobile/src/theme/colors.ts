@@ -26,6 +26,7 @@ export interface ThemePalette {
   // Brand Tokens
   primary: string;      // Brand Emerald
   primaryDark: string;  // Deep Emerald
+  primaryText: string;  // High-contrast emerald text (light/dark adaptive)
   primaryLight: string; // Emerald Tint / Pill Background
   primaryBorder: string;
 
@@ -72,6 +73,7 @@ export const LightColors: ThemePalette = {
 
   primary: '#10B981',
   primaryDark: '#059669',
+  primaryText: '#059669',
   primaryLight: '#D1FAE5',
   primaryBorder: 'rgba(16, 185, 129, 0.3)',
 
@@ -115,6 +117,7 @@ export const DarkColors: ThemePalette = {
 
   primary: '#10B981',
   primaryDark: '#059669',
+  primaryText: '#34D399',
   primaryLight: 'rgba(16, 185, 129, 0.18)',
   primaryBorder: 'rgba(16, 185, 129, 0.35)',
 
@@ -145,11 +148,32 @@ export const setGlobalThemeColors = (isDark: boolean): ThemePalette => {
   return next;
 };
 
-export const Typography = {
-  screenTitle: { fontSize: 20, fontWeight: '700' as const, color: Colors.navy },
-  sectionHeader: { fontSize: 15, fontWeight: '600' as const, color: Colors.navy },
-  cardTitle: { fontSize: 13, fontWeight: '600' as const, color: Colors.navy },
-  body: { fontSize: 12, fontWeight: '400' as const, color: Colors.ink },
-  caption: { fontSize: 10, fontWeight: '400' as const, color: Colors.inkSoft },
+export const createTypography = (palette: ThemePalette) => ({
+  screenTitle: { fontSize: 20, fontWeight: '700' as const, color: palette.navy },
+  sectionHeader: { fontSize: 15, fontWeight: '600' as const, color: palette.navy },
+  cardTitle: { fontSize: 13, fontWeight: '600' as const, color: palette.navy },
+  body: { fontSize: 12, fontWeight: '400' as const, color: palette.ink },
+  caption: { fontSize: 10, fontWeight: '400' as const, color: palette.inkSoft },
   badge: { fontSize: 8.5, fontWeight: '700' as const, textTransform: 'uppercase' as const },
+});
+
+export const Typography = {
+  get screenTitle() {
+    return { fontSize: 20, fontWeight: '700' as const, color: Colors.navy };
+  },
+  get sectionHeader() {
+    return { fontSize: 15, fontWeight: '600' as const, color: Colors.navy };
+  },
+  get cardTitle() {
+    return { fontSize: 13, fontWeight: '600' as const, color: Colors.navy };
+  },
+  get body() {
+    return { fontSize: 12, fontWeight: '400' as const, color: Colors.ink };
+  },
+  get caption() {
+    return { fontSize: 10, fontWeight: '400' as const, color: Colors.inkSoft };
+  },
+  get badge() {
+    return { fontSize: 8.5, fontWeight: '700' as const, textTransform: 'uppercase' as const };
+  },
 };

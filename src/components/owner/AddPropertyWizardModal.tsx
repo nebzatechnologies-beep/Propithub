@@ -1660,6 +1660,7 @@ export const AddPropertyWizardModal: React.FC<AddPropertyWizardModalProps> = ({
                 {/* Detailed Units Inventory Table with Horizontal Scrolling */}
                 <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
                   <div
+                    className="table-wrap"
                     style={{
                       overflowX: 'auto',
                       overflowY: 'auto',

@@ -1,6 +1,14 @@
 import React from 'react';
-import { TouchableOpacity, Text, StyleSheet, ActivityIndicator } from 'react-native';
-import { Colors } from '../theme/colors';
+import {
+  TouchableOpacity,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  StyleProp,
+  ViewStyle,
+  TextStyle,
+} from 'react-native';
+import { useMobileTheme } from '../context/MobileThemeContext';
 
 interface ButtonProps {
   title: string;
@@ -9,6 +17,8 @@ interface ButtonProps {
   size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
   disabled?: boolean;
+  style?: StyleProp<ViewStyle>;
+  textStyle?: StyleProp<TextStyle>;
 }
 
 export const Button: React.FC<ButtonProps> = ({
@@ -18,28 +28,36 @@ export const Button: React.FC<ButtonProps> = ({
   size = 'md',
   loading = false,
   disabled = false,
+  style: customStyle,
+  textStyle,
 }) => {
+  const { colors, isDark } = useMobileTheme();
+
   const getButtonStyles = () => {
     switch (variant) {
       case 'secondary':
-        return { bg: Colors.surfaceSunken, border: Colors.line, text: Colors.navy };
+        return { bg: colors.surfaceSunken, border: colors.line, text: colors.navy };
       case 'danger':
-        return { bg: Colors.crimson, border: Colors.crimson, text: '#FFFFFF' };
+        return { bg: colors.crimson, border: colors.crimson, text: '#FFFFFF' };
       case 'outline':
-        return { bg: 'transparent', border: Colors.primary, text: Colors.primaryDark };
+        return {
+          bg: 'transparent',
+          border: colors.primary,
+          text: isDark ? colors.primaryText : colors.primaryDark,
+        };
       default:
-        return { bg: Colors.primary, border: Colors.primary, text: '#FFFFFF' };
+        return { bg: colors.primary, border: colors.primary, text: '#FFFFFF' };
     }
   };
 
-  const style = getButtonStyles();
+  const paletteStyle = getButtonStyles();
 
   const sizeStyle =
     size === 'sm'
-      ? { height: 34, paddingHorizontal: 12 }
+      ? { minHeight: 34, paddingHorizontal: 12, paddingVertical: 6 }
       : size === 'lg'
-      ? { height: 50, paddingHorizontal: 20 }
-      : { height: 44, paddingHorizontal: 16 };
+      ? { minHeight: 50, paddingHorizontal: 20, paddingVertical: 10 }
+      : { minHeight: 44, paddingHorizontal: 16, paddingVertical: 8 };
 
   const fontSize = size === 'sm' ? 12 : size === 'lg' ? 15 : 13.5;
 
@@ -48,17 +66,25 @@ export const Button: React.FC<ButtonProps> = ({
       style={[
         styles.button,
         sizeStyle,
-        { backgroundColor: style.bg, borderColor: style.border },
+        { backgroundColor: paletteStyle.bg, borderColor: paletteStyle.border },
         disabled && styles.disabled,
+        customStyle,
       ]}
       onPress={onPress}
       disabled={disabled || loading}
       activeOpacity={0.8}
     >
       {loading ? (
-        <ActivityIndicator color={style.text} size="small" />
+        <ActivityIndicator color={paletteStyle.text} size="small" />
       ) : (
-        <Text style={[styles.text, { color: style.text, fontSize }]}>{title}</Text>
+        <Text
+          style={[styles.text, { color: paletteStyle.text, fontSize }, textStyle]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+        >
+          {title}
+        </Text>
       )}
     </TouchableOpacity>
   );
@@ -66,7 +92,7 @@ export const Button: React.FC<ButtonProps> = ({
 
 const styles = StyleSheet.create({
   button: {
-    height: 44,
+    minHeight: 44,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
@@ -77,6 +103,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     letterSpacing: -0.2,
+    textAlign: 'center',
   },
   disabled: {
     opacity: 0.5,

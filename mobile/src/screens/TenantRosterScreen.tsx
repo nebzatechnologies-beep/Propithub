@@ -971,8 +971,10 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
                           <Text style={[styles.contactSub, { color: colors.inkSoft }]}>{t.email}</Text>
                         </View>
                         <View style={styles.kycBadgeGreen}>
-                          <Feather name="check" size={10} color="#059669" />
-                          <Text style={styles.kycTextGreen}>KYC Verified</Text>
+                          <Feather name={(t.kycStatus === 'verified' || (t as any).kycDocuments?.length > 0) ? 'check' : 'clock'} size={10} color={(t.kycStatus === 'verified' || (t as any).kycDocuments?.length > 0) ? '#059669' : '#D97706'} />
+                          <Text style={[styles.kycTextGreen, !(t.kycStatus === 'verified' || (t as any).kycDocuments?.length > 0) && { color: '#D97706' }]}>
+                            {(t.kycStatus === 'verified' || (t as any).kycDocuments?.length > 0) ? 'KYC Verified' : 'KYC Pending'}
+                          </Text>
                         </View>
                       </View>
 
@@ -1000,7 +1002,13 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
                       <View style={[styles.cardActionsRow, { borderTopColor: colors.line }]}>
                         <TouchableOpacity
                           style={[styles.callBtn, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}
-                          onPress={() => Linking.openURL(`tel:${t.phone}`)}
+                          onPress={() => {
+                            if (!t.phone) {
+                              Alert.alert('No Phone', 'No phone number registered for this resident.');
+                              return;
+                            }
+                            Linking.openURL(`tel:${t.phone}`);
+                          }}
                           activeOpacity={0.8}
                         >
                           <Feather name="phone" size={14} color={colors.navy} />
@@ -1018,7 +1026,12 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
 
                         <TouchableOpacity
                           style={styles.moveOutBtn}
-                          onPress={() => onInitiateVacatePress?.(t.unit)}
+                          onPress={() => {
+                            const matchedUnit = myUnits.find(
+                              (u) => (u.unitNumber === t.unit || u.id === t.unit) && (!t.propertyId || u.propertyId === t.propertyId)
+                            );
+                            onInitiateVacatePress?.(matchedUnit?.id || t.unit);
+                          }}
                           activeOpacity={0.8}
                         >
                           <Feather name="log-out" size={14} color="#DC2626" />

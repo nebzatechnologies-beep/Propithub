@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
-import { StaffMember, Ticket } from '../../types';
+import { StaffMember, Ticket, InAppNotification } from '../../types';
 import { Key, Copy, Check, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
@@ -14,7 +14,7 @@ import { useCurrency } from '../../context/CurrencyContext';
 import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 
 export const MaintenancePage: React.FC = () => {
-  const { state, updateState, createOwnerMaintenanceTicket, saveTicket, saveStaff, deleteStaff, showToast } = useAppData();
+  const { state, updateState, createOwnerMaintenanceTicket, saveTicket, saveStaff, deleteStaff, saveNotification, showToast } = useAppData();
   const { user, provisionUser } = useAuth();
   const navigate = useNavigate();
   const { viewCurrency, convert, format } = useCurrency();
@@ -27,7 +27,7 @@ export const MaintenancePage: React.FC = () => {
   const [newTicketUnit, setNewTicketUnit] = useState('');
   const [newTicketIssue, setNewTicketIssue] = useState('');
   const [newTicketCategory, setNewTicketCategory] = useState('Plumbing');
-  const [newTicketPriority, setNewTicketPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
+  const [newTicketPriority, setNewTicketPriority] = useState<'Low' | 'Medium' | 'High' | 'Emergency'>('Medium');
   const [newTicketAssignee, setNewTicketAssignee] = useState('');
   const [newTicketCost, setNewTicketCost] = useState(0);
 
@@ -84,6 +84,12 @@ export const MaintenancePage: React.FC = () => {
   const myUnits = state.units.filter(
     (u) => (ownerId && u.ownerId === ownerId) || (u.propertyId && myPropertyIds.has(u.propertyId))
   );
+
+  useEffect(() => {
+    if (!newTicketUnit && myUnits.length > 0) {
+      setNewTicketUnit(myUnits[0].unitNumber || myUnits[0].id);
+    }
+  }, [myUnits, newTicketUnit]);
 
   const resolveTicketCurrency = (ticket?: Ticket | null) => {
     if (!ticket) return DEFAULT_CURRENCY_SYMBOL;
@@ -218,8 +224,9 @@ export const MaintenancePage: React.FC = () => {
       return;
     }
     // Scope unit lookup to owner's units — prevents linking ticket to another owner's same-numbered unit
-    const unitObj = myUnits.find((u) => u.id === newTicketUnit) ||
-      myUnits.find((u) => u.unitNumber === newTicketUnit);
+    const targetUnit = newTicketUnit || (myUnits[0] ? (myUnits[0].unitNumber || myUnits[0].id) : '');
+    const unitObj = myUnits.find((u) => u.id === targetUnit) || myUnits.find((u) => u.unitNumber === targetUnit) || myUnits[0];
+
     const staffObj = newTicketAssignee
       ? myStaff.find((s) => s.name === newTicketAssignee || s.id === newTicketAssignee) ||
         state.staff.find((s) => s.id === newTicketAssignee && s.ownerId === ownerId)
@@ -230,7 +237,7 @@ export const MaintenancePage: React.FC = () => {
     createOwnerMaintenanceTicket({
       ownerId,
       propertyId: resolvedPropId,
-      unit: unitObj?.unitNumber || newTicketUnit,
+      unit: unitObj?.unitNumber || targetUnit,
       unitId: unitObj?.id || undefined,
       tenant: unitObj?.tenant || 'Direct Owner Ticket',
       issue: `[${newTicketCategory}] ${newTicketIssue.trim()}`,
@@ -241,7 +248,7 @@ export const MaintenancePage: React.FC = () => {
         payer: 'owner',
         amount: newTicketCost,
         method: null,
-        status: 'awaiting_payment',
+        status: newTicketCost > 0 ? 'awaiting_payment' : 'none',
       },
     });
     setIsNewTicketOpen(false);
@@ -521,7 +528,7 @@ export const MaintenancePage: React.FC = () => {
                         <td>
                           <span
                             className={`badge ${
-                              t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'
+                              t.priority === 'Emergency' || t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'
                             }`}
                           >
                             {t.priority}
@@ -529,7 +536,23 @@ export const MaintenancePage: React.FC = () => {
                         </td>
                         <td>
                           {t.assignedTo ? (
-                            t.assignedTo
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{t.assignedTo}</span>
+                              {t.status !== 'resolved' && (
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  style={{ padding: '2px 6px', fontSize: '11px' }}
+                                  title="Reassign staff"
+                                  onClick={() => {
+                                    setAssigningTicket(t);
+                                    setAssigneeName(myStaff[0]?.name || '');
+                                  }}
+                                >
+                                  Reassign
+                                </button>
+                              )}
+                            </div>
                           ) : (
                             <button
                               type="button"
@@ -610,7 +633,7 @@ export const MaintenancePage: React.FC = () => {
                       <div style={{ fontWeight: 600, color: 'var(--ink)', marginBottom: '4px' }}>{t.issue}</div>
                       <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '12px' }}>
                         <span className="badge grey">{(t as any).category || 'General'}</span>
-                        <span className={`badge ${t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'}`}>
+                        <span className={`badge ${t.priority === 'Emergency' || t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'}`}>
                           {t.priority} Priority
                         </span>
                       </div>

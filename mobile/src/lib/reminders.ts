@@ -9,7 +9,6 @@ import {
   MobileUserProfile,
   MobileTenancyRequest,
   MobilePlatformSupportTicket,
-  MobileDispute,
 } from '../types';
 import type { MobileAppState } from '../context/MobileAppDataContext';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, normalizeCurrencyCode, getCurrencySymbol } from './currencyService';
@@ -806,8 +805,9 @@ export const getOwnerReminders = (
 
   // 6. Upcoming Rent Scheduled in Next 5 Days
   const upcomingInvoices = (state.invoices || []).filter((inv) => {
-    if (inv.status === 'paid' || inv.status === 'cancelled') return false;
+    if (inv.status === 'paid' || inv.status === 'cancelled' || inv.status === 'void') return false;
     if (inv.ownerId && inv.ownerId !== ownerId) return false;
+    if (isInvoiceForVacatedTenancy(inv, state, myUnits)) return false;
     const prop = myProperties.find((pr) => pr.id === inv.propertyId);
     if (!prop) return false;
     if (!matchesFilter(prop.id, prop.currency)) return false;
@@ -919,27 +919,6 @@ export const getManagerReminders = (
       actionScreen: 'manager_maintenance',
       category: 'maintenance',
       unitNumber: t.unit,
-    });
-  });
-
-  // 2. Operational Disputes Awaiting Manager Response
-  const pendingDisputes = (state.disputes || []).filter((d) => {
-    if (d.status === 'resolved') return false;
-    if (ownerId && d.ownerId !== ownerId) return false;
-    if (user.assignedProperties?.length && d.propertyId && !user.assignedProperties.includes(d.propertyId)) return false;
-    return d.status === 'filed' || d.status === 'under_review' || d.status === 'mediation_in_progress';
-  });
-
-  pendingDisputes.forEach((d) => {
-    reminders.push({
-      id: `manager_dispute_${d.id}`,
-      title: `Dispute Awaiting Response: ${d.category || 'Tenant Dispute'}`,
-      description: `Raised by ${d.raisedByName} regarding "${(d.statement || '').slice(0, 60)}". Provide operational resolution.`,
-      severity: 'warning',
-      icon: 'alert-triangle',
-      actionLabel: 'Resolve Dispute',
-      actionScreen: 'disputes_desk',
-      category: 'approval',
     });
   });
 

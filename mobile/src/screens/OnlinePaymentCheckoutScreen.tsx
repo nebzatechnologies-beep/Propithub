@@ -87,6 +87,7 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
       tenant: selectedInvoice.tenant || user?.displayName || 'Resident',
       tenantId: selectedInvoice.tenantId || user?.id || '',
       unit: selectedInvoice.unit,
+      propertyId: selectedInvoice.propertyId || '',
       propertyName: selectedInvoice.propertyName || 'Property',
       amount: selectedInvoice.total,
       currency: selectedInvoice.currency || viewCurrency,
@@ -120,6 +121,7 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
       if (leaseId) {
         const activeGw = (paymentRail === 'easebuzz' ? 'easebuzz' : paymentRail === 'razorpay' ? 'razorpay' : paymentRail === 'stripe' ? 'stripe' : 'paypal') as any;
         updateAgreementAutopay(leaseId, {
+          enabled: true,
           activeGateway: activeGw,
           mandateId: `mandate_${activeGw}_${Date.now()}`,
           status: 'active',

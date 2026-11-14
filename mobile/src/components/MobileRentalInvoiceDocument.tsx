@@ -7,12 +7,15 @@ import {
   ScrollView,
   Image,
   Modal,
+  Alert,
+  Platform,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { MobileInvoice } from '../types';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
-import { downloadDocument } from '../lib/documentService';
 
 interface MobileRentalInvoiceDocumentProps {
   visible: boolean;
@@ -151,20 +154,108 @@ export const MobileRentalInvoiceDocument: React.FC<MobileRentalInvoiceDocumentPr
 
   const documentTitle = (invoice as any).documentTitle || effectiveTemplate?.documentTitle || (isDeposit ? 'DEPOSIT RECEIPT' : 'INVOICE');
 
-  const handleDownload = () => {
-    downloadDocument({
-      fileName: `${isDeposit ? 'Deposit_Voucher' : 'Invoice'}_${invoice.id || 'DOC'}.pdf`,
-      title: `${documentTitle} #${invoice.id}`,
-      docType: isDeposit ? 'Security Deposit Voucher' : 'Rental Tax Invoice',
-      meta: {
-        tenantName,
-        propertyName,
-        unit: unitNumber,
-        amount: format(totalAmount, currency),
-        date: issueDate,
-        status,
-      },
-    });
+  const handleDownload = async () => {
+    const esc = (v: unknown) =>
+      String(v ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const includeTerms = (invoice as any).includeTerms !== false && effectiveTemplate?.includeTerms !== false;
+    const payToParts = [
+      bankName,
+      accountName && `A/C ${accountName}`,
+      accountNumber && `(${accountNumber})`,
+      ifscOrRouting && `IFSC: ${ifscOrRouting}`,
+      upiId && `UPI: ${upiId}`,
+    ].filter(Boolean);
+    const payToStr = payToParts.join(' · ') || (isDeposit ? 'Where deposit is held' : 'Bank or UPI details');
+    const itemRows = items
+      .map(
+        (item: any) =>
+          `<tr style="border-bottom:1px solid #F3F4F6;"><td style="padding:8px 0;font-weight:600;color:#111827;">${esc(item.description || (isDeposit ? 'Security deposit (Held in trust)' : 'Rental Charge'))}</td><td style="padding:8px 0;text-align:right;font-weight:600;color:#111827;">${esc(format(Number(item.amount) || 0, currency))}</td></tr>`
+      )
+      .join('');
+    const html = `
+      <html>
+        <head><meta charset="utf-8" /><style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 26px; color: #111827; background: #FFFFFF; font-size: 12.5px; }
+          .sheet { border: 1px solid #E5E7EB; border-radius: 8px; padding: 28px 30px; }
+          .head { display: flex; justify-content: space-between; border-bottom: 1px solid #E5E7EB; padding-bottom: 16px; margin-bottom: 18px; }
+          .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; font-size: 12px; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 12px; }
+          .total { display: flex; justify-content: space-between; align-items: center; border-top: 2px solid #E5E7EB; padding-top: 10px; margin-bottom: 18px; }
+          .payto { background: #F9FAFB; padding: 10px 12px; border-radius: 6px; margin-bottom: 16px; font-size: 11.5px; color: #4B5563; }
+          .terms { border-top: 1px solid #E5E7EB; padding-top: 10px; margin-bottom: 14px; font-size: 11px; color: #4B5563; line-height: 1.5; white-space: pre-line; }
+          .foot { border-top: 1px solid #E5E7EB; padding-top: 12px; display: flex; justify-content: space-between; align-items: flex-end; font-size: 11px; color: #6B7280; }
+        </style></head>
+        <body>
+          <div class="sheet">
+            <div class="head">
+              <div>
+                <div style="font-size:18px;font-weight:800;color:#111827;">${esc(issuerName)}</div>
+                <div style="font-size:11.5px;color:#6B7280;margin-top:2px;line-height:1.4;">
+                  ${issuerEmail ? `${esc(issuerEmail)}<br/>` : ''}
+                  ${issuerPhone ? `${esc(issuerPhone)}<br/>` : ''}
+                  ${issuerAddress ? `${esc(issuerAddress)}<br/>` : ''}
+                  ${issuerTaxNo ? `<span style="color:#059669;font-weight:600;">${esc(issuerTaxNo)}</span>` : ''}
+                </div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:16px;font-weight:800;color:#111827;">${esc(documentTitle)}</div>
+                <div style="font-size:11px;color:#6B7280;margin-top:2px;">No. ${esc(invoice.id)}<br/>${esc(issueDate)}</div>
+              </div>
+            </div>
+            <div class="grid2">
+              <div>
+                <div style="font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;margin-bottom:2px;">${isDeposit ? 'RECEIVED FROM' : 'BILL TO'}</div>
+                <b>${esc(tenantName)}</b>
+                <div style="color:#6B7280;font-size:11.5px;">Unit ${esc(unitNumber)} · ${esc(propertyName || 'Property Premises')}</div>
+                ${tenantEmail || tenantPhone ? `<div style="color:#6B7280;font-size:11px;">${esc(tenantEmail)}${tenantPhone ? ` • ${esc(tenantPhone)}` : ''}</div>` : ''}
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;margin-bottom:2px;">${isDeposit ? 'REFUND TIMELINE' : 'PAYMENT DUE'}</div>
+                <div style="font-weight:600;">${isDeposit ? 'Within 14 days of move-out' : esc(dueDate)}</div>
+                ${!isDeposit ? `<div style="color:#6B7280;font-size:11px;">Billing Cycle: ${esc(billingPeriodStart)} to ${esc(billingPeriodEnd)}</div>` : ''}
+                ${isPaid ? `<div style="color:#059669;font-weight:600;font-size:11px;">✓ Payment Settled & Cleared</div>` : ''}
+              </div>
+            </div>
+            <table><tbody>${itemRows}
+              ${taxAmount > 0 ? `<tr style="border-bottom:1px solid #F3F4F6;"><td style="padding:8px 0;color:#6B7280;">Tax</td><td style="padding:8px 0;text-align:right;color:#6B7280;">${esc(format(taxAmount, currency))}</td></tr>` : ''}
+              ${discount > 0 ? `<tr style="border-bottom:1px solid #F3F4F6;"><td style="padding:8px 0;color:#DC2626;">Discount</td><td style="padding:8px 0;text-align:right;color:#DC2626;">-${esc(format(discount, currency))}</td></tr>` : ''}
+              ${effectiveLateFee > 0 ? `<tr style="border-bottom:1px solid #F3F4F6;"><td style="padding:8px 0;color:#DC2626;">Late Fee Penalty</td><td style="padding:8px 0;text-align:right;color:#DC2626;font-weight:600;">+${esc(format(effectiveLateFee, currency))}</td></tr>` : ''}
+            </tbody></table>
+            <div class="total">
+              <span style="font-size:12px;font-weight:600;color:#6B7280;">${isDeposit ? 'Held for you' : isPaid ? 'Total Paid' : 'Total to pay'}</span>
+              <b style="font-size:18px;color:#111827;">${esc(format(totalAmount, currency))}</b>
+            </div>
+            <div class="payto">
+              <div style="font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;margin-bottom:2px;">${isDeposit ? 'HELD AT' : 'PAY TO'}</div>
+              <div>${esc(payToStr)}</div>
+            </div>
+            ${includeTerms && termsAndConditions ? `<div class="terms"><div style="font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;margin-bottom:4px;">${isDeposit ? 'DEPOSIT TERMS & CONDITIONS' : 'TERMS & CONDITIONS'}</div>${esc(termsAndConditions)}</div>` : ''}
+            <div class="foot">
+              <div>${esc(notes)}</div>
+              <div style="text-align:right;font-weight:600;color:#111827;">${esc(signatoryName)}</div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+    try {
+      if (Platform.OS === 'web') {
+        await Print.printAsync({ html });
+        return;
+      }
+      const { uri } = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `${documentTitle} #${invoice.id}` });
+      } else {
+        Alert.alert('PDF Ready', `Saved to: ${uri}`);
+      }
+    } catch (e: any) {
+      Alert.alert('Download Error', e?.message || 'Unable to generate PDF.');
+    }
   };
 
   return (
@@ -368,7 +459,7 @@ export const MobileRentalInvoiceDocument: React.FC<MobileRentalInvoiceDocumentPr
 
                 <View style={styles.netDueRow}>
                   <Text style={styles.netDueLabel}>
-                    {isPaid ? 'Total Settled:' : 'Net Amount Due:'}
+                    {isDeposit ? 'Held for you:' : isPaid ? 'Total Paid:' : 'Total to pay:'}
                   </Text>
                   <Text style={[styles.netDueVal, isPaid && { color: '#059669' }]}>
                     {format(totalAmount, currency)}
@@ -376,9 +467,9 @@ export const MobileRentalInvoiceDocument: React.FC<MobileRentalInvoiceDocumentPr
                 </View>
               </View>
 
-              {/* Bank Remittance Details */}
+              {/* Pay To / Held At */}
               <View style={styles.remittanceBox}>
-                <Text style={styles.sectionHeader}>BANK REMITTANCE & PAYMENT DETAILS</Text>
+                <Text style={styles.sectionHeader}>{isDeposit ? 'HELD AT' : 'PAY TO'}</Text>
                 {bankName || accountNumber ? (
                   <View style={{ marginTop: 4 }}>
                     <Text style={styles.remittanceText}>

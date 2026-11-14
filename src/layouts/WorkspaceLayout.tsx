@@ -250,7 +250,7 @@ export const WorkspaceLayout: React.FC = () => {
                 <Wrench size={16} /> Maintenance
               </NavLink>
               <NavLink to="/owner/team" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <UserCheck size={16} /> Staff & Team
+                <UserCheck size={16} /> Managers
               </NavLink>
               <NavLink to="/owner/helpdesk" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <HelpCircle size={16} /> Platform Helpdesk
@@ -461,6 +461,13 @@ export const WorkspaceLayout: React.FC = () => {
 
             {/* Bottom Actions inside drawer */}
             <div style={{ padding: '14px', borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div className="mobile-drawer-currency">
+                <CurrencyConverterTrigger
+                  variant="button"
+                  label="Currency Converter"
+                  style={{ width: '100%', justifyContent: 'center' }}
+                />
+              </div>
               <button
                 type="button"
                 className="btn secondary small"

@@ -4138,6 +4138,15 @@ input[type="file"]::-webkit-file-upload-button:hover,
   .currency-converter-topbar {
     display: none !important;
   }
+
+  .mobile-drawer-currency {
+    display: flex !important;
+  }
+}
+
+.mobile-drawer-currency {
+  display: none;
+  width: 100%;
 }
 
 /* Modal Dialog Palette */
@@ -5346,7 +5355,13 @@ input[type="file"]::-webkit-file-upload-button:hover,
   box-shadow: 0 10px 30px rgba(11, 15, 23, 0.08);
   margin: 22px 0 14px;
   align-items: stretch;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
+  z-index: 20;
+}
+
+.hsearch label:first-child {
+  border-radius: 15px 0 0 15px;
 }
 
 .hsearch label {
@@ -5433,7 +5448,7 @@ input[type="file"]::-webkit-file-upload-button:hover,
 }
 
 .hsearch .btn {
-  border-radius: 0 !important;
+  border-radius: 0 15px 15px 0 !important;
   height: 100% !important;
   min-height: 60px !important;
   padding-inline: 26px !important;
@@ -5461,6 +5476,11 @@ input[type="file"]::-webkit-file-upload-button:hover,
   flex-wrap: wrap;
   align-items: center;
   margin-bottom: 8px;
+}
+
+.shero .chips-row {
+  max-height: 80px;
+  overflow: hidden;
 }
 
 .chipb {
@@ -6933,6 +6953,7 @@ input[type="file"]::-webkit-file-upload-button:hover,
     grid-column: 1 / -1;
     border-bottom: 1px solid var(--line);
     border-right: 0;
+    border-radius: 15px 15px 0 0;
   }
 
   .hsearch label:nth-child(2) {

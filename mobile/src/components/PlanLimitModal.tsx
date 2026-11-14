@@ -13,6 +13,14 @@ import {
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { ResourceQuotaType } from '../hooks/usePlanLimits';
 import { useMobileTheme } from '../context/MobileThemeContext';
+import { ThemePalette } from '../theme/colors';
+
+type PlanLimitNavigateFn = (screenKey: string) => void;
+let fallbackNavigateHandler: PlanLimitNavigateFn | null = null;
+
+export const registerPlanLimitFallbackNavigate = (fn: PlanLimitNavigateFn | null) => {
+  fallbackNavigateHandler = fn;
+};
 
 interface PlanLimitModalProps {
   visible: boolean;
@@ -22,6 +30,7 @@ interface PlanLimitModalProps {
   planName?: string;
   onClose: () => void;
   onUpgrade?: () => void;
+  onNavigate?: (screenKey: string) => void;
 }
 
 const RESOURCE_LABELS: Record<
@@ -68,6 +77,7 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
   planName = 'Free Trial',
   onClose,
   onUpgrade,
+  onNavigate,
 }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
@@ -83,6 +93,17 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
 
   const isZeroLimit = limit === 0;
 
+  const handleUpgradePress = () => {
+    onClose();
+    if (onUpgrade) {
+      onUpgrade();
+    } else if (onNavigate) {
+      onNavigate('owner_plan_subscription');
+    } else if (fallbackNavigateHandler) {
+      fallbackNavigateHandler('owner_plan_subscription');
+    }
+  };
+
   return (
     <Modal
       visible={visible}
@@ -93,15 +114,15 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
     >
       <View style={styles.overlay}>
         <SafeAreaView style={styles.safeArea}>
-          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+          <View style={styles.card}>
             {/* Header: Icon + Close Button */}
             <View style={styles.headerRow}>
-              <View style={[styles.iconCircle, isDark && { backgroundColor: 'rgba(217, 119, 6, 0.15)', borderColor: 'rgba(217, 119, 6, 0.3)' }]}>
-                <Feather name={info.icon} size={20} color="#D97706" />
+              <View style={styles.iconCircle}>
+                <Feather name={info.icon} size={20} color={colors.amber} />
               </View>
               <TouchableOpacity
                 onPress={onClose}
-                style={[styles.closeBtn, { backgroundColor: colors.surfaceSunken }]}
+                style={styles.closeBtn}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 activeOpacity={0.7}
               >
@@ -117,32 +138,32 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
               showsVerticalScrollIndicator={false}
             >
               {/* Title & Subtitle */}
-              <Text style={[styles.title, { color: colors.navy }]}>
+              <Text style={styles.title}>
                 {info.singular} Limit Reached
               </Text>
-              <Text style={[styles.subtitle, { color: colors.inkSoft }]}>
+              <Text style={styles.subtitle}>
                 {isZeroLimit ? (
                   <>
-                    <Text style={[styles.bold, { color: colors.navy }]}>{info.plural}</Text> are not included on the{' '}
+                    <Text style={styles.bold}>{info.plural}</Text> are not included on the{' '}
                     <Text style={styles.boldPlan}>{planName}</Text>. Upgrade your tier to unlock delegation.
                   </>
                 ) : (
                   <>
-                    You have reached the maximum quota of <Text style={[styles.bold, { color: colors.navy }]}>{limit}</Text> {info.plural.toLowerCase()} permitted on your{' '}
+                    You have reached the maximum quota of <Text style={styles.bold}>{limit}</Text> {info.plural.toLowerCase()} permitted on your{' '}
                     <Text style={styles.boldPlan}>{planName}</Text>.
                   </>
                 )}
               </Text>
 
               {/* Progress Gauge */}
-              <View style={[styles.gaugeContainer, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
+              <View style={styles.gaugeContainer}>
                 <View style={styles.gaugeHeader}>
-                  <Text style={[styles.gaugeLabel, { color: colors.inkSoft }]}>Plan Allocation</Text>
+                  <Text style={styles.gaugeLabel}>Plan Allocation</Text>
                   <Text style={[styles.gaugeValue, isZeroLimit ? styles.gaugeZero : styles.gaugeFull]}>
                     {isZeroLimit ? `0 Allowed on ${planName}` : `${currentUsage} / ${limit} Used`}
                   </Text>
                 </View>
-                <View style={[styles.progressBarBg, { backgroundColor: colors.line }]}>
+                <View style={styles.progressBarBg}>
                   <View
                     style={[
                       styles.progressBarFill,
@@ -151,23 +172,38 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
                     ]}
                   />
                 </View>
-                <Text style={[styles.gaugeDesc, { color: colors.inkSoft }]}>{info.description}</Text>
+                <Text style={styles.gaugeDesc}>{info.description}</Text>
               </View>
 
               {/* Benefits Box */}
-              <View style={[styles.benefitsBox, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.12)', borderColor: 'rgba(16, 185, 129, 0.25)' }]}>
-                <Text style={[styles.benefitsTitle, isDark && { color: '#34D399' }]}>Upgrade to unlock:</Text>
+              <View style={styles.benefitsBox}>
+                <Text style={styles.benefitsTitle}>Upgrade to unlock:</Text>
                 <View style={styles.benefitItem}>
-                  <Ionicons name="checkmark-circle" size={16} color="#16A34A" style={styles.benefitIcon} />
-                  <Text style={[styles.benefitText, isDark && { color: '#6EE7B7' }]}>Expanded property & unit quotas</Text>
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={16}
+                    color={isDark ? colors.primaryText : '#16A34A'}
+                    style={styles.benefitIcon}
+                  />
+                  <Text style={styles.benefitText}>Expanded property & unit quotas</Text>
                 </View>
                 <View style={styles.benefitItem}>
-                  <Ionicons name="checkmark-circle" size={16} color="#16A34A" style={styles.benefitIcon} />
-                  <Text style={[styles.benefitText, isDark && { color: '#6EE7B7' }]}>Unlimited tenant onboarding & leases</Text>
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={16}
+                    color={isDark ? colors.primaryText : '#16A34A'}
+                    style={styles.benefitIcon}
+                  />
+                  <Text style={styles.benefitText}>Unlimited tenant onboarding & leases</Text>
                 </View>
                 <View style={styles.benefitItem}>
-                  <Ionicons name="checkmark-circle" size={16} color="#16A34A" style={styles.benefitIcon} />
-                  <Text style={[styles.benefitText, isDark && { color: '#6EE7B7' }]}>Dedicated team collaboration & managers</Text>
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={16}
+                    color={isDark ? colors.primaryText : '#16A34A'}
+                    style={styles.benefitIcon}
+                  />
+                  <Text style={styles.benefitText}>Dedicated team collaboration & managers</Text>
                 </View>
               </View>
             </ScrollView>
@@ -175,15 +211,14 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
             {/* Actions: Sticky at Bottom of Card */}
             <View style={styles.actionCol}>
               <TouchableOpacity
-                style={[styles.upgradeBtn, { backgroundColor: colors.primary }]}
-                onPress={() => {
-                  onClose();
-                  if (onUpgrade) onUpgrade();
-                }}
+                style={styles.upgradeBtn}
+                onPress={handleUpgradePress}
                 activeOpacity={0.88}
               >
                 <Feather name="zap" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                <Text style={styles.upgradeBtnText}>Upgrade Subscription</Text>
+                <Text style={styles.upgradeBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+                  Upgrade Subscription
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -191,7 +226,7 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
                 onPress={onClose}
                 activeOpacity={0.7}
               >
-                <Text style={[styles.cancelBtnText, { color: colors.inkSoft }]}>Maybe Later</Text>
+                <Text style={styles.cancelBtnText}>Maybe Later</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -201,7 +236,7 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
   );
 };
 
-const createStyles = (colors: any, isDark: boolean) =>
+const createStyles = (colors: ThemePalette, isDark: boolean) =>
   StyleSheet.create({
   overlay: {
     flex: 1,
@@ -239,9 +274,9 @@ const createStyles = (colors: any, isDark: boolean) =>
     width: 38,
     height: 38,
     borderRadius: 10,
-    backgroundColor: '#FEF3C7',
+    backgroundColor: colors.amberBg,
     borderWidth: 1,
-    borderColor: '#FDE68A',
+    borderColor: isDark ? 'rgba(251, 191, 36, 0.35)' : '#FDE68A',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -249,7 +284,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: isDark ? colors.surfaceSunken : '#F1F5F9',
+    backgroundColor: colors.surfaceSunken,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -279,10 +314,10 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   boldPlan: {
     fontWeight: '700',
-    color: '#D97706',
+    color: colors.amber,
   },
   gaugeContainer: {
-    backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
+    backgroundColor: colors.surfaceSunken,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.line,
@@ -293,6 +328,8 @@ const createStyles = (colors: any, isDark: boolean) =>
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
     marginBottom: 6,
   },
   gaugeLabel: {
@@ -307,14 +344,14 @@ const createStyles = (colors: any, isDark: boolean) =>
     fontWeight: '700',
   },
   gaugeFull: {
-    color: '#DC2626',
+    color: colors.crimson,
   },
   gaugeZero: {
-    color: '#D97706',
+    color: colors.amber,
   },
   progressBarBg: {
     height: 6,
-    backgroundColor: isDark ? colors.surfaceSunken : '#E2E8F0',
+    backgroundColor: colors.line,
     borderRadius: 999,
     overflow: 'hidden',
     marginBottom: 8,
@@ -324,10 +361,10 @@ const createStyles = (colors: any, isDark: boolean) =>
     borderRadius: 999,
   },
   progressBarFull: {
-    backgroundColor: '#DC2626',
+    backgroundColor: colors.crimson,
   },
   progressBarZero: {
-    backgroundColor: '#F59E0B',
+    backgroundColor: colors.amber,
   },
   gaugeDesc: {
     fontSize: 11.5,
@@ -335,17 +372,17 @@ const createStyles = (colors: any, isDark: boolean) =>
     lineHeight: 15,
   },
   benefitsBox: {
-    backgroundColor: '#F0FDF4',
+    backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#F0FDF4',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#BBF7D0',
+    borderColor: isDark ? 'rgba(16, 185, 129, 0.28)' : '#BBF7D0',
     padding: 12,
     marginBottom: 4,
   },
   benefitsTitle: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#166534',
+    color: isDark ? colors.primaryText : '#166534',
     marginBottom: 6,
   },
   benefitItem: {
@@ -358,7 +395,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   benefitText: {
     fontSize: 12,
-    color: '#15803D',
+    color: isDark ? '#6EE7B7' : '#15803D',
     fontWeight: '500',
     flex: 1,
   },
@@ -367,9 +404,11 @@ const createStyles = (colors: any, isDark: boolean) =>
     gap: 6,
   },
   upgradeBtn: {
-    backgroundColor: '#0F172A',
+    backgroundColor: colors.primary,
     borderRadius: 12,
+    minHeight: 44,
     paddingVertical: 12,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',

@@ -5,7 +5,7 @@ import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { TenantRecord, UserProfile, TenancyRequest, Agreement, Invoice, Unit, RequiredIdItem } from '../../types';
-import { Plus, Send, Clock, CheckCircle, XCircle, UserCheck, UserPlus, Mail, Phone, Building, Key, Eye, EyeOff, Upload, FileCheck, ArrowRight, ShieldCheck, Trash2 } from 'lucide-react';
+import { Plus, Send, Clock, CheckCircle, XCircle, UserCheck, UserPlus, Mail, Phone, Building, Key, Eye, EyeOff, Upload, FileCheck, ArrowRight, ShieldCheck, Trash2, Search } from 'lucide-react';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { OnboardResidentModal } from '../../components/owner/OnboardResidentModal';
 import {
@@ -30,9 +30,19 @@ export const Tenant360Page: React.FC = () => {
     saveAgreement,
     saveInvoice,
     saveUnit,
+    saveProperty,
   } = useAppData();
   const { user, provisionUser } = useAuth();
-  const ownerId = user?.id || '';
+  const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
+    (m: any) =>
+      (user?.id && String(m.id) === user.id) ||
+      (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const effectiveOwnerId =
+    user?.role === 'manager'
+      ? (user?.ownerId || (managerRecord as any)?.ownerId || '')
+      : (user?.id || '');
+  const ownerId = effectiveOwnerId;
 
   const navigate = useNavigate();
   const {
@@ -48,14 +58,15 @@ export const Tenant360Page: React.FC = () => {
   const isTenantLimitReached = usage.tenants.isFull;
 
   const [activeTab, setActiveTab] = useState<'active' | 'requests'>('active');
-  const [selectedTenant, setSelectedTenant] = useState<TenantRecord | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [isSubmittingProv, setIsSubmittingProv] = useState(false);
 
   // Unified Onboard Resident Modal state
   const [isOnboardOpen, setIsOnboardOpen] = useState(false);
 
-  const ownerEmail = user?.email?.toLowerCase() || '';
-  const ownerName = user?.displayName?.toLowerCase() || '';
+  const ownerEmail = user?.role === 'manager' ? '' : (user?.email?.toLowerCase() || '');
+  const ownerName = user?.role === 'manager' ? '' : (user?.displayName?.toLowerCase() || '');
 
   const isGenericName = (n?: string) => {
     if (!n) return true;
@@ -63,12 +74,32 @@ export const Tenant360Page: React.FC = () => {
     return s === 'property owner' || s === 'landlord' || s === 'owner' || s === 'admin' || s === 'manager';
   };
 
-  const myProperties = state.properties.filter(
-    (p) =>
-      (ownerId && p.ownerId === ownerId) ||
-      (ownerEmail && (p as any).ownerEmail?.toLowerCase() === ownerEmail) ||
-      (!isGenericName(ownerName) && (p as any).ownerName?.toLowerCase() === ownerName)
+  const assignedPropertyId =
+    user?.role === 'manager'
+      ? ((user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '')
+      : '';
+  const assignedPropertyIds = new Set<string>(
+    user?.role === 'manager' && Array.isArray((managerRecord as any)?.assignedProperties)
+      ? (managerRecord as any).assignedProperties.map(String)
+      : []
   );
+  if (assignedPropertyId) assignedPropertyIds.add(String(assignedPropertyId));
+
+  const myProperties = React.useMemo(() => {
+    const ownerProps = state.properties.filter(
+      (p) =>
+        (ownerId && p.ownerId === ownerId) ||
+        (ownerEmail && (p as any).ownerEmail?.toLowerCase() === ownerEmail) ||
+        (!isGenericName(ownerName) && (p as any).ownerName?.toLowerCase() === ownerName)
+    );
+    if (user?.role === 'manager') {
+      const scoped = ownerProps.filter(
+        (p) => assignedPropertyIds.has(p.id) || p.assignedManagerId === user?.id
+      );
+      if (assignedPropertyIds.size > 0 || scoped.length > 0) return scoped;
+    }
+    return ownerProps;
+  }, [state.properties, ownerId, ownerEmail, ownerName, user?.role, user?.id, assignedPropertyId]);
   const myPropertyIds = new Set(myProperties.map((p) => p.id));
 
   const defaultOwnerCurrency = getCurrencySymbol(myProperties.find((p) => p.currency)?.currency || myProperties[0]?.currency || DEFAULT_CURRENCY_SYMBOL);
@@ -88,11 +119,20 @@ export const Tenant360Page: React.FC = () => {
       (u.propertyId && myPropertyIds.has(u.propertyId))
   );
 
-  const mySentRequests = (state.tenancyRequests || []).filter(
-    (r) =>
-      (ownerId && r.ownerId === ownerId) ||
-      (ownerEmail && (r as any).ownerEmail?.toLowerCase() === ownerEmail) ||
-      (r.propertyId && myPropertyIds.has(r.propertyId))
+  const mySentRequests = React.useMemo(() => {
+    return (state.tenancyRequests || [])
+      .filter(
+        (r) =>
+          (ownerId && r.ownerId === ownerId) ||
+          (ownerEmail && (r as any).ownerEmail?.toLowerCase() === ownerEmail) ||
+          (r.propertyId && myPropertyIds.has(r.propertyId))
+      )
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  }, [state.tenancyRequests, ownerId, ownerEmail, myPropertyIds]);
+
+  const pendingRequestCount = React.useMemo(
+    () => mySentRequests.filter((r) => r.status === 'pending').length,
+    [mySentRequests]
   );
 
   const myAgreements = (state.agreements || []).filter((a) => {
@@ -112,12 +152,12 @@ export const Tenant360Page: React.FC = () => {
 
   const availableTemplates = React.useMemo(() => {
     const custom = (state.agreementTemplates || []).filter(
-      (t) => t.ownerId === user?.id || user?.role === 'superadmin' || (user?.role as string) === 'admin'
+      (t) => t.ownerId === ownerId || t.ownerId === user?.id || user?.role === 'superadmin' || (user?.role as string) === 'admin'
     );
     const fromAg: { id: string; title: string; fileName: string; fileData: string; fileSizeKb: number }[] = [];
     const seen = new Set(custom.map((t) => (t.fileName || t.title).toLowerCase()));
     (state.agreements || []).forEach((a) => {
-      if ((a.ownerId === user?.id || user?.role === 'superadmin' || (user?.role as string) === 'admin') && a.fileData && a.fileName) {
+      if ((a.ownerId === ownerId || a.ownerId === user?.id || user?.role === 'superadmin' || (user?.role as string) === 'admin') && a.fileData && a.fileName) {
         const lower = a.fileName.toLowerCase();
         if (!seen.has(lower)) {
           seen.add(lower);
@@ -297,7 +337,7 @@ export const Tenant360Page: React.FC = () => {
           );
 
           const newRecord: TenantRecord = {
-            id: req.tenantId || userProf?.id || `usr_tenant_${Date.now()}`,
+            id: req.tenantId || userProf?.id || `usr_tenant_req_${req.id}`,
             name: req.tenantName || userProf?.displayName || 'Resident',
             email: req.tenantEmail || userProf?.email || '',
             phone: req.tenantPhone || userProf?.phone || '',
@@ -338,7 +378,7 @@ export const Tenant360Page: React.FC = () => {
             ? state.users.find((u) => u.id === unit.currentTenantId)
             : undefined;
           const newRecord: TenantRecord = {
-            id: unit.currentTenantId || userProf?.id || `usr_tenant_${Date.now()}`,
+            id: unit.currentTenantId || userProf?.id || `usr_tenant_unit_${unit.id}`,
             name: unit.tenant || userProf?.displayName || 'Resident',
             email: userProf?.email || '',
             phone: userProf?.phone || '',
@@ -375,7 +415,7 @@ export const Tenant360Page: React.FC = () => {
             ? (agr as any).tenantUploadedIds.map((d: any) => ({ title: d.title || 'ID Document', fileUrl: d.fileUrl, verified: true }))
             : ((userProf as any)?.kycDocuments || []);
           const newRecord: TenantRecord = {
-            id: agr.tenantId || userProf?.id || `usr_tenant_${Date.now()}`,
+            id: agr.tenantId || userProf?.id || `usr_tenant_ag_${agr.id}`,
             name: agr.tenant || userProf?.displayName || 'Resident',
             email: agr.tenantEmail || userProf?.email || '',
             phone: agr.tenantPhone || userProf?.phone || '',
@@ -414,8 +454,41 @@ export const Tenant360Page: React.FC = () => {
     return uniqueTenants;
   }, [state.tenants, state.units, state.tenancyRequests, state.agreements, state.users, ownerId, ownerEmail, ownerName]);
 
+  const selectedTenant = React.useMemo(
+    () => myTenants.find((t) => t.id === selectedTenantId) || null,
+    [myTenants, selectedTenantId]
+  );
+
+  const filteredTenants = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return myTenants;
+    return myTenants.filter(
+      (t) =>
+        (t.name || '').toLowerCase().includes(q) ||
+        (t.email || '').toLowerCase().includes(q) ||
+        (t.phone || '').toLowerCase().includes(q) ||
+        (t.unit || '').toLowerCase().includes(q) ||
+        (t.propertyName || '').toLowerCase().includes(q) ||
+        (t.unitsRented || []).some((u) => u.toLowerCase().includes(q))
+    );
+  }, [myTenants, searchQuery]);
+
+  const filteredRequests = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return mySentRequests;
+    return mySentRequests.filter(
+      (r) =>
+        (r.tenantName || '').toLowerCase().includes(q) ||
+        (r.tenantEmail || '').toLowerCase().includes(q) ||
+        (r.tenantPhone || '').toLowerCase().includes(q) ||
+        (r.unitNumber || '').toLowerCase().includes(q) ||
+        (r.propertyName || '').toLowerCase().includes(q)
+    );
+  }, [mySentRequests, searchQuery]);
+
   // Self-heal and sync any missing tenant records back to Firestore (strictly for this owner's verified tenants)
   useEffect(() => {
+    if (!ownerId) return;
     myTenants.forEach((t) => {
       if (t.ownerId === ownerId) {
         const existingInState = state.tenants.find((orig) => orig.id === t.id);
@@ -438,6 +511,10 @@ export const Tenant360Page: React.FC = () => {
   const handleCancelRequest = (reqId: string) => {
     const targetReq = (state.tenancyRequests || []).find((r) => r.id === reqId);
     if (!targetReq) return;
+
+    if (!window.confirm(`Cancel tenancy invitation for ${targetReq.tenantName} (Unit ${targetReq.unitNumber})? This will release the reserved unit.`)) {
+      return;
+    }
 
     const cancelledReq: TenancyRequest = {
       ...targetReq,
@@ -474,9 +551,17 @@ export const Tenant360Page: React.FC = () => {
 
     saveTenancyRequest(cancelledReq, tenantNotif);
 
-    // Cancel any draft agreements or unconfirmed invoices
+    const reqPropId = targetReq.propertyId || targetUnit?.propertyId;
+
+    // Cancel any draft/pending agreements scoped by propertyId & ownerId (never cancel unrelated active leases)
     const updatedAgreements = (state.agreements || []).map((a) => {
+      const matchesProp = !reqPropId || !a.propertyId || a.propertyId === reqPropId;
+      const matchesOwner = !ownerId || !a.ownerId || a.ownerId === ownerId;
+      const isNonActive = a.status !== 'active' && a.status !== 'terminated';
       if (
+        matchesProp &&
+        matchesOwner &&
+        isNonActive &&
         (a.unit === targetReq.unitNumber || (targetUnit && a.unit === targetUnit.unitNumber)) &&
         (a.tenantId === targetReq.tenantId || (targetReq.tenantEmail && a.tenantEmail?.toLowerCase() === targetReq.tenantEmail.toLowerCase()))
       ) {
@@ -488,7 +573,11 @@ export const Tenant360Page: React.FC = () => {
     });
 
     const updatedInvoices = (state.invoices || []).map((inv) => {
+      const matchesProp = !reqPropId || !inv.propertyId || inv.propertyId === reqPropId;
+      const matchesOwner = !ownerId || !inv.ownerId || inv.ownerId === ownerId;
       if (
+        matchesProp &&
+        matchesOwner &&
         (inv.unit === targetReq.unitNumber || (targetUnit && inv.unit === targetUnit.unitNumber)) &&
         (inv.tenantId === targetReq.tenantId || (targetReq.tenantEmail && inv.tenantEmail?.toLowerCase() === targetReq.tenantEmail.toLowerCase())) &&
         (inv.status === 'sent' || inv.status === 'draft' || inv.status === 'pending_confirmation')
@@ -501,7 +590,10 @@ export const Tenant360Page: React.FC = () => {
     });
 
     const updatedTenants = (state.tenants || []).map((t) => {
-      if (t.id === targetReq.tenantId || (targetReq.tenantEmail && t.email?.toLowerCase() === targetReq.tenantEmail.toLowerCase())) {
+      if (
+        (!ownerId || !t.ownerId || t.ownerId === ownerId) &&
+        (t.id === targetReq.tenantId || (targetReq.tenantEmail && t.email?.toLowerCase() === targetReq.tenantEmail.toLowerCase()))
+      ) {
         const upT: TenantRecord = {
           ...t,
           unit: t.unit === targetReq.unitNumber ? '' : t.unit,
@@ -512,6 +604,17 @@ export const Tenant360Page: React.FC = () => {
       }
       return t;
     });
+
+    const nextUnitsSnapshot = freedUnit
+      ? state.units.map((u) => (u.id === freedUnit!.id ? freedUnit! : u))
+      : state.units;
+    if (freedUnit) {
+      const targetProp = state.properties.find((p) => p.id === freedUnit!.propertyId);
+      if (targetProp) {
+        const occ = nextUnitsSnapshot.filter((u) => u.propertyId === targetProp.id && u.status === 'occupied').length;
+        saveProperty({ ...targetProp, occupied: occ });
+      }
+    }
 
     updateState((prev) => {
       const updatedUnits = freedUnit
@@ -562,6 +665,18 @@ export const Tenant360Page: React.FC = () => {
             <UserPlus size={16} /> Onboard Tenant
           </button>
         </div>
+      </div>
+
+      {/* Search Bar */}
+      <div style={{ marginBottom: '14px', position: 'relative', maxWidth: '420px' }}>
+        <Search size={15} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-soft)', pointerEvents: 'none' }} />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search tenants or invitations by name, email, unit, or property..."
+          style={{ paddingLeft: '36px', width: '100%' }}
+        />
       </div>
 
       {/* Tabs Bar: Active Tenants vs Sent Tenancy Requests */}
@@ -615,7 +730,7 @@ export const Tenant360Page: React.FC = () => {
           }}
         >
           <Send size={15} />
-          Pending Invitations ({mySentRequests.length})
+          Pending Invitations ({pendingRequestCount})
         </button>
       </div>
 
@@ -638,19 +753,19 @@ export const Tenant360Page: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {myTenants.length === 0 ? (
+                      {filteredTenants.length === 0 ? (
                         <tr>
                           <td colSpan={6} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
                             <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
                               No active tenants
                             </div>
                             <div style={{ fontSize: '12.5px' }}>
-                              Use the "+ Onboard Tenant" button above to add a tenant or send a lease invitation.
+                              Use the "Onboard Tenant" button above to add a tenant or send a lease invitation.
                             </div>
                           </td>
                         </tr>
                       ) : (
-                        myTenants.map((t) => (
+                        filteredTenants.map((t) => (
                           <tr key={t.id}>
                             <td>
                               <div className="person">
@@ -679,7 +794,7 @@ export const Tenant360Page: React.FC = () => {
                               <button
                                 type="button"
                                 className="btn secondary small"
-                                onClick={() => setSelectedTenant(t)}
+                                onClick={() => setSelectedTenantId(t.id)}
                               >
                                 View Details
                               </button>
@@ -694,17 +809,17 @@ export const Tenant360Page: React.FC = () => {
 
               {/* Mobile Card View */}
               <div className="mobile-card-view">
-                {myTenants.length === 0 ? (
+                {filteredTenants.length === 0 ? (
                   <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
                     <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
                       No active tenants
                     </div>
                     <div style={{ fontSize: '12.5px' }}>
-                      Use the "+ Onboard Tenant" button above to add a tenant or send a lease invitation.
+                      Use the "Onboard Tenant" button above to add a tenant or send a lease invitation.
                     </div>
                   </div>
                 ) : (
-                  myTenants.map((t) => (
+                  filteredTenants.map((t) => (
                     <div key={t.id} className="staff-card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
                         <div className="person">
@@ -740,7 +855,7 @@ export const Tenant360Page: React.FC = () => {
                       <button
                         type="button"
                         className="btn secondary small btn-mobile-full"
-                        onClick={() => setSelectedTenant(t)}
+                        onClick={() => setSelectedTenantId(t.id)}
                       >
                         View Details
                       </button>
@@ -772,19 +887,19 @@ export const Tenant360Page: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {mySentRequests.length === 0 ? (
+                  {filteredRequests.length === 0 ? (
                     <tr>
                       <td colSpan={8} style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '36px 16px' }}>
                         <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
                           No tenancy requests sent yet
                         </div>
                         <div style={{ fontSize: '12.5px' }}>
-                          Use the "+ Add Tenant" button above to send an online lease invitation to a tenant.
+                          Use the "Onboard Tenant" button above to send an online lease invitation to a tenant.
                         </div>
                       </td>
                     </tr>
                   ) : (
-                    mySentRequests.map((r) => {
+                    filteredRequests.map((r) => {
                       let statusBadge = (
                         <span className="badge amber" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                           <Clock size={12} /> Pending Tenant Response
@@ -864,17 +979,17 @@ export const Tenant360Page: React.FC = () => {
 
           {/* Mobile Card View */}
           <div className="mobile-card-view">
-            {mySentRequests.length === 0 ? (
+            {filteredRequests.length === 0 ? (
               <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
                 <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '6px' }}>
                   No tenancy requests sent yet
                 </div>
                 <div style={{ fontSize: '12.5px' }}>
-                  Use the "+ Add Tenant" button above to send an online lease invitation to a tenant.
+                  Use the "Onboard Tenant" button above to send an online lease invitation to a tenant.
                 </div>
               </div>
             ) : (
-              mySentRequests.map((r) => {
+              filteredRequests.map((r) => {
                 let statusBadge = (
                   <span className="badge amber" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                     <Clock size={12} /> Pending Response
@@ -959,11 +1074,11 @@ export const Tenant360Page: React.FC = () => {
 
       {/* Tenant Detail Modal */}
       {selectedTenant && (
-        <div className="modal-backdrop" onClick={() => setSelectedTenant(null)}>
+        <div className="modal-backdrop" onClick={() => setSelectedTenantId(null)}>
           <div className="modal" style={{ maxWidth: '640px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h3>Tenant Details: {selectedTenant.name}</h3>
-              <button type="button" className="modal-close" onClick={() => setSelectedTenant(null)}>
+              <button type="button" className="modal-close" onClick={() => setSelectedTenantId(null)}>
                 ✕
               </button>
             </div>
@@ -1101,7 +1216,7 @@ export const Tenant360Page: React.FC = () => {
               })()}
             </div>
             <div className="modal-foot">
-              <button type="button" className="btn secondary btn-mobile-full" onClick={() => setSelectedTenant(null)}>
+              <button type="button" className="btn secondary btn-mobile-full" onClick={() => setSelectedTenantId(null)}>
                 Close
               </button>
             </div>

@@ -414,7 +414,7 @@ export const TenantSearchCombobox: React.FC<TenantSearchComboboxProps> = ({
                 className="btn brass small"
                 disabled={!newName.trim()}
               >
-                {selectedTenant ? 'Save Details' : 'Use This Tenant'}
+                {selectedTenant ? 'Save Details' : 'Add Tenant'}
               </button>
             </div>
           </form>

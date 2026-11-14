@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import {
@@ -7,13 +7,12 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
-  StatusBar,
   TextInput,
   Alert,
 } from 'react-native';
-import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { ScreenContainer } from '../components/ScreenContainer';
 import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
@@ -31,22 +30,61 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
   const { user } = useMobileAuth();
   const { viewCurrency } = useMobileCurrency();
 
-  const properties = state.properties;
-  const [selectedPropertyId, setSelectedPropertyId] = useState(properties[0]?.id || '');
-  const selectedProperty = properties.find((p) => p.id === selectedPropertyId) || properties[0];
+  const [refreshing, setRefreshing] = useState(false);
 
-  const unitsInProp = state.units.filter((u) => {
-    if (u.propertyId !== selectedProperty?.id) return false;
-    if (u.status === 'occupied') return false;
-    if (u.tenant || u.currentTenantId) return false;
-    const hasActiveAg = (state.agreements || []).some(
-      (a) =>
-        (a.status === 'active' || a.status === 'pending_deposit') &&
-        (!u.propertyId || !a.propertyId || a.propertyId === u.propertyId) &&
-        (a.unit === u.unitNumber || a.unit === u.id)
-    );
-    return !hasActiveAg;
-  });
+  const effectiveOwnerId = useMemo(() => {
+    if (user?.role === 'manager') return user?.ownerId || '';
+    return user?.ownerId || user?.id || '';
+  }, [user]);
+
+  const properties = useMemo(() => {
+    const allProps = state.properties || [];
+    const owned = effectiveOwnerId
+      ? allProps.filter((p) => p.ownerId === effectiveOwnerId)
+      : [];
+    if (user?.role === 'manager') {
+      const assignedIds = user?.assignedProperties || (user?.propertyId ? [user.propertyId] : []);
+      if (assignedIds.length > 0) {
+        return owned.filter((p) => assignedIds.includes(p.id));
+      }
+    }
+    return owned;
+  }, [state.properties, effectiveOwnerId, user]);
+
+  const getVacantUnitsForProperty = useCallback(
+    (propertyId?: string) => {
+      if (!propertyId) return [];
+      return (state.units || []).filter((u) => {
+        if (u.propertyId !== propertyId) return false;
+        if (u.status === 'occupied' || u.status === 'reserved') return false;
+        if (u.tenant || u.currentTenantId) return false;
+        const hasActiveAg = (state.agreements || []).some(
+          (a) =>
+            (a.status === 'active' ||
+              a.status === 'pending_deposit' ||
+              a.status === 'pending_approval' ||
+              a.status === 'awaiting_tenant_signature' ||
+              a.status === 'awaiting_tenant_upload') &&
+            (!u.propertyId || !a.propertyId || a.propertyId === u.propertyId) &&
+            (a.unit === u.unitNumber || a.unit === u.id)
+        );
+        return !hasActiveAg;
+      });
+    },
+    [state.units, state.agreements]
+  );
+
+  const [selectedPropertyId, setSelectedPropertyId] = useState(properties[0]?.id || '');
+  const selectedProperty = useMemo(
+    () => properties.find((p) => p.id === selectedPropertyId) || properties[0],
+    [properties, selectedPropertyId]
+  );
+
+  const unitsInProp = useMemo(
+    () => getVacantUnitsForProperty(selectedProperty?.id),
+    [getVacantUnitsForProperty, selectedProperty?.id]
+  );
+
   const isSingleAsset = selectedProperty ? isSingleUnitProperty(selectedProperty) : false;
   const [leaseScope, setLeaseScope] = useState<'unit' | 'master'>(isSingleAsset ? 'master' : 'unit');
   const [selectedUnitNum, setSelectedUnitNum] = useState(
@@ -54,13 +92,17 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
   );
   const selectedUnit = unitsInProp.find((u) => u.unitNumber === selectedUnitNum) || unitsInProp[0];
 
-  const [tenantName, setTenantName] = useState(selectedUnit?.tenant || '');
+  const [tenantName, setTenantName] = useState('');
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPhone, setTenantPhone] = useState('');
 
-  const [rent, setRent] = useState(selectedUnit?.rent ? selectedUnit.rent.toString() : '');
+  const [rent, setRent] = useState(selectedUnit?.rent ? String(selectedUnit.rent) : '');
   const [deposit, setDeposit] = useState(
-    selectedUnit?.deposit ? selectedUnit.deposit.toString() : (selectedUnit?.rent ? (selectedUnit.rent * 2).toString() : '')
+    selectedUnit?.deposit !== undefined && selectedUnit?.deposit !== null
+      ? String(selectedUnit.deposit)
+      : selectedUnit?.rent
+        ? String(selectedUnit.rent * 2)
+        : ''
   );
   const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(
@@ -75,6 +117,12 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
     'No structural alterations or wall drilling without prior landlord approval.',
     'Painting restoration fee applies if property returned with damages beyond ordinary wear.',
   ]);
+
+  useEffect(() => {
+    if (!selectedPropertyId && properties[0]?.id) {
+      setSelectedPropertyId(properties[0].id);
+    }
+  }, [properties, selectedPropertyId]);
 
   useEffect(() => {
     let mounted = true;
@@ -97,7 +145,7 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
         if (data.tenantEmail) setTenantEmail(data.tenantEmail);
         if (data.tenantPhone) setTenantPhone(data.tenantPhone);
         if (data.rent) setRent(String(data.rent));
-        if (data.deposit) setDeposit(String(data.deposit));
+        if (data.deposit !== undefined && data.deposit !== null) setDeposit(String(data.deposit));
         if (data.startDate) setStartDate(data.startDate);
         if (data.endDate) setEndDate(data.endDate);
       } catch {
@@ -108,6 +156,11 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
     return () => {
       mounted = false;
     };
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 450);
   }, []);
 
   const handleAddClause = () => {
@@ -122,58 +175,101 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
   };
 
   const handleGenerateAgreement = () => {
-    if (!tenantName.trim()) {
-      Alert.alert('Required', 'Please enter tenant name.');
+    if (!selectedProperty) {
+      Alert.alert('No Property Selected', 'Please select an owned property first.');
       return;
     }
-    const agrId = `AGR-${Date.now().toString().slice(-6)}`;
+    if (leaseScope === 'unit' && !selectedUnit) {
+      Alert.alert('No Vacant Unit', 'Please select a vacant unit before drafting a lease.');
+      return;
+    }
+    if (!tenantName.trim()) {
+      Alert.alert('Required', 'Please enter tenant legal name.');
+      return;
+    }
+
+    const parsedRent = Number(rent);
+    if (!Number.isFinite(parsedRent) || parsedRent <= 0) {
+      Alert.alert('Invalid Rent', 'Please enter a valid monthly rent amount greater than 0.');
+      return;
+    }
+
+    const parsedDeposit = deposit.trim() === '' ? 0 : Number(deposit);
+    if (!Number.isFinite(parsedDeposit) || parsedDeposit < 0) {
+      Alert.alert('Invalid Deposit', 'Security deposit must be a valid non-negative number.');
+      return;
+    }
+
+    const startMs = new Date(startDate).getTime();
+    const endMs = new Date(endDate).getTime();
+    if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+      Alert.alert('Invalid Dates', 'Please enter valid Start and End dates (End Date must be after Start Date).');
+      return;
+    }
+
+    const parsedEsc = Number(escalation);
+    const parsedLockIn = Number(lockInMonths);
+    const parsedNotice = Number(noticeDays);
+
+    const cleanEmail = tenantEmail.trim().toLowerCase();
+    const cleanPhone = tenantPhone.trim();
+    const matchedUser = (state.users || []).find(
+      (u) =>
+        (cleanEmail && u.email?.toLowerCase() === cleanEmail) ||
+        (cleanPhone && u.phone && u.phone.replace(/\D/g, '') === cleanPhone.replace(/\D/g, ''))
+    );
+    const matchedTenant = (state.tenants || []).find(
+      (t) =>
+        t.ownerId === (selectedProperty.ownerId || effectiveOwnerId) &&
+        ((cleanEmail && t.email?.toLowerCase() === cleanEmail) ||
+          (cleanPhone && t.phone && t.phone.replace(/\D/g, '') === cleanPhone.replace(/\D/g, '')))
+    );
+    const resolvedTenantId = matchedUser?.id || matchedTenant?.id || '';
+
+    const agrId = `AGR-DRAFT-${Date.now().toString().slice(-6)}`;
     const isMaster = leaseScope === 'master';
-    const finalUnit = isMaster ? 'Entire Property (Master Tenancy)' : selectedUnitNum;
+    const finalUnit = isMaster ? 'Entire Property (Master Tenancy)' : (selectedUnit?.unitNumber || selectedUnitNum);
+
     const newAgr: MobileAgreement = {
       id: agrId,
-      ownerId: user?.ownerId || user?.id || '',
+      ownerId: selectedProperty.ownerId || effectiveOwnerId,
       ownerName: user?.displayName || 'Property Owner',
-      propertyId: selectedProperty?.id || '',
-      propertyName: selectedProperty?.name || 'Property Premises',
+      propertyId: selectedProperty.id,
+      propertyName: selectedProperty.name,
       unit: finalUnit,
+      unitId: isMaster ? undefined : selectedUnit?.id,
       tenant: tenantName.trim(),
-      tenantId: `tenant-${Date.now().toString().slice(-4)}`,
-      tenantEmail: tenantEmail.trim(),
-      tenantPhone: tenantPhone.trim(),
+      tenantId: resolvedTenantId,
+      tenantEmail: cleanEmail || undefined,
+      tenantPhone: cleanPhone || undefined,
       start: startDate,
       end: endDate,
-
-      rent: parseInt(rent, 10) || 28000,
-      deposit: parseInt(deposit, 10) || 56000,
-      currency: selectedProperty?.currency || viewCurrency,
-      escalationPercent: parseInt(escalation, 10) || 5,
-      lockInMonths: parseInt(lockInMonths, 10) || 6,
-      noticePeriodDays: parseInt(noticeDays, 10) || 30,
-      status: 'active',
+      rent: parsedRent,
+      deposit: parsedDeposit,
+      currency: selectedProperty.currency || viewCurrency,
+      escalationPercent: Number.isFinite(parsedEsc) && parsedEsc >= 0 ? parsedEsc : 5,
+      lockInMonths: Number.isFinite(parsedLockIn) && parsedLockIn >= 0 ? parsedLockIn : 6,
+      noticePeriodDays: Number.isFinite(parsedNotice) && parsedNotice >= 0 ? parsedNotice : 30,
+      status: 'draft',
+      isDraft: true,
+      draftSavedAt: new Date().toISOString(),
       executionMode: (isMaster ? 'master_bulk_lease' : 'digital_dispatch') as any,
       specialClauses: clauses,
-      tenantSignedAt: new Date().toISOString(),
-      ownerSignedAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
 
     saveAgreement(newAgr);
     Alert.alert(
-      'Agreement Executed & Signed! 📄',
-      `Contract ${agrId} for ${finalUnit} has been recorded and tenancy is officially active.`
+      'Lease Draft Saved',
+      `Draft ${agrId} for ${finalUnit} has been saved to your Lease Drafts. Open Leasing Hub to dispatch for signature or record execution.`
     );
     if (onSuccess) onSuccess();
     else if (onBack) onBack();
   };
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      {/* StatusBar managed globally */}
-
-      {/* Real Screen Status Bar */}
+  const headerNode = (
+    <>
       <ScreenStatusBar />
-
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={onBack} style={styles.backBtn} activeOpacity={0.7}>
@@ -182,21 +278,31 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
           <View style={styles.logoBadge}>
             <PropithubIcon size={18} />
           </View>
-          <View>
-            <Text style={styles.headerTitle}>Issue Lease</Text>
+          <View style={{ minWidth: 0, flexShrink: 1 }}>
+            <Text style={styles.headerTitle} numberOfLines={1}>Draft Lease</Text>
           </View>
         </View>
       </View>
+    </>
+  );
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>1. Property & Apartment Selection</Text>
+  return (
+    <ScreenContainer
+      scrollable
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      header={headerNode}
+      contentContainerStyle={styles.content}
+    >
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>1. Property & Apartment Selection</Text>
 
-          <Text style={styles.inputLabel}>Select Building</Text>
+        <Text style={styles.inputLabel}>Select Building</Text>
+        {properties.length === 0 ? (
+          <Text style={styles.emptyHelperText}>
+            No properties found for your account. Add a property before drafting a lease.
+          </Text>
+        ) : (
           <View style={styles.pickerRow}>
             {properties.map((p) => {
               const isSelected = p.id === selectedProperty?.id;
@@ -207,266 +313,320 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
                   onPress={() => {
                     setSelectedPropertyId(p.id);
                     const isSingle = isSingleUnitProperty(p);
-                    const units = state.units.filter((u) => u.propertyId === p.id);
+                    const vacantUnits = getVacantUnitsForProperty(p.id);
                     if (isSingle) {
                       setLeaseScope('master');
                       setSelectedUnitNum('Entire Property (Master Tenancy)');
-                      const totalRent = units.reduce((s, u) => s + (u.rent || 0), 0) || (p as any).monthlyRent || 50000;
-                      setRent(totalRent.toString());
-                      setDeposit((totalRent * 2).toString());
+                      const propRent =
+                        vacantUnits.reduce((s, u) => s + (u.rent || 0), 0) ||
+                        (p as any).monthlyRent ||
+                        0;
+                      setRent(propRent > 0 ? String(propRent) : '');
+                      setDeposit(propRent > 0 ? String(propRent * 2) : '');
                     } else {
                       setLeaseScope('unit');
-                      if (units[0]) {
-                        setSelectedUnitNum(units[0].unitNumber);
-                        setRent(units[0].rent.toString());
-                        setDeposit(units[0].deposit.toString());
+                      if (vacantUnits[0]) {
+                        setSelectedUnitNum(vacantUnits[0].unitNumber);
+                        setRent(vacantUnits[0].rent ? String(vacantUnits[0].rent) : '');
+                        setDeposit(
+                          vacantUnits[0].deposit !== undefined && vacantUnits[0].deposit !== null
+                            ? String(vacantUnits[0].deposit)
+                            : ''
+                        );
+                      } else {
+                        setSelectedUnitNum('');
+                        setRent('');
+                        setDeposit('');
                       }
                     }
                   }}
                 >
-                  <Text style={[styles.pickerChipText, isSelected && styles.pickerChipTextActive]}>
+                  <Text
+                    style={[styles.pickerChipText, isSelected && styles.pickerChipTextActive]}
+                    numberOfLines={1}
+                  >
                     {p.name}
                   </Text>
                 </TouchableOpacity>
               );
             })}
           </View>
+        )}
 
-          {/* Lease Scope: Unit vs Master / Bulk Tenancy */}
-          <View style={styles.scopeSwitcherRow}>
-            <TouchableOpacity
-              style={[styles.scopeBtn, leaseScope === 'unit' && styles.scopeBtnActive]}
-              onPress={() => {
-                setLeaseScope('unit');
-                if (unitsInProp[0]) {
-                  setSelectedUnitNum(unitsInProp[0].unitNumber);
-                  setRent(unitsInProp[0].rent.toString());
-                  setDeposit(unitsInProp[0].deposit.toString());
-                }
-              }}
-            >
-              <Ionicons name="grid-outline" size={13} color={leaseScope === 'unit' ? '#059669' : colors.inkSoft} style={{ marginRight: 4 }} />
-              <Text style={[styles.scopeBtnText, leaseScope === 'unit' && styles.scopeBtnTextActive]}>
-                Individual Unit
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.scopeBtn, leaseScope === 'master' && styles.scopeBtnActive]}
-              onPress={() => {
-                setLeaseScope('master');
-                setSelectedUnitNum('Entire Property (Master Tenancy)');
-                const totalRent = unitsInProp.reduce((s, u) => s + (u.rent || 0), 0) || 50000;
-                setRent(totalRent.toString());
-                setDeposit((totalRent * 2).toString());
-              }}
-            >
-              <MaterialCommunityIcons name="home-group" size={15} color={leaseScope === 'master' ? '#059669' : colors.inkSoft} style={{ marginRight: 4 }} />
-              <Text style={[styles.scopeBtnText, leaseScope === 'master' && styles.scopeBtnTextActive]}>
-                Master / Bulk Lease
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {leaseScope === 'master' ? (
-            <View style={[styles.masterLeaseNotice, { backgroundColor: isDark ? colors.surfaceSunken : '#F0FDF4', borderColor: isDark ? colors.line : '#BBF7D0' }]}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <MaterialCommunityIcons name="shield-crown" size={18} color="#059669" />
-                <Text style={{ fontSize: 13.5, fontWeight: '700', color: '#166534' }}>
-                  Bulk Master Tenancy Mode Active
-                </Text>
-              </View>
-              <Text style={{ fontSize: 12, color: '#15803D', marginTop: 4 }}>
-                Leasing {selectedProperty?.name || 'Property'} as an entire standalone asset / master corporate lease. Covers all leasable units under one overarching contract.
-              </Text>
-            </View>
-          ) : (
-            <>
-              <Text style={styles.inputLabel}>Select Vacant Unit ({unitsInProp.length} available)</Text>
-              {unitsInProp.length === 0 ? (
-                <Text style={{ fontSize: 13, color: '#94A3B8', marginVertical: 8 }}>
-                  No vacant units available in this property. All units are currently occupied.
-                </Text>
-              ) : (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginVertical: 6 }}>
-                  {unitsInProp.map((u) => {
-                    const isSelected = u.unitNumber === selectedUnitNum;
-                    return (
-                      <TouchableOpacity
-                        key={u.id}
-                        style={[styles.unitChip, isSelected && styles.unitChipActive]}
-                        onPress={() => {
-                          setSelectedUnitNum(u.unitNumber);
-                          setRent(u.rent.toString());
-                          setDeposit(u.deposit.toString());
-                        }}
-                      >
-                        <Text style={[styles.unitChipTitle, isSelected && styles.unitChipTitleActive]}>
-                          Unit {u.unitNumber}
-                        </Text>
-                        <Text style={[styles.unitChipSub, isSelected && styles.unitChipSubActive]}>
-                          {u.unitType} • Vacant
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              )}
-            </>
-          )}
-
-          <View style={styles.divider} />
-          <Text style={styles.cardTitle}>2. Tenant Information</Text>
-
-          <Text style={styles.inputLabel}>Tenant Full Legal Name *</Text>
-          <TextInput
-            style={styles.input}
-            value={tenantName}
-            onChangeText={setTenantName}
-            placeholder="e.g. Full Name"
-          />
-
-          <View style={styles.grid2}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Email Address</Text>
-              <TextInput
-                style={styles.input}
-                value={tenantEmail}
-                onChangeText={setTenantEmail}
-                placeholder="tenant@email.com"
-                keyboardType="email-address"
-              />
-            </View>
-
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Phone Number</Text>
-              <TextInput
-                style={styles.input}
-                value={tenantPhone}
-                onChangeText={setTenantPhone}
-                placeholder="+91 98765 43210"
-                keyboardType="phone-pad"
-              />
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-          <Text style={styles.cardTitle}>3. Financial & Escalation Terms</Text>
-
-          <View style={styles.grid2}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Monthly Rent ({selectedProperty?.currency || viewCurrency})</Text>
-              <TextInput
-                style={styles.input}
-                value={rent}
-                onChangeText={setRent}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Security Deposit</Text>
-              <TextInput
-                style={styles.input}
-                value={deposit}
-                onChangeText={setDeposit}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          <View style={styles.grid2}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Start Date (YYYY-MM-DD)</Text>
-              <TextInput
-                style={styles.input}
-                value={startDate}
-                onChangeText={setStartDate}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>End Date (11 Months)</Text>
-              <TextInput
-                style={styles.input}
-                value={endDate}
-                onChangeText={setEndDate}
-              />
-            </View>
-          </View>
-
-          <View style={styles.grid3}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Annual Escalation</Text>
-              <TextInput
-                style={styles.input}
-                value={escalation}
-                onChangeText={setEscalation}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Lock-in Period</Text>
-              <TextInput
-                style={styles.input}
-                value={lockInMonths}
-                onChangeText={setLockInMonths}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inputLabel}>Notice Days</Text>
-              <TextInput
-                style={styles.input}
-                value={noticeDays}
-                onChangeText={setNoticeDays}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-          <Text style={styles.cardTitle}>4. Standard & Custom Legal Clauses</Text>
-
-          {clauses.map((clause, idx) => (
-            <View key={idx} style={styles.clauseRow}>
-              <Text style={styles.clauseBullet}>§{idx + 1}</Text>
-              <Text style={styles.clauseText}>{clause}</Text>
-              <TouchableOpacity onPress={() => handleRemoveClause(idx)}>
-                <Ionicons name="close-circle" size={16} color="#94A3B8" />
-              </TouchableOpacity>
-            </View>
-          ))}
-
-          <View style={styles.addClauseRow}>
-            <TextInput
-              style={[styles.input, { flex: 1, marginBottom: 0 }]}
-              value={customClause}
-              onChangeText={setCustomClause}
-              placeholder="Add custom condition (e.g. 1 reserved parking bay)..."
+        {/* Lease Scope: Unit vs Master / Bulk Tenancy */}
+        <View style={styles.scopeSwitcherRow}>
+          <TouchableOpacity
+            style={[styles.scopeBtn, leaseScope === 'unit' && styles.scopeBtnActive]}
+            onPress={() => {
+              setLeaseScope('unit');
+              if (unitsInProp[0]) {
+                setSelectedUnitNum(unitsInProp[0].unitNumber);
+                setRent(unitsInProp[0].rent ? String(unitsInProp[0].rent) : '');
+                setDeposit(
+                  unitsInProp[0].deposit !== undefined && unitsInProp[0].deposit !== null
+                    ? String(unitsInProp[0].deposit)
+                    : ''
+                );
+              } else {
+                setSelectedUnitNum('');
+              }
+            }}
+          >
+            <Ionicons
+              name="grid-outline"
+              size={13}
+              color={leaseScope === 'unit' ? colors.primaryText : colors.inkSoft}
+              style={{ marginRight: 4 }}
             />
-            <TouchableOpacity style={styles.addClauseBtn} onPress={handleAddClause}>
-              <Text style={styles.addClauseBtnText}>Add</Text>
-            </TouchableOpacity>
-          </View>
+            <Text style={[styles.scopeBtnText, leaseScope === 'unit' && styles.scopeBtnTextActive]} numberOfLines={1}>
+              Individual Unit
+            </Text>
+          </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.generateBtn}
-            onPress={handleGenerateAgreement}
-            activeOpacity={0.85}
+            style={[styles.scopeBtn, leaseScope === 'master' && styles.scopeBtnActive]}
+            onPress={() => {
+              setLeaseScope('master');
+              setSelectedUnitNum('Entire Property (Master Tenancy)');
+              const totalRent =
+                unitsInProp.reduce((s, u) => s + (u.rent || 0), 0) ||
+                (selectedProperty as any)?.monthlyRent ||
+                0;
+              setRent(totalRent > 0 ? String(totalRent) : '');
+              setDeposit(totalRent > 0 ? String(totalRent * 2) : '');
+            }}
           >
-            <Text style={styles.generateBtnText}>✓ Generate & Activate Lease</Text>
+            <MaterialCommunityIcons
+              name="home-group"
+              size={15}
+              color={leaseScope === 'master' ? colors.primaryText : colors.inkSoft}
+              style={{ marginRight: 4 }}
+            />
+            <Text style={[styles.scopeBtnText, leaseScope === 'master' && styles.scopeBtnTextActive]} numberOfLines={1}>
+              Master / Bulk Lease
+            </Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+
+        {leaseScope === 'master' ? (
+          <View
+            style={[
+              styles.masterLeaseNotice,
+              {
+                backgroundColor: isDark ? colors.surfaceSunken : '#F0FDF4',
+                borderColor: isDark ? colors.line : '#BBF7D0',
+              },
+            ]}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <MaterialCommunityIcons name="shield-crown" size={18} color={colors.primaryText} />
+              <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.primaryText, flex: 1 }}>
+                Bulk Master Tenancy Mode Active
+              </Text>
+            </View>
+            <Text style={{ fontSize: 12, color: colors.inkSoft, marginTop: 4 }}>
+              Leasing {selectedProperty?.name || 'Property'} as an entire standalone asset / master corporate lease. Covers all leasable units under one overarching contract.
+            </Text>
+          </View>
+        ) : (
+          <>
+            <Text style={styles.inputLabel}>Select Vacant Unit ({unitsInProp.length} available)</Text>
+            {unitsInProp.length === 0 ? (
+              <Text style={styles.emptyHelperText}>
+                No vacant units available in this property. All units are currently occupied or reserved.
+              </Text>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginVertical: 6 }}>
+                {unitsInProp.map((u) => {
+                  const isSelected = u.unitNumber === selectedUnitNum;
+                  return (
+                    <TouchableOpacity
+                      key={u.id}
+                      style={[styles.unitChip, isSelected && styles.unitChipActive]}
+                      onPress={() => {
+                        setSelectedUnitNum(u.unitNumber);
+                        setRent(u.rent ? String(u.rent) : '');
+                        setDeposit(
+                          u.deposit !== undefined && u.deposit !== null ? String(u.deposit) : ''
+                        );
+                      }}
+                    >
+                      <Text style={[styles.unitChipTitle, isSelected && styles.unitChipTitleActive]} numberOfLines={1}>
+                        Unit {u.unitNumber}
+                      </Text>
+                      <Text style={[styles.unitChipSub, isSelected && styles.unitChipSubActive]} numberOfLines={1}>
+                        {u.unitType} • Vacant
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </>
+        )}
+
+        <View style={styles.divider} />
+        <Text style={styles.cardTitle}>2. Tenant Information</Text>
+
+        <Text style={styles.inputLabel}>Tenant Full Legal Name *</Text>
+        <TextInput
+          style={styles.input}
+          value={tenantName}
+          onChangeText={setTenantName}
+          placeholder="e.g. Full Name"
+          placeholderTextColor={colors.inkSoft}
+        />
+
+        <View style={styles.grid2}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel}>Email Address</Text>
+            <TextInput
+              style={styles.input}
+              value={tenantEmail}
+              onChangeText={setTenantEmail}
+              placeholder="tenant@email.com"
+              placeholderTextColor={colors.inkSoft}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+          </View>
+
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel}>Phone Number</Text>
+            <TextInput
+              style={styles.input}
+              value={tenantPhone}
+              onChangeText={setTenantPhone}
+              placeholder="+91 98765 43210"
+              placeholderTextColor={colors.inkSoft}
+              keyboardType="phone-pad"
+            />
+          </View>
+        </View>
+
+        <View style={styles.divider} />
+        <Text style={styles.cardTitle}>3. Financial & Escalation Terms</Text>
+
+        <View style={styles.grid2}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel} numberOfLines={1}>
+              Monthly Rent ({selectedProperty?.currency || viewCurrency}) *
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={rent}
+              onChangeText={setRent}
+              placeholder="e.g. 2500"
+              placeholderTextColor={colors.inkSoft}
+              keyboardType="numeric"
+            />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel} numberOfLines={1}>Security Deposit</Text>
+            <TextInput
+              style={styles.input}
+              value={deposit}
+              onChangeText={setDeposit}
+              placeholder="e.g. 5000"
+              placeholderTextColor={colors.inkSoft}
+              keyboardType="numeric"
+            />
+          </View>
+        </View>
+
+        <View style={styles.grid2}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel} numberOfLines={1}>Start Date (YYYY-MM-DD)</Text>
+            <TextInput
+              style={styles.input}
+              value={startDate}
+              onChangeText={setStartDate}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.inkSoft}
+            />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel} numberOfLines={1}>End Date (YYYY-MM-DD)</Text>
+            <TextInput
+              style={styles.input}
+              value={endDate}
+              onChangeText={setEndDate}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.inkSoft}
+            />
+          </View>
+        </View>
+
+        <View style={styles.grid3}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel} numberOfLines={1}>Escalation (%)</Text>
+            <TextInput
+              style={styles.input}
+              value={escalation}
+              onChangeText={setEscalation}
+              keyboardType="numeric"
+            />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel} numberOfLines={1}>Lock-in (Mo)</Text>
+            <TextInput
+              style={styles.input}
+              value={lockInMonths}
+              onChangeText={setLockInMonths}
+              keyboardType="numeric"
+            />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.inputLabel} numberOfLines={1}>Notice (Days)</Text>
+            <TextInput
+              style={styles.input}
+              value={noticeDays}
+              onChangeText={setNoticeDays}
+              keyboardType="numeric"
+            />
+          </View>
+        </View>
+
+        <View style={styles.divider} />
+        <Text style={styles.cardTitle}>4. Standard & Custom Legal Clauses</Text>
+
+        {clauses.map((clause, idx) => (
+          <View key={idx} style={styles.clauseRow}>
+            <Text style={styles.clauseBullet}>§{idx + 1}</Text>
+            <Text style={styles.clauseText}>{clause}</Text>
+            <TouchableOpacity onPress={() => handleRemoveClause(idx)}>
+              <Ionicons name="close-circle" size={16} color={colors.inkSoft} />
+            </TouchableOpacity>
+          </View>
+        ))}
+
+        <View style={styles.addClauseRow}>
+          <TextInput
+            style={[styles.input, { flex: 1, marginBottom: 0 }]}
+            value={customClause}
+            onChangeText={setCustomClause}
+            placeholder="Add custom condition (e.g. 1 reserved parking bay)..."
+            placeholderTextColor={colors.inkSoft}
+          />
+          <TouchableOpacity style={styles.addClauseBtn} onPress={handleAddClause}>
+            <Text style={styles.addClauseBtnText}>Add</Text>
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity
+          style={styles.generateBtn}
+          onPress={handleGenerateAgreement}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.generateBtnText}>Save Lease Draft</Text>
+        </TouchableOpacity>
+      </View>
+    </ScreenContainer>
   );
 };
 
 const createStyles = (colors: any, isDark: boolean) =>
   StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -480,6 +640,8 @@ const createStyles = (colors: any, isDark: boolean) =>
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
   },
   backBtn: {
     width: 36,
@@ -494,7 +656,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     width: 32,
     height: 32,
     borderRadius: 8,
-    backgroundColor: '#10B981',
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
@@ -503,26 +665,6 @@ const createStyles = (colors: any, isDark: boolean) =>
     fontSize: 16,
     fontWeight: '700',
     color: colors.navy,
-  },
-  headerSub: {
-    fontSize: 11,
-    color: colors.inkSoft,
-  },
-  stampBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    backgroundColor: '#ECFDF5',
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-  },
-  stampBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  scroll: {
-    flex: 1,
   },
   content: {
     padding: 16,
@@ -540,6 +682,11 @@ const createStyles = (colors: any, isDark: boolean) =>
     fontWeight: '700',
     color: colors.navy,
     marginBottom: 8,
+  },
+  emptyHelperText: {
+    fontSize: 13,
+    color: colors.inkSoft,
+    marginVertical: 8,
   },
   inputLabel: {
     fontSize: 11,
@@ -573,8 +720,8 @@ const createStyles = (colors: any, isDark: boolean) =>
     borderColor: colors.line,
   },
   pickerChipActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
   pickerChipText: {
     fontSize: 12,
@@ -595,8 +742,8 @@ const createStyles = (colors: any, isDark: boolean) =>
     marginRight: 8,
   },
   unitChipActive: {
-    backgroundColor: '#ECFDF5',
-    borderColor: '#10B981',
+    backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
+    borderColor: colors.primary,
   },
   unitChipTitle: {
     fontSize: 12,
@@ -604,7 +751,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     color: colors.navy,
   },
   unitChipTitleActive: {
-    color: '#059669',
+    color: colors.primaryText,
   },
   unitChipSub: {
     fontSize: 10,
@@ -612,7 +759,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     marginTop: 1,
   },
   unitChipSubActive: {
-    color: '#059669',
+    color: colors.primaryText,
   },
   grid2: {
     flexDirection: 'row',
@@ -641,7 +788,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   clauseBullet: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#10B981',
+    color: colors.primary,
   },
   clauseText: {
     fontSize: 12,
@@ -655,7 +802,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     marginBottom: 16,
   },
   addClauseBtn: {
-    backgroundColor: '#10B981',
+    backgroundColor: colors.primary,
     paddingHorizontal: 14,
     borderRadius: 8,
     justifyContent: 'center',
@@ -666,7 +813,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     fontWeight: '600',
   },
   generateBtn: {
-    backgroundColor: '#10B981',
+    backgroundColor: colors.primary,
     paddingVertical: 13,
     borderRadius: 8,
     alignItems: 'center',
@@ -695,7 +842,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     backgroundColor: isDark ? colors.surfaceSunken : '#F8FAFC',
   },
   scopeBtnActive: {
-    borderColor: '#059669',
+    borderColor: colors.primaryText,
     backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5',
   },
   scopeBtnText: {
@@ -704,7 +851,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     color: colors.inkSoft,
   },
   scopeBtnTextActive: {
-    color: isDark ? '#34D399' : '#059669',
+    color: colors.primaryText,
     fontWeight: '700',
   },
   masterLeaseNotice: {

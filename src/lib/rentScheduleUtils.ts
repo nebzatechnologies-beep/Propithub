@@ -49,8 +49,14 @@ export function buildRentSchedule(
   ownerSettings?: OwnerSettings | Record<string, OwnerSettings> | undefined | null,
   isVacated?: boolean
 ): RentScheduleResult {
-  // If resident is vacated without active agreement, return empty schedule immediately
-  if (isVacated && !agreement) {
+  // If resident is vacated without active agreement, or agreement is unexecuted/cancelled, return empty schedule immediately
+  if (
+    (isVacated && !agreement) ||
+    (agreement &&
+      ['cancelled', 'draft', 'awaiting_tenant_upload', 'pending_approval'].includes(
+        agreement.status as string
+      ))
+  ) {
     return {
       currentDueItem: null,
       upcomingDues: [],
@@ -90,7 +96,7 @@ export function buildRentSchedule(
   const propertyName = prop?.name || tenantRecord?.propertyName || 'Assigned Property';
   const currency = agreement?.currency || prop?.currency || tenantRecord?.currency || DEFAULT_CURRENCY;
   const monthlyRent = Number(agreement?.rent || tenantRecord?.rent) || 0;
-  const dueDay = Math.min(Math.max(Number(agreement?.rentDueDay) || 1, 1), 28);
+  const dueDay = Math.min(Math.max(Number(agreement?.rentDueDay || (agreement as any)?.dueDay) || 1, 1), 28);
   const effectiveUnit = agreement?.unit || tenantRecord?.unit || '';
   const effectiveTenantId = agreement?.tenantId || tenantRecord?.id || '';
 
@@ -148,16 +154,21 @@ export function buildRentSchedule(
       (inv) =>
         (inv.invoiceType === 'deposit' || (inv as any).type === 'deposit' || inv.id === agreement.depositInvoiceId) &&
         inv.status === 'paid' &&
-        (inv.leaseAgreementId === agreement.id || inv.unit === effectiveUnit || inv.id === agreement.depositInvoiceId)
+        (inv.leaseAgreementId === agreement.id ||
+          (inv as any).agreementId === agreement.id ||
+          inv.id === agreement.depositInvoiceId ||
+          ((!agreement.propertyId || !inv.propertyId || inv.propertyId === agreement.propertyId) &&
+            inv.unit === effectiveUnit))
     )
   );
 
-  // Filter real rent invoices and rent payments for this agreement or unit
+  // Filter real rent invoices and rent payments for this agreement or unit (property-scoped)
   const relatedInvoices = invoices.filter(
     (inv) =>
       (inv.invoiceType === 'rent' || (inv as any).type === 'rent') &&
-      ((agreement?.id && (inv.leaseAgreementId === agreement.id || inv.id.includes(agreement.id))) ||
+      ((agreement?.id && (inv.leaseAgreementId === agreement.id || (inv as any).agreementId === agreement.id || inv.id.includes(agreement.id))) ||
         (effectiveUnit &&
+          (!agreement?.propertyId || !inv.propertyId || inv.propertyId === agreement.propertyId) &&
           (inv.unit === effectiveUnit || inv.unit?.toLowerCase() === effectiveUnit.toLowerCase()) &&
           (inv.tenantId === effectiveTenantId || (agreement?.tenant && inv.tenant === agreement.tenant))))
   );
@@ -165,8 +176,10 @@ export function buildRentSchedule(
   const relatedPayments = payments.filter(
     (p) =>
       (p.type === 'rent' || (!(p.type === 'deposit') && !(p as any).invoiceType?.includes('deposit') && !p.notes?.toLowerCase().includes('deposit'))) &&
-      ((effectiveUnit && (p.unit === effectiveUnit || p.unit?.toLowerCase() === effectiveUnit.toLowerCase())) ||
-        (effectiveTenantId && p.tenantId === effectiveTenantId))
+      ((agreement?.id && ((p as any).agreementId === agreement.id || (p as any).leaseAgreementId === agreement.id)) ||
+        ((!agreement?.propertyId || !p.propertyId || p.propertyId === agreement.propertyId) &&
+          ((effectiveUnit && (p.unit === effectiveUnit || p.unit?.toLowerCase() === effectiveUnit.toLowerCase())) ||
+            (effectiveTenantId && p.tenantId === effectiveTenantId))))
   );
 
   let cursorYear = startDate.getFullYear();
@@ -228,7 +241,11 @@ export function buildRentSchedule(
       paidAt = matchingPay?.date || matchingInv?.paidAt || dueDateStr;
       paymentMethod = matchingPay?.method || matchingInv?.paymentMethodUsed || 'DIRECT_SETTLEMENT';
       transactionRef = matchingPay?.id || matchingInv?.id;
-    } else if (matchingInv?.status === 'pending_confirmation' || matchingPay?.status === 'pending_confirmation') {
+    } else if (
+      matchingInv?.status === 'pending_confirmation' ||
+      matchingPay?.status === 'pending_confirmation' ||
+      (matchingPay?.status as any) === 'pending'
+    ) {
       status = 'pending_confirmation';
       transactionRef = matchingPay?.id || matchingInv?.id;
     } else {
@@ -284,6 +301,8 @@ export function buildRentSchedule(
   const isTenancyConcluded = Boolean(
     isVacated ||
     agreement?.status === 'terminated' ||
+    (agreement?.status as any) === 'concluded' ||
+    (agreement?.status as any) === 'cancelled' ||
     (!agreement && tenantRecord?.unit === 'Unassigned')
   );
 
@@ -297,8 +316,14 @@ export function buildRentSchedule(
         .filter((c) => c.status !== 'paid')
         .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
-  // Current due item is the first unpaid item (strictly null if tenancy is vacated/concluded)
-  const currentDueItem = isTenancyConcluded ? null : (upcomingDues[0] || null);
+  // Current due item prioritizes overdue/due_now -> due_soon -> pending_confirmation -> earliest upcoming (strictly null if tenancy is vacated/concluded)
+  const currentDueItem = isTenancyConcluded
+    ? null
+    : upcomingDues.find((c) => c.status === 'overdue' || c.status === 'due_now') ||
+      upcomingDues.find((c) => c.status === 'due_soon') ||
+      upcomingDues.find((c) => c.status === 'pending_confirmation') ||
+      upcomingDues[0] ||
+      null;
 
   return {
     currentDueItem,

@@ -1,13 +1,16 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   Alert,
+  RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon } from '../components/PropithubLogo';
@@ -42,6 +45,12 @@ export const StaffTaskPaymentsScreen: React.FC<StaffTaskPaymentsScreenProps> = (
   const [remindedTickets, setRemindedTickets] = useState<Record<string, boolean>>({});
   const [settlingTicketId, setSettlingTicketId] = useState<string | null>(null);
   const [remindingTicketId, setRemindingTicketId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 600);
+  }, []);
 
   const currentStaff = useMemo(
     () =>
@@ -81,7 +90,7 @@ export const StaffTaskPaymentsScreen: React.FC<StaffTaskPaymentsScreenProps> = (
   const staffCurrency = getCurrencySymbol(staffRawCurrency) || DEFAULT_CURRENCY_SYMBOL;
 
   const unreadNotificationsCount = useMemo(
-    () => (state.notifications || []).filter((n) => !n.read).length,
+    () => (state.notifications || []).filter((n) => !n.isRead).length,
     [state.notifications]
   );
 
@@ -127,7 +136,7 @@ export const StaffTaskPaymentsScreen: React.FC<StaffTaskPaymentsScreenProps> = (
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <ScreenStatusBar />
 
       {/* Minimal Top App Bar (.topbar) */}
@@ -181,10 +190,24 @@ export const StaffTaskPaymentsScreen: React.FC<StaffTaskPaymentsScreenProps> = (
         </View>
       </View>
 
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
+      >
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
       >
         {/* Section Title (1-to-1 with Web TaskPaymentsPage.tsx) */}
         <TourTarget id="staff-earnings-grid">
@@ -340,6 +363,7 @@ export const StaffTaskPaymentsScreen: React.FC<StaffTaskPaymentsScreenProps> = (
           })
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };

@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Appearance, ColorSchemeName, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ThemePalette,
   LightColors,
@@ -392,6 +393,26 @@ const scanAndApplyRNWDarkOverrides = (isDark: boolean) => {
 export const MobileThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [themeMode, setThemeModeState] = useState<ThemeMode>(getInitialThemeMode);
   const [systemScheme, setSystemScheme] = useState<ColorSchemeName>(() => Appearance.getColorScheme());
+  const hasHydratedNativeRef = useRef(Platform.OS === 'web');
+
+  // Hydrate persisted theme preference on native iOS / Android
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    let mounted = true;
+    AsyncStorage.getItem(STORAGE_THEME_MODE_KEY)
+      .then((saved) => {
+        if (mounted && (saved === 'system' || saved === 'light' || saved === 'dark')) {
+          setThemeModeState(saved as ThemeMode);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        hasHydratedNativeRef.current = true;
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // Listen to OS system theme changes in real-time
   useEffect(() => {
@@ -408,7 +429,12 @@ export const MobileThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return systemScheme === 'dark';
   }, [themeMode, systemScheme]);
 
-  // Sync global tokens & Web CSS
+  // Synchronously update legacy Colors & return reactive palette before child render
+  const colors = useMemo(() => {
+    return setGlobalThemeColors(isDark);
+  }, [isDark]);
+
+  // Sync global tokens, native storage & Web CSS
   useEffect(() => {
     currentIsDarkState = isDark;
     setGlobalThemeColors(isDark);
@@ -420,6 +446,10 @@ export const MobileThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
         (globalThis as any).localStorage.setItem(STORAGE_WEB_THEME_KEY, isDark ? 'dark' : 'light');
       }
     } catch {}
+
+    if (Platform.OS !== 'web' && hasHydratedNativeRef.current) {
+      AsyncStorage.setItem(STORAGE_THEME_MODE_KEY, themeMode).catch(() => {});
+    }
 
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
 
@@ -459,29 +489,38 @@ export const MobileThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [isDark, themeMode]);
 
   const setThemeMode = useCallback((mode: ThemeMode) => {
+    hasHydratedNativeRef.current = true;
     setThemeModeState(mode);
+    if (Platform.OS !== 'web') {
+      AsyncStorage.setItem(STORAGE_THEME_MODE_KEY, mode).catch(() => {});
+    }
   }, []);
 
   const toggleTheme = useCallback(() => {
+    hasHydratedNativeRef.current = true;
     setThemeModeState((prev) => {
-      if (prev === 'light') return 'dark';
-      if (prev === 'dark') return 'light';
-      return isDark ? 'light' : 'dark';
+      const next: ThemeMode =
+        prev === 'light' ? 'dark' : prev === 'dark' ? 'light' : isDark ? 'light' : 'dark';
+      if (Platform.OS !== 'web') {
+        AsyncStorage.setItem(STORAGE_THEME_MODE_KEY, next).catch(() => {});
+      }
+      return next;
     });
   }, [isDark]);
 
-  const colors = useMemo(() => (isDark ? DarkColors : LightColors), [isDark]);
+  const contextValue = useMemo(
+    () => ({
+      themeMode,
+      setThemeMode,
+      isDark,
+      colors,
+      toggleTheme,
+    }),
+    [themeMode, setThemeMode, isDark, colors, toggleTheme]
+  );
 
   return (
-    <MobileThemeContext.Provider
-      value={{
-        themeMode,
-        setThemeMode,
-        isDark,
-        colors,
-        toggleTheme,
-      }}
-    >
+    <MobileThemeContext.Provider value={contextValue}>
       {children}
     </MobileThemeContext.Provider>
   );

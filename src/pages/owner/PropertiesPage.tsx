@@ -3,9 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { GooglePlacesAddressPicker } from '../../components/GooglePlacesAddressPicker';
-import { Property, Unit, PropertyAddress, PaymentTransaction, ListingBoostPlan, OwnerSettings } from '../../types';
+import { Property, Unit, PropertyAddress, PaymentTransaction, ListingBoostPlan } from '../../types';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, deleteDoc } from 'firebase/firestore';
 import { uploadOrCompressImage } from '../../lib/imageUploader';
 import { sanitizeCountry } from '../../lib/addressUtils';
 import { AddressDisplay } from '../../components/common/AddressDisplay';
@@ -88,7 +88,16 @@ export const PropertiesPage: React.FC = () => {
   } = useAppData();
   const { user, isOwnerPlanActive } = useAuth();
   const navigate = useNavigate();
-  const ownerId = user?.id || '';
+  const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
+    (m: any) =>
+      (user?.id && String(m.id) === user.id) ||
+      (user?.email && m.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const effectiveOwnerId =
+    user?.role === 'manager'
+      ? user?.ownerId || (managerRecord as any)?.ownerId || user?.id || ''
+      : user?.id || '';
+  const ownerId = effectiveOwnerId;
   const isPlanActive = isOwnerPlanActive(ownerId);
   const { viewCurrency, convert, format } = useCurrency();
 
@@ -109,8 +118,8 @@ export const PropertiesPage: React.FC = () => {
 
   const maxProperties = usage.properties.max;
   const maxUnits = usage.units.max;
-  const isPropertyLimitReached = usage.properties.isFull;
-  const isUnitLimitReached = usage.units.isFull;
+  const isPropertyLimitReached = usage.properties.isFull && user?.role !== 'manager';
+  const isUnitLimitReached = usage.units.isFull && user?.role !== 'manager';
 
   const [unitToBoost, setUnitToBoost] = useState<Unit | null>(null);
   const [selectedBoostPlanId, setSelectedBoostPlanId] = useState<string>('boost_standard');
@@ -158,76 +167,9 @@ export const PropertiesPage: React.FC = () => {
       return;
     }
 
-    setIsApplyingBoost(true);
-    try {
-      const now = Date.now();
-      const expiryIso = new Date(now + plan.days * 86400000).toISOString();
-      const nowIso = new Date(now).toISOString();
-
-      const updatedBoostSettings = {
-        popularBoostUntil: expiryIso,
-        popularBoostPlanId: plan.id,
-        popularBoostPlanName: plan.name,
-        popularBoostPlanPrice: plan.price,
-        popularBoostDays: plan.days,
-        popularBoostActivatedAt: nowIso,
-      };
-
-      updateState((prev) => {
-        const nextOwnerSettings = { ...prev.ownerSettings };
-        if (ownerId) {
-          nextOwnerSettings[ownerId] = {
-            ...(nextOwnerSettings[ownerId] || {}),
-            ...updatedBoostSettings,
-          } as OwnerSettings;
-        }
-
-        const nextUnits = prev.units.map((u) => {
-          if ((u.ownerId === ownerId || !u.ownerId) && (u.status === 'vacant' || u.isListedPublicly)) {
-            return {
-              ...u,
-              isPopular: true,
-              isListedPublicly: true,
-              popularUntil: expiryIso,
-              popularActivatedAt: nowIso,
-              popularPlanId: plan.id,
-              popularPlanPrice: plan.price,
-            };
-          }
-          return u;
-        });
-
-        return {
-          ...prev,
-          ownerSettings: nextOwnerSettings,
-          units: nextUnits,
-        };
-      });
-
-      if (isFirebaseConfigured && ownerId) {
-        setDoc(doc(db, 'owners', ownerId), { ...updatedBoostSettings }, { merge: true }).catch(console.warn);
-        const myVacantUnits = state.units.filter((u) => (u.ownerId === ownerId || !u.ownerId) && (u.status === 'vacant' || u.isListedPublicly));
-        for (const vu of myVacantUnits) {
-          setDoc(doc(db, 'units', vu.id), {
-            ...vu,
-            isPopular: true,
-            isListedPublicly: true,
-            popularUntil: expiryIso,
-            popularActivatedAt: nowIso,
-            popularPlanId: plan.id,
-            popularPlanPrice: plan.price,
-          }, { merge: true }).catch(console.warn);
-        }
-      }
-
-      showToast(`🔥 "${plan.name}" activated! All your available listings are now Popular on /homes for ${plan.days} days! ($${plan.price})`);
-      setUnitToBoost(null);
-    } catch (err: any) {
-      console.error('Failed to apply popular boost:', err);
-      showToast('Failed to apply popular boost: ' + (err?.message || 'Unknown error'));
-    } finally {
-      setIsApplyingBoost(false);
-    }
+    setUnitToBoost(null);
+    showToast(`Redirecting to Plan & Boost checkout to pay for "${plan.name}" ($${plan.price})...`);
+    navigate(`/owner/subscription?boost=${encodeURIComponent(plan.id)}&unit=${encodeURIComponent(unit.id)}`);
   };
 
   const handleCancelPopularBoost = async (unit: Unit) => {
@@ -652,6 +594,13 @@ export const PropertiesPage: React.FC = () => {
     if (!window.confirm(`Are you sure you want to delete Unit ${target?.unitNumber || unitId}? This action cannot be undone.`)) {
       return;
     }
+    if (isFirebaseConfigured) {
+      try {
+        await deleteDoc(doc(db, 'units', unitId));
+      } catch (err) {
+        console.warn('Firestore deleteUnit warning:', err);
+      }
+    }
     updateState((prev) => ({
       ...prev,
       units: prev.units.filter((u) => u.id !== unitId),
@@ -659,7 +608,7 @@ export const PropertiesPage: React.FC = () => {
     if (target?.propertyId) {
       const prop = state.properties.find((p) => p.id === target.propertyId);
       if (prop) {
-        saveProperty({
+        await saveProperty({
           ...prop,
           unitCount: Math.max(0, (prop.unitCount || 1) - 1),
         });
@@ -673,7 +622,8 @@ export const PropertiesPage: React.FC = () => {
   const handleAddUnitToProperty = () => {
     if (!addUnitProperty) return;
     if (isUnitLimitReached) {
-      showToast(`⚠️ Unit limit reached (${myUnits.length}/${maxUnits} on ${currentPlanName} tier). Please upgrade your plan to add more units.`);
+      showToast(`⚠️ Unit limit reached (${usage.units.used}/${maxUnits} on ${currentPlanName} tier). Please upgrade your plan to add more units.`);
+      openLimitModal('units');
       return;
     }
     const cleanNum = newUnitNumber.trim() || `Unit ${Date.now().toString().slice(-4)}`;
@@ -965,7 +915,7 @@ export const PropertiesPage: React.FC = () => {
     }
   };
 
-  const handleCreateProperty = () => {
+  const handleCreateProperty = async () => {
     const errs: Record<string, string> = {};
     if (!propName.trim()) {
       errs.propName = 'Property name is required.';
@@ -988,11 +938,13 @@ export const PropertiesPage: React.FC = () => {
     const calculatedUnitCount = propStructure === 'single_unit' ? 1 : initialUnits.length;
 
     if (isPropertyLimitReached) {
-      showToast(`⚠️ Property limit reached (${myProperties.length}/${maxProperties} on ${currentPlanName} tier). Please upgrade your plan to add more properties.`);
+      showToast(`⚠️ Property limit reached (${usage.properties.used}/${maxProperties} on ${currentPlanName} tier). Please upgrade your plan to add more properties.`);
+      openLimitModal('properties');
       return;
     }
-    if (maxUnits < 9999 && (myUnits.length + calculatedUnitCount) > maxUnits) {
-      showToast(`⚠️ Adding this property would exceed your plan's unit limit (${myUnits.length + calculatedUnitCount} > ${maxUnits} on ${currentPlanName} tier). Please adjust units or upgrade your plan.`);
+    if (user?.role !== 'manager' && maxUnits < 9999 && (usage.units.used + calculatedUnitCount) > maxUnits) {
+      showToast(`⚠️ Adding this property would exceed your plan's unit limit (${usage.units.used + calculatedUnitCount} > ${maxUnits} on ${currentPlanName} tier). Please adjust units or upgrade your plan.`);
+      openLimitModal('units');
       return;
     }
 
@@ -1014,6 +966,12 @@ export const PropertiesPage: React.FC = () => {
         lng: 0,
       };
       const resolvedCountry = sanitizeCountry(propCountry || confirmedAddress.country, confirmedAddress.formattedAddress);
+      const targetManagerId =
+        user?.role === 'manager'
+          ? (propAssignedManager === 'self' || propAssignedManager === user?.id
+              ? user?.id
+              : propAssignedManager || user?.id)
+          : (propAssignedManager || undefined);
 
       const newProp: Property = {
         id: propId,
@@ -1025,7 +983,7 @@ export const PropertiesPage: React.FC = () => {
         isSingleUnit: propStructure === 'single_unit',
         floorsCount: propFloors,
         yearBuilt: propYearBuilt ? Number(propYearBuilt) : undefined,
-        assignedManagerId: propAssignedManager || undefined,
+        assignedManagerId: targetManagerId,
         address: {
           ...confirmedAddress,
           country: resolvedCountry,
@@ -1099,7 +1057,7 @@ export const PropertiesPage: React.FC = () => {
         }));
       }
 
-      saveProperty(newProp, newUnits);
+      await saveProperty(newProp, newUnits);
 
       setIsAddPropOpen(false);
       setModalStep(1);
@@ -4100,6 +4058,7 @@ export const PropertiesPage: React.FC = () => {
                     {/* Detailed Units Inventory Table with Horizontal Scrolling */}
                     <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
                       <div
+                        className="table-wrap"
                         style={{
                           overflowX: 'auto',
                           overflowY: 'auto',

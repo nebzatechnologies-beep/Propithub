@@ -153,12 +153,15 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
         tenantId: user.id,
         tenantPhone: user.phone || '',
         tenantEmail: user.email,
+        tenantContact: user.phone || user.email || '',
         issue: ticketIssue.trim(),
+        description: ticketNotes.trim() || undefined,
         category: ticketCategory,
         priority: ticketPriority,
         status: 'open',
+        payment: { status: 'none' },
         created: new Date().toISOString().split('T')[0],
-      };
+      } as any;
 
       saveTicket(newTicket);
       setIsSubmittingTicket(false);
@@ -179,12 +182,16 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
     setIsSubmittingPay(true);
     setTimeout(() => {
       updateTicket(payingTicket.id, {
-        status: 'in_progress',
+        payment: {
+          ...(payingTicket.payment || {}),
+          method: chargePayMethod,
+          status: 'pending_approval',
+        } as any,
       });
       setIsSubmittingPay(false);
       setShowPayChargeModal(false);
       setPayingTicket(null);
-      Alert.alert('Repair Charge Paid ✓', `Payment via ${chargePayMethod} recorded. Technician work order updated.`);
+      Alert.alert('Repair Charge Submitted ✓', `Payment via ${chargePayMethod} submitted for landlord approval.`);
     }, 500);
   };
 
@@ -193,7 +200,8 @@ export const TenantMaintenanceScreen: React.FC<TenantMaintenanceScreenProps> = (
     updateTicket(ticketId, {
       rating,
       residentFeedback: feedback,
-    });
+      completionNotes: feedback.trim() || undefined,
+    } as any);
     Alert.alert(
       'Feedback Recorded ⭐',
       `Thank you! Your ${rating}-star review and feedback for technician service has been recorded on the job work order.`

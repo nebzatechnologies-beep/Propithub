@@ -1,5 +1,5 @@
 import React from 'react';
-import { Invoice } from '../../types';
+import { Invoice, InvoiceTemplateConfig } from '../../types';
 import { useAppData } from '../../context/AppDataContext';
 import { DEFAULT_CURRENCY, getCurrencySymbol, normalizeCurrencyCode } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
@@ -7,12 +7,14 @@ import { CurrencyAmount } from '../common/CurrencyAmount';
 
 interface RentalInvoiceDocumentProps {
   invoice: Invoice;
+  template?: Partial<InvoiceTemplateConfig>;
   id?: string;
   style?: React.CSSProperties;
 }
 
 export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
   invoice,
+  template,
   id = 'printable-rental-invoice',
   style,
 }) => {
@@ -27,7 +29,8 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
   const rawInvoiceCurrency = invoice.currency || state.units.find((u) => u.unitNumber === invoice.unit || u.id === invoice.unit)?.currency || DEFAULT_CURRENCY;
   const currency = getCurrencySymbol(rawInvoiceCurrency);
   const isDeposit = invoice.invoiceType === 'deposit' || invoice.type === 'deposit';
-  const effectiveTemplate = isDeposit ? (ownerSettings?.depositTemplate || ownerSettings?.invoiceTemplate) : ownerSettings?.invoiceTemplate;
+  const baseTemplate = isDeposit ? (ownerSettings?.depositTemplate || ownerSettings?.invoiceTemplate) : ownerSettings?.invoiceTemplate;
+  const effectiveTemplate = template ? { ...(baseTemplate || {}), ...template } : baseTemplate;
 
   // Resolve matching tenant profile from state or user records to ensure contact details are never N/A when on file
   const matchingTenant = (state.tenants || []).find((t) => {
@@ -249,60 +252,62 @@ export const RentalInvoiceDocument: React.FC<RentalInvoiceDocumentProps> = ({
       </div>
 
       {/* Line Items Table */}
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
-        <tbody>
-          {items.map((item, idx) => (
-            <tr key={idx} style={{ borderBottom: '1px solid #F3F4F6' }}>
-              <td style={{ padding: '8px 0', fontWeight: 600, color: '#111827' }}>
-                {item.description || (isDeposit ? 'Security deposit (Held in trust)' : 'Rental Charge')}
-              </td>
-              <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827' }}>
-                {currency}{(Number(item.amount) || 0).toLocaleString('en-IN')}
-              </td>
-            </tr>
-          ))}
-          {taxAmount > 0 && (
-            <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-              <td style={{ padding: '8px 0', color: '#6B7280' }}>
-                Tax {effectiveTemplate?.taxLabel || 'GST'}
-              </td>
-              <td style={{ padding: '8px 0', textAlign: 'right', color: '#6B7280' }}>
-                {currency}{taxAmount.toLocaleString('en-IN')}
-              </td>
-            </tr>
-          )}
-          {discount > 0 && (
-            <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-              <td style={{ padding: '8px 0', color: '#DC2626' }}>
-                Discount / Concession Deducted
-              </td>
-              <td style={{ padding: '8px 0', textAlign: 'right', color: '#DC2626' }}>
-                -{currency}{discount.toLocaleString('en-IN')}
-              </td>
-            </tr>
-          )}
-          {effectiveLateFee > 0 && (
-            <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-              <td style={{ padding: '8px 0', color: '#DC2626' }}>
-                Late Fee Penalty {invoice.lateFeeCalculation ? `(${invoice.lateFeeCalculation})` : ''}
-              </td>
-              <td style={{ padding: '8px 0', textAlign: 'right', color: '#DC2626', fontWeight: 600 }}>
-                +{currency}{effectiveLateFee.toLocaleString('en-IN')}
-              </td>
-            </tr>
-          )}
-          {isLateFeeWaived && lateFeeApplied > 0 && (
-            <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-              <td style={{ padding: '8px 0', color: '#059669' }}>
-                Late Fee Penalty (Waived)
-              </td>
-              <td style={{ padding: '8px 0', textAlign: 'right', color: '#059669', fontWeight: 600 }}>
-                {currency}0 (WAIVED)
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      <div style={{ marginBottom: '14px', width: '100%' }}>
+        <table style={{ width: '100%', minWidth: 0, borderCollapse: 'collapse', fontSize: '12px', whiteSpace: 'normal' }}>
+          <tbody>
+            {items.map((item, idx) => (
+              <tr key={idx} style={{ borderBottom: '1px solid #F3F4F6' }}>
+                <td style={{ padding: '8px 8px 8px 0', fontWeight: 600, color: '#111827', whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                  {item.description || (isDeposit ? 'Security deposit (Held in trust)' : 'Rental Charge')}
+                </td>
+                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827', whiteSpace: 'nowrap' }}>
+                  {currency}{(Number(item.amount) || 0).toLocaleString('en-IN')}
+                </td>
+              </tr>
+            ))}
+            {taxAmount > 0 && (
+              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                <td style={{ padding: '8px 0', color: '#6B7280' }}>
+                  Tax {effectiveTemplate?.taxLabel || 'GST'}
+                </td>
+                <td style={{ padding: '8px 0', textAlign: 'right', color: '#6B7280' }}>
+                  {currency}{taxAmount.toLocaleString('en-IN')}
+                </td>
+              </tr>
+            )}
+            {discount > 0 && (
+              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                <td style={{ padding: '8px 0', color: '#DC2626' }}>
+                  Discount / Concession Deducted
+                </td>
+                <td style={{ padding: '8px 0', textAlign: 'right', color: '#DC2626' }}>
+                  -{currency}{discount.toLocaleString('en-IN')}
+                </td>
+              </tr>
+            )}
+            {effectiveLateFee > 0 && (
+              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                <td style={{ padding: '8px 0', color: '#DC2626' }}>
+                  Late Fee Penalty {invoice.lateFeeCalculation ? `(${invoice.lateFeeCalculation})` : ''}
+                </td>
+                <td style={{ padding: '8px 0', textAlign: 'right', color: '#DC2626', fontWeight: 600 }}>
+                  +{currency}{effectiveLateFee.toLocaleString('en-IN')}
+                </td>
+              </tr>
+            )}
+            {isLateFeeWaived && lateFeeApplied > 0 && (
+              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
+                <td style={{ padding: '8px 0', color: '#059669' }}>
+                  Late Fee Penalty (Waived)
+                </td>
+                <td style={{ padding: '8px 0', textAlign: 'right', color: '#059669', fontWeight: 600 }}>
+                  {currency}0 (WAIVED)
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       {/* Total */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #E5E7EB', paddingTop: '10px', marginBottom: '18px' }}>

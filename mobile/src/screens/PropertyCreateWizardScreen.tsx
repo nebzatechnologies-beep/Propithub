@@ -12,6 +12,8 @@ import {
   LayoutAnimation,
   ActivityIndicator,
   Platform,
+  RefreshControl,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -188,9 +190,10 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
     COUNTRY_OPTIONS[0];
 
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [refreshing, setRefreshing] = useState(false);
 
   // STEP 1 STATE: Identity & Structure
-  const [propertyName, setPropertyName] = useState('Maple Heights Residency');
+  const [propertyName, setPropertyName] = useState('');
   const [country, setCountry] = useState(initialCountryOption.name);
   const [isCountryDropdownOpen, setIsCountryDropdownOpen] = useState(false);
   const [countrySearchQuery, setCountrySearchQuery] = useState('');
@@ -215,12 +218,12 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
   const activePlacesQueryRef = useRef<string>('');
 
   const [confirmedAddress, setConfirmedAddress] = useState<MobilePropertyAddress>({
-    formattedAddress: `${initialCountryOption.address}, ${initialCountryOption.city}, ${initialCountryOption.state}`,
+    formattedAddress: '',
     country: initialCountryOption.name,
-    city: initialCountryOption.city,
-    placeId: 'default_place',
-    lat: initialCountryOption.defaultRent ? 28.3973 : 0,
-    lng: initialCountryOption.defaultRent ? 77.0694 : 0,
+    city: '',
+    placeId: '',
+    lat: 0,
+    lng: 0,
   });
 
   const [floorsCount, setFloorsCount] = useState('4');
@@ -272,30 +275,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
   const [bulkBaseDeposit, setBulkBaseDeposit] = useState(String(initialCountryOption.defaultDeposit || 50000));
   const [bulkDefaultPhoto, setBulkDefaultPhoto] = useState<string | null>(null);
 
-  const [initialUnits, setInitialUnits] = useState<UnitDraft[]>([
-    {
-      unitNumber: '101',
-      unitType: '2 BHK',
-      floor: '1st Floor',
-      areaSqFt: 1100,
-      furnishing: 'Semi-Furnished',
-      rent: initialCountryOption.defaultRent || 25000,
-      deposit: initialCountryOption.defaultDeposit || 50000,
-      currency: initialCountryOption.currency,
-      electricityMeter: 'MTR-101',
-    },
-    {
-      unitNumber: '102',
-      unitType: '2 BHK',
-      floor: '1st Floor',
-      areaSqFt: 1100,
-      furnishing: 'Semi-Furnished',
-      rent: initialCountryOption.defaultRent || 25000,
-      deposit: initialCountryOption.defaultDeposit || 50000,
-      currency: initialCountryOption.currency,
-      electricityMeter: 'MTR-102',
-    },
-  ]);
+  const [initialUnits, setInitialUnits] = useState<UnitDraft[]>([]);
 
   const [expandedUnitIndices, setExpandedUnitIndices] = useState<Record<number, boolean>>({});
   const [openUnitDropdown, setOpenUnitDropdown] = useState<{ idx: number; field: 'layout' | 'furnishing' } | null>(null);
@@ -663,7 +643,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
       return;
     }
     const unitCountToRegister = propStructure === 'single_unit' ? 1 : initialUnits.length;
-    if (usage.units.used + unitCountToRegister > usage.units.max) {
+    if (usage.units.max < 9999 && usage.units.used + unitCountToRegister > usage.units.max) {
       setLimitModalType('units');
       return;
     }
@@ -759,7 +739,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         }));
       }
 
-      saveProperty(newProp, newUnitsList);
+      await Promise.resolve(saveProperty(newProp, newUnitsList));
       Alert.alert(
         'Property Published! 🎉',
         propStructure === 'single_unit'
@@ -778,26 +758,41 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      <ScreenStatusBar />
-
-      {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity onPress={onBack} style={styles.backBtn} activeOpacity={0.7}>
-            <Ionicons name="arrow-back" size={20} color={colors.navy} />
-          </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: colors.navy }]}>Add New Property</Text>
-        </View>
-        <View style={[styles.stepBadge, isDark && { backgroundColor: '#064E3B', borderColor: '#059669' }]}>
-          <Text style={[styles.stepBadgeText, isDark && { color: '#6EE7B7' }]}>STEP {step} / 4</Text>
-        </View>
-      </View>
-
-      <ScrollView
-        style={[styles.scroll, { backgroundColor: colors.background }]}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
+        <ScreenStatusBar />
+
+        {/* Header */}
+        <View style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.line }]}>
+          <View style={styles.headerLeft}>
+            <TouchableOpacity onPress={onBack} style={styles.backBtn} activeOpacity={0.7}>
+              <Ionicons name="arrow-back" size={20} color={colors.navy} />
+            </TouchableOpacity>
+            <Text style={[styles.headerTitle, { color: colors.navy }]}>Add New Property</Text>
+          </View>
+          <View style={[styles.stepBadge, isDark && { backgroundColor: '#064E3B', borderColor: '#059669' }]}>
+            <Text style={[styles.stepBadgeText, isDark && { color: '#6EE7B7' }]}>STEP {step} / 4</Text>
+          </View>
+        </View>
+
+        <ScrollView
+          style={[styles.scroll, { backgroundColor: colors.background }]}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                setTimeout(() => setRefreshing(false), 500);
+              }}
+              tintColor={colors.primary}
+            />
+          }
+        >
         {/* Current Stage Chip Only (Web Parity Clean UX) */}
         {(() => {
           const stepDefs = [
@@ -1638,13 +1633,17 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                 <View style={styles.grid2}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.inputLabel}>Layout / House Type *</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={singleUnitType}
-                      onChangeText={setSingleUnitType}
-                      placeholder="e.g. 4 BHK Villa / Whole House"
-                      placeholderTextColor={colors.inkSoft}
-                    />
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                      {getUnitTypesForProperty(propertyType, singleUnitType).map((t) => (
+                        <TouchableOpacity
+                          key={t}
+                          style={[styles.smallSegBtn, { flexGrow: 0, paddingHorizontal: 10 }, singleUnitType === t && styles.smallSegBtnActive]}
+                          onPress={() => setSingleUnitType(t)}
+                        >
+                          <Text style={[styles.smallSegText, singleUnitType === t && styles.smallSegTextActive]} numberOfLines={1}>{t}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.inputLabel}>Property Identifier / Unit Label</Text>
@@ -1819,12 +1818,17 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     <View style={styles.grid2}>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.inputLabel}>Layout / Type</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={bulkUnitType}
-                          onChangeText={setBulkUnitType}
-                          placeholder="e.g. 2 BHK"
-                        />
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                          {getUnitTypesForProperty(propertyType, bulkUnitType).map((t) => (
+                            <TouchableOpacity
+                              key={t}
+                              style={[styles.smallSegBtn, { flexGrow: 0, paddingHorizontal: 10 }, bulkUnitType === t && styles.smallSegBtnActive]}
+                              onPress={() => setBulkUnitType(t)}
+                            >
+                              <Text style={[styles.smallSegText, bulkUnitType === t && styles.smallSegTextActive]} numberOfLines={1}>{t}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.inputLabel}>Furnishing</Text>
@@ -1863,6 +1867,16 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                           keyboardType="numeric"
                         />
                       </View>
+                    </View>
+
+                    <View style={{ marginBottom: 10 }}>
+                      <Text style={styles.inputLabel}>Base Security Deposit ({getSymbol(propCurrency)})</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={bulkBaseDeposit}
+                        onChangeText={setBulkBaseDeposit}
+                        keyboardType="numeric"
+                      />
                     </View>
 
                     {/* Batch Unit Photo (Opt) */}
@@ -2309,6 +2323,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
           onNavigate?.('owner_plan_subscription');
         }}
       />
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };

@@ -115,6 +115,9 @@ interface AppDataContextType {
   saveLandingConfig: (cfg: Partial<LandingConfig>) => Promise<void>;
   saveCommsConfig: (cfg: any) => Promise<void>;
   saveNotificationToggles: (toggles: Record<string, boolean>) => Promise<void>;
+  saveNotification: (notif: InAppNotification) => Promise<void>;
+  saveReview: (review: any, target?: 'owners' | 'tenants') => Promise<void>;
+  saveOwnerReviewReply: (reviewId: string, replyText: string, tenantId?: string, ownerName?: string) => Promise<void>;
   markNotificationRead: (notifId: string, fallbackNotif?: InAppNotification) => Promise<void>;
   saveTenantPayoutProfile: (profile: TenantPayoutProfile) => Promise<void>;
   createDepositSettlement: (settlement: DepositSettlement) => Promise<void>;
@@ -141,6 +144,9 @@ interface AppDataContextType {
   offerLeaseRenewal: (
     unit: string,
     terms: {
+      propertyId?: string;
+      agreementId?: string;
+      currency?: string;
       currentRent: number;
       percentageIncrease: number;
       proposedRent: number;
@@ -1528,6 +1534,81 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     );
 
+    // 32. Sync reviews live from Firestore (normalizing Web & Mobile review schemas)
+    const normalizeReviewRecord = (raw: any, docId?: string) => {
+      const id = raw?.id || docId || `rev-${Date.now()}`;
+      const owner = raw?.owner || raw?.ownerName || '';
+      const ownerName = raw?.ownerName || raw?.owner || '';
+      const by = raw?.by || raw?.tenantName || raw?.reviewerName || 'Verified Resident';
+      const tenantName = raw?.tenantName || (raw?.reviewType === 'tenant' ? raw?.tenant : raw?.by) || '';
+      const text = raw?.text ?? raw?.comment ?? '';
+      const comment = raw?.comment ?? raw?.text ?? '';
+      return {
+        ...raw,
+        id,
+        owner,
+        ownerName,
+        by,
+        tenantName,
+        text,
+        comment,
+        rating: Number(raw?.rating) || 5,
+        createdAt: raw?.createdAt || new Date().toISOString(),
+      };
+    };
+
+    const unsubReviews = onSnapshot(
+      collection(db, 'reviews'),
+      (snapshot) => {
+        const fbOwnerReviews: any[] = [];
+        const fbTenantReviews: any[] = [];
+        snapshot.forEach((d) => {
+          const raw = d.data();
+          if (!raw) return;
+          const normalized = normalizeReviewRecord(raw, d.id);
+          const isTenantReview =
+            raw.reviewType === 'tenant' ||
+            raw.targetRole === 'tenant' ||
+            (Boolean(raw.tenant) && !raw.owner && !raw.ownerName && !raw.ownerId);
+          if (isTenantReview) {
+            fbTenantReviews.push(normalized);
+          } else {
+            fbOwnerReviews.push(normalized);
+          }
+        });
+
+        setState((prev) => {
+          const ownerMap = new Map<string, any>();
+          (prev.reviews?.owners || []).forEach((r: any) => {
+            if (r?.id) ownerMap.set(r.id, normalizeReviewRecord(r, r.id));
+          });
+          fbOwnerReviews.forEach((r) => ownerMap.set(r.id, r));
+
+          const tenantMap = new Map<string, any>();
+          (prev.reviews?.tenants || []).forEach((r: any) => {
+            if (r?.id) tenantMap.set(r.id, normalizeReviewRecord(r, r.id));
+          });
+          fbTenantReviews.forEach((r) => tenantMap.set(r.id, r));
+
+          const sortDesc = (a: any, b: any) =>
+            new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+
+          return {
+            ...prev,
+            reviews: {
+              owners: Array.from(ownerMap.values()).sort(sortDesc),
+              tenants: Array.from(tenantMap.values()).sort(sortDesc),
+            },
+          };
+        });
+      },
+      (err) => {
+        if (err.code !== 'permission-denied') {
+          console.warn('Firestore reviews listener warning:', err);
+        }
+      }
+    );
+
     return () => {
       unsubUsers();
       unsubTenants();
@@ -1565,6 +1646,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubAnnouncements();
       unsubAcks();
       unsubEnquiries();
+      unsubReviews();
     };
   }, []);
 
@@ -4176,6 +4258,123 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
+  const saveNotification = async (notif: InAppNotification): Promise<void> => {
+    if (!notif || !notif.id) return;
+    const fullNotif: InAppNotification = {
+      ...notif,
+      isRead: Boolean(notif.isRead),
+      createdAt: notif.createdAt || new Date().toISOString(),
+    };
+    setState((prev) => ({
+      ...prev,
+      notifications: [fullNotif, ...(prev.notifications || []).filter((n) => n.id !== fullNotif.id)],
+    }));
+    if (isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'notifications', fullNotif.id), cleanFirestoreObject(fullNotif), { merge: true });
+      } catch (err) {
+        console.warn('Firestore saveNotification sync error:', err);
+      }
+    }
+  };
+
+  const saveReview = async (review: any, target?: 'owners' | 'tenants'): Promise<void> => {
+    const id = review?.id || `REV-${Date.now()}`;
+    const isTenantTarget =
+      target === 'tenants' ||
+      review?.reviewType === 'tenant' ||
+      review?.targetRole === 'tenant';
+    const bucket: 'owners' | 'tenants' = isTenantTarget ? 'tenants' : 'owners';
+    const normalized = {
+      ...review,
+      id,
+      reviewType: isTenantTarget ? 'tenant' : 'owner',
+      owner: review?.owner || review?.ownerName || '',
+      ownerName: review?.ownerName || review?.owner || '',
+      by: review?.by || review?.tenantName || 'Verified Resident',
+      tenantName: review?.tenantName || (isTenantTarget ? review?.tenant : review?.by) || '',
+      text: review?.text ?? review?.comment ?? '',
+      comment: review?.comment ?? review?.text ?? '',
+      rating: Number(review?.rating) || 5,
+      createdAt: review?.createdAt || new Date().toISOString(),
+    };
+
+    setState((prev) => ({
+      ...prev,
+      reviews: {
+        owners: bucket === 'owners'
+          ? [normalized, ...(prev.reviews?.owners || []).filter((r: any) => r.id !== id)]
+          : (prev.reviews?.owners || []),
+        tenants: bucket === 'tenants'
+          ? [normalized, ...(prev.reviews?.tenants || []).filter((r: any) => r.id !== id)]
+          : (prev.reviews?.tenants || []),
+      },
+    }));
+
+    if (isFirebaseConfigured) {
+      try {
+        await setDoc(doc(db, 'reviews', id), cleanFirestoreObject(normalized), { merge: true });
+      } catch (err) {
+        console.warn('Firestore saveReview sync error:', err);
+      }
+    }
+  };
+
+  const saveOwnerReviewReply = async (
+    reviewId: string,
+    replyText: string,
+    tenantId?: string,
+    ownerName?: string
+  ): Promise<void> => {
+    const trimmedReply = (replyText || '').trim();
+    if (!reviewId || !trimmedReply) return;
+
+    const replyDate = new Date().toISOString().split('T')[0];
+    const existingReview = (state.reviews?.owners || []).find((r: any) => r.id === reviewId);
+    const targetTenantId = tenantId || existingReview?.tenantId;
+    const resolvedOwnerName = ownerName || existingReview?.ownerName || existingReview?.owner || 'Property Owner';
+
+    const notif: InAppNotification | null = targetTenantId
+      ? {
+          id: `notif-reply-${Date.now()}`,
+          userId: targetTenantId,
+          title: `${resolvedOwnerName} replied to your review!`,
+          body: `"${trimmedReply}"`,
+          link: '/tenant/trust',
+          isRead: false,
+          createdAt: new Date().toISOString(),
+        }
+      : null;
+
+    setState((prev) => ({
+      ...prev,
+      reviews: {
+        ...prev.reviews,
+        owners: (prev.reviews?.owners || []).map((item: any) =>
+          item.id === reviewId
+            ? { ...item, ownerReply: trimmedReply, ownerReplyDate: replyDate }
+            : item
+        ),
+      },
+      notifications: notif ? [notif, ...(prev.notifications || []).filter((n) => n.id !== notif.id)] : prev.notifications,
+    }));
+
+    if (isFirebaseConfigured) {
+      try {
+        await setDoc(
+          doc(db, 'reviews', reviewId),
+          { ownerReply: trimmedReply, ownerReplyDate: replyDate },
+          { merge: true }
+        );
+        if (notif) {
+          await setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif), { merge: true });
+        }
+      } catch (err) {
+        console.warn('Firestore saveOwnerReviewReply sync error:', err);
+      }
+    }
+  };
+
   const markNotificationRead = async (notifId: string, fallbackNotif?: InAppNotification) => {
     setState((prev) => {
       const exists = (prev.notifications || []).some((n) => n.id === notifId);
@@ -5950,18 +6149,37 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const pmId = String(manager.id);
     const sanitizedManager = { ...manager };
     delete sanitizedManager.tempPassword;
+    const propIdsToAssign = Array.from(
+      new Set(
+        [
+          sanitizedManager.propertyId ? String(sanitizedManager.propertyId) : '',
+          ...(Array.isArray(sanitizedManager.assignedProperties)
+            ? sanitizedManager.assignedProperties.map((p: any) => String(p || ''))
+            : []),
+        ].filter(Boolean)
+      )
+    );
     setState((prev) => ({
       ...prev,
       propertyManagers: [...(prev.propertyManagers || []).filter((m: any) => String(m.id) !== pmId), sanitizedManager],
       users: userProfile ? [...prev.users.filter((u) => u.id !== userProfile.id), userProfile] : prev.users,
+      properties:
+        propIdsToAssign.length > 0
+          ? prev.properties.map((p) =>
+              propIdsToAssign.includes(p.id) ? { ...p, assignedManagerId: pmId } : p
+            )
+          : prev.properties,
     }));
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'propertyManagers', pmId), sanitizedManager, { merge: true });
+        await setDoc(doc(db, 'propertyManagers', pmId), cleanFirestoreObject(sanitizedManager), { merge: true });
+        for (const propId of propIdsToAssign) {
+          await setDoc(doc(db, 'properties', propId), { assignedManagerId: pmId }, { merge: true });
+        }
         if (userProfile) {
           const sanitizedProfile = { ...userProfile };
           delete (sanitizedProfile as any).tempPassword;
-          await setDoc(doc(db, 'users', userProfile.id), sanitizedProfile, { merge: true });
+          await setDoc(doc(db, 'users', userProfile.id), cleanFirestoreObject(sanitizedProfile), { merge: true });
         }
       } catch (err) {
         console.warn('Firestore saveManager sync error:', err);
@@ -7377,6 +7595,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         saveLandingConfig,
         saveCommsConfig,
         saveNotificationToggles,
+        saveNotification,
+        saveReview,
+        saveOwnerReviewReply,
         markNotificationRead,
         savePlatformInvoiceTemplate,
         saveTenantPayoutProfile,

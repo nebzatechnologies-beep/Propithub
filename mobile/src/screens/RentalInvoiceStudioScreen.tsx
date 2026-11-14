@@ -9,6 +9,7 @@ import {
   SafeAreaView,
   TextInput,
   Alert,
+  Share,
 } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -30,7 +31,7 @@ export const DEFAULT_DEPOSIT_TERMS = `1. Security Deposit Classification: 100% R
 export const RentalInvoiceStudioScreen: React.FC<{
   onBack?: () => void;
   onSuccess?: () => void;
-  initialType?: 'rent' | 'deposit';
+  initialType?: 'rent' | 'deposit' | 'utility' | 'maintenance' | 'late_fee';
 }> = ({ onBack, onSuccess, initialType = 'rent' }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
@@ -38,8 +39,7 @@ export const RentalInvoiceStudioScreen: React.FC<{
   const { user } = useMobileAuth();
   const { format, getSymbol, viewCurrency } = useMobileCurrency();
 
-  // Mode: 'rent' or 'deposit'
-  const [invoiceType, setInvoiceType] = useState<'rent' | 'deposit'>(initialType);
+  const [invoiceType, setInvoiceType] = useState<'rent' | 'deposit' | 'utility' | 'maintenance' | 'late_fee'>(initialType);
 
   // Active Tab: 'edit' or 'preview' (1-to-1 Web Parity)
   const [activeTab, setActiveTab] = useState<'edit' | 'preview'>('edit');
@@ -86,10 +86,12 @@ export const RentalInvoiceStudioScreen: React.FC<{
   const [depositAmount, setDepositAmount] = useState(
     selectedUnit?.deposit ? selectedUnit.deposit.toString() : (selectedUnit?.rent ? (selectedUnit.rent * 2).toString() : '50000')
   );
-  const [societyDues, setSocietyDues] = useState('1500');
-  const [waterCharges, setWaterCharges] = useState('350');
-  const [parkingFee, setParkingFee] = useState('500');
+  const [societyDues, setSocietyDues] = useState('0');
+  const [waterCharges, setWaterCharges] = useState('0');
+  const [parkingFee, setParkingFee] = useState('0');
   const [lateFee, setLateFee] = useState('0');
+  const [taxPercent, setTaxPercent] = useState('0');
+  const [discountAmt, setDiscountAmt] = useState('0');
 
   // Additional customizable line items
   const [extraItems, setExtraItems] = useState<MobileInvoiceItem[]>([]);
@@ -97,11 +99,11 @@ export const RentalInvoiceStudioScreen: React.FC<{
   const [newAmt, setNewAmt] = useState('');
 
   // Electricity Sub-Meter
-  const [prevReading, setPrevReading] = useState('1420');
-  const [currReading, setCurrReading] = useState('1610');
-  const [ratePerKwh, setRatePerKwh] = useState('9.5');
+  const [prevReading, setPrevReading] = useState('0');
+  const [currReading, setCurrReading] = useState('0');
+  const [ratePerKwh, setRatePerKwh] = useState('0');
 
-  const [dueDate, setDueDate] = useState('2026-11-10');
+  const [dueDate, setDueDate] = useState(new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]);
   const [notes, setNotes] = useState('Thank you for your prompt tenancy settlement.');
 
   // Computations
@@ -118,11 +120,22 @@ export const RentalInvoiceStudioScreen: React.FC<{
   const parkingNum = parseInt(parkingFee, 10) || 0;
   const lateFeeNum = parseInt(lateFee, 10) || 0;
   const extraTotal = extraItems.reduce((sum, item) => sum + (item.amount || 0), 0);
+  const taxPctNum = parseFloat(taxPercent) || 0;
+  const discountNum = parseFloat(discountAmt) || 0;
 
-  const grandTotal =
+  const subtotal =
     invoiceType === 'deposit'
       ? depositNum + extraTotal
+      : invoiceType === 'utility'
+      ? electricityTotal + waterNum + extraTotal
+      : invoiceType === 'maintenance'
+      ? societyNum + extraTotal
+      : invoiceType === 'late_fee'
+      ? lateFeeNum + extraTotal
       : rentNum + societyNum + waterNum + parkingNum + electricityTotal + lateFeeNum + extraTotal;
+
+  const taxAmount = Math.round(Math.max(0, subtotal - discountNum) * (taxPctNum / 100));
+  const grandTotal = Math.max(0, subtotal - discountNum + taxAmount);
 
   // Compiled items list
   const compiledItemsList = useMemo<MobileInvoiceItem[]>(() => {
@@ -177,7 +190,7 @@ export const RentalInvoiceStudioScreen: React.FC<{
     setNewAmt('');
   };
 
-  const handleGenerateInvoice = () => {
+  const handleGenerateInvoice = (targetStatus: 'sent' | 'draft' = 'sent') => {
     if (!selectedUnit) {
       Alert.alert('No Unit Selected', 'Please select a valid unit to issue an invoice.');
       return;
@@ -206,14 +219,16 @@ export const RentalInvoiceStudioScreen: React.FC<{
       unit: selectedUnit.unitNumber,
       propertyName: selectedUnit.propertyName,
       propertyId: selectedUnit.propertyId,
-      amount: isDep ? depositNum : rentNum,
-      tax: 0,
+      amount: subtotal,
+      tax: taxAmount,
+      discount: discountNum,
       total: grandTotal,
       due: dueDate,
-      status: 'sent',
+      status: targetStatus,
       currency: effectiveCurrency,
       type: invoiceType,
       invoiceType: invoiceType,
+      notes: notes.trim() || undefined,
       lateFeeApplied: isDep ? 0 : lateFeeNum,
       items: compiledItemsList,
       meterReadings: isDep
@@ -225,12 +240,12 @@ export const RentalInvoiceStudioScreen: React.FC<{
             waterCharges: waterNum,
           },
       createdAt: new Date().toISOString(),
-    };
+    } as MobileInvoice;
 
     saveInvoice(newInvoice);
     Alert.alert(
-      isDep ? 'Deposit Voucher Dispatched! 🛡️' : 'Invoice Dispatched! 💳',
-      `${isDep ? 'Security Deposit Voucher' : 'Invoice'} ${invId} for ${format(grandTotal, effectiveCurrency)} has been sent to ${newInvoice.tenant}.`
+      targetStatus === 'draft' ? 'Draft Saved ✓' : isDep ? 'Deposit Voucher Dispatched! 🛡️' : 'Invoice Dispatched! 💳',
+      `${isDep ? 'Security Deposit Voucher' : 'Invoice'} ${invId} for ${format(grandTotal, effectiveCurrency)} ${targetStatus === 'draft' ? 'saved as draft' : `has been sent to ${newInvoice.tenant}`}.`
     );
     if (onSuccess) onSuccess();
     else if (onBack) onBack();
@@ -287,28 +302,35 @@ export const RentalInvoiceStudioScreen: React.FC<{
 
       {activeTab === 'edit' ? (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          {/* Category Selector: Rent vs Deposit Voucher */}
-          <View style={styles.categoryRow}>
-            <TouchableOpacity
-              style={[styles.categoryBtn, invoiceType === 'rent' && styles.categoryBtnActive]}
-              onPress={() => setInvoiceType('rent')}
-            >
-              <MaterialCommunityIcons name="receipt" size={16} color={invoiceType === 'rent' ? '#059669' : colors.inkSoft} style={{ marginRight: 5 }} />
-              <Text style={[styles.categoryBtnText, invoiceType === 'rent' && styles.categoryBtnTextActive]}>
-                Rent Invoice
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.categoryBtn, invoiceType === 'deposit' && styles.categoryBtnDepositActive]}
-              onPress={() => setInvoiceType('deposit')}
-            >
-              <MaterialCommunityIcons name="shield-check" size={16} color={invoiceType === 'deposit' ? '#D97706' : colors.inkSoft} style={{ marginRight: 5 }} />
-              <Text style={[styles.categoryBtnText, invoiceType === 'deposit' && { color: '#B45309', fontWeight: '700' }]}>
-                Security Deposit Voucher
-              </Text>
-            </TouchableOpacity>
-          </View>
+          {/* Category Selector: All 5 Categories */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }} contentContainerStyle={{ gap: 8 }}>
+            {([
+              { key: 'rent', label: 'Rent Invoice' },
+              { key: 'deposit', label: 'Deposit Voucher' },
+              { key: 'utility', label: 'Utility Bill' },
+              { key: 'maintenance', label: 'Maintenance' },
+              { key: 'late_fee', label: 'Late Fee' },
+            ] as const).map((cat) => (
+              <TouchableOpacity
+                key={cat.key}
+                style={[
+                  styles.categoryBtn,
+                  { flex: 0, paddingHorizontal: 14 },
+                  invoiceType === cat.key && (cat.key === 'deposit' ? styles.categoryBtnDepositActive : styles.categoryBtnActive),
+                ]}
+                onPress={() => setInvoiceType(cat.key)}
+              >
+                <Text
+                  style={[
+                    styles.categoryBtnText,
+                    invoiceType === cat.key && (cat.key === 'deposit' ? { color: '#B45309', fontWeight: '700' } : styles.categoryBtnTextActive),
+                  ]}
+                >
+                  {cat.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
 
           <View style={styles.card}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -545,6 +567,32 @@ export const RentalInvoiceStudioScreen: React.FC<{
               <Text style={styles.addItemBtnText}>+ Add Line Item</Text>
             </TouchableOpacity>
 
+            {/* Tax & Discount Controls */}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Tax (%)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={taxPercent}
+                  onChangeText={setTaxPercent}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  placeholderTextColor={colors.inkSoft}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Discount ({getSymbol(effectiveCurrency)})</Text>
+                <TextInput
+                  style={styles.input}
+                  value={discountAmt}
+                  onChangeText={setDiscountAmt}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  placeholderTextColor={colors.inkSoft}
+                />
+              </View>
+            </View>
+
             {/* Grand Total Summary Box */}
             <View style={styles.totalBox}>
               <View>
@@ -560,19 +608,27 @@ export const RentalInvoiceStudioScreen: React.FC<{
               </Text>
             </View>
 
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
               <TouchableOpacity
                 style={styles.previewNavBtn}
                 onPress={() => setActiveTab('preview')}
                 activeOpacity={0.85}
               >
                 <Feather name="eye" size={15} color={colors.navy} style={{ marginRight: 5 }} />
-                <Text style={styles.previewNavBtnText}>Preview Voucher</Text>
+                <Text style={styles.previewNavBtnText}>Preview</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.dispatchBtn, { flex: 2, backgroundColor: invoiceType === 'deposit' ? '#D97706' : '#10B981' }]}
-                onPress={handleGenerateInvoice}
+                style={[styles.previewNavBtn, { backgroundColor: colors.surfaceSunken }]}
+                onPress={() => handleGenerateInvoice('draft')}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.previewNavBtnText, { color: colors.ink }]}>Save Draft</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.dispatchBtn, { flex: 1.5, backgroundColor: invoiceType === 'deposit' ? '#D97706' : '#10B981' }]}
+                onPress={() => handleGenerateInvoice('sent')}
                 activeOpacity={0.85}
               >
                 <Text style={styles.dispatchBtnText}>
@@ -668,8 +724,22 @@ export const RentalInvoiceStudioScreen: React.FC<{
               </TouchableOpacity>
 
               <TouchableOpacity
+                style={styles.previewNavBtn}
+                onPress={() =>
+                  Share.share({
+                    title: `${invoiceType.toUpperCase()} — Unit ${selectedUnit?.unitNumber || ''}`,
+                    message: `Invoice for ${matchedTenant?.name || selectedUnit?.tenant || 'Resident'} (Unit ${selectedUnit?.unitNumber || ''})\nTotal: ${format(grandTotal, effectiveCurrency)}\nDue: ${dueDate}\n${notes}`,
+                  })
+                }
+                activeOpacity={0.85}
+              >
+                <Feather name="share-2" size={15} color={colors.navy} style={{ marginRight: 5 }} />
+                <Text style={styles.previewNavBtnText}>Share</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
                 style={[styles.dispatchBtn, { flex: 2, backgroundColor: invoiceType === 'deposit' ? '#D97706' : '#10B981' }]}
-                onPress={handleGenerateInvoice}
+                onPress={() => handleGenerateInvoice('sent')}
                 activeOpacity={0.85}
               >
                 <Text style={styles.dispatchBtnText}>

@@ -31,7 +31,7 @@ import { Property, PropertyAddress, Unit } from '../../types';
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { uploadOrCompressImage } from '../../lib/imageUploader';
 import { db, isFirebaseConfigured } from '../../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { sanitizeCountry } from '../../lib/addressUtils';
 import { OnboardResidentModal } from '../../components/owner/OnboardResidentModal';
 import { AddPropertyWizardModal } from '../../components/owner/AddPropertyWizardModal';
@@ -281,7 +281,28 @@ export const ManagedPropertiesPage: React.FC = () => {
     updateState((prev) => ({
       ...prev,
       units: prev.units.filter((u) => u.id !== unitId),
+      properties: prev.properties.map((p) =>
+        target && p.id === target.propertyId
+          ? { ...p, unitCount: Math.max(0, (p.unitCount ?? prev.units.filter((u) => u.propertyId === p.id).length) - 1) }
+          : p
+      ),
     }));
+    if (isFirebaseConfigured) {
+      try {
+        await deleteDoc(doc(db, 'units', unitId));
+        if (target?.propertyId) {
+          const remaining = state.units.filter((u) => u.propertyId === target.propertyId && u.id !== unitId);
+          await setDoc(
+            doc(db, 'properties', target.propertyId),
+            { unitCount: remaining.length, occupied: remaining.filter((u) => u.status === 'occupied').length },
+            { merge: true }
+          );
+        }
+      } catch (err: any) {
+        console.warn('Firestore deleteUnit error:', err);
+        showToast(`⚠️ Unit removed locally but cloud sync failed: ${err?.message || 'Error'}`);
+      }
+    }
     showToast(`✓ Unit ${target?.unitNumber || unitId} deleted.`);
     setEditingUnit(null);
     setViewingUnit(null);

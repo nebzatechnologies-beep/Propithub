@@ -1,24 +1,23 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
-  StatusBar,
   TextInput,
   Image,
   Modal,
   Alert,
   ActivityIndicator,
   LayoutAnimation,
-  Linking,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
-import { PropithubIcon } from '../components/PropithubLogo';
+import { ScreenContainer } from '../components/ScreenContainer';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
@@ -49,14 +48,35 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
 }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
-  const { state, planUsage, saveUnit, deleteUnit, saveProperty, updateTenancyRequest, updateAgreement } = useMobileAppData();
+  const {
+    state,
+    planUsage,
+    saveUnit,
+    deleteUnit,
+    saveProperty,
+    saveInvoice,
+    saveTenant,
+    updateTenancyRequest,
+    updateAgreement,
+  } = useMobileAppData();
   const { user } = useMobileAuth();
   const { format, getSymbol, viewCurrency } = useMobileCurrency();
   const { usage, currentPlanName } = usePlanLimits();
   const [limitModalType, setLimitModalType] = useState<ResourceQuotaType | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 600);
+  }, []);
 
   const [activeTab, setActiveTab] = useState<'properties' | 'directory'>('properties');
   const [searchQuery, setSearchQuery] = useState('');
+  const [actionSheetUnit, setActionSheetUnit] = useState<MobileUnit | null>(null);
+  const [viewingUnit, setViewingUnit] = useState<MobileUnit | null>(null);
+  const [unitToConfirmListing, setUnitToConfirmListing] = useState<MobileUnit | null>(null);
+  const [vacateConfirmTarget, setVacateConfirmTarget] = useState<{ unit: MobileUnit; updatedData: MobileUnit } | null>(null);
+  const [isProcessingVacate, setIsProcessingVacate] = useState(false);
 
   // Add Unit Modal State
   const [targetProperty, setTargetProperty] = useState<MobileProperty | null>(null);
@@ -279,11 +299,22 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
     };
 
     saveUnit(newUnit);
+    const existingPropUnitCount = myUnits.filter((u) => u.propertyId === targetProperty.id).length;
+    saveProperty({
+      ...targetProperty,
+      unitCount: Math.max((targetProperty.unitCount || 0) + 1, existingPropUnitCount + 1),
+    });
     setTargetProperty(null);
     Alert.alert('Unit Added', `Unit ${newUnit.unitNumber} added to ${targetProperty.name}`);
   };
 
   const handleOpenEditUnit = (unit: MobileUnit) => {
+    const effectiveStatus = resolveEffectiveUnitStatus(
+      unit,
+      state.agreements,
+      state.tenancyRequests,
+      state.moveOuts
+    );
     setEditingUnit(unit);
     setOpenEditDropdown(null);
     setEditUnitNumber(unit.unitNumber || '');
@@ -293,7 +324,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
     setEditFurnishing(unit.furnishing || 'Semi-Furnished');
     setEditRent(unit.rent != null ? unit.rent.toString() : '');
     setEditDeposit(unit.deposit != null ? unit.deposit.toString() : '');
-    setEditStatus(unit.status || 'vacant');
+    setEditStatus(effectiveStatus);
     setEditElectricityMeter(unit.electricityMeter || '');
     setEditWaterMeter(unit.waterMeter || '');
     setEditUnitImages(
@@ -303,6 +334,22 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
         ? [unit.image]
         : []
     );
+  };
+
+  const handleRequestToggleListing = (unit: MobileUnit) => {
+    if (!unit.isListedPublicly) {
+      setUnitToConfirmListing(unit);
+    } else {
+      saveUnit({ ...unit, isListedPublicly: false });
+      Alert.alert('Listing Hidden', `Unit ${unit.unitNumber} has been unlisted from the public marketplace.`);
+    }
+  };
+
+  const handleUnitRowPress = (unit: MobileUnit) => {
+    if (onUnitPress) {
+      onUnitPress(unit);
+    }
+    setViewingUnit(unit);
   };
 
   const getUnitStatusBadge = (status?: string) => {
@@ -319,36 +366,108 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
     }
   };
 
+  const matchesUnitForCleanup = (
+    item: { unit?: string; unitNumber?: string; unitId?: string; propertyId?: string },
+    targetUnit: MobileUnit
+  ) => {
+    const cleanTarget = (targetUnit.unitNumber || targetUnit.id || '')
+      .toLowerCase()
+      .replace(/^(unit|apt|flat|#)\s*/i, '')
+      .trim();
+    const itemUnit = (item.unitNumber || item.unit || '')
+      .toLowerCase()
+      .replace(/^(unit|apt|flat|#)\s*/i, '')
+      .trim();
+    const matchesUnit = (cleanTarget && itemUnit === cleanTarget) || item.unitId === targetUnit.id || item.unit === targetUnit.id;
+    const matchesProp = !item.propertyId || !targetUnit.propertyId || item.propertyId === targetUnit.propertyId;
+    return matchesUnit && matchesProp;
+  };
+
+  const executeVacateOrCancelUnit = async (targetUnit: MobileUnit, updatedData: MobileUnit) => {
+    setIsProcessingVacate(true);
+    try {
+      const cleanNum = updatedData.unitNumber || targetUnit.unitNumber || targetUnit.id;
+
+      // 1. Cancel pending or accepted tenancy requests for this unit
+      for (const r of state.tenancyRequests || []) {
+        if ((r.status === 'pending' || r.status === 'accepted') && matchesUnitForCleanup(r, targetUnit)) {
+          await updateTenancyRequest(r.id, 'cancelled');
+        }
+      }
+
+      // 2. Terminate active/draft/pending agreements for this unit
+      for (const a of state.agreements || []) {
+        if (a.status !== 'terminated' && a.status !== 'cancelled' && a.status !== 'rejected' && matchesUnitForCleanup(a, targetUnit)) {
+          await updateAgreement(a.id, { status: 'terminated' });
+        }
+      }
+
+      // 3. Void unpaid deposit invoices for this unit
+      for (const inv of state.invoices || []) {
+        if (
+          inv.type === 'deposit' &&
+          inv.status !== 'paid' &&
+          inv.status !== 'cancelled' &&
+          (inv.status as string) !== 'void' &&
+          matchesUnitForCleanup({ unit: inv.unit, propertyId: inv.propertyId }, targetUnit)
+        ) {
+          saveInvoice({ ...inv, status: 'cancelled' });
+        }
+      }
+
+      // 4. Clean up resident record in state.tenants
+      const targetTenantId = targetUnit.currentTenantId;
+      const targetTenantName = targetUnit.tenant;
+      const matchedTenant = (state.tenants || []).find(
+        (t) =>
+          (targetTenantId && t.id === targetTenantId) ||
+          (targetTenantName && t.name === targetTenantName)
+      );
+      if (matchedTenant) {
+        const remainingUnits = (matchedTenant.unitsRented || []).filter(
+          (uStr) => uStr !== targetUnit.unitNumber && uStr !== targetUnit.id && uStr !== cleanNum
+        );
+        await saveTenant({
+          ...matchedTenant,
+          unit: remainingUnits[0] || '',
+          unitsRented: remainingUnits,
+          status: remainingUnits.length > 0 ? 'active' : 'past',
+        });
+      }
+
+      // 5. Save unit as vacant
+      const vacatedUnit: MobileUnit = {
+        ...updatedData,
+        unitNumber: cleanNum,
+        status: 'vacant',
+        tenant: null,
+        currentTenantId: null,
+      };
+      saveUnit(vacatedUnit);
+      setVacateConfirmTarget(null);
+      setEditingUnit(null);
+      setOpenEditDropdown(null);
+      if (viewingUnit?.id === vacatedUnit.id) {
+        setViewingUnit(vacatedUnit);
+      }
+      Alert.alert('Unit Vacated ✓', `Unit ${cleanNum} is now marked Vacant and pending reservations/deposit invoices have been cleared.`);
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Could not complete unit vacate.');
+    } finally {
+      setIsProcessingVacate(false);
+    }
+  };
+
   const handleSaveUnitEdit = () => {
     if (!editingUnit) return;
     const cleanNum = editUnitNumber.trim() || editingUnit.unitNumber || editingUnit.id;
     const isBecomingVacant = editStatus === 'vacant';
-
-    // Cascade cancellation when changing unit status to vacant
-    if (isBecomingVacant) {
-      const cleanTarget = cleanNum.toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
-      const propId = editingUnit.propertyId;
-
-      // 1. Cancel any pending or accepted tenancy requests for this unit
-      (state.tenancyRequests || []).forEach((r) => {
-        const rUnit = (r.unitNumber || r.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
-        const matchesUnit = (rUnit === cleanTarget || r.unitId === editingUnit.id);
-        const matchesProp = !r.propertyId || !propId || r.propertyId === propId;
-        if (matchesUnit && matchesProp && (r.status === 'pending' || r.status === 'accepted')) {
-          updateTenancyRequest(r.id, 'cancelled');
-        }
-      });
-
-      // 2. Terminate draft / pending agreements for this unit
-      (state.agreements || []).forEach((a) => {
-        const aUnit = (a.unit || '').toLowerCase().replace(/^(unit|apt|flat|#)\s*/i, '').trim();
-        const matchesUnit = (aUnit === cleanTarget || a.unitId === editingUnit.id);
-        const matchesProp = !a.propertyId || !propId || a.propertyId === propId;
-        if (matchesUnit && matchesProp && a.status !== 'terminated' && a.status !== 'cancelled') {
-          updateAgreement(a.id, { status: 'terminated' });
-        }
-      });
-    }
+    const currentEffective = resolveEffectiveUnitStatus(
+      editingUnit,
+      state.agreements,
+      state.tenancyRequests,
+      state.moveOuts
+    );
 
     const updated: MobileUnit = {
       ...editingUnit,
@@ -367,15 +486,34 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
       images: editUnitImages,
       image: editUnitImages[0] || undefined,
     };
+
+    // Require explicit vacate confirmation if unit is occupied / has active resident
+    if (
+      isBecomingVacant &&
+      (editingUnit.status === 'occupied' || currentEffective === 'occupied' || Boolean(editingUnit.tenant))
+    ) {
+      setVacateConfirmTarget({ unit: editingUnit, updatedData: updated });
+      return;
+    }
+
+    if (isBecomingVacant) {
+      executeVacateOrCancelUnit(editingUnit, updated);
+      return;
+    }
+
     saveUnit(updated);
     setEditingUnit(null);
     setOpenEditDropdown(null);
+    if (viewingUnit?.id === updated.id) {
+      setViewingUnit(updated);
+    }
     Alert.alert('Unit Updated', `Unit ${cleanNum} updated successfully.`);
   };
 
   const handleDeleteUnit = () => {
     if (!editingUnit) return;
-    if (editingUnit.status === 'occupied' || editingUnit.tenant) {
+    const effective = resolveEffectiveUnitStatus(editingUnit, state.agreements, state.tenancyRequests, state.moveOuts);
+    if (effective === 'occupied' || editingUnit.status === 'occupied' || editingUnit.tenant) {
       Alert.alert(
         'Cannot Delete Unit',
         '⚠️ Cannot delete an occupied unit. Please vacate the tenant first.'
@@ -392,7 +530,16 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
           style: 'destructive',
           onPress: () => {
             const num = editingUnit.unitNumber || editingUnit.id;
+            const parentProp = myProperties.find((p) => p.id === editingUnit.propertyId);
             deleteUnit(editingUnit.id);
+            if (parentProp) {
+              const remainingPropUnits = myUnits.filter((u) => u.propertyId === parentProp.id && u.id !== editingUnit.id).length;
+              saveProperty({
+                ...parentProp,
+                unitCount: Math.max(0, Math.min((parentProp.unitCount || 1) - 1, remainingPropUnits)),
+              });
+            }
+            if (viewingUnit?.id === editingUnit.id) setViewingUnit(null);
             setEditingUnit(null);
             setOpenEditDropdown(null);
             Alert.alert('Unit Deleted', `Unit ${num} has been deleted.`);
@@ -427,21 +574,22 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* StatusBar managed globally */}
-      <ScreenStatusBar />
-
-      {/* Header */}
-      <Header
-        title="Properties"
-        onNotificationPress={() => onNavigate?.('notifications_center')}
-        onProfilePress={onProfilePress}
-      />
-
-      <ScrollView
-        style={[styles.scroll, { backgroundColor: colors.background }]}
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <ScreenContainer
+        scrollable
+        refreshing={refreshing}
+        onRefresh={handleRefresh}
         contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
+        header={
+          <>
+            <ScreenStatusBar />
+            <Header
+              title="Properties"
+              onNotificationPress={() => onNavigate?.('notifications_center')}
+              onProfilePress={onProfilePress}
+            />
+          </>
+        }
       >
         {/* Plan Limits Indicator Strip */}
         <View style={[styles.planUsageStrip, isDark && { backgroundColor: 'rgba(37, 99, 235, 0.15)', borderColor: 'rgba(37, 99, 235, 0.3)' }]}>
@@ -696,145 +844,191 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                       <View style={styles.divider} />
 
                       {/* Action Bar for this property */}
-                      <View style={styles.propActionRow}>
-                        <Text style={styles.unitDirectoryEyebrow}>
-                          UNITS ({propUnits.length})
-                        </Text>
-                        <TouchableOpacity
-                          style={styles.addUnitSmallBtn}
-                          onPress={() => handleOpenAddUnit(prop)}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="add" size={14} color="#059669" />
-                          <Text style={styles.addUnitSmallBtnText}>Add Unit</Text>
-                        </TouchableOpacity>
-                      </View>
+                      {(() => {
+                        const isSingleUnit =
+                          prop.propertyStructure === 'single_unit' ||
+                          prop.isSingleUnit ||
+                          ((prop.propertyType || '').toLowerCase().includes('single') && propUnits.length <= 1) ||
+                          (propUnits.length === 1 && propUnits[0]?.unitNumber === 'Entire House');
+                        const singleUnit = propUnits[0];
+                        const singleEffective = singleUnit
+                          ? resolveEffectiveUnitStatus(singleUnit, state.agreements, state.tenancyRequests, state.moveOuts)
+                          : 'vacant';
+                        const singleBadge = getUnitStatusBadge(singleEffective);
 
-                      {/* Units within this property */}
-                      {propUnits.map((u) => {
-                        const unitPhotos = (u.images || []).filter((img) => img && !img.includes('unsplash.com'));
-                        const unitThumb = unitPhotos[0] || (u.image && !u.image.includes('unsplash.com') ? u.image : null);
-                        const isUploadingThisUnit = uploadingUnitId === u.id;
+                        if (isSingleUnit) {
+                          return (
+                            <>
+                              <View style={styles.propActionRow}>
+                                <Text style={styles.unitDirectoryEyebrow}>SINGLE-UNIT ASSET</Text>
+                                {singleUnit && (
+                                  <TouchableOpacity
+                                    style={styles.manageActionBtn}
+                                    onPress={() => setActionSheetUnit(singleUnit)}
+                                    activeOpacity={0.75}
+                                  >
+                                    <Feather name="more-horizontal" size={16} color={colors.inkSoft} />
+                                  </TouchableOpacity>
+                                )}
+                              </View>
+                              {singleUnit ? (
+                                <View style={[styles.singleUnitCard, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
+                                  <View style={styles.singleUnitTopRow}>
+                                    <View style={{ flex: 1, minWidth: 0 }}>
+                                      <Text style={[styles.unitItemTitle, { color: colors.navy }]} numberOfLines={1}>
+                                        {singleUnit.unitType || prop.propertyType || 'Single Family Home'}
+                                      </Text>
+                                      <Text style={[styles.unitItemSub, { color: colors.inkSoft }]} numberOfLines={1}>
+                                        {format(singleUnit.rent, singleUnit.currency || viewCurrency)}/mo • Dep {format(singleUnit.deposit, singleUnit.currency || viewCurrency)}
+                                      </Text>
+                                    </View>
+                                    <View style={singleBadge.badge}>
+                                      <Text style={singleBadge.text}>{singleBadge.label}</Text>
+                                    </View>
+                                  </View>
+
+                                  <Text style={[styles.singleUnitMetaText, { color: colors.inkSoft }]} numberOfLines={1}>
+                                    {singleUnit.areaSqFt ? `${singleUnit.areaSqFt} sq.ft • ` : ''}
+                                    {singleUnit.furnishing || 'Semi-Furnished'}
+                                    {singleUnit.tenant ? ` • Resident: ${singleUnit.tenant}` : ' • Available for lease'}
+                                  </Text>
+
+                                  <View style={styles.singleUnitBtnRow}>
+                                    <TouchableOpacity
+                                      style={[styles.singleUnitBtn, { backgroundColor: colors.surface, borderColor: colors.line }]}
+                                      onPress={() => handleOpenEditUnit(singleUnit)}
+                                      activeOpacity={0.8}
+                                    >
+                                      <Feather name="edit-2" size={12} color={colors.navy} />
+                                      <Text style={[styles.singleUnitBtnText, { color: colors.navy }]}>Edit Specs</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={[styles.singleUnitBtn, { backgroundColor: '#059669', borderColor: '#059669' }]}
+                                      onPress={() => handleUnitRowPress(singleUnit)}
+                                      activeOpacity={0.8}
+                                    >
+                                      <Feather name="eye" size={12} color="#FFFFFF" />
+                                      <Text style={[styles.singleUnitBtnText, { color: '#FFFFFF' }]}>
+                                        {singleEffective === 'occupied' ? 'View Lease' : 'View / Lease'}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              ) : (
+                                <TouchableOpacity
+                                  style={styles.addUnitSmallBtn}
+                                  onPress={() => handleOpenAddUnit(prop)}
+                                  activeOpacity={0.8}
+                                >
+                                  <Ionicons name="add" size={14} color="#059669" />
+                                  <Text style={styles.addUnitSmallBtnText}>Configure Single-Unit Specs</Text>
+                                </TouchableOpacity>
+                              )}
+                            </>
+                          );
+                        }
 
                         return (
-                          <View key={u.id} style={[styles.unitItem, { gap: 10 }]}>
-                            {/* Unit Photo Thumbnail / Quick Upload */}
-                            <TouchableOpacity
-                              onPress={() => {
-                                if (unitThumb) {
-                                  setPreviewImage({ url: unitThumb, title: `${prop.name} • Unit ${u.unitNumber}` });
-                                } else {
-                                  handleQuickUnitPhotoUpload(u);
-                                }
-                              }}
-                              style={{
-                                width: 38,
-                                height: 38,
-                                borderRadius: 8,
-                                backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
-                                borderWidth: 1,
-                                borderColor: colors.line,
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                overflow: 'hidden',
-                              }}
-                              activeOpacity={0.8}
-                            >
-                              {isUploadingThisUnit ? (
-                                <ActivityIndicator size="small" color="#059669" />
-                              ) : unitThumb ? (
-                                <Image source={{ uri: unitThumb }} style={{ width: '100%', height: '100%' }} />
-                              ) : (
-                                <Feather name="camera" size={14} color={colors.inkSoft} />
-                              )}
-                            </TouchableOpacity>
-
-                            <View style={{ flex: 1 }}>
-                              <Text style={[styles.unitItemTitle, { color: colors.navy }]}>
-                                Unit {u.unitNumber} ({u.unitType}) • {u.floor}
+                          <>
+                            <View style={styles.propActionRow}>
+                              <Text style={styles.unitDirectoryEyebrow}>
+                                UNITS ({propUnits.length})
                               </Text>
-                              <Text style={[styles.unitItemSub, { color: colors.inkSoft }]}>
-                                {format(u.rent, u.currency || viewCurrency)}/mo • Dep {format(u.deposit, u.currency || viewCurrency)}
-                                {u.tenant ? ` • ${u.tenant}` : ''}
-                              </Text>
-                            </View>
-
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                              {(!u.status || u.status === 'vacant') && (
-                                <TouchableOpacity
-                                  onPress={() => saveUnit({ ...u, isListedPublicly: !u.isListedPublicly })}
-                                  style={{
-                                    paddingHorizontal: 6,
-                                    paddingVertical: 3,
-                                    borderRadius: 6,
-                                    backgroundColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.14)' : 'rgba(100, 116, 139, 0.12)',
-                                    borderWidth: 1,
-                                    borderColor: u.isListedPublicly ? 'rgba(16, 185, 129, 0.35)' : colors.line,
-                                  }}
-                                  activeOpacity={0.75}
-                                >
-                                  <Text
-                                    style={{
-                                      fontSize: 9,
-                                      fontWeight: '800',
-                                      color: u.isListedPublicly ? '#059669' : colors.inkSoft,
-                                    }}
-                                  >
-                                    {u.isListedPublicly ? 'LIVE' : 'UNLISTED'}
-                                  </Text>
-                                </TouchableOpacity>
-                              )}
-
-                              {(!u.status || u.status === 'vacant' || (u as any).isListedPublicly) && (
-                                <TouchableOpacity
-                                  onPress={() => handleToggleUnitPopular(u)}
-                                  style={{
-                                    paddingHorizontal: 6,
-                                    paddingVertical: 3,
-                                    borderRadius: 6,
-                                    backgroundColor: u.isPopular
-                                      ? (isDark ? 'rgba(217, 119, 6, 0.25)' : '#FEF3C7')
-                                      : (isDark ? 'rgba(100, 116, 139, 0.14)' : '#F1F5F9'),
-                                    borderWidth: 1,
-                                    borderColor: u.isPopular ? '#F59E0B' : colors.line,
-                                    flexDirection: 'row',
-                                    alignItems: 'center',
-                                    gap: 2,
-                                  }}
-                                  activeOpacity={0.75}
-                                >
-                                  <Text style={{ fontSize: 9 }}>🔥</Text>
-                                  <Text
-                                    style={{
-                                      fontSize: 9,
-                                      fontWeight: '800',
-                                      color: u.isPopular ? (isDark ? '#FBBF24' : '#B45309') : colors.inkSoft,
-                                    }}
-                                  >
-                                    {u.isPopular ? 'POPULAR' : 'BOOST'}
-                                  </Text>
-                                </TouchableOpacity>
-                              )}
-
-                              {(() => {
-                                const badge = getUnitStatusBadge(u.status);
-                                return (
-                                  <View style={badge.badge}>
-                                    <Text style={badge.text}>{badge.label}</Text>
-                                  </View>
-                                );
-                              })()}
-
                               <TouchableOpacity
-                                style={styles.editUnitIconBtn}
-                                onPress={() => handleOpenEditUnit(u)}
+                                style={styles.addUnitSmallBtn}
+                                onPress={() => handleOpenAddUnit(prop)}
+                                activeOpacity={0.8}
                               >
-                                <Feather name="edit-2" size={14} color="#64748B" />
+                                <Ionicons name="add" size={14} color="#059669" />
+                                <Text style={styles.addUnitSmallBtnText}>Add Unit</Text>
                               </TouchableOpacity>
                             </View>
-                          </View>
+
+                            {/* Clean 2-Row Unit Anatomy */}
+                            {propUnits.map((u) => {
+                              const unitPhotos = (u.images || []).filter((img) => img && !img.includes('unsplash.com'));
+                              const unitThumb = unitPhotos[0] || (u.image && !u.image.includes('unsplash.com') ? u.image : null);
+                              const isUploadingThisUnit = uploadingUnitId === u.id;
+                              const effStatus = resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts);
+                              const badge = getUnitStatusBadge(effStatus);
+
+                              return (
+                                <TouchableOpacity
+                                  key={u.id}
+                                  style={[styles.unitItem, { gap: 10 }]}
+                                  onPress={() => handleUnitRowPress(u)}
+                                  activeOpacity={0.8}
+                                >
+                                  {/* Unit Photo Thumbnail / Quick Upload */}
+                                  <TouchableOpacity
+                                    onPress={() => {
+                                      if (unitThumb) {
+                                        setPreviewImage({ url: unitThumb, title: `${prop.name} • Unit ${u.unitNumber}` });
+                                      } else {
+                                        handleQuickUnitPhotoUpload(u);
+                                      }
+                                    }}
+                                    style={{
+                                      width: 38,
+                                      height: 38,
+                                      borderRadius: 8,
+                                      backgroundColor: isDark ? '#1E293B' : '#F1F5F9',
+                                      borderWidth: 1,
+                                      borderColor: colors.line,
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      overflow: 'hidden',
+                                      flexShrink: 0,
+                                    }}
+                                    activeOpacity={0.8}
+                                  >
+                                    {isUploadingThisUnit ? (
+                                      <ActivityIndicator size="small" color="#059669" />
+                                    ) : unitThumb ? (
+                                      <Image source={{ uri: unitThumb }} style={{ width: '100%', height: '100%' }} />
+                                    ) : (
+                                      <Feather name="camera" size={14} color={colors.inkSoft} />
+                                    )}
+                                  </TouchableOpacity>
+
+                                  <View style={{ flex: 1, minWidth: 0 }}>
+                                    {/* Row 1: Unit # • Type + 1 Status Pill */}
+                                    <View style={styles.unitRowLine}>
+                                      <Text
+                                        style={[styles.unitItemTitle, { color: colors.navy, flex: 1, minWidth: 0 }]}
+                                        numberOfLines={1}
+                                      >
+                                        Unit {u.unitNumber} • {u.unitType}
+                                      </Text>
+                                      <View style={[badge.badge, { flexShrink: 0 }]}>
+                                        <Text style={badge.text} numberOfLines={1}>{badge.label}</Text>
+                                      </View>
+                                    </View>
+
+                                    {/* Row 2: Rent • Tenant + ⋯ Action Sheet */}
+                                    <View style={[styles.unitRowLine, { marginTop: 4 }]}>
+                                      <Text
+                                        style={[styles.unitItemSub, { color: colors.inkSoft, flex: 1, minWidth: 0, marginTop: 0 }]}
+                                        numberOfLines={1}
+                                      >
+                                        {format(u.rent, u.currency || viewCurrency)}/mo • {u.tenant || (u.isListedPublicly ? 'Listed' : 'Vacant')}
+                                      </Text>
+                                      <TouchableOpacity
+                                        style={[styles.manageActionBtn, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}
+                                        onPress={() => setActionSheetUnit(u)}
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        activeOpacity={0.75}
+                                      >
+                                        <Feather name="more-horizontal" size={15} color={colors.navy} />
+                                      </TouchableOpacity>
+                                    </View>
+                                  </View>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </>
                         );
-                      })}
+                      })()}
                     </View>
                   </View>
                 );
@@ -885,16 +1079,19 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                           <Feather name="camera" size={16} color={colors.inkSoft} />
                         )}
                       </TouchableOpacity>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.dirUnitTitle, { color: colors.navy }]}>
-                          Unit {u.unitNumber} • {u.propertyName}
-                        </Text>
-                        <Text style={[styles.dirUnitSub, { color: colors.inkSoft }]}>
-                          {u.unitType} • {u.floor}{u.areaSqFt ? ` • ${u.areaSqFt} sq.ft` : ''}
-                        </Text>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <TouchableOpacity onPress={() => handleUnitRowPress(u)} activeOpacity={0.75}>
+                          <Text style={[styles.dirUnitTitle, { color: colors.navy }]} numberOfLines={1}>
+                            Unit {u.unitNumber} • {u.propertyName}
+                          </Text>
+                          <Text style={[styles.dirUnitSub, { color: colors.inkSoft }]} numberOfLines={1}>
+                            {u.unitType} • {u.floor}{u.areaSqFt ? ` • ${u.areaSqFt} sq.ft` : ''}
+                          </Text>
+                        </TouchableOpacity>
                       </View>
                       {(() => {
-                        const badge = getUnitStatusBadge(u.status);
+                        const eff = resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts);
+                        const badge = getUnitStatusBadge(eff);
                         return (
                           <View style={badge.badge}>
                             <Text style={badge.text}>{badge.label}</Text>
@@ -919,13 +1116,13 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                     </View>
 
                     <View style={[styles.dirTenantRow, isDark && { borderTopColor: colors.line }]}>
-                      <Text style={[styles.dirTenantText, { color: colors.inkSoft }]}>
+                      <Text style={[styles.dirTenantText, { color: colors.inkSoft }]} numberOfLines={1}>
                         Resident: <Text style={{ fontWeight: '700', color: colors.navy }}>{u.tenant || 'Vacant'}</Text>
                       </Text>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                        {(!u.status || u.status === 'vacant') && (
+                        {resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts) === 'vacant' && (
                           <TouchableOpacity
-                            onPress={() => saveUnit({ ...u, isListedPublicly: !u.isListedPublicly })}
+                            onPress={() => handleRequestToggleListing(u)}
                             style={{
                               paddingHorizontal: 8,
                               paddingVertical: 4,
@@ -948,7 +1145,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                           </TouchableOpacity>
                         )}
 
-                        {(!u.status || u.status === 'vacant' || (u as any).isListedPublicly) && (
+                        {(resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts) === 'vacant' || (u as any).isListedPublicly) && (
                           <TouchableOpacity
                             onPress={() => handleToggleUnitPopular(u)}
                             style={{
@@ -981,9 +1178,9 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
 
                         <TouchableOpacity
                           style={styles.dirEditBtn}
-                          onPress={() => handleOpenEditUnit(u)}
+                          onPress={() => setActionSheetUnit(u)}
                         >
-                          <Text style={styles.dirEditBtnText}>Edit Unit</Text>
+                          <Text style={styles.dirEditBtnText}>Manage ⋯</Text>
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -994,7 +1191,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
           </View>
         )}
         <View style={{ height: 100 }} />
-      </ScrollView>
+      </ScreenContainer>
 
       {/* Floating Action Button: Add Property */}
       {onAddPropertyPress && (
@@ -1021,8 +1218,12 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
 
       {/* MODAL: ADD UNIT TO EXISTING PROPERTY */}
       {targetProperty && (
-        <Modal visible transparent animationType="slide">
-          <View style={styles.modalBackdrop}>
+        <Modal visible transparent animationType="slide" onRequestClose={() => setTargetProperty(null)}>
+          <KeyboardAvoidingView
+            style={styles.modalBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            enabled={Platform.OS !== 'web'}
+          >
             <View style={styles.modalCard}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Add Unit to {targetProperty.name}</Text>
@@ -1147,14 +1348,18 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                 </View>
               </ScrollView>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       )}
 
       {/* MODAL: EDIT UNIT SPECIFICATIONS */}
       {editingUnit && (
         <Modal visible transparent animationType="slide" onRequestClose={() => setEditingUnit(null)}>
-          <View style={styles.modalBackdrop}>
+          <KeyboardAvoidingView
+            style={styles.modalBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            enabled={Platform.OS !== 'web'}
+          >
             <View style={styles.modalCardLarge}>
               <View style={styles.modalHeader}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
@@ -1585,7 +1790,8 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
               {/* Footer Buttons */}
               <View style={styles.modalFooter}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  {!editingUnit.tenant && editingUnit.status !== 'occupied' ? (
+                  {!editingUnit.tenant &&
+                  resolveEffectiveUnitStatus(editingUnit, state.agreements, state.tenancyRequests, state.moveOuts) !== 'occupied' ? (
                     <TouchableOpacity
                       style={styles.deleteUnitBtn}
                       onPress={handleDeleteUnit}
@@ -1608,9 +1814,327 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                 </View>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       )}
+
+      {/* MODAL: UNIT ACTION SHEET (⋯) */}
+      <Modal
+        visible={!!actionSheetUnit}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setActionSheetUnit(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.modalTitle} numberOfLines={1}>
+                  Unit {actionSheetUnit?.unitNumber} • {actionSheetUnit?.unitType}
+                </Text>
+                <Text style={[styles.modalSubtitle, { color: colors.inkSoft }]} numberOfLines={1}>
+                  {actionSheetUnit?.propertyName}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setActionSheetUnit(null)}>
+                <Ionicons name="close" size={22} color={colors.inkSoft} />
+              </TouchableOpacity>
+            </View>
+
+            {actionSheetUnit && (() => {
+              const eff = resolveEffectiveUnitStatus(actionSheetUnit, state.agreements, state.tenancyRequests, state.moveOuts);
+              return (
+                <View style={{ gap: 8 }}>
+                  <TouchableOpacity
+                    style={[styles.sheetActionRow, { borderColor: colors.line, backgroundColor: colors.surfaceSunken }]}
+                    onPress={() => {
+                      const u = actionSheetUnit;
+                      setActionSheetUnit(null);
+                      handleUnitRowPress(u);
+                    }}
+                  >
+                    <Feather name="eye" size={16} color={colors.navy} />
+                    <Text style={[styles.sheetActionText, { color: colors.navy }]}>View Unit Details</Text>
+                    <Feather name="chevron-right" size={16} color={colors.inkSoft} />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.sheetActionRow, { borderColor: colors.line, backgroundColor: colors.surfaceSunken }]}
+                    onPress={() => {
+                      const u = actionSheetUnit;
+                      setActionSheetUnit(null);
+                      handleOpenEditUnit(u);
+                    }}
+                  >
+                    <Feather name="edit-2" size={16} color="#D97706" />
+                    <Text style={[styles.sheetActionText, { color: colors.navy }]}>Edit Unit Specs</Text>
+                    <Feather name="chevron-right" size={16} color={colors.inkSoft} />
+                  </TouchableOpacity>
+
+                  {eff === 'vacant' && (
+                    <TouchableOpacity
+                      style={[styles.sheetActionRow, { borderColor: colors.line, backgroundColor: colors.surfaceSunken }]}
+                      onPress={() => {
+                        const u = actionSheetUnit;
+                        setActionSheetUnit(null);
+                        handleRequestToggleListing(u);
+                      }}
+                    >
+                      <Feather name={actionSheetUnit.isListedPublicly ? 'eye-off' : 'globe'} size={16} color="#059669" />
+                      <Text style={[styles.sheetActionText, { color: colors.navy }]}>
+                        {actionSheetUnit.isListedPublicly ? 'Unlist from Marketplace (LIVE)' : 'Publish to Marketplace (LIVE)'}
+                      </Text>
+                      <Feather name="chevron-right" size={16} color={colors.inkSoft} />
+                    </TouchableOpacity>
+                  )}
+
+                  {(eff === 'vacant' || actionSheetUnit.isListedPublicly) && (
+                    <TouchableOpacity
+                      style={[styles.sheetActionRow, { borderColor: colors.line, backgroundColor: colors.surfaceSunken }]}
+                      onPress={() => {
+                        const u = actionSheetUnit;
+                        setActionSheetUnit(null);
+                        handleToggleUnitPopular(u);
+                      }}
+                    >
+                      <Text style={{ fontSize: 15 }}>🔥</Text>
+                      <Text style={[styles.sheetActionText, { color: colors.navy }]}>
+                        {actionSheetUnit.isPopular ? 'Disable Popular Spotlight' : 'Boost to Popular Spotlight'}
+                      </Text>
+                      <Feather name="chevron-right" size={16} color={colors.inkSoft} />
+                    </TouchableOpacity>
+                  )}
+
+                  {(eff === 'occupied' || eff === 'reserved' || Boolean(actionSheetUnit.tenant)) && (
+                    <TouchableOpacity
+                      style={[styles.sheetActionRow, { borderColor: isDark ? '#7F1D1D' : '#FECACA', backgroundColor: isDark ? '#3B1212' : '#FEF2F2' }]}
+                      onPress={() => {
+                        const u = actionSheetUnit;
+                        setActionSheetUnit(null);
+                        setVacateConfirmTarget({
+                          unit: u,
+                          updatedData: { ...u, status: 'vacant', tenant: null, currentTenantId: null },
+                        });
+                      }}
+                    >
+                      <Feather name="log-out" size={16} color="#EF4444" />
+                      <Text style={[styles.sheetActionText, { color: '#EF4444' }]}>
+                        Vacate Unit / Clear Resident
+                      </Text>
+                      <Feather name="chevron-right" size={16} color="#EF4444" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })()}
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL: UNIT DETAIL VIEW */}
+      <Modal
+        visible={!!viewingUnit}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setViewingUnit(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCardLarge}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.modalTitle} numberOfLines={1}>
+                  Unit {viewingUnit?.unitNumber} • {viewingUnit?.unitType}
+                </Text>
+                <Text style={[styles.modalSubtitle, { color: colors.inkSoft }]} numberOfLines={1}>
+                  {viewingUnit?.propertyName}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setViewingUnit(null)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color={colors.inkSoft} />
+              </TouchableOpacity>
+            </View>
+
+            {viewingUnit && (() => {
+              const eff = resolveEffectiveUnitStatus(viewingUnit, state.agreements, state.tenancyRequests, state.moveOuts);
+              const badge = getUnitStatusBadge(eff);
+              const unitPhotos = (viewingUnit.images || []).filter((img) => img && !img.includes('unsplash.com'));
+              const thumb = unitPhotos[0] || (viewingUnit.image && !viewingUnit.image.includes('unsplash.com') ? viewingUnit.image : null);
+
+              return (
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 16 }}>
+                  {thumb && (
+                    <Image
+                      source={{ uri: thumb }}
+                      style={{ width: '100%', height: 160, borderRadius: 12, marginBottom: 12 }}
+                      resizeMode="cover"
+                    />
+                  )}
+
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+                    <View style={badge.badge}>
+                      <Text style={badge.text}>{badge.label}</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 6 }}>
+                      {viewingUnit.isListedPublicly && (
+                        <View style={[styles.unitOccupiedBadge, { paddingHorizontal: 8 }]}>
+                          <Text style={styles.unitOccupiedBadgeText}>● PUBLICLY LISTED</Text>
+                        </View>
+                      )}
+                      {viewingUnit.isPopular && (
+                        <View style={styles.unitReservedBadge}>
+                          <Text style={styles.unitReservedBadgeText}>🔥 POPULAR</Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+
+                  <View style={[styles.dirFinancialRow, { marginVertical: 0, marginBottom: 12 }]}>
+                    <View>
+                      <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>MONTHLY RENT</Text>
+                      <Text style={[styles.dirFinVal, { color: colors.navy }]}>{format(viewingUnit.rent, viewingUnit.currency || viewCurrency)}</Text>
+                    </View>
+                    <View>
+                      <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>DEPOSIT</Text>
+                      <Text style={[styles.dirFinVal, { color: colors.navy }]}>{format(viewingUnit.deposit, viewingUnit.currency || viewCurrency)}</Text>
+                    </View>
+                    <View>
+                      <Text style={[styles.dirFinLabel, { color: colors.inkSoft }]}>AREA</Text>
+                      <Text style={[styles.dirFinVal, { color: colors.navy }]}>{viewingUnit.areaSqFt ? `${viewingUnit.areaSqFt} sq.ft` : '—'}</Text>
+                    </View>
+                  </View>
+
+                  <View style={{ gap: 6, marginBottom: 16 }}>
+                    <Text style={[styles.detailLine, { color: colors.inkSoft }]}>
+                      Floor: <Text style={{ color: colors.navy, fontWeight: '700' }}>{viewingUnit.floor || '—'}</Text>
+                    </Text>
+                    <Text style={[styles.detailLine, { color: colors.inkSoft }]}>
+                      Furnishing: <Text style={{ color: colors.navy, fontWeight: '700' }}>{viewingUnit.furnishing || 'Semi-Furnished'}</Text>
+                    </Text>
+                    <Text style={[styles.detailLine, { color: colors.inkSoft }]}>
+                      Resident: <Text style={{ color: colors.navy, fontWeight: '700' }}>{viewingUnit.tenant || 'Vacant'}</Text>
+                    </Text>
+                    <Text style={[styles.detailLine, { color: colors.inkSoft }]}>
+                      Meters: <Text style={{ color: colors.navy, fontWeight: '700' }}>Elec {viewingUnit.electricityMeter || '—'} / Water {viewingUnit.waterMeter || '—'}</Text>
+                    </Text>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <TouchableOpacity
+                      style={[styles.modalCancelBtn, { flex: 1 }]}
+                      onPress={() => setViewingUnit(null)}
+                    >
+                      <Text style={styles.modalCancelBtnText}>Close</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.modalSaveBtn, { flex: 1, backgroundColor: '#D97706' }]}
+                      onPress={() => {
+                        const u = viewingUnit;
+                        setViewingUnit(null);
+                        handleOpenEditUnit(u);
+                      }}
+                    >
+                      <Text style={styles.modalSaveBtnText}>Edit Unit</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              );
+            })()}
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL: LISTING CONFIRMATION */}
+      <Modal
+        visible={!!unitToConfirmListing}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setUnitToConfirmListing(null)}
+      >
+        <View style={[styles.modalBackdrop, { justifyContent: 'center', padding: 20 }]}>
+          <View style={[styles.modalCard, { borderRadius: 16, paddingBottom: 20 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Publish Listing Publicly?</Text>
+              <TouchableOpacity onPress={() => setUnitToConfirmListing(null)}>
+                <Ionicons name="close" size={20} color={colors.inkSoft} />
+              </TouchableOpacity>
+            </View>
+            {unitToConfirmListing && (
+              <>
+                <Text style={[styles.detailLine, { color: colors.inkSoft, lineHeight: 19, marginBottom: 14 }]}>
+                  Unit <Text style={{ fontWeight: '700', color: colors.navy }}>{unitToConfirmListing.unitNumber}</Text> ({unitToConfirmListing.propertyName}) will become visible to prospective tenants on the public Homes Marketplace at{' '}
+                  <Text style={{ fontWeight: '700', color: '#059669' }}>
+                    {format(unitToConfirmListing.rent, unitToConfirmListing.currency || viewCurrency)}/mo
+                  </Text>.
+                </Text>
+                <View style={styles.modalBtnRow}>
+                  <TouchableOpacity
+                    style={styles.modalCancelBtn}
+                    onPress={() => setUnitToConfirmListing(null)}
+                  >
+                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.modalSaveBtn}
+                    onPress={() => {
+                      const target = unitToConfirmListing;
+                      saveUnit({ ...target, isListedPublicly: true });
+                      setUnitToConfirmListing(null);
+                      Alert.alert('Listing Live ✓', `Unit ${target.unitNumber} is now live on the Homes Marketplace.`);
+                    }}
+                  >
+                    <Text style={styles.modalSaveBtnText}>Publish Listing ✓</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL: VACATE UNIT CONFIRMATION */}
+      <Modal
+        visible={!!vacateConfirmTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !isProcessingVacate && setVacateConfirmTarget(null)}
+      >
+        <View style={[styles.modalBackdrop, { justifyContent: 'center', padding: 20 }]}>
+          <View style={[styles.modalCard, { borderRadius: 16, paddingBottom: 20 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Confirm Unit Vacate</Text>
+              <TouchableOpacity disabled={isProcessingVacate} onPress={() => setVacateConfirmTarget(null)}>
+                <Ionicons name="close" size={20} color={colors.inkSoft} />
+              </TouchableOpacity>
+            </View>
+            {vacateConfirmTarget && (
+              <>
+                <Text style={[styles.detailLine, { color: colors.inkSoft, lineHeight: 19, marginBottom: 14 }]}>
+                  Marking Unit <Text style={{ fontWeight: '700', color: colors.navy }}>{vacateConfirmTarget.unit.unitNumber}</Text> as Vacant will detach resident{' '}
+                  <Text style={{ fontWeight: '700', color: colors.navy }}>{vacateConfirmTarget.unit.tenant || 'current resident'}</Text>, terminate active/pending agreements, cancel open invitations, and void unpaid deposit invoices.
+                </Text>
+                <View style={styles.modalBtnRow}>
+                  <TouchableOpacity
+                    style={styles.modalCancelBtn}
+                    disabled={isProcessingVacate}
+                    onPress={() => setVacateConfirmTarget(null)}
+                  >
+                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalSaveBtn, { backgroundColor: '#DC2626' }]}
+                    disabled={isProcessingVacate}
+                    onPress={() => executeVacateOrCancelUnit(vacateConfirmTarget.unit, vacateConfirmTarget.updatedData)}
+                  >
+                    <Text style={styles.modalSaveBtnText}>
+                      {isProcessingVacate ? 'Vacating...' : 'Confirm Vacate'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* Lightbox Image Preview Modal */}
       <Modal
@@ -1677,7 +2201,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
           onNavigate?.('owner_plan_subscription');
         }}
       />
-    </SafeAreaView>
+    </View>
   );
 };
 
@@ -2429,5 +2953,72 @@ const createStyles = (colors: any, isDark: boolean) =>
     fontSize: 12,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  unitRowLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minWidth: 0,
+  },
+  manageActionBtn: {
+    width: 30,
+    height: 26,
+    borderRadius: 6,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  singleUnitCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 12,
+    gap: 8,
+  },
+  singleUnitTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  singleUnitMetaText: {
+    fontSize: 11.5,
+  },
+  singleUnitBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 2,
+  },
+  singleUnitBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  singleUnitBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  sheetActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  sheetActionText: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  detailLine: {
+    fontSize: 12.5,
   },
 });

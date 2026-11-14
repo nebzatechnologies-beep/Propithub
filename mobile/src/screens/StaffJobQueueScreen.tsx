@@ -1,17 +1,21 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   TextInput,
   Modal,
   Alert,
   Linking,
+  RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import { doc, setDoc } from 'firebase/firestore';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon } from '../components/PropithubLogo';
@@ -20,6 +24,8 @@ import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
 import { getStaffReminders } from '../lib/reminders';
+import { db, isFirebaseConfigured } from '../lib/firebase';
+import { uploadOrCompressDocument } from '../lib/imageUploader';
 import { MobileTicket } from '../types';
 
 interface StaffJobQueueScreenProps {
@@ -48,6 +54,14 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
   const [statusInput, setStatusInput] = useState<'in_progress' | 'resolved'>('resolved');
   const [completionNotes, setCompletionNotes] = useState('');
   const [photoProofName, setPhotoProofName] = useState<string | null>(null);
+  const [photoProofData, setPhotoProofData] = useState<string | null>(null);
+  const [isSavingStatus, setIsSavingStatus] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 600);
+  }, []);
 
   const currentStaff = useMemo(() => {
     return (
@@ -167,7 +181,7 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
   }, [state.announcements, user, currentStaff?.ownerId, myTickets, dismissedNoticeIds, justAckedIds]);
 
   const unreadNotificationsCount = useMemo(() => {
-    const unreadNotifs = (state.notifications || []).filter((n) => !n.read).length;
+    const unreadNotifs = (state.notifications || []).filter((n) => !n.isRead).length;
     return unreadNotifs + staffBulletins.length;
   }, [state.notifications, staffBulletins.length]);
 
@@ -216,6 +230,7 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
     setStatusInput(ticket.status === 'in_progress' ? 'in_progress' : 'resolved');
     setCompletionNotes(ticket.completionNotes || '');
     setPhotoProofName(null);
+    setPhotoProofData(null);
     setShowStatusModal(true);
   };
 
@@ -224,38 +239,75 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.7,
+        base64: true,
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
         setPhotoProofName(asset.fileName || 'completion-proof.jpg');
+        const mime = asset.mimeType || 'image/jpeg';
+        setPhotoProofData(asset.base64 ? `data:${mime};base64,${asset.base64}` : asset.uri);
       }
     } catch {
       Alert.alert('Photo Proof', 'Could not open image library.');
     }
   };
 
-  const handleSaveStatus = () => {
-    if (!selectedTicket) return;
+  const handleSaveStatus = async () => {
+    if (!selectedTicket || isSavingStatus) return;
+    setIsSavingStatus(true);
+    try {
+      const isCompleted = statusInput === 'resolved';
+      const updates: Partial<MobileTicket> & Record<string, any> = {
+        status: statusInput,
+        completionNotes: completionNotes.trim() || undefined,
+      };
 
-    updateTicket(selectedTicket.id, {
-      status: statusInput,
-      completionNotes: completionNotes.trim() || undefined,
-    });
+      if (photoProofData) {
+        const proofUrl = await uploadOrCompressDocument(
+          photoProofData,
+          `tickets/${selectedTicket.id}/completion_${Date.now()}.jpg`,
+          'image/jpeg'
+        );
+        if (proofUrl) {
+          updates.photoProof = proofUrl;
+          updates.completionPhoto = proofUrl;
+          updates.photos = [...(selectedTicket.photos || []), proofUrl];
+        }
+      }
 
-    setShowStatusModal(false);
-    Alert.alert(
-      'Ticket Updated',
-      `Ticket ${selectedTicket.id} updated. Tenant and owner notified.`
-    );
-    setSelectedTicket(null);
-    setCompletionNotes('');
-    setPhotoProofName(null);
+      updateTicket(selectedTicket.id, updates);
+
+      // Increment staff.completed when resolving a ticket (matches Web DashboardQueuePage)
+      const wasAlreadyResolved = selectedTicket.status === 'resolved';
+      if (isCompleted && !wasAlreadyResolved && currentStaff) {
+        const nextCompleted = (currentStaff.completed || 0) + 1;
+        if (isFirebaseConfigured) {
+          setDoc(doc(db, 'staff', currentStaff.id), { completed: nextCompleted }, { merge: true }).catch(
+            console.warn
+          );
+        }
+      }
+
+      setShowStatusModal(false);
+      Alert.alert(
+        'Ticket Updated',
+        `Ticket ${selectedTicket.id} updated. Tenant and owner notified.`
+      );
+      setSelectedTicket(null);
+      setCompletionNotes('');
+      setPhotoProofName(null);
+      setPhotoProofData(null);
+    } catch (err: any) {
+      Alert.alert('Update Failed', err?.message || 'Could not save ticket update.');
+    } finally {
+      setIsSavingStatus(false);
+    }
   };
 
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <ScreenStatusBar />
 
       {/* Minimal Top App Bar (.topbar) */}
@@ -315,6 +367,15 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
       >
         {/* Technician Action Center & Reminders (1-to-1 with Web) */}
         {staffReminders.map((rem) => {
@@ -544,7 +605,7 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
                 </View>
 
                 {/* Issue Description */}
-                <Text style={[styles.jobTitle, { color: colors.navy }]}>{t.issue}</Text>
+                <Text style={[styles.jobTitle, { color: colors.navy }]} numberOfLines={3}>{t.issue}</Text>
 
                 {/* 3-Step Progress Bar (.prog from Propithub Role Simulator.html) */}
                 <View style={styles.progBar}>
@@ -633,8 +694,17 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
       </ScrollView>
 
       {/* Update Ticket Modal (1-to-1 with Web) */}
-      <Modal visible={showStatusModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={showStatusModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowStatusModal(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
+        >
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
             <View style={[styles.sheetHandle, { backgroundColor: colors.line }]} />
 
@@ -748,16 +818,17 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.saveStatusBtn}
+                  style={[styles.saveStatusBtn, isSavingStatus && { opacity: 0.6 }]}
                   onPress={handleSaveStatus}
+                  disabled={isSavingStatus}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.saveStatusBtnText}>Save update</Text>
+                  <Text style={styles.saveStatusBtnText}>{isSavingStatus ? 'Saving…' : 'Save update'}</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1031,6 +1102,7 @@ const createStyles = (colors: any, isDark: boolean) =>
       justifyContent: 'flex-end',
     },
     modalContent: {
+      maxHeight: '88%',
       borderTopLeftRadius: 24,
       borderTopRightRadius: 24,
       paddingHorizontal: 20,

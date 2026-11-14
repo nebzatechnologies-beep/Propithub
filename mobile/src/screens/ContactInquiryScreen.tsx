@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import {
   View,
@@ -6,23 +6,122 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
-  StatusBar,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
+  RefreshControl,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { doc, setDoc } from 'firebase/firestore';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon } from '../components/PropithubLogo';
+import { useMobileAppData } from '../context/MobileAppDataContext';
+import { useMobileAuth } from '../context/MobileAuthContext';
+import { useMobileToast } from '../context/MobileToastContext';
+import { db, isFirebaseConfigured } from '../lib/firebase';
 
 export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const { createPlatformSupportTicket } = useMobileAppData();
+  const { user, role } = useMobileAuth();
+  const { showToast } = useMobileToast();
+
+  const [name, setName] = useState(user?.displayName || '');
+  const [email, setEmail] = useState(user?.email || '');
+  const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submittedRef, setSubmittedRef] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    if (user?.displayName && !name) setName(user.displayName);
+    if (user?.email && !email) setEmail(user.email);
+  }, [user?.displayName, user?.email]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 500);
+  }, []);
+
+  const handleSendMessage = async () => {
+    const cleanName = name.trim();
+    const cleanEmail = email.trim();
+    const cleanMsg = message.trim();
+
+    if (!cleanName || !cleanEmail || !cleanMsg) {
+      Alert.alert('Missing Details', 'Please fill in your name, email address, and inquiry message.');
+      return;
+    }
+    if (!cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const refId = `TKT-MOB-${Math.floor(100000 + Math.random() * 900000)}`;
+      const topic = subject.trim() || `Inquiry from ${cleanName} (${(role || 'general').toUpperCase()})`;
+      await createPlatformSupportTicket({
+        id: refId,
+        userId: user?.id,
+        owner: cleanName,
+        ownerId: user?.id,
+        ownerEmail: cleanEmail,
+        topic,
+        category: 'general',
+        priority: 'medium',
+        detail: cleanMsg,
+      });
+
+      if (isFirebaseConfigured) {
+        await setDoc(
+          doc(db, 'platformSupport', refId),
+          {
+            senderEmail: cleanEmail,
+            senderPhone: user?.phone || null,
+            role: role || 'general',
+            message: cleanMsg,
+          },
+          { merge: true }
+        ).catch(console.warn);
+
+        const notifId = `notif_sup_${Date.now()}`;
+        await setDoc(
+          doc(db, 'notifications', notifId),
+          {
+            id: notifId,
+            userId: 'role_superadmin',
+            title: `New Support Request: ${subject.trim() || 'General Inquiry'}`,
+            body: `${cleanName} (${cleanEmail}) sent an inquiry: "${cleanMsg.slice(0, 80)}${cleanMsg.length > 80 ? '...' : ''}"`,
+            category: 'system',
+            link: '/superadmin/oversight',
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            relatedEntityId: refId,
+          },
+          { merge: true }
+        ).catch(console.warn);
+      }
+
+      setSubmittedRef(refId);
+      setSubject('');
+      setMessage('');
+      showToast(`Support inquiry dispatched (${refId}) ✓`, 'success');
+      Alert.alert('Inquiry Sent ✓', `Your support ticket (${refId}) has been submitted. Our team will reply within 24 hours.`);
+    } catch (err: any) {
+      Alert.alert('Submission Failed', err?.message || 'Could not send inquiry. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={styles.safeArea}>
       {/* StatusBar managed globally */}
 
       {/* Real Screen Status Bar */}
@@ -37,8 +136,8 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
           <View style={styles.logoBadge}>
             <PropithubIcon size={20} />
           </View>
-          <View>
-            <Text style={styles.headerTitle}>Contact Support</Text>
+          <View style={{ flexShrink: 1 }}>
+            <Text style={styles.headerTitle} numberOfLines={1}>Contact Support</Text>
           </View>
         </View>
         <View style={styles.helpBadge}>
@@ -46,10 +145,24 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
         </View>
       </View>
 
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
+      >
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
       >
         {/* Support SLA Banner (Dark Card) */}
         <View style={styles.darkCard}>
@@ -63,6 +176,15 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
           </View>
         </View>
 
+        {submittedRef && (
+          <View style={[styles.successBanner, { backgroundColor: isDark ? 'rgba(16,185,129,0.14)' : '#ECFDF5', borderColor: '#10B981' }]}>
+            <Feather name="check-circle" size={16} color="#10B981" style={{ marginRight: 8 }} />
+            <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '600', color: isDark ? '#A7F3D0' : '#065F46' }}>
+              Ticket {submittedRef} received. Our support team will respond shortly.
+            </Text>
+          </View>
+        )}
+
         {/* Inquiry Form */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Send Us a Message</Text>
@@ -73,7 +195,7 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
             value={name}
             onChangeText={setName}
             placeholder="John Doe"
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.inkMuted}
           />
 
           <Text style={styles.inputLabel}>Email Address</Text>
@@ -82,8 +204,18 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
             value={email}
             onChangeText={setEmail}
             placeholder="john@example.com"
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.inkMuted}
             keyboardType="email-address"
+            autoCapitalize="none"
+          />
+
+          <Text style={styles.inputLabel}>Subject (Optional)</Text>
+          <TextInput
+            style={styles.input}
+            value={subject}
+            onChangeText={setSubject}
+            placeholder="e.g. Billing question, Technical support"
+            placeholderTextColor={colors.inkMuted}
           />
 
           <Text style={styles.inputLabel}>Inquiry Message</Text>
@@ -92,15 +224,25 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
             value={message}
             onChangeText={setMessage}
             placeholder="Describe your inquiry, billing question, or technical request..."
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.inkMuted}
             multiline
           />
 
-          <TouchableOpacity style={styles.sendBtn} activeOpacity={0.85}>
-            <Text style={styles.sendBtnText}>Send Message</Text>
+          <TouchableOpacity
+            style={[styles.sendBtn, isSubmitting && { opacity: 0.7 }]}
+            onPress={handleSendMessage}
+            disabled={isSubmitting}
+            activeOpacity={0.85}
+          >
+            {isSubmitting ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.sendBtnText}>Send Message</Text>
+            )}
           </TouchableOpacity>
         </View>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
@@ -124,6 +266,17 @@ const createStyles = (colors: any, isDark: boolean) =>
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    marginRight: 8,
+  },
+  successBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginBottom: 14,
   },
   backBtn: {
     paddingRight: 10,

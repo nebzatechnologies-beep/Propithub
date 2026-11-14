@@ -35,40 +35,60 @@ export function parseDeepLink(url: string): ParsedDeepLink | null {
   }
 }
 
+let lastHandledUrl = '';
+let lastHandledAt = 0;
+
 /**
  * Initializes deep link listener for native iOS / Android and browser URL switches
  */
 export function initializeDeepLinking(
-  onNavigateToScreen?: (screenKey: string, params?: Record<string, string>) => void
+  onNavigateToScreen?: (screenKey: string, params?: Record<string, string>) => void,
+  userRole?: string
 ): () => void {
   const handleUrl = (url: string | null) => {
     if (!url) return;
+    const now = Date.now();
+    if (url === lastHandledUrl && now - lastHandledAt < 1500) {
+      return;
+    }
     const parsed = parseDeepLink(url);
     if (!parsed) return;
+    lastHandledUrl = url;
+    lastHandledAt = now;
 
-    // Handle payment return redirects
+    const effectiveRole = (parsed.params.role || userRole || '').toLowerCase();
+
+    // Handle payment return redirects (role-safe)
     if (parsed.path === 'payment-callback' || parsed.path.includes('payment')) {
       Alert.alert(
         'Payment Verified ✓',
         'Your transaction was processed. Your financial records and tenancy ledger have been updated.'
       );
       if (onNavigateToScreen) {
-        onNavigateToScreen('financial_ledger', parsed.params);
+        const targetScreen = effectiveRole === 'tenant' ? 'tenant_payments' : 'financial_ledger';
+        onNavigateToScreen(targetScreen, parsed.params);
       }
       return;
     }
 
-    // Direct routing for invoices, agreements, or units
+    // Direct routing for invoices, agreements, or units (role-safe)
     if (parsed.path === 'invoice' || parsed.params.invoiceId) {
       if (onNavigateToScreen) {
-        onNavigateToScreen('financial_ledger', parsed.params);
+        const targetScreen = effectiveRole === 'tenant' ? 'tenant_payments' : 'financial_ledger';
+        onNavigateToScreen(targetScreen, parsed.params);
       }
       return;
     }
 
     if (parsed.path === 'lease' || parsed.params.agreementId) {
       if (onNavigateToScreen) {
-        onNavigateToScreen('tenant_lease', parsed.params);
+        const targetScreen =
+          effectiveRole === 'owner'
+            ? 'leasing_hub'
+            : effectiveRole === 'manager'
+            ? 'manager_lease_documents'
+            : 'tenant_lease';
+        onNavigateToScreen(targetScreen, parsed.params);
       }
       return;
     }

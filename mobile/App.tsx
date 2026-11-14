@@ -1,5 +1,5 @@
 import './src/lib/polyfills';
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { Platform, View, ActivityIndicator } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -26,9 +26,26 @@ import { MobileTourProvider } from './src/context/MobileTourContext';
 
 function ThemedApp() {
   const { isDark, colors } = useMobileTheme();
+  const navigatorRef = useRef<((screenKey: string) => void) | null>(null);
+  const pendingScreenRef = useRef<string | null>(null);
+
+  const handleRegisterNavigate = useCallback((fn: (screenKey: string) => void) => {
+    navigatorRef.current = fn;
+    if (pendingScreenRef.current) {
+      const pendingKey = pendingScreenRef.current;
+      pendingScreenRef.current = null;
+      fn(pendingKey);
+    }
+  }, []);
 
   useEffect(() => {
-    const cleanup = initializeDeepLinking();
+    const cleanup = initializeDeepLinking((screenKey) => {
+      if (navigatorRef.current) {
+        navigatorRef.current(screenKey);
+      } else {
+        pendingScreenRef.current = screenKey;
+      }
+    });
     return () => cleanup();
   }, []);
 
@@ -42,7 +59,7 @@ function ThemedApp() {
               <MobileAppDataProvider>
                 <MobilePaymentSheetProvider>
                   <MobileTourProvider>
-                    <RootNavigator initialRole="owner" />
+                    <RootNavigator initialRole="owner" onRegisterNavigate={handleRegisterNavigate} />
                   </MobileTourProvider>
                 </MobilePaymentSheetProvider>
               </MobileAppDataProvider>

@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
@@ -14,9 +14,44 @@ import { CurrencyConverterTrigger } from '../../components/common/CurrencyConver
 import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/CurrencyAmount';
 import { FileText, Printer, Download, CheckCircle2, Clock } from 'lucide-react';
 import { downloadSinglePlatformInvoicePDF } from '../../lib/pdf';
+import { PlatformInvoiceDocument } from '../../components/invoices/PlatformInvoiceDocument';
+
+const QuotaMeter: React.FC<{
+  label: string;
+  used: number;
+  max: number;
+  accentColor: string;
+}> = ({ label, used, max, accentColor }) => {
+  const isUnlimited = max >= 999;
+  const pct = isUnlimited ? Math.min(100, used * 10) : Math.min(100, (used / Math.max(1, max)) * 100);
+
+  return (
+    <div style={{ padding: '4px 0' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '13px' }}>
+        <span style={{ color: 'var(--ink-soft)', fontWeight: 500 }}>{label}</span>
+        <span style={{ fontSize: '12.5px' }}>
+          <b style={{ color: 'var(--ink)' }}>{used}</b>
+          <span style={{ color: 'var(--ink-soft)' }}> / {isUnlimited ? 'Unlimited' : max}</span>
+        </span>
+      </div>
+      <div style={{ width: '100%', height: '7px', background: 'var(--surface-sunken)', borderRadius: '10px', overflow: 'hidden' }}>
+        <div
+          style={{
+            width: `${pct}%`,
+            height: '100%',
+            background: accentColor,
+            borderRadius: '10px',
+            transition: 'width 0.3s ease',
+          }}
+        />
+      </div>
+    </div>
+  );
+};
 
 export const PlanSubscriptionPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { state, updateState, showToast, updateOwnerAutopay, cancelOwnerAutopay } = useAppData();
   const { user, updateUserProfile } = useAuth();
 
@@ -72,6 +107,21 @@ export const PlanSubscriptionPage: React.FC = () => {
         (u.isListedPublicly || u.status === 'vacant')
     );
   }, [state.units, effectiveOwnerId]);
+
+  useEffect(() => {
+    const boostParam = searchParams.get('boost');
+    if (!boostParam) return;
+    const plans = state.boostPlans && state.boostPlans.length > 0 ? state.boostPlans : DEFAULT_BOOST_PLANS;
+    const matched = plans.find((p) => p.id === boostParam && p.isActive !== false);
+    if (matched) {
+      setBuyingBoostPlan(matched);
+      const unitParam = searchParams.get('unit') || '';
+      if (unitParam) setBoostUnitId(unitParam);
+      searchParams.delete('boost');
+      searchParams.delete('unit');
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [searchParams, state.boostPlans, setSearchParams]);
 
   const isBoostPassActive = Boolean(
     ownerSettings?.popularBoostUntil &&
@@ -421,19 +471,27 @@ export const PlanSubscriptionPage: React.FC = () => {
       const effectiveOwnerId = ownerId || userFromState?.id || user?.id || '';
       const chosenPlanName = targetPlan.name || selectedPlanName;
 
-      // Idempotency check: prevent duplicate paid invoices if an unexpired invoice for this plan already exists
-      const existingActiveInvoice = (state.platformInvoices || []).find(
-        (inv) =>
-          inv.ownerId === effectiveOwnerId &&
-          inv.planId === targetPlan.id &&
-          inv.status === 'paid' &&
-          inv.periodEnd &&
-          new Date(inv.periodEnd).getTime() > Date.now()
+      // Idempotency check: prevent duplicate paid invoices only if already on the same active plan & cycle
+      const isTargetAlreadyActive = Boolean(
+        isCurrentPlanActive &&
+        currentPlan &&
+        targetPlan.id === currentPlan.id &&
+        (ownerSettings?.billingCycle || 'monthly') === (isAnnual ? 'annual' : 'monthly')
       );
-      if (existingActiveInvoice) {
-        showToast(`Active subscription invoice for ${chosenPlanName} is already on record.`);
-        setIsProcessing(false);
-        return;
+      if (isTargetAlreadyActive) {
+        const existingActiveInvoice = (state.platformInvoices || []).find(
+          (inv) =>
+            inv.ownerId === effectiveOwnerId &&
+            inv.planId === targetPlan.id &&
+            inv.status === 'paid' &&
+            inv.periodEnd &&
+            new Date(inv.periodEnd).getTime() > Date.now()
+        );
+        if (existingActiveInvoice) {
+          showToast(`Active subscription invoice for ${chosenPlanName} is already on record.`);
+          setIsProcessing(false);
+          return;
+        }
       }
 
       const newInvoiceId = `PINV-${Date.now().toString().slice(-6)}`;
@@ -865,7 +923,8 @@ export const PlanSubscriptionPage: React.FC = () => {
       const ebKey = state.platformGateways.easebuzz?.merchantKey || '';
       const ebSalt = state.platformGateways.easebuzz?.salt || '';
       if (!ebKey || !ebSalt) {
-        await applyBoostActivation();
+        setIsProcessingBoost(false);
+        showToast('⚠️ Easebuzz credentials (Merchant Key & Salt) are not configured by the platform admin. Boost cannot be activated without payment.');
         return;
       }
       await launchEasebuzzPayment({
@@ -895,7 +954,8 @@ export const PlanSubscriptionPage: React.FC = () => {
     if (boostGateway === 'razorpay') {
       const rzpKey = state.platformGateways.razorpay?.keyId || '';
       if (!rzpKey) {
-        await applyBoostActivation();
+        setIsProcessingBoost(false);
+        showToast('⚠️ Razorpay Key ID is not configured by the platform admin. Boost cannot be activated without payment.');
         return;
       }
       await launchRazorpayPayment({
@@ -927,7 +987,8 @@ export const PlanSubscriptionPage: React.FC = () => {
     if (boostGateway === 'stripe') {
       const stripePub = state.platformGateways.stripe?.pubKey || '';
       if (!stripePub) {
-        await applyBoostActivation();
+        setIsProcessingBoost(false);
+        showToast('⚠️ Stripe Publishable Key is not configured by the platform admin. Boost cannot be activated without payment.');
         return;
       }
       await launchStripePayment({
@@ -954,7 +1015,8 @@ export const PlanSubscriptionPage: React.FC = () => {
     if (boostGateway === 'paypal') {
       const paypalClientId = state.platformGateways.paypal?.clientId || '';
       if (!paypalClientId) {
-        await applyBoostActivation();
+        setIsProcessingBoost(false);
+        showToast('⚠️ PayPal Client ID is not configured by the platform admin. Boost cannot be activated without payment.');
         return;
       }
       await launchPayPalPayment({
@@ -976,8 +1038,9 @@ export const PlanSubscriptionPage: React.FC = () => {
       return;
     }
 
-    // Fallback simulation
-    await applyBoostActivation();
+    // Unknown or unconfigured gateway
+    setIsProcessingBoost(false);
+    showToast('⚠️ Selected payment gateway is not configured. Boost cannot be activated without payment.');
   };
 
   return (
@@ -1135,7 +1198,7 @@ export const PlanSubscriptionPage: React.FC = () => {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
                   <span style={{ fontSize: '20px', fontWeight: 800, color: 'var(--ink)' }}>
-                    {isTrial ? '$0' : `$${currentPlan?.price || 79}`}
+                    {isTrial ? '$0' : `$${currentPlan?.price ?? 0}`}
                   </span>
                   <span style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
                     {isTrial ? '/mo (Free Trial)' : '/mo'}
@@ -1298,6 +1361,48 @@ export const PlanSubscriptionPage: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* Resource Quota & Live Capacity Gauges */}
+      <div className="panel" style={{ marginBottom: '24px' }}>
+        <div className="panel-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+          <h3 style={{ margin: 0 }}>Resource Quota &amp; Usage</h3>
+          <span className="badge grey" style={{ fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            Live Capacity
+          </span>
+        </div>
+        <div className="panel-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px' }}>
+          <QuotaMeter
+            label="Properties"
+            used={usage.properties.used}
+            max={usage.properties.max}
+            accentColor="#10B981"
+          />
+          <QuotaMeter
+            label="Units"
+            used={usage.units.used}
+            max={usage.units.max}
+            accentColor="#3B82F6"
+          />
+          <QuotaMeter
+            label="Tenants"
+            used={usage.tenants.used}
+            max={usage.tenants.max}
+            accentColor="#8B5CF6"
+          />
+          <QuotaMeter
+            label="Managers"
+            used={usage.managers.used}
+            max={usage.managers.max}
+            accentColor="#F59E0B"
+          />
+          <QuotaMeter
+            label="Maintenance Staff"
+            used={usage.staff.used}
+            max={usage.staff.max}
+            accentColor="#EC4899"
+          />
+        </div>
+      </div>
 
       <div className="section-title">All Available Propithub Subscription Tiers</div>
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))' }}>
@@ -1656,102 +1761,8 @@ export const PlanSubscriptionPage: React.FC = () => {
               ['--line-strong' as any]: '#D1D5DB',
             }}
           >
-            <div style={{ padding: '32px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid var(--line)', paddingBottom: '20px', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
-                <div>
-                  <div style={{ fontSize: '24px', fontWeight: 700, letterSpacing: '-0.5px' }}>
-                    PROPIT<span style={{ color: 'var(--brass)' }}>HUB</span>
-                  </div>
-                  <div style={{ fontSize: '13px', color: 'var(--ink-soft)', marginTop: '4px' }}>
-                    Propithub Technologies Cloud Platform<br />
-                    Billing & Licensing Division
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '20px', fontWeight: 700, color: 'var(--ink)' }}>INVOICE RECEIPT</div>
-                  <div style={{ fontFamily: 'monospace', fontWeight: 600, marginTop: '2px' }}>{selectedPlatformInvoice.id}</div>
-                  <div style={{ marginTop: '8px' }}>
-                    <span className={`badge ${selectedPlatformInvoice.status === 'paid' ? 'green' : 'brass'}`}>
-                      {selectedPlatformInvoice.status.toUpperCase()}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-2" style={{ marginBottom: '24px', fontSize: '13px', lineHeight: '1.6' }}>
-                <div>
-                  <div style={{ fontWeight: 600, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '11px', marginBottom: '4px' }}>
-                    Customer Details:
-                  </div>
-                  <b>{selectedPlatformInvoice.ownerName}</b>
-                  <div>{selectedPlatformInvoice.ownerEmail}</div>
-                  <div style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Account ID: {selectedPlatformInvoice.ownerId}</div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontWeight: 600, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '11px', marginBottom: '4px' }}>
-                    Timeline:
-                  </div>
-                  <div>Issue Date: <b>{new Date(selectedPlatformInvoice.issueDate).toLocaleDateString()}</b></div>
-                  <div>Due Date: <b>{new Date(selectedPlatformInvoice.dueDate).toLocaleDateString()}</b></div>
-                  {selectedPlatformInvoice.paidAt && (
-                    <div style={{ color: 'var(--green)', fontWeight: 600 }}>
-                      Paid on: {new Date(selectedPlatformInvoice.paidAt).toLocaleDateString()}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <table style={{ width: '100%', marginBottom: '24px', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ background: 'var(--surface-sunken)', borderBottom: '1px solid var(--line-strong)' }}>
-                    <th style={{ textAlign: 'left', padding: '10px 12px' }}>Item Description</th>
-                    <th style={{ textAlign: 'right', padding: '10px 12px' }}>Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                    <td style={{ padding: '14px 12px' }}>
-                      <b>Propithub SaaS Subscription — {selectedPlatformInvoice.planName} Plan</b>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px' }}>
-                        {selectedPlatformInvoice.notes || 'Multi-property tenant management & cloud dispatch'}
-                      </div>
-                    </td>
-                    <td style={{ textAlign: 'right', padding: '14px 12px', fontWeight: 600, fontSize: '15px' }}>
-                      ${selectedPlatformInvoice.amount.toFixed(2)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '24px' }}>
-                <div style={{ width: '240px', fontSize: '14px', lineHeight: '1.8' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Subtotal:</span>
-                    <span>${selectedPlatformInvoice.amount.toFixed(2)}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '2px solid var(--line-strong)', paddingTop: '6px', fontWeight: 700, fontSize: '16px' }}>
-                    <span>Total:</span>
-                    <span style={{ color: 'var(--brass)' }}>${selectedPlatformInvoice.total.toFixed(2)}</span>
-                  </div>
-                </div>
-              </div>
-
-              {selectedPlatformInvoice.status === 'paid' ? (
-                <div style={{ background: 'var(--ledger-soft)', border: '1px solid var(--ledger)', padding: '14px', borderRadius: 'var(--radius)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <CheckCircle2 size={20} color="var(--ledger)" />
-                  <div>
-                    <b>Payment Confirmed:</b> Settled via {selectedPlatformInvoice.paymentMethod || 'Stripe / Bank Wire'}.<br />
-                    <span style={{ fontSize: '12px', color: 'var(--ink)' }}>Ref: {selectedPlatformInvoice.transactionRef || 'N/A'}</span>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ background: 'var(--amber-soft)', border: '1px solid var(--amber)', padding: '14px', borderRadius: 'var(--radius)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <Clock size={20} color="var(--amber)" />
-                  <div>
-                    <b>Payment Due:</b> Due by {new Date(selectedPlatformInvoice.dueDate).toLocaleDateString()}.
-                  </div>
-                </div>
-              )}
+            <div style={{ padding: '20px' }}>
+              <PlatformInvoiceDocument invoice={selectedPlatformInvoice} />
             </div>
 
             <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 24px', background: 'var(--surface-sunken)', borderTop: '1px solid var(--line)', flexWrap: 'wrap', gap: '8px' }}>
@@ -1759,7 +1770,7 @@ export const PlanSubscriptionPage: React.FC = () => {
                 <button
                   type="button"
                   className="btn secondary small btn-mobile-full"
-                  onClick={() => downloadSinglePlatformInvoicePDF(selectedPlatformInvoice)}
+                  onClick={() => downloadSinglePlatformInvoicePDF(selectedPlatformInvoice, state.platformInvoiceTemplate)}
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}
                 >
                   <Download size={14} /> Download PDF
@@ -2396,95 +2407,7 @@ export const PlanSubscriptionPage: React.FC = () => {
                 className="btn secondary"
                 onClick={() => setIsChangePaymentMethodOpen(false)}
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn brass"
-                disabled={isProcessing}
-                onClick={async () => {
-                  if (!effectiveOwnerId) return;
-
-                  if (!ownerMandateConsentChecked) {
-                    showToast('⚠️ Please check the standing instruction authorization box to proceed.');
-                    return;
-                  }
-
-                  let displayDetails = `${selectedNewGateway.toUpperCase()} Active Card`;
-                  let token = `mandate_${selectedNewGateway}_${Date.now()}`;
-                  const cleanCard = ownerMandateCardNumber.replace(/\s+/g, '');
-
-                  if (selectedNewGateway === 'stripe') {
-                    if (!cleanCard || cleanCard.length < 15) {
-                      showToast('⚠️ Please enter a valid 16-digit card number.');
-                      return;
-                    }
-                    if (!ownerMandateCardExpiry || !ownerMandateCardExpiry.includes('/')) {
-                      showToast('⚠️ Please enter card expiry in MM/YY format.');
-                      return;
-                    }
-                    if (!ownerMandateCardCvv || ownerMandateCardCvv.length < 3) {
-                      showToast('⚠️ Please enter a valid 3-digit CVV/CVC.');
-                      return;
-                    }
-                    const last4 = cleanCard.slice(-4);
-                    const brand = cleanCard.startsWith('4') ? 'Visa' : cleanCard.startsWith('5') ? 'Mastercard' : 'Card';
-                    displayDetails = `${brand} ending in •••• ${last4}`;
-                    token = `pm_owner_${last4}_${Date.now()}`;
-                  } else if (selectedNewGateway === 'razorpay') {
-                    if (ownerMandateRzpSubMode === 'upi') {
-                      if (!ownerMandateUpiId || !ownerMandateUpiId.includes('@')) {
-                        showToast('⚠️ Please enter a valid UPI ID (e.g. owner@okhdfcbank).');
-                        return;
-                      }
-                      displayDetails = `UPI AutoPay (${ownerMandateUpiId.trim()})`;
-                      token = `rzp_upi_${Date.now()}`;
-                    } else {
-                      if (!cleanCard || cleanCard.length < 15) {
-                        showToast('⚠️ Please enter a valid card number.');
-                        return;
-                      }
-                      const last4 = cleanCard.slice(-4);
-                      displayDetails = `Card ending in •••• ${last4}`;
-                      token = `rzp_card_${last4}_${Date.now()}`;
-                    }
-                  } else if (selectedNewGateway === 'easebuzz') {
-                    if (!ownerMandateAccountNum || ownerMandateAccountNum.length < 6) {
-                      showToast('⚠️ Please enter a valid account number.');
-                      return;
-                    }
-                    const last4 = ownerMandateAccountNum.slice(-4);
-                    displayDetails = `e-NACH (${ownerMandateBankName} •••• ${last4})`;
-                    token = `eb_nach_${last4}_${Date.now()}`;
-                  } else if (selectedNewGateway === 'paypal') {
-                    if (!ownerMandatePaypalEmail || !ownerMandatePaypalEmail.includes('@')) {
-                      showToast('⚠️ Please enter your PayPal billing email address.');
-                      return;
-                    }
-                    displayDetails = `PayPal (${ownerMandatePaypalEmail.trim()})`;
-                    token = `B-${Date.now().toString(36).toUpperCase()}`;
-                  }
-
-                  setIsProcessing(true);
-                  try {
-                    await updateOwnerAutopay(effectiveOwnerId, {
-                      activeGateway: selectedNewGateway,
-                      mandateId: token,
-                      status: 'active',
-                      autoRenew: true,
-                      displayDetails,
-                      updatedAt: new Date().toISOString(),
-                    });
-                    showToast(`✓ Active billing method switched to ${displayDetails}! Old mandate cancelled.`);
-                    setIsChangePaymentMethodOpen(false);
-                  } catch (err: any) {
-                    showToast(`Error switching payment method: ${err.message || err}`);
-                  } finally {
-                    setIsProcessing(false);
-                  }
-                }}
-              >
-                {isProcessing ? 'Authorizing...' : 'Authorize'}
+                Close
               </button>
             </div>
           </div>

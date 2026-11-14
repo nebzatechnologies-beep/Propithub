@@ -74,12 +74,9 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
 
   const myUnits = useMemo(() => {
-    return state.units.filter((u) => {
-      if (u.propertyId && myPropertyIds.has(u.propertyId)) return true;
-      if (ownerId && u.ownerId === ownerId) return true;
-      return false;
-    });
-  }, [state.units, myPropertyIds, ownerId]);
+    if (myPropertyIds.size === 0) return [];
+    return state.units.filter((u) => Boolean(u.propertyId && myPropertyIds.has(u.propertyId)));
+  }, [state.units, myPropertyIds]);
 
   const occupiedCount = useMemo(() => {
     return myUnits.filter(
@@ -88,12 +85,9 @@ export const ManagerOperationsScreen: React.FC<ManagerOperationsScreenProps> = (
   }, [myUnits, state.agreements, state.tenancyRequests, state.moveOuts]);
 
   const myTickets = useMemo(() => {
-    return state.tickets.filter((t) => {
-      if (t.propertyId && myPropertyIds.has(t.propertyId)) return true;
-      if (ownerId && t.ownerId === ownerId) return true;
-      return false;
-    });
-  }, [state.tickets, myPropertyIds, ownerId]);
+    if (myPropertyIds.size === 0) return [];
+    return state.tickets.filter((t) => Boolean(t.propertyId && myPropertyIds.has(t.propertyId)));
+  }, [state.tickets, myPropertyIds]);
 
   const myStaff = useMemo(() => {
     if (!ownerId) return [];

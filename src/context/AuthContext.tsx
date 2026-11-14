@@ -460,6 +460,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, role: found.role };
   };
 
+  const mapFirebaseRegisterError = (err: any): string => {
+    const code = err?.code || '';
+    if (code === 'auth/email-already-in-use') {
+      return 'An account with this email address already exists. Please sign in instead.';
+    }
+    if (code === 'auth/weak-password') {
+      return 'Password is too weak. Please choose a stronger password (at least 6 characters).';
+    }
+    if (code === 'auth/invalid-email') {
+      return 'Please enter a valid email address.';
+    }
+    if (code === 'auth/operation-not-allowed') {
+      return 'Email/password registration is currently disabled. Please contact support.';
+    }
+    if (code === 'auth/network-request-failed') {
+      return 'Network error while creating your account. Please check your connection and try again.';
+    }
+    return err?.message || 'Registration failed. Please verify your details and try again.';
+  };
+
   const registerOwner = async (
     name: string,
     email: string,
@@ -505,7 +525,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       taxConfig: { label: 'Service Tax', percent: 0 },
     };
 
-    // 1. Sync to Firebase if configured
+    // 1. Sync to Firebase if configured (never fall back to unauthenticated fake local user)
     if (isFirebaseConfigured) {
       try {
         const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
@@ -515,7 +535,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await setDoc(doc(db, 'users', cred.user.uid), newOwner);
         await setDoc(doc(db, 'owners', cred.user.uid), newSettings);
       } catch (err: any) {
-        console.warn('Firebase registration failed, using local registration:', err?.message);
+        console.warn('Firebase owner registration failed:', err?.message);
+        throw new Error(mapFirebaseRegisterError(err));
       }
     }
 
@@ -585,7 +606,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await setDoc(doc(db, 'users', cred.user.uid), newTenantUser);
         await setDoc(doc(db, 'tenants', cred.user.uid), newTenantRecord);
       } catch (err: any) {
-        console.warn('Firebase tenant registration failed, using local registration:', err?.message);
+        console.warn('Firebase tenant registration failed:', err?.message);
+        throw new Error(mapFirebaseRegisterError(err));
       }
     }
 

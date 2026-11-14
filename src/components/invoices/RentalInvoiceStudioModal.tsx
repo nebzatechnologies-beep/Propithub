@@ -26,6 +26,8 @@ import { ButtonProcessing } from '../common/Spinner';
 import { DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL, getCurrencySymbol } from '../../lib/currencyService';
 import { useCurrency } from '../../context/CurrencyContext';
 import { downloadSingleInvoicePDF } from '../../lib/pdf';
+import { db, isFirebaseConfigured } from '../../lib/firebase';
+import { doc, setDoc } from 'firebase/firestore';
 
 interface RentalInvoiceStudioModalProps {
   isOpen: boolean;
@@ -448,6 +450,12 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
     setIsSavingInvoice(true);
     await new Promise((r) => setTimeout(r, 450));
 
+    const safeIsoDate = (val?: string) => {
+      if (!val || !val.trim()) return new Date().toISOString();
+      const parsed = new Date(val);
+      return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+    };
+
     const invoiceToSave: Invoice = {
       id: invoiceId,
       ownerId,
@@ -467,7 +475,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
       total: grandTotal,
       due: dueDate,
       status: finalStatus,
-      issueDate: new Date(issueDate).toISOString(),
+      issueDate: safeIsoDate(issueDate),
       items,
       notes,
       issuerName,
@@ -478,8 +486,8 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
       tenantTaxNo,
       tenantPhone,
       tenantEmail,
-      billingPeriodStart: new Date(billingPeriodStart).toISOString(),
-      billingPeriodEnd: new Date(billingPeriodEnd).toISOString(),
+      billingPeriodStart: safeIsoDate(billingPeriodStart),
+      billingPeriodEnd: safeIsoDate(billingPeriodEnd),
       termsAndConditions,
       bankDetails: {
         bankName,
@@ -522,6 +530,13 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
         isRead: false,
         createdAt: new Date().toISOString(),
       };
+      if (isFirebaseConfigured) {
+        try {
+          await setDoc(doc(db, 'notifications', notif.id), notif);
+        } catch (err) {
+          console.warn('Firestore notification sync error:', err);
+        }
+      }
       updateState((prev) => ({
         ...prev,
         notifications: [...(prev.notifications || []), notif],
@@ -625,7 +640,7 @@ export const RentalInvoiceStudioModal: React.FC<RentalInvoiceStudioModalProps> =
                       notes,
                       signatoryName,
                       signatureUrl: signatureUrl || undefined,
-                    })
+                    }, invoiceType === 'deposit' ? (state.ownerSettings[ownerId]?.depositTemplate || state.ownerSettings[ownerId]?.invoiceTemplate) : state.ownerSettings[ownerId]?.invoiceTemplate)
                   }
                   title="Download official PDF invoice"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px' }}

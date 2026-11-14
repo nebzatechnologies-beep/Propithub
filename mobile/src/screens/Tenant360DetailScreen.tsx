@@ -34,7 +34,7 @@ export const Tenant360DetailScreen: React.FC<Tenant360DetailScreenProps> = ({
   const { format, viewCurrency } = useMobileCurrency();
   const { user } = useMobileAuth();
 
-  const ownerId = user?.role === 'owner' ? user.id : '';
+  const ownerId = user?.role === 'owner' ? user.id : ((user as any)?.ownerId || '');
   const myProperties = useMemo(() => {
     if (!ownerId) return state.properties;
     return state.properties.filter(
@@ -92,7 +92,7 @@ export const Tenant360DetailScreen: React.FC<Tenant360DetailScreenProps> = ({
           (tenant.unit && a.unit?.toLowerCase().trim() === tenant.unit.toLowerCase().trim());
         const matchProp = !a.propertyId || !tenant.propertyId || a.propertyId === tenant.propertyId;
         const matchTenant = a.tenantId === tenant.id || Boolean(tenant.email && a.tenantEmail?.toLowerCase() === tenant.email.toLowerCase());
-        return matchProp && matchTenant && (!tenant.unit || matchUnit);
+        return a.status !== 'terminated' && a.status !== 'cancelled' && matchProp && matchTenant && (!tenant.unit || matchUnit);
       }) || null
     );
   }, [state.agreements, tenant]);
@@ -110,7 +110,7 @@ export const Tenant360DetailScreen: React.FC<Tenant360DetailScreenProps> = ({
   }, [state.tenancyRequests, tenant]);
 
   const pendingDue = tenantInvoices
-    .filter((i) => i.status !== 'paid')
+    .filter((i) => i.status !== 'paid' && (i.status as any) !== 'cancelled' && (i.status as any) !== 'draft')
     .reduce((sum, i) => sum + i.total, 0);
 
   const handleCall = (phone?: string) => {

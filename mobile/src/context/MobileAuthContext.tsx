@@ -87,8 +87,14 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 propertyId: uData.propertyId,
                 assignedProperties: uData.assignedProperties || (uData.propertyId ? [uData.propertyId] : []),
                 avatarUrl: uData.avatarUrl || null,
-                plan: uData.plan || 'pro',
+                plan: uData.plan || 'starter',
+                status: uData.status,
+                notificationPreferences: uData.notificationPreferences,
+                deletionStatus: uData.deletionStatus,
+                deletionRequestedAt: uData.deletionRequestedAt ?? null,
+                scheduledPermanentDeletionAt: uData.scheduledPermanentDeletionAt ?? null,
                 hasCompletedTour: Boolean(uData.hasCompletedTour),
+                createdAt: uData.createdAt,
               };
               setCurrentUser(profile);
               setActiveRole(profile.role);
@@ -121,8 +127,14 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               propertyId: uData.propertyId,
               assignedProperties: uData.assignedProperties || (uData.propertyId ? [uData.propertyId] : []),
               avatarUrl: uData.avatarUrl || null,
-              plan: uData.plan || 'pro',
+              plan: uData.plan || 'starter',
+              status: uData.status,
+              notificationPreferences: uData.notificationPreferences,
+              deletionStatus: uData.deletionStatus,
+              deletionRequestedAt: uData.deletionRequestedAt ?? null,
+              scheduledPermanentDeletionAt: uData.scheduledPermanentDeletionAt ?? null,
               hasCompletedTour: Boolean(uData.hasCompletedTour),
+              createdAt: uData.createdAt,
             };
             setCurrentUser(profile);
             setActiveRole(profile.role);
@@ -186,7 +198,7 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               ownerName: null,
               avatarUrl: null,
               assignedProperties: detectedAssignedProps,
-              plan: 'pro',
+              plan: 'starter',
               hasCompletedTour: false,
             };
             setCurrentUser(fallbackProfile);
@@ -236,8 +248,14 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           propertyId: uData.propertyId,
           assignedProperties: uData.assignedProperties || (uData.propertyId ? [uData.propertyId] : []),
           avatarUrl: uData.avatarUrl || null,
-          plan: uData.plan || 'pro',
+          plan: uData.plan || 'starter',
+          status: uData.status,
+          notificationPreferences: uData.notificationPreferences,
+          deletionStatus: uData.deletionStatus,
+          deletionRequestedAt: uData.deletionRequestedAt ?? null,
+          scheduledPermanentDeletionAt: uData.scheduledPermanentDeletionAt ?? null,
           hasCompletedTour: Boolean(uData.hasCompletedTour),
+          createdAt: uData.createdAt,
         };
         setCurrentUser(profile);
         setActiveRole(userRole);
@@ -312,6 +330,16 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             planStatus: isTrial ? 'trialing' : 'expired',
             trialEndsAt: isTrial ? new Date(Date.now() + trialDays * 86400000).toISOString() : null,
             isInitialTrial: isTrial,
+            paymentMethods: {
+              cash: { enabled: true },
+              upi: { enabled: true, upiId: '', qrImage: null },
+              bank: { enabled: true, accountName: name.trim(), accountNumber: '', country: 'India', routing: '' },
+              paypal: { enabled: false, email: '' },
+              razorpay: { enabled: false, keyId: '', keySecret: '' },
+              stripe: { enabled: false, pubKey: '', secretKey: '' },
+            },
+            lateFeeConfig: { enabled: true, graceDays: 5, type: 'percent', value: 2, cap: 1000 },
+            taxConfig: { label: 'Service Tax', percent: 0 },
           },
           { merge: true }
         );

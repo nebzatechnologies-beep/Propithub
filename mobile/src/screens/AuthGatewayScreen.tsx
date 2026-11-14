@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,14 +6,15 @@ import {
   TouchableOpacity,
   Pressable,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   KeyboardAvoidingView,
   Platform,
   Alert,
   ActivityIndicator,
   ScrollView,
+  RefreshControl,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAuth } from '../context/MobileAuthContext';
@@ -39,7 +40,15 @@ export const AuthGatewayScreen: React.FC<AuthGatewayProps> = ({ onLoginSuccess }
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [focusedField, setFocusedField] = useState<'name' | 'phone' | 'email' | 'password' | null>(null);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setErrorMessage(null);
+    setFieldErrors({});
+    setTimeout(() => setRefreshing(false), 450);
+  }, []);
 
   // In-page error & field validation states
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -187,13 +196,22 @@ export const AuthGatewayScreen: React.FC<AuthGatewayProps> = ({ onLoginSuccess }
       <ScreenStatusBar />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
         style={styles.keyboardView}
       >
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.primary}
+              colors={[colors.primary]}
+            />
+          }
         >
           {/* Centered Logo Badge */}
           <View style={styles.logoContainer}>

@@ -186,27 +186,44 @@ export const TeamPage: React.FC = () => {
     showToast(`${name} onboarded successfully with login credentials.`);
   };
 
-  const handleRemovePM = async (id: number, name: string) => {
+  const getManagerAssignedProperty = (m: any) => {
+    if (!m) return null;
+    const propId = m.propertyId || (m.assignedProperties && m.assignedProperties[0]) || m.assignedPropertyId;
+    return myProperties.find((p) => p.id === propId || (m.assignedProperty && p.name === m.assignedProperty)) || null;
+  };
+
+  const handleRemovePM = async (id: string | number, name: string) => {
     await deleteManager(id);
     showToast(`${name} removed as property manager.`);
   };
 
   const handleConfirmManagerPayout = () => {
     if (!payingManager) return;
+    if (!payMonth.trim()) {
+      showToast('⚠️ Please enter a payout month or period.');
+      return;
+    }
+    if (!payAmount || payAmount <= 0) {
+      showToast('⚠️ Payout amount must be greater than 0.');
+      return;
+    }
+
+    const assignedProp = getManagerAssignedProperty(payingManager);
     recordManagerPayout({
       id: `MP-${Date.now()}`,
       managerId: String(payingManager.id || 'usr-pm-1'),
       managerName: payingManager.name,
       ownerId: user?.id || '',
-      month: payMonth,
+      month: payMonth.trim(),
       amount: payAmount,
-      currency: getCurrencySymbol(myProperties.find((p) => p.id === payingManager.assignedPropertyId || p.name === payingManager.assignedProperty)?.currency || myProperties[0]?.currency) || DEFAULT_CURRENCY_SYMBOL,
+      currency: getCurrencySymbol(assignedProp?.currency || myProperties[0]?.currency) || DEFAULT_CURRENCY_SYMBOL,
       status: 'paid',
       paymentMethod: payMethod,
       utrReference: payUtr || `TXN${Math.floor(100000 + Math.random() * 900000)}`,
       paidAt: new Date().toLocaleDateString('en-CA'),
       notes: payNotes,
     });
+    showToast(`✓ Payout of ${payAmount} recorded for ${payingManager.name}.`);
     setIsPayModalOpen(false);
     setPayingManager(null);
   };
@@ -789,11 +806,11 @@ export const TeamPage: React.FC = () => {
                   style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', border: '1px solid var(--line-strong)', background: 'var(--surface)', fontWeight: 500 }}
                 >
                   {myManagers.map((m: any) => {
-                    const assignedProp = myProperties.find((p) => p.id === m.assignedPropertyId || p.name === m.assignedProperty);
+                    const assignedProp = getManagerAssignedProperty(m);
                     const propCurr = getCurrencySymbol(assignedProp?.currency || myProperties[0]?.currency) || DEFAULT_CURRENCY_SYMBOL;
                     return (
                       <option key={m.id} value={m.id}>
-                        {m.name} ({m.email}) — Property: {m.assignedProperty || assignedProp?.name || 'Unassigned'} ({propCurr})
+                        {m.name} ({m.email}) — Property: {assignedProp?.name || 'Unassigned'} ({propCurr})
                       </option>
                     );
                   })}
@@ -810,7 +827,7 @@ export const TeamPage: React.FC = () => {
                   />
                 </div>
                 <div className="field">
-                  <label>Amount ({payingManager ? (getCurrencySymbol(myProperties.find((p) => p.id === payingManager.assignedPropertyId || p.name === payingManager.assignedProperty)?.currency || myProperties[0]?.currency) || DEFAULT_CURRENCY_SYMBOL) : DEFAULT_CURRENCY_SYMBOL})</label>
+                  <label>Amount ({payingManager ? (getCurrencySymbol(getManagerAssignedProperty(payingManager)?.currency || myProperties[0]?.currency) || DEFAULT_CURRENCY_SYMBOL) : DEFAULT_CURRENCY_SYMBOL})</label>
                   <input
                     type="number"
                     min="0"

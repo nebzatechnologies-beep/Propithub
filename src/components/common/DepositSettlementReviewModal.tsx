@@ -38,10 +38,10 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
   const { state, respondToDepositSettlement, confirmRefundReceipt, confirmCashClaim, rejectCashClaim, showToast } = useAppData();
   const { user } = useAuth();
 
-  const currencySymbol = getCurrencySymbol(settlement.currency) || DEFAULT_CURRENCY_SYMBOL;
-  const locale = getLocaleForCurrency(settlement.currency);
   const liveSettlement = (state.depositSettlements || []).find((s) => s.id === settlement.id) || settlement;
   const activeSettle = liveSettlement;
+  const currencySymbol = getCurrencySymbol(activeSettle.currency) || DEFAULT_CURRENCY_SYMBOL;
+  const locale = getLocaleForCurrency(activeSettle.currency);
 
   const [isConfirmingReceipt, setIsConfirmingReceipt] = useState(false);
   const isDisbursed = activeSettle.status === 'refunded' || Boolean(activeSettle.disbursedAt);
@@ -51,15 +51,15 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
   const matchingCashClaim = (state.cashClaims || []).find((c) => {
     const isPending = c.status === 'pending_confirmation' || (c as any).status === 'pending';
     if (!isPending) return false;
-    if (c.settlementId && (c.settlementId === settlement.id || settlement.id.includes(c.settlementId) || c.settlementId.includes(settlement.id))) return true;
-    if ((settlement as any).cashClaimId && c.id === (settlement as any).cashClaimId) return true;
-    if (c.moveOutId && settlement.id.includes(c.moveOutId)) return true;
+    if (c.settlementId && (c.settlementId === activeSettle.id || activeSettle.id.includes(c.settlementId) || c.settlementId.includes(activeSettle.id))) return true;
+    if ((activeSettle as any).cashClaimId && c.id === (activeSettle as any).cashClaimId) return true;
+    if (c.moveOutId && activeSettle.id.includes(c.moveOutId)) return true;
     if (
       c.unit &&
-      settlement.unit &&
-      cleanUnit(c.unit) === cleanUnit(settlement.unit) &&
-      (!c.tenantId || c.tenantId === settlement.tenantId) &&
-      (!c.moveOutId || settlement.id.includes(c.moveOutId)) &&
+      activeSettle.unit &&
+      cleanUnit(c.unit) === cleanUnit(activeSettle.unit) &&
+      (!c.tenantId || c.tenantId === activeSettle.tenantId) &&
+      (!c.moveOutId || activeSettle.id.includes(c.moveOutId)) &&
       (c.type === 'deposit_refund' || c.claimedByRole === 'owner')
     )
       return true;
@@ -86,7 +86,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
 
   // Existing payout profile if configured
   const existingProfile = (state.payoutProfiles || []).find(
-    (p) => p.tenantId === user?.id || p.tenantId === settlement.tenantId
+    (p) => p.tenantId === user?.id || p.tenantId === activeSettle.tenantId
   );
 
   // Form states - Payout
@@ -96,13 +96,13 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
     if (existingProfile?.channel === 'bank_in') return 'bank_in';
     if (existingProfile?.channel === 'paypal') return 'paypal';
     if (existingProfile?.channel === 'iban_eu') return 'iban';
-    const isIndia = normalizeCurrencyCode(settlement.currency) === 'INR';
+    const isIndia = normalizeCurrencyCode(activeSettle.currency) === 'INR';
     return isIndia ? 'upi' : 'paypal';
   })();
 
   const [payoutMethod, setPayoutMethod] = useState<'upi' | 'bank_in' | 'iban' | 'paypal' | 'cash'>(defaultMethod);
   const [accountHolderName, setAccountHolderName] = useState(
-    activeSettle.chosenPayoutDetails?.accountHolderName || existingProfile?.accountHolderName || user?.displayName || settlement.tenantName || ''
+    activeSettle.chosenPayoutDetails?.accountHolderName || existingProfile?.accountHolderName || user?.displayName || activeSettle.tenantName || ''
   );
   const [upiId, setUpiId] = useState(activeSettle.chosenPayoutDetails?.upiId || existingProfile?.upiId || '');
   const [accountNumber, setAccountNumber] = useState(activeSettle.chosenPayoutDetails?.accountNumber || existingProfile?.accountNumber || '');
@@ -114,7 +114,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
   const [notes, setNotes] = useState('');
 
   // Form states - Reject
-  const [rejectReason, setRejectReason] = useState(settlement.rejectionReason || settlement.notes || '');
+  const [rejectReason, setRejectReason] = useState(activeSettle.rejectionReason || activeSettle.notes || '');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCashConfirming, setIsCashConfirming] = useState(false);
@@ -172,9 +172,9 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
 
     try {
       setIsSubmitting(true);
-      await respondToDepositSettlement(settlement.id, 'approved', notes.trim(), payoutDetails);
+      await respondToDepositSettlement(activeSettle.id, 'approved', notes.trim(), payoutDetails);
       showToast(
-        `✓ Settlement accepted! Preferred refund destination registered. Landlord has been notified to disburse ${currencySymbol}${(Number(settlement.netRefundableAmount) || 0).toLocaleString(
+        `✓ Settlement accepted! Preferred refund destination registered. Landlord has been notified to disburse ${currencySymbol}${(Number(activeSettle.netRefundableAmount) || 0).toLocaleString(
           locale
         )}.`
       );
@@ -199,7 +199,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
 
     try {
       setIsSubmitting(true);
-      await respondToDepositSettlement(settlement.id, 'rejected', rejectReason.trim());
+      await respondToDepositSettlement(activeSettle.id, 'rejected', rejectReason.trim());
       showToast('✓ Deductions rejected. Landlord notified to revise deductions and re-send recalculated refund.');
       if (onSuccess) onSuccess();
       onClose();
@@ -227,7 +227,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
               </h3>
             </div>
             <div style={{ fontSize: '12.5px', color: 'var(--ink-soft)', marginTop: '3px' }}>
-              Unit {settlement.unit} • {settlement.propertyName}
+              Unit {activeSettle.unit} • {activeSettle.propertyName}
             </div>
           </div>
           <button type="button" className="modal-close" onClick={onClose}>
@@ -379,9 +379,9 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
               <XCircle size={18} style={{ marginTop: '2px', flexShrink: 0 }} />
               <div>
                 <b>Deductions Rejected:</b> You have requested a recalculation.
-                {(settlement.rejectionReason || settlement.notes) && (
+                {(activeSettle.rejectionReason || activeSettle.notes) && (
                   <div style={{ marginTop: '4px', fontStyle: 'italic', color: 'var(--ink)' }}>
-                    "{settlement.rejectionReason || settlement.notes}"
+                    "{activeSettle.rejectionReason || activeSettle.notes}"
                   </div>
                 )}
                 <div style={{ marginTop: '4px', fontSize: '12px', color: 'var(--ink-soft)' }}>
@@ -391,7 +391,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
             </div>
           )}
 
-          {settlement.revisionNotes && (
+          {activeSettle.revisionNotes && (
             <div
               style={{
                 background: '#EFF6FF',
@@ -409,7 +409,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
               <div>
                 <b>Landlord Recalculation Note:</b>
                 <div style={{ marginTop: '4px', fontStyle: 'italic', color: 'var(--ink)' }}>
-                  "{settlement.revisionNotes}"
+                  "{activeSettle.revisionNotes}"
                 </div>
               </div>
             </div>
@@ -427,18 +427,18 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <span style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>Initial Security Deposit Held:</span>
               <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--ink)' }}>
-                {currencySymbol}{Number(settlement.grossDepositHeld ?? (settlement as any).deposit ?? 0).toLocaleString(locale)}
+                {currencySymbol}{Number(activeSettle.grossDepositHeld ?? (activeSettle as any).deposit ?? 0).toLocaleString(locale)}
               </span>
             </div>
 
             {/* Deductions breakdown */}
-            {settlement.deductions && settlement.deductions.length > 0 ? (
+            {activeSettle.deductions && activeSettle.deductions.length > 0 ? (
               <div style={{ borderTop: '1px solid var(--line)', paddingTop: '10px', marginTop: '10px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--danger)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Itemized Inspection Deductions ({settlement.deductions.length})
+                  Itemized Inspection Deductions ({activeSettle.deductions.length})
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {settlement.deductions.map((item, idx) => (
+                  {activeSettle.deductions.map((item, idx) => (
                     <div
                       key={item.id || idx}
                       style={{
@@ -505,7 +505,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
                   }}
                 >
                   <span>Total Deductions Assessed:</span>
-                  <span>- {currencySymbol}{(Number(settlement.totalDeductions) || 0).toLocaleString(locale)}</span>
+                  <span>- {currencySymbol}{(Number(activeSettle.totalDeductions) || 0).toLocaleString(locale)}</span>
                 </div>
               </div>
             ) : (
@@ -543,7 +543,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
                 </div>
               </div>
               <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ledger, #2F5D50)' }}>
-                {currencySymbol}{(Number(settlement.netRefundableAmount) || 0).toLocaleString(locale)}
+                {currencySymbol}{(Number(activeSettle.netRefundableAmount) || 0).toLocaleString(locale)}
               </div>
             </div>
           </div>
@@ -787,7 +787,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
                   <div style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
                     Choose where you would like the landlord to disburse your refund balance of{' '}
                     <b style={{ color: 'var(--ledger, #2F5D50)' }}>
-                      {currencySymbol}{(Number(settlement.netRefundableAmount) || 0).toLocaleString(locale)}
+                      {currencySymbol}{(Number(activeSettle.netRefundableAmount) || 0).toLocaleString(locale)}
                     </b>
                     :
                   </div>
@@ -988,7 +988,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
                     <ButtonProcessing
                       loading={isSubmitting}
                       loadingText="Submitting Acceptance..."
-                      defaultText={`Accept Settlement & Authorize Refund (${currencySymbol}${(Number(settlement.netRefundableAmount) || 0).toLocaleString(locale)})`}
+                      defaultText={`Accept Settlement & Authorize Refund (${currencySymbol}${(Number(activeSettle.netRefundableAmount) || 0).toLocaleString(locale)})`}
                       icon={<Check size={16} />}
                     />
                   </button>
@@ -1085,7 +1085,7 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
             <button
               type="button"
               className="btn secondary small btn-mobile-full"
-              onClick={() => downloadDepositSettlementPdf(settlement)}
+              onClick={() => downloadDepositSettlementPdf(activeSettle)}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
             >
               <Download size={13} /> Download PDF Voucher
@@ -1093,39 +1093,6 @@ export const DepositSettlementReviewModal: React.FC<DepositSettlementReviewModal
           </div>
 
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {isCashConfirmationPending && (
-              <button
-                type="button"
-                className={`btn ${isCashConfirming ? 'btn-processing' : ''}`}
-                disabled={isCashConfirming}
-                style={{ background: '#16A34A', color: '#fff', border: 'none', padding: '8px 16px', fontSize: '12.5px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
-                onClick={async () => {
-                  setIsCashConfirming(true);
-                  try {
-                    await new Promise((r) => setTimeout(r, 350));
-                    if (matchingCashClaim) {
-                      await confirmCashClaim(matchingCashClaim.id);
-                    } else {
-                      await confirmRefundReceipt(activeSettle.id);
-                    }
-                    showToast('✓ Cash refund confirmed! Security deposit settled.');
-                    if (onSuccess) onSuccess();
-                    onClose();
-                  } catch (err: any) {
-                    showToast(err?.message || 'Failed to confirm cash receipt.');
-                  } finally {
-                    setIsCashConfirming(false);
-                  }
-                }}
-              >
-                <ButtonProcessing
-                  loading={isCashConfirming}
-                  loadingText="Confirming..."
-                  defaultText={`✓ Confirm Cash Received (${currencySymbol}${(Number(matchingCashClaim?.amount) || activeSettle.netRefundableAmount || 0).toLocaleString(locale)})`}
-                  icon={<CheckCircle2 size={15} />}
-                />
-              </button>
-            )}
             <button type="button" className="btn secondary btn-mobile-full" onClick={onClose}>
               Close
             </button>

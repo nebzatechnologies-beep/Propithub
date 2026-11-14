@@ -182,6 +182,7 @@ export interface PlatformInvoiceTemplateConfig {
   accountNumber?: string;
   swiftCode?: string;
 }
+export type PlatformInvoiceTemplate = PlatformInvoiceTemplateConfig;
 
 export interface PropertyAddress {
   formattedAddress: string;
@@ -626,6 +627,9 @@ export interface PlatformInvoice {
   notes?: string;
   // Legal & Tax Fields
   issuerName?: string;
+  issuerAddress?: string;
+  issuerEmail?: string;
+  issuerPhone?: string;
   issuerTaxNo?: string;
   ownerTaxNo?: string;
   termsAndConditions?: string;
@@ -709,10 +713,11 @@ export interface Ticket {
     email: string;
   };
   issue: string;
-  priority: 'Low' | 'Medium' | 'High';
+  priority: 'Low' | 'Medium' | 'High' | 'Emergency';
   status: 'open' | 'assigned' | 'in_progress' | 'resolved';
   assignedTo: string | null;
   assignedStaffId?: string | null;
+  assignedStaffName?: string | null;
   created: string;
   payment: TicketPayment;
   photos?: string[];
@@ -793,25 +798,6 @@ export interface TenantReview {
   rating: number;
   text: string;
   createdAt?: string;
-}
-
-export interface Dispute {
-  id: string;
-  ownerId?: string;
-  tenantId?: string;
-  raisedById?: string;
-  unit?: string;
-  invoiceId?: string;
-  type: 'Payment' | 'Maintenance' | 'Deposit' | 'Review' | string;
-  raisedBy: string;
-  against: string;
-  detail: string;
-  status: 'awaiting_owner' | 'community_review' | 'resolved';
-  evidence: string;
-  created: string;
-  resolution?: string | null;
-  votes: { support: number; reject: number };
-  votedBy?: string[];
 }
 
 export interface ReviewItem {

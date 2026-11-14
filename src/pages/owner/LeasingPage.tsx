@@ -2,16 +2,13 @@ import React, { useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
-import { Agreement, AgreementTemplate, RenewalItem, MoveOutRequest, Invoice, TenantRecord, UserProfile, RequiredIdItem, TenancyRequest } from '../../types';
-import { db, isFirebaseConfigured } from '../../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { Agreement, AgreementTemplate, RenewalItem } from '../../types';
 import {
   getTodayDateString,
   getNextMonthFirstDateString,
   getOneYearLaterDateString,
   getDaysFromNowString,
 } from '../../lib/dates';
-import { TenantSearchCombobox, SelectedTenantInfo } from '../../components/leasing/TenantSearchCombobox';
 import { downloadAgreementPDF } from '../../lib/pdf';
 import { usePlanLimits } from '../../hooks/usePlanLimits';
 import { PlanLimitModal } from '../../components/common/PlanLimitModal';
@@ -47,7 +44,7 @@ import { CurrencyAmount, getTableCurrencyHeader } from '../../components/common/
 
 
 export const LeasingPage: React.FC = () => {
-  const { state, updateState, showToast, saveAgreement, deleteAgreement, saveAgreementTemplate, deleteAgreementTemplate, saveUnit, saveInvoice, saveTenant, saveMoveout, saveTenancyRequest, approveSignedAgreement, rejectSignedAgreement, offerLeaseRenewal, approveLeaseRenewal, updateEnquiryStatus } = useAppData();
+  const { state, showToast, deleteAgreement, saveAgreementTemplate, deleteAgreementTemplate, approveSignedAgreement, rejectSignedAgreement, offerLeaseRenewal, approveLeaseRenewal, updateEnquiryStatus } = useAppData();
   const { user, isOwnerPlanActive } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -68,7 +65,6 @@ export const LeasingPage: React.FC = () => {
   const [leaseStatusFilter, setLeaseStatusFilter] = useState<'all' | 'active' | 'pending' | 'terminated'>('all');
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
-  const [isCreatingAgreement, setIsCreatingAgreement] = useState(false);
   const [isApprovingAgreement, setIsApprovingAgreement] = useState(false);
   const [isRejectingAgreement, setIsRejectingAgreement] = useState(false);
   const [isRejectingModalOpen, setIsRejectingModalOpen] = useState(false);
@@ -77,29 +73,6 @@ export const LeasingPage: React.FC = () => {
   const [isApprovingRenewal, setIsApprovingRenewal] = useState(false);
   const [viewingAgreement, setViewingAgreement] = useState<Agreement | null>(null);
   const [inspectingSignedAgreement, setInspectingSignedAgreement] = useState<Agreement | null>(null);
-
-  // Upload Agreement Modal state
-  const [newAgUnit, setNewAgUnit] = useState('');
-  const [newAgTenant, setNewAgTenant] = useState('');
-  const [uploadTenantInfo, setUploadTenantInfo] = useState<SelectedTenantInfo | null>(null);
-  const [newAgStart, setNewAgStart] = useState(getNextMonthFirstDateString());
-  const [newAgEnd, setNewAgEnd] = useState(getOneYearLaterDateString(getNextMonthFirstDateString()));
-  const [uploadRent, setUploadRent] = useState<number>(0);
-  const [uploadDeposit, setUploadDeposit] = useState<number>(0);
-  const [uploadDueDay, setUploadDueDay] = useState<number>(1);
-  const [uploadMode, setUploadMode] = useState<'digital_dispatch' | 'already_executed_offline'>('digital_dispatch');
-  const [offlineDepositCollected, setOfflineDepositCollected] = useState<boolean>(true);
-  const [offlineDepositRef, setOfflineDepositRef] = useState<string>('Cash / Bank Wire Settled');
-  const [newAgAuto, setNewAgAuto] = useState('Off');
-  const [newAgFileName, setNewAgFileName] = useState('Rental_Agreement_Signed.pdf');
-  const [newAgFileData, setNewAgFileData] = useState<string | null>(null);
-  const [newAgFileSize, setNewAgFileSize] = useState<number | null>(null);
-  const [leaseAgreementSource, setLeaseAgreementSource] = useState<'upload' | 'library'>('upload');
-  const [leaseSelectedTemplateId, setLeaseSelectedTemplateId] = useState<string>('');
-  const [newAgRequireIds, setNewAgRequireIds] = useState(false);
-  const [newAgIdList, setNewAgIdList] = useState<RequiredIdItem[]>([
-    { id: 'ag_id_1', name: 'Voter ID' },
-  ]);
 
   // Renewal offer modal state
   const [renewalModalItem, setRenewalModalItem] = useState<RenewalItem | null>(null);
@@ -333,450 +306,6 @@ export const LeasingPage: React.FC = () => {
   const maxTenants = usage.tenants.max;
   const isTenantLimitReached = usage.tenants.isFull;
 
-  // File upload handler
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setNewAgFileName(file.name);
-      setNewAgFileSize(Math.round(file.size / 1024));
-      const reader = new FileReader();
-      reader.onload = () => {
-        setNewAgFileData(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleCreateAgreement = async () => {
-    setIsCreatingAgreement(true);
-    await new Promise((r) => setTimeout(r, 450));
-    const unitObj = vacantUnits.find((u) => u.id === newAgUnit || u.unitNumber === newAgUnit) || myUnits.find((u) => u.id === newAgUnit);
-    if (!unitObj) {
-      setIsCreatingAgreement(false);
-      showToast('⚠️ Please select a valid vacant unit to create an agreement.');
-      return;
-    }
-    const agId = `AG-${Math.floor(1000 + Math.random() * 9000)}`;
-    const tenantName = uploadTenantInfo?.name || newAgTenant.trim() || unitObj?.tenant || 'Resident';
-    const tenantEmail = uploadTenantInfo?.email || '';
-    const tenantPhone = uploadTenantInfo?.phone || '';
-    const tenantId = uploadTenantInfo?.id || unitObj?.currentTenantId || `usr_tenant_${Date.now()}`;
-
-    // Prefer id then email; avoid name-only match which can pick wrong tenant across owners
-    const existingTenant = myTenants.find(
-      (t) =>
-        t.id === tenantId ||
-        (tenantEmail && t.email?.toLowerCase() === tenantEmail.toLowerCase())
-    );
-    if (isTenantLimitReached && !existingTenant) {
-      setIsCreatingAgreement(false);
-      showToast(`⚠️ Tenant limit reached (${myTenants.length}/${maxTenants} on ${currentPlanName} tier). Please upgrade your plan to add more tenants.`);
-      return;
-    }
-
-    const isOfflineMode = uploadMode === 'already_executed_offline';
-    const nowIso = new Date().toISOString();
-
-    if (!isOfflineMode) {
-      // Digital Dispatch Workflow:
-      // Dispatches an official TenancyRequest with attached agreement.
-      // Tenant must first review & accept the offer on their dashboard
-      // (same process as in Add Resident and Search & Invite).
-      const requestId = `req_${Date.now()}`;
-      const unitNumber = unitObj?.unitNumber || unitObj?.id || 'Unit';
-      const targetProp = state.properties.find((p) => p.id === unitObj?.propertyId) || myProperties[0];
-      const rentAmount = uploadRent || unitObj?.rent || 0;
-      const depAmount = uploadDeposit || unitObj?.deposit || 0;
-      const currencyCode = unitObj?.currency || targetProp?.currency || defaultOwnerCurrency;
-      const cleanEmail = tenantEmail || `${tenantName.toLowerCase().replace(/\s+/g, '')}@tenant.com`;
-
-      const newRequest: TenancyRequest = {
-        id: requestId,
-        ownerId,
-        ownerName: user?.displayName || 'Property Owner',
-        ownerEmail: user?.email || '',
-        tenantId,
-        tenantName,
-        tenantEmail: cleanEmail,
-        tenantPhone,
-        propertyId: targetProp?.id || 'prop-1',
-        propertyName: targetProp?.name || 'Property',
-        unitId: unitObj?.id || newAgUnit,
-        unitNumber,
-        rent: rentAmount,
-        deposit: depAmount,
-        currency: currencyCode,
-        leaseStart: newAgStart || getNextMonthFirstDateString(),
-        leaseEnd: newAgEnd || getOneYearLaterDateString(getNextMonthFirstDateString()),
-        message: `Welcome to your new home at ${targetProp?.name || 'Property'}! Please review the attached lease agreement for Unit ${unitNumber}, accept, sign, and upload your signed copy to proceed to security deposit settlement.`,
-        agreementFileName: newAgFileName || 'Rental_Agreement.pdf',
-        agreementFileData: newAgFileData,
-        agreementFileSize: newAgFileSize || undefined,
-        requireTenantId: newAgRequireIds,
-        requiredIdList: newAgRequireIds ? newAgIdList.filter((i) => i.name.trim()) : [],
-        requiredIdTypes: newAgRequireIds ? newAgIdList.map((i) => i.name.trim()).filter(Boolean) : [],
-        status: 'pending',
-        createdAt: nowIso,
-      };
-
-      // Reserve unit while tenancy invitation is pending
-      if (unitObj) {
-        saveUnit({
-          ...unitObj,
-          status: 'reserved',
-          tenant: tenantName,
-          currentTenantId: tenantId,
-          rent: rentAmount || unitObj.rent,
-          deposit: depAmount || unitObj.deposit,
-        });
-      }
-
-      // In-app notification for tenant to accept on dashboard
-      const notif = {
-        id: `notif_${Date.now()}`,
-        userId: tenantId,
-        title: `Tenancy Offer & Lease Agreement from ${user?.displayName || 'Property Owner'}`,
-        body: `You have received a tenancy invitation with attached lease agreement for Unit ${unitNumber} at ${targetProp?.name || 'Property'} (${getCurrencySymbol(currencyCode)}${rentAmount.toLocaleString()}/mo). Please inspect and accept on your dashboard.`,
-        link: '/tenant/dashboard',
-        isRead: false,
-        createdAt: nowIso,
-      };
-
-      saveTenancyRequest(newRequest, notif);
-
-      updateState((prev) => {
-        const updatedUnits = prev.units.map((u) =>
-          u.id === unitObj?.id
-            ? {
-              ...u,
-              status: 'reserved' as const,
-              tenant: tenantName,
-              currentTenantId: tenantId,
-              rent: rentAmount || u.rent,
-              deposit: depAmount || u.deposit,
-            }
-            : u
-        );
-
-        const updatedProperties = prev.properties.map((p) => {
-          if (p.id === unitObj?.propertyId) {
-            const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
-            return { ...p, occupied: occ };
-          }
-          return p;
-        });
-
-        // Upsert tenant record and provision user profile if new
-        const existingTenantIndex = prev.tenants.findIndex(
-          (t) =>
-            t.id === tenantId ||
-            (tenantEmail && t.email?.toLowerCase() === tenantEmail.toLowerCase())
-        );
-        let updatedTenants = [...prev.tenants];
-        if (existingTenantIndex >= 0) {
-          const t = prev.tenants[existingTenantIndex];
-          const unitsRented = Array.from(new Set([...(t.unitsRented || []), unitNumber]));
-          updatedTenants[existingTenantIndex] = {
-            ...t,
-            unit: unitNumber,
-            unitsRented,
-            owner: user?.displayName || 'Property Owner',
-            ownerId,
-            rent: rentAmount || t.rent,
-            deposit: depAmount || t.deposit,
-            currency: currencyCode,
-            leaseStart: newAgStart || t.leaseStart,
-            leaseEnd: newAgEnd || t.leaseEnd,
-          };
-        } else {
-          const newRecord: TenantRecord = {
-            id: tenantId,
-            name: tenantName,
-            email: cleanEmail,
-            phone: tenantPhone || '',
-            unit: unitNumber,
-            owner: user?.displayName || 'Property Owner',
-            ownerId,
-            leaseStart: newAgStart || getNextMonthFirstDateString(),
-            leaseEnd: newAgEnd || getOneYearLaterDateString(getNextMonthFirstDateString()),
-            rent: rentAmount,
-            deposit: depAmount,
-            currency: currencyCode,
-            rating: 5.0,
-            unitsRented: [unitNumber],
-            history: [],
-            kycDocuments: [],
-          };
-          updatedTenants.push(newRecord);
-
-          const newProfile: UserProfile = {
-            id: tenantId,
-            email: newRecord.email,
-            role: 'tenant',
-            ownerId,
-            displayName: tenantName,
-            phone: newRecord.phone,
-            status: 'active',
-            createdAt: nowIso,
-            tempPassword: uploadTenantInfo?.tempPassword || 'Welcome@123',
-          };
-          saveTenant(newRecord, newProfile);
-        }
-
-        return {
-          ...prev,
-          tenancyRequests: [newRequest, ...(prev.tenancyRequests || [])],
-          units: updatedUnits,
-          properties: updatedProperties,
-          tenants: updatedTenants,
-          notifications: [...(prev.notifications || []), notif],
-        };
-      });
-
-      setIsCreatingAgreement(false);
-      setIsUploadOpen(false);
-      showToast(`✓ Tenancy invitation with attached lease agreement dispatched to ${tenantName}! Unit ${unitNumber} reserved pending resident acceptance.`);
-      return;
-    }
-
-    const newAg: Agreement = {
-      id: agId,
-      ownerId,
-      propertyId: unitObj?.propertyId || 'prop-1',
-      unit: unitObj?.unitNumber || unitObj?.id || 'Unit',
-      tenant: tenantName,
-      tenantId,
-      tenantEmail,
-      tenantPhone,
-      type: 'uploaded',
-      executionMode: uploadMode,
-      contentHtml: null,
-      fileName: newAgFileName,
-      fileData: newAgFileData,
-      initialAgreementUrl: newAgFileData || undefined,
-      initialAgreementName: newAgFileName || undefined,
-      initialUploadedAt: nowIso,
-      ownerSignedDocumentUrl: newAgFileData || undefined,
-      ownerSignedDocumentName: newAgFileName || undefined,
-      ownerSignedUploadedAt: nowIso,
-      start: newAgStart || getNextMonthFirstDateString(),
-      end: newAgEnd || getOneYearLaterDateString(getNextMonthFirstDateString()),
-      rent: uploadRent || unitObj?.rent || 0,
-      deposit: uploadDeposit || unitObj?.deposit || 0,
-      currency: unitObj?.currency || myProperties.find((p) => p.id === unitObj?.propertyId)?.currency || defaultOwnerCurrency,
-      rentDueDay: uploadDueDay || 1,
-      status: isOfflineMode ? 'active' : 'awaiting_tenant_upload',
-      tenantSignature: null,
-      signedDocumentUrl: isOfflineMode ? newAgFileData || undefined : undefined,
-      signedDocumentName: isOfflineMode ? newAgFileName : undefined,
-      signedUploadedAt: isOfflineMode ? nowIso : undefined,
-      approvedAt: nowIso,
-      approvedBy: user?.displayName || 'Property Owner',
-      counterSignedAt: nowIso,
-      counterSignatory: user?.displayName || 'Property Owner',
-      depositStatus: isOfflineMode && offlineDepositCollected ? 'paid' : 'unpaid',
-      autoRenew: newAgAuto === 'On',
-      requireTenantId: newAgRequireIds,
-      requiredIdList: newAgRequireIds ? newAgIdList.filter((i) => i.name.trim()) : [],
-      requiredIdTypes: newAgRequireIds ? newAgIdList.map((i) => i.name.trim()).filter(Boolean) : [],
-      requiredIdType: newAgRequireIds && newAgIdList.length > 0 ? newAgIdList[0].name.trim() : undefined,
-    };
-
-    updateState((prev) => {
-      // If offline mode, mark occupied; if digital dispatch, mark reserved
-      const updatedUnits = prev.units.map((u) =>
-        u.id === unitObj?.id
-          ? {
-            ...u,
-            status: isOfflineMode ? ('occupied' as const) : ('reserved' as const),
-            tenant: tenantName,
-            currentTenantId: tenantId,
-            rent: uploadRent || u.rent,
-            deposit: uploadDeposit || u.deposit,
-          }
-          : u
-      );
-
-      const updatedProperties = prev.properties.map((p) => {
-        if (p.id === unitObj?.propertyId) {
-          const occ = updatedUnits.filter((u) => u.propertyId === p.id && u.status === 'occupied').length;
-          return { ...p, occupied: occ };
-        }
-        return p;
-      });
-
-      // If offline mode and deposit was already collected, record payment transaction
-      const newPayments = [...prev.payments];
-      if (isOfflineMode && offlineDepositCollected && (uploadDeposit || 0) > 0) {
-        newPayments.unshift({
-          id: `TXN-DEP-${Date.now().toString().slice(-6)}`,
-          ownerId,
-          tenant: tenantName,
-          tenantId,
-          unit: unitObj?.unitNumber || unitObj?.id || 'Unit',
-          amount: uploadDeposit,
-          date: new Date().toISOString().split('T')[0],
-          dueDate: newAgStart,
-          status: 'paid',
-          method: offlineDepositRef || 'Offline Cash/Wire',
-          type: 'deposit',
-          currency: unitObj?.currency || myProperties.find((p) => p.id === unitObj?.propertyId)?.currency || defaultOwnerCurrency,
-          notes: `Security deposit collected offline upon manual lease execution.`,
-        });
-      }
-
-      // Sync or upsert TenantRecord in state.tenants
-      const unitNumber = unitObj?.unitNumber || unitObj?.id || 'Unit';
-      // Prefer id/email; avoid name-only match which can pick wrong tenant across owners
-      const existingTenantIndex = prev.tenants.findIndex(
-        (t) =>
-          t.id === tenantId ||
-          (tenantEmail && t.email?.toLowerCase() === tenantEmail.toLowerCase())
-      );
-      let updatedTenants = [...prev.tenants];
-      if (existingTenantIndex >= 0) {
-        const t = prev.tenants[existingTenantIndex];
-        const unitsRented = Array.from(new Set([...(t.unitsRented || []), unitNumber]));
-        updatedTenants[existingTenantIndex] = {
-          ...t,
-          unit: unitNumber,
-          unitsRented,
-          owner: user?.displayName || 'Property Owner',
-          ownerId,
-          rent: uploadRent || t.rent,
-          deposit: uploadDeposit || t.deposit,
-          currency: unitObj?.currency || t.currency || myProperties.find((p) => p.id === unitObj?.propertyId)?.currency || defaultOwnerCurrency,
-          leaseStart: newAgStart || t.leaseStart,
-          leaseEnd: newAgEnd || t.leaseEnd,
-        };
-      } else {
-        const newRecord: TenantRecord = {
-          id: tenantId,
-          name: tenantName,
-          email: tenantEmail || `${tenantName.toLowerCase().replace(/\s+/g, '')}@tenant.com`,
-          phone: tenantPhone || '',
-          unit: unitNumber,
-          owner: user?.displayName || 'Property Owner',
-          ownerId,
-          leaseStart: newAgStart,
-          leaseEnd: newAgEnd,
-          rent: uploadRent || unitObj?.rent || 0,
-          deposit: uploadDeposit || unitObj?.deposit || 0,
-          currency: unitObj?.currency || myProperties.find((p) => p.id === unitObj?.propertyId)?.currency || defaultOwnerCurrency,
-          rating: 5.0,
-          unitsRented: [unitNumber],
-          history: [],
-          kycDocuments: [],
-        };
-        updatedTenants.push(newRecord);
-
-        // Provision UserProfile account with tempPassword for first-time login
-        const newProfile: UserProfile = {
-          id: tenantId,
-          email: newRecord.email,
-          role: 'tenant',
-          ownerId,
-          displayName: tenantName,
-          phone: newRecord.phone,
-          status: 'active',
-          createdAt: nowIso,
-          tempPassword: uploadTenantInfo?.tempPassword || 'Welcome@123',
-        };
-        saveTenant(newRecord, newProfile);
-      }
-
-      // Notify tenant
-      const notif = {
-        id: `notif_${Date.now()}`,
-        userId: tenantId,
-        title: isOfflineMode ? 'Executed Lease Uploaded' : 'Lease Agreement Ready for Physical Signature',
-        body: isOfflineMode
-          ? `Your executed lease agreement for Unit ${unitObj?.unitNumber || unitObj?.id} is on file.`
-          : `Your landlord has drafted your tenancy agreement for Unit ${unitObj?.unitNumber || unitObj?.id}. Please download, print, sign in ink, and upload your signed document to settle your security deposit.`,
-        link: '/tenant/lease',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
-
-      // If offline mode, generate first month rent invoice
-      let updatedInvoices = prev.invoices;
-      if (isOfflineMode && (uploadRent || unitObj?.rent || 0) > 0) {
-        const cleanAgId = agId.replace(/[^a-zA-Z0-9_-]/g, '');
-        const rentInvId = `INV-RENT-${cleanAgId}-M1`;
-        const propName = prev.properties.find((p) => p.id === newAg.propertyId)?.name || 'Rental Property';
-        const rentAmount = uploadRent || unitObj?.rent || 0;
-        const firstMonthRentInvoice: Invoice = {
-          id: rentInvId,
-          ownerId,
-          propertyId: newAg.propertyId,
-          tenant: tenantName,
-          tenantId,
-          unit: unitNumber,
-          propertyName: propName,
-          amount: rentAmount,
-          tax: 0,
-          total: rentAmount,
-          currency: unitObj?.currency || myProperties.find((p) => p.id === unitObj?.propertyId)?.currency || defaultOwnerCurrency,
-          due: newAgStart || getNextMonthFirstDateString(),
-          status: 'sent',
-          invoiceType: 'rent',
-          leaseAgreementId: agId,
-          issueDate: nowIso.split('T')[0],
-          notes: `First month move-in rent pursuant to executed tenancy agreement for Unit ${unitNumber}.`,
-          items: [
-            {
-              description: `First Month Rent (Move-in) — Unit ${unitNumber} (${propName})`,
-              amount: rentAmount,
-            },
-          ],
-        };
-        saveInvoice(firstMonthRentInvoice);
-        updatedInvoices = [firstMonthRentInvoice, ...prev.invoices];
-      }
-
-      saveAgreement(newAg);
-      if (unitObj) {
-        saveUnit({
-          ...unitObj,
-          status: isOfflineMode ? ('occupied' as const) : ('reserved' as const),
-          tenant: tenantName,
-          currentTenantId: tenantId,
-          rent: uploadRent || unitObj.rent,
-          deposit: uploadDeposit || unitObj.deposit,
-        });
-      }
-      return {
-        ...prev,
-        agreements: [...prev.agreements, newAg],
-        units: updatedUnits,
-        properties: updatedProperties,
-        tenants: updatedTenants,
-        payments: newPayments,
-        invoices: updatedInvoices,
-        renewals: (prev.renewals || []).filter((r) => {
-          if (r.unit === unitNumber && (!newAg.propertyId || !r.propertyId || r.propertyId === newAg.propertyId)) {
-            const belongsToNewTenant =
-              (tenantId && r.tenantId === tenantId) ||
-              (tenantName && r.tenant && r.tenant.toLowerCase() === tenantName.toLowerCase());
-            return belongsToNewTenant;
-          }
-          return true;
-        }),
-        notifications: [...(prev.notifications || []), notif],
-      };
-    });
-
-    setIsCreatingAgreement(false);
-    setIsUploadOpen(false);
-    showToast(
-      isOfflineMode
-        ? `Agreement ${agId} uploaded as fully executed! Unit marked Occupied.`
-        : `Agreement ${agId} dispatched! Unit marked Reserved (awaiting physical signature & deposit).`
-    );
-  };
-
-
-
   const openRenewalModalForUnit = (unitNumber: string, specificAgreement?: Agreement, targetPropertyId?: string) => {
     const effPropId = targetPropertyId || specificAgreement?.propertyId;
     const matchAgreement =
@@ -847,8 +376,9 @@ export const LeasingPage: React.FC = () => {
       tenant: matchAgreement?.tenant || matchTenant?.name || matchRenewal?.tenant || 'Resident',
       tenantId: matchAgreement?.tenantId || matchTenant?.id || matchRenewal?.tenantId,
       ownerId: matchAgreement?.ownerId || matchTenant?.ownerId || ownerId,
-      propertyId: matchAgreement?.propertyId || matchTenant?.propertyId || matchRenewal?.propertyId,
+      propertyId: effPropId || matchAgreement?.propertyId || matchUnit?.propertyId || matchTenant?.propertyId || matchRenewal?.propertyId,
       propertyName: matchTenant?.propertyName || matchRenewal?.propertyName,
+      currency: matchAgreement?.currency || matchUnit?.currency || matchTenant?.currency || matchRenewal?.currency || myProperties.find((p) => p.id === (effPropId || matchAgreement?.propertyId))?.currency || defaultOwnerCurrency,
       currentRent: effectiveRentVal,
       leaseEnd: effectiveLeaseEnd,
       daysLeft: Math.max(0, Math.ceil((new Date(effectiveLeaseEnd).getTime() - Date.now()) / (1000 * 3600 * 24))),
@@ -1277,12 +807,12 @@ export const LeasingPage: React.FC = () => {
 
               {/* Mobile Card View */}
               <div className="mobile-card-view">
-                {myAgreements.length === 0 ? (
+                {filteredAgreements.length === 0 ? (
                   <div className="staff-card" style={{ textAlign: 'center', color: 'var(--ink-soft)', padding: '24px 16px' }}>
-                    No lease agreements on record. Use "+ Create Lease" above to create and record a lease agreement.
+                    No lease agreements found{leaseStatusFilter && leaseStatusFilter !== 'all' ? ` matching "${leaseStatusFilter}"` : ''}.
                   </div>
                 ) : (
-                  myAgreements.map((a) => {
+                  filteredAgreements.map((a) => {
                     const matchingDepInv = (state.invoices || []).find(
                       (inv) =>
                         a.depositInvoiceId
@@ -1290,9 +820,9 @@ export const LeasingPage: React.FC = () => {
                           : inv.leaseAgreementId === a.id && (inv.invoiceType === 'deposit' || inv.type === 'deposit')
                     );
                     const isDepositPaid = a.depositStatus === 'paid' || matchingDepInv?.status === 'paid';
-                    const isPendingApproval = a.status === 'pending_approval';
-                    const isPendingDeposit = (a.status === 'pending_deposit' || a.depositStatus === 'unpaid') && !isDepositPaid;
-                    const isLeaseActive = a.status === 'active' || isDepositPaid;
+                    const isPendingApproval = a.status === 'pending_approval' || (a as any).status === 'awaiting_owner_signature';
+                    const isPendingDeposit = (a.status === 'pending_deposit' || a.depositStatus === 'unpaid') && !isDepositPaid && !isPendingApproval;
+                    const isLeaseActive = a.status === 'active' && !isPendingApproval;
                     const initialDocUrl = a.initialAgreementUrl || a.fileData || a.ownerSignedDocumentUrl;
                     const initialDocName = a.initialAgreementName || a.fileName || a.ownerSignedDocumentName || `Landlord_Signed_Lease_${a.unit}.pdf`;
 
@@ -1306,7 +836,11 @@ export const LeasingPage: React.FC = () => {
                             </div>
                           </div>
                           <div>
-                            {isLeaseActive ? (
+                            {a.status === 'draft' ? (
+                              <span className="badge grey" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#F1F5F9', color: '#475569', border: '1px solid #CBD5E1' }}>
+                                <Bookmark size={12} color="#64748B" /> Draft ({a.tenant && a.tenant !== 'Unassigned Resident' ? 'Ready' : 'Unassigned'})
+                              </span>
+                            ) : isLeaseActive ? (
                               <span className="badge green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                 <CheckCircle2 size={12} /> Active Lease
                               </span>
@@ -2891,7 +2425,7 @@ export const LeasingPage: React.FC = () => {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: 'var(--ink-soft)', fontSize: '13px' }}>Current Contracted Rent:</span>
-                  <b style={{ color: 'var(--ink)', fontSize: '14px' }}>{formatMoney(renewalCurrentRent, inspectingSignedRenewal?.currency)}/mo</b>
+                  <b style={{ color: 'var(--ink)', fontSize: '14px' }}>{formatMoney(renewalCurrentRent, renewalModalItem?.currency)}/mo</b>
                 </div>
               </div>
 
@@ -2946,7 +2480,7 @@ export const LeasingPage: React.FC = () => {
                   </div>
 
                   <div className="field" style={{ margin: 0 }}>
-                    <label style={{ fontSize: '12px' }}>New Monthly Rent ({getCurrencySymbol(inspectingSignedRenewal?.currency || defaultOwnerCurrency)})</label>
+                    <label style={{ fontSize: '12px' }}>New Monthly Rent ({getCurrencySymbol(renewalModalItem?.currency || defaultOwnerCurrency)})</label>
                     <input
                       type="number"
                       step="100"
@@ -2977,8 +2511,8 @@ export const LeasingPage: React.FC = () => {
                     }}
                   >
                     {renewalNewRent >= renewalCurrentRent
-                      ? `+${formatMoney(renewalNewRent - renewalCurrentRent, inspectingSignedRenewal?.currency)}/mo increase`
-                      : `-${formatMoney(renewalCurrentRent - renewalNewRent, inspectingSignedRenewal?.currency)}/mo decrease`}
+                      ? `+${formatMoney(renewalNewRent - renewalCurrentRent, renewalModalItem?.currency)}/mo increase`
+                      : `-${formatMoney(renewalCurrentRent - renewalNewRent, renewalModalItem?.currency)}/mo decrease`}
                   </span>
                   <span style={{ color: 'var(--ink-soft)' }}>Effective upon renewal start date</span>
                 </div>
@@ -3145,6 +2679,7 @@ export const LeasingPage: React.FC = () => {
                   })();
 
                   await offerLeaseRenewal(renewalModalItem.unit, {
+                    propertyId: renewalModalItem.propertyId,
                     currentRent: renewalCurrentRent,
                     percentageIncrease: renewalPercent,
                     proposedRent: renewalNewRent,
@@ -3155,7 +2690,7 @@ export const LeasingPage: React.FC = () => {
                     ownerAgreementFileUrl: renewalAgreementFileUrl,
                     ownerAgreementFileName: renewalAgreementFileName,
                     ownerAgreementFileSize: renewalAgreementFileSize,
-                  });
+                  } as any);
 
                   setIsSendingRenewalOffer(false);
                   setRenewalModalItem(null);
@@ -3304,7 +2839,7 @@ export const LeasingPage: React.FC = () => {
                 onClick={async () => {
                   setIsApprovingRenewal(true);
                   await new Promise((r) => setTimeout(r, 450));
-                  await approveLeaseRenewal(inspectingSignedRenewal.unit);
+                  await approveLeaseRenewal(inspectingSignedRenewal.unit, inspectingSignedRenewal.propertyId);
                   setIsApprovingRenewal(false);
                   setInspectingSignedRenewal(null);
                 }}

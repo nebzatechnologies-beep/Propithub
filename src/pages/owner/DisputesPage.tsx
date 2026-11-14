@@ -7,7 +7,7 @@ interface DisputesPageProps {
 }
 
 export const DisputesPage: React.FC<DisputesPageProps> = () => {
-  const { state, updateState, showToast } = useAppData();
+  const { state, saveOwnerReviewReply, showToast } = useAppData();
   const { user } = useAuth();
   const ownerName = user?.displayName || 'Property Owner';
   const ownerId = user?.id || '';
@@ -110,30 +110,16 @@ export const DisputesPage: React.FC<DisputesPageProps> = () => {
                           <button
                             type="button"
                             className="btn brass small"
-                            onClick={() => {
+                            onClick={async () => {
                               const reply = (reviewReplies[reviewId] || '').trim();
                               if (!reply) return;
-                              const updatedReviews = (state.reviews?.owners || []).map((item: any) =>
-                                item.id === r.id
-                                  ? { ...item, ownerReply: reply, ownerReplyDate: new Date().toISOString().split('T')[0] }
-                                  : item
-                              );
-                              const notif = r.tenantId ? {
-                                id: `notif-reply-${Date.now()}`,
-                                userId: r.tenantId,
-                                title: `${ownerName} replied to your review!`,
-                                body: `"${reply}"`,
-                                link: '/tenant/trust',
-                                isRead: false,
-                                createdAt: new Date().toISOString(),
-                              } : null;
-                              updateState((prev) => ({
-                                ...prev,
-                                reviews: { ...prev.reviews, owners: updatedReviews },
-                                notifications: notif ? [...(prev.notifications || []), notif] : prev.notifications,
-                              }));
-                              setActiveReplyId(null);
-                              showToast('Reply published successfully.');
+                              try {
+                                await saveOwnerReviewReply(r.id, reply, r.tenantId, ownerName);
+                                setActiveReplyId(null);
+                                showToast('Reply published successfully.');
+                              } catch (err: any) {
+                                showToast('Failed to publish reply: ' + (err?.message || 'Unknown error'));
+                              }
                             }}
                           >
                             Publish Reply

@@ -2,23 +2,18 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
 import { useCurrency } from '../../context/CurrencyContext';
-import { GLOBAL_CURRENCIES, CurrencyMeta, formatCurrencyLabel } from '../../lib/currencyService';
+import { GLOBAL_CURRENCIES, formatCurrencyLabel } from '../../lib/currencyService';
 import { CurrencyConverterTrigger } from '../../components/common/CurrencyConverterTrigger';
 import { Link } from 'react-router-dom';
 import {
   AlertCircle,
-  CircleDollarSign,
   Building,
   ArrowRight,
-  TrendingUp,
-  ExternalLink,
   Users,
 } from 'lucide-react';
 import { PaymentTransaction, Property, InAppNotification } from '../../types';
-import { getOwnerReminders } from '../../lib/reminders';
+import { getOwnerReminders, isInvoiceForVacatedTenancy } from '../../lib/reminders';
 import { DashboardReminderHub } from '../../components/dashboard/DashboardReminderHub';
-import { db, isFirebaseConfigured } from '../../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
 import { resolveUnitOccupancy, calculatePortfolioMetrics, isDepositPayment } from '../../lib/portfolioSelectors';
 import { AddressDisplay } from '../../components/common/AddressDisplay';
 
@@ -36,9 +31,9 @@ const normalizeCurrency = (raw?: string): { code: string; symbol: string; label:
 };
 
 export const OwnerDashboardPage: React.FC = () => {
-  const { state, updateState, showToast } = useAppData();
+  const { state, saveNotification, showToast } = useAppData();
   const { user, isOwnerPlanActive } = useAuth();
-  const { viewCurrency, setViewCurrency, convert, format, currencies, isLive } = useCurrency();
+  const { viewCurrency, convert, format, currencies } = useCurrency();
   const ownerId = user?.id || '';
 
   // 1. Base entities for this owner
@@ -46,9 +41,18 @@ export const OwnerDashboardPage: React.FC = () => {
     () => state.properties.filter((p) => p.ownerId === ownerId),
     [state.properties, ownerId]
   );
+  const activePropertyIds = useMemo(
+    () => new Set(myProperties.map((p) => p.id)),
+    [myProperties]
+  );
   const myUnits = useMemo(
-    () => state.units.filter((u) => (ownerId ? u.ownerId === ownerId : !u.ownerId)),
-    [state.units, ownerId]
+    () =>
+      state.units.filter(
+        (u) =>
+          (ownerId ? u.ownerId === ownerId : !u.ownerId) ||
+          (u.propertyId ? activePropertyIds.has(u.propertyId) : false)
+      ),
+    [state.units, ownerId, activePropertyIds]
   );
   const myTickets = useMemo(
     () => state.tickets.filter((t) => t.ownerId === ownerId),
@@ -114,59 +118,7 @@ export const OwnerDashboardPage: React.FC = () => {
     return defaultProp ? getPropertyCurrency(defaultProp) : { code: 'USD', symbol: '$', label: '$' };
   };
 
-  // 5. Discover all distinct currencies actively configured in this owner's portfolio
-  const portfolioCurrencies = useMemo(() => {
-    const map = new Map<string, { code: string; symbol: string; label: string }>();
-    myProperties.forEach((p) => {
-      const curr = getPropertyCurrency(p);
-      map.set(curr.code, curr);
-    });
-    myUnits.forEach((u) => {
-      if (u.currency) {
-        const curr = normalizeCurrency(u.currency);
-        map.set(curr.code, curr);
-      }
-    });
-    return Array.from(map.values());
-  }, [myProperties, myUnits]);
-
-  // Selectable quick pills combining portfolio currencies, major world currencies, and current active currency
-  const selectablePills = useMemo(() => {
-    const list: CurrencyMeta[] = [];
-    const added = new Set<string>();
-
-    portfolioCurrencies.forEach((c) => {
-      const match = GLOBAL_CURRENCIES.find((g) => g.code === c.code);
-      if (!added.has(c.code)) {
-        added.add(c.code);
-        list.push(match || { code: c.code, symbol: c.symbol, name: c.label, country: '', flag: '🌐' });
-      }
-    });
-
-    ['USD', 'INR', 'AED', 'EUR', 'GBP'].forEach((code) => {
-      if (!added.has(code)) {
-        const match = GLOBAL_CURRENCIES.find((g) => g.code === code);
-        if (match) {
-          added.add(code);
-          list.push(match);
-        }
-      }
-    });
-
-    if (!added.has(effectiveCurrency)) {
-      const match =
-        GLOBAL_CURRENCIES.find((g) => g.code === effectiveCurrency) ||
-        currencies.find((g) => g.code === effectiveCurrency);
-      if (match) {
-        added.add(effectiveCurrency);
-        list.push(match);
-      }
-    }
-
-    return list;
-  }, [portfolioCurrencies, effectiveCurrency, currencies]);
-
-  // 6. Filtered properties, units, and payments based on property filter
+  // 5. Filtered properties, units, and payments based on property filter
   const filteredProperties = useMemo(() => {
     return myProperties.filter((p) => {
       if (selectedPropertyId !== 'all' && p.id !== selectedPropertyId) return false;
@@ -204,7 +156,6 @@ export const OwnerDashboardPage: React.FC = () => {
   }, [state, ownerId, selectedPropertyId]);
 
   const isPlanExpired = !isOwnerPlanActive(ownerId);
-  const isMultiCurrency = portfolioCurrencies.length > 1;
 
   // Real paid rent payments & total rent collected (strictly excluding security deposits held in trust and outflows)
   const realPaidPayments = useMemo(
@@ -225,33 +176,16 @@ export const OwnerDashboardPage: React.FC = () => {
     }, 0);
   }, [realPaidPayments, effectiveCurrency, convert]);
 
-  // Real overdue & pending confirmation payments (converted into effectiveCurrency, excluding deposits)
+  // Real overdue & pending confirmation payments (converted into effectiveCurrency, excluding deposits & vacated tenancies)
   const realOverduePayments = useMemo(
-    () => filteredPayments.filter((p) => {
-      if (p.status !== 'overdue') return false;
-      if (isDepositPayment(p, state.invoices)) return false;
-      const isVacated = (state.moveouts || []).some((m) => {
-        const matchesUnit = m.unit === p.unit || (m as any).unitId === p.unit;
-        if (!matchesUnit) return false;
-        const isCompleted = m.status === 'refund_completed' || m.status === 'settled' || (m as any).tenantConfirmedReceipt;
-        if (!isCompleted) return false;
-        // If payment is tied to an active agreement, it is not vacated
-        if ((p as any).leaseAgreementId) {
-          const ag = state.agreements.find((a) => a.id === (p as any).leaseAgreementId);
-          if (ag && ag.status !== 'terminated') return false;
-          return (m as any).agreementId === (p as any).leaseAgreementId;
-        }
-        // If unit is currently occupied/reserved with an active tenancy, old moveout does not silence this payment
-        const targetUnit = state.units.find((u) => u.unitNumber === p.unit || u.id === p.unit);
-        if (targetUnit && (targetUnit.status === 'occupied' || targetUnit.status === 'reserved')) {
-          return false;
-        }
+    () =>
+      filteredPayments.filter((p) => {
+        if (p.status !== 'overdue') return false;
+        if (isDepositPayment(p, state.invoices)) return false;
+        if (isInvoiceForVacatedTenancy(p as any, state, myUnits)) return false;
         return true;
-      });
-      if (isVacated) return false;
-      return true;
-    }),
-    [filteredPayments, state.moveouts, state.agreements, state.units, state.invoices]
+      }),
+    [filteredPayments, state, myUnits]
   );
   const realPendingPayments = useMemo(
     () => filteredPayments.filter((p) => p.status === 'pending_confirmation' && !isDepositPayment(p, state.invoices)),
@@ -345,62 +279,52 @@ export const OwnerDashboardPage: React.FC = () => {
   }, [realPaidPayments, effectiveCurrency, convert]);
 
   const handleSendNudge = async (reminder: any) => {
-    const delinquentInvoices = (state.invoices || []).filter(
-      (inv) =>
-        inv.ownerId === ownerId &&
-        inv.status !== 'paid' &&
-        inv.status !== 'cancelled' &&
-        inv.status !== 'draft'
-    );
-
-    const targetTenantIds = new Set<string>();
-    delinquentInvoices.forEach((inv) => {
-      if (inv.tenantId) targetTenantIds.add(inv.tenantId);
+    const todayStr = new Date().toISOString().split('T')[0];
+    const delinquentInvoices = (state.invoices || []).filter((inv) => {
+      if (inv.ownerId !== ownerId) return false;
+      if (selectedPropertyId !== 'all' && inv.propertyId && inv.propertyId !== selectedPropertyId) {
+        return false;
+      }
+      if (inv.status === 'paid' || inv.status === 'cancelled' || inv.status === 'draft' || inv.status === 'void') {
+        return false;
+      }
+      const isOverdue = inv.status === 'overdue' || (inv.due ? inv.due < todayStr : false);
+      if (!isOverdue) return false;
+      if (isInvoiceForVacatedTenancy(inv, state, myUnits)) return false;
+      return true;
     });
 
-    if (reminder.targetTenantId) targetTenantIds.add(reminder.targetTenantId);
+    const targetTenantIds = new Set<string>();
+    if (reminder?.targetTenantId) {
+      targetTenantIds.add(reminder.targetTenantId);
+    } else {
+      delinquentInvoices.forEach((inv) => {
+        if (inv.tenantId) targetTenantIds.add(inv.tenantId);
+      });
+    }
+
+    if (targetTenantIds.size === 0) {
+      showToast('No active overdue tenant invoices found to nudge.');
+      return;
+    }
 
     const now = new Date().toISOString();
-    const createdNotifs: InAppNotification[] = [];
-
-    if (targetTenantIds.size > 0) {
-      targetTenantIds.forEach((tId) => {
+    await Promise.all(
+      Array.from(targetTenantIds).map((tId) => {
         const notif: InAppNotification = {
           id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           userId: tId,
           title: 'Rent Payment Reminder',
-          body: `Rent payment is overdue for your unit. Please review your active invoices and complete settlement.`,
+          body: 'Rent payment is overdue for your unit. Please review your active invoices and complete settlement.',
           link: '/tenant/payments',
           isRead: false,
           createdAt: now,
         };
-        createdNotifs.push(notif);
-        if (isFirebaseConfigured) {
-          setDoc(doc(db, 'notifications', notif.id), notif).catch(console.warn);
-        }
-      });
-    } else {
-      const notif: InAppNotification = {
-        id: `notif_${Date.now()}`,
-        userId: 'all_tenants',
-        title: 'Rent Payment Reminder',
-        body: `Rent payment is overdue for your unit. Please review your active invoices and complete settlement.`,
-        link: '/tenant/payments',
-        isRead: false,
-        createdAt: now,
-      };
-      createdNotifs.push(notif);
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'notifications', notif.id), notif).catch(console.warn);
-      }
-    }
+        return saveNotification(notif);
+      })
+    );
 
-    updateState((prev) => ({
-      ...prev,
-      notifications: [...createdNotifs, ...(prev.notifications || [])],
-    }));
-
-    showToast(`✓ Rent payment reminder dispatched to ${targetTenantIds.size || 1} resident(s).`);
+    showToast(`✓ Rent payment reminder dispatched to ${targetTenantIds.size} resident(s).`);
   };
 
   return (
@@ -426,7 +350,7 @@ export const OwnerDashboardPage: React.FC = () => {
       {/* PROPERTY & CURRENCY FILTER CARD (ALWAYS VISIBLE) */}
       <div
         style={{
-          background: '#FFFFFF',
+          background: 'var(--surface)',
           border: '1px solid var(--line)',
           borderRadius: 'var(--radius)',
           padding: '14px 18px',
@@ -453,7 +377,7 @@ export const OwnerDashboardPage: React.FC = () => {
               fontSize: '13px',
               border: '1px solid var(--line-strong)',
               borderRadius: '8px',
-              background: '#fff',
+              background: 'var(--surface)',
               color: 'var(--ink)',
               fontWeight: 500,
               minWidth: '200px',
@@ -468,17 +392,17 @@ export const OwnerDashboardPage: React.FC = () => {
                 </option>
               );
             })}
-            {selectedPropertyId !== 'all' && (
-              <button
-                type="button"
-                className="btn secondary small"
-                onClick={() => setSelectedPropertyId('all')}
-                style={{ fontSize: '11.5px', padding: '4px 8px', marginLeft: '10px' }}
-              >
-                Reset Property
-              </button>
-            )}
           </select>
+          {selectedPropertyId !== 'all' && (
+            <button
+              type="button"
+              className="btn secondary small"
+              onClick={() => setSelectedPropertyId('all')}
+              style={{ fontSize: '11.5px', padding: '4px 10px' }}
+            >
+              Reset Property
+            </button>
+          )}
 
           {myManagers.length > 0 && (
             <Link
@@ -503,6 +427,14 @@ export const OwnerDashboardPage: React.FC = () => {
             </Link>
           )}
         </div>
+
+        {/* Right: Currency Converter Trigger */}
+        <CurrencyConverterTrigger
+          amount={realCollectedAmount || 100}
+          currency={effectiveCurrency}
+          label={`Currency: ${effectiveCurrency}`}
+          variant="button"
+        />
       </div>
 
       {/* ONBOARDED MANAGERS STATUS BANNER (When owner has managers with 0 properties) */}
@@ -573,6 +505,19 @@ export const OwnerDashboardPage: React.FC = () => {
           <div className="consist-kpi-value">
             {format(realCollectedAmount, effectiveCurrency, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
+          {(realOverdueAmount > 0 || realPendingAmount > 0) && (
+            <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '4px' }}>
+              {realOverdueAmount > 0 && (
+                <span style={{ color: 'var(--crimson, #dc2626)', fontWeight: 600 }}>
+                  Overdue: {format(realOverdueAmount, effectiveCurrency)}
+                </span>
+              )}
+              {realOverdueAmount > 0 && realPendingAmount > 0 && ' · '}
+              {realPendingAmount > 0 && (
+                <span>Pending: {format(realPendingAmount, effectiveCurrency)}</span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Card 2: Expected Monthly Rent Roll */}
@@ -593,6 +538,9 @@ export const OwnerDashboardPage: React.FC = () => {
         <div className="consist-kpi-card">
           <div className="consist-kpi-label">Active Maintenance</div>
           <div className="consist-kpi-value">{activeTickets.length}</div>
+          <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '4px' }}>
+            {resolvedTickets.length} resolved
+          </div>
         </div>
       </div>
 
@@ -637,7 +585,7 @@ export const OwnerDashboardPage: React.FC = () => {
                         width: '100%',
                         maxWidth: '38px',
                         height: `${heightPct}%`,
-                        background: m.amount > 0 ? 'linear-gradient(180deg, var(--teal-primary) 0%, #0D9488 100%)' : '#E5E7EB',
+                        background: m.amount > 0 ? 'linear-gradient(180deg, var(--teal-primary) 0%, #0D9488 100%)' : 'var(--surface-sunken)',
                         borderRadius: '6px 6px 0 0',
                         transition: 'height 0.3s ease',
                       }}
@@ -678,7 +626,7 @@ export const OwnerDashboardPage: React.FC = () => {
                   {occupiedCount} unit{occupiedCount === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((occupiedCount / totalUnitsCount) * 100) : 0}%)
                 </b>
               </div>
-              <div style={{ width: '100%', height: '7px', background: '#F1F3F5', borderRadius: '10px', overflow: 'hidden' }}>
+              <div style={{ width: '100%', height: '7px', background: 'var(--surface-sunken)', borderRadius: '10px', overflow: 'hidden' }}>
                 <div
                   style={{
                     width: `${totalUnitsCount > 0 ? Math.round((occupiedCount / totalUnitsCount) * 100) : 0}%`,
@@ -701,7 +649,7 @@ export const OwnerDashboardPage: React.FC = () => {
                   {vacantUnits.length} unit{vacantUnits.length === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((vacantUnits.length / totalUnitsCount) * 100) : 0}%)
                 </b>
               </div>
-              <div style={{ width: '100%', height: '7px', background: '#F1F3F5', borderRadius: '10px', overflow: 'hidden' }}>
+              <div style={{ width: '100%', height: '7px', background: 'var(--surface-sunken)', borderRadius: '10px', overflow: 'hidden' }}>
                 <div
                   style={{
                     width: `${totalUnitsCount > 0 ? Math.round((vacantUnits.length / totalUnitsCount) * 100) : 0}%`,
@@ -724,7 +672,7 @@ export const OwnerDashboardPage: React.FC = () => {
                   {reservedUnits.length} unit{reservedUnits.length === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((reservedUnits.length / totalUnitsCount) * 100) : 0}%)
                 </b>
               </div>
-              <div style={{ width: '100%', height: '7px', background: '#F1F3F5', borderRadius: '10px', overflow: 'hidden' }}>
+              <div style={{ width: '100%', height: '7px', background: 'var(--surface-sunken)', borderRadius: '10px', overflow: 'hidden' }}>
                 <div
                   style={{
                     width: `${totalUnitsCount > 0 ? Math.round((reservedUnits.length / totalUnitsCount) * 100) : 0}%`,
@@ -747,7 +695,7 @@ export const OwnerDashboardPage: React.FC = () => {
                   {maintenanceUnits.length} unit{maintenanceUnits.length === 1 ? '' : 's'} ({totalUnitsCount > 0 ? Math.round((maintenanceUnits.length / totalUnitsCount) * 100) : 0}%)
                 </b>
               </div>
-              <div style={{ width: '100%', height: '7px', background: '#F1F3F5', borderRadius: '10px', overflow: 'hidden' }}>
+              <div style={{ width: '100%', height: '7px', background: 'var(--surface-sunken)', borderRadius: '10px', overflow: 'hidden' }}>
                 <div
                   style={{
                     width: `${totalUnitsCount > 0 ? Math.round((maintenanceUnits.length / totalUnitsCount) * 100) : 0}%`,

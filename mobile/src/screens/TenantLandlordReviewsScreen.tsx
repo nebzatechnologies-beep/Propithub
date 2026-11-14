@@ -157,18 +157,23 @@ export const TenantLandlordReviewsScreen: React.FC<TenantLandlordReviewsScreenPr
     setIsSubmittingReview(true);
     try {
       const tenantProp = tenantRecord?.propertyId ? state.properties.find((p) => p.id === tenantRecord.propertyId) : null;
+      const resolvedOwnerName = selectedOwnerForReview?.displayName || selectedOwnerForReview?.name || (tenantRecord as any)?.owner || 'Property Landlord';
       await saveReview({
         id: `REV-${Date.now().toString().slice(-5)}`,
         tenantId: user.id,
         tenantName: userName,
+        by: userName,
         ownerId: selectedOwnerForReview?.id || tenantRecord?.ownerId || '',
-        ownerName: selectedOwnerForReview?.displayName || selectedOwnerForReview?.name || (tenantRecord as any)?.owner || 'Property Landlord',
+        ownerName: resolvedOwnerName,
+        owner: resolvedOwnerName,
+        propertyId: tenantProp?.id || tenantRecord?.propertyId || '',
         propertyName: tenantProp?.name || tenantRecord?.propertyName || 'Residence',
         unit: tenantRecord?.unit || 'Residence',
         rating: newRating,
         comment: newComment.trim(),
+        text: newComment.trim(),
         createdAt: new Date().toISOString(),
-      });
+      } as any);
 
       setIsSubmittingReview(false);
       setShowWriteModal(false);

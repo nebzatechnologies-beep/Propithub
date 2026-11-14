@@ -46,6 +46,7 @@ export interface MobileProperty {
   address: MobilePropertyAddress | string;
   propertyType: string; // e.g. Residential Apartment, Commercial Office, Villa, Gated Community
   propertyStructure?: 'single_unit' | 'multi_unit';
+  structureType?: 'single_unit' | 'multi_unit';
   propertyCategory?: 'residential' | 'commercial' | 'mixed';
   isSingleUnit?: boolean;
   floorsCount: number;
@@ -555,29 +556,6 @@ export interface MobileDepositSettlement {
   createdAt: string;
 }
 
-
-export interface MobileDispute {
-  id: string;
-  ownerId?: string;
-  tenantId?: string;
-  raisedById: string;
-  raisedByName: string;
-  raisedByRole: 'tenant' | 'owner';
-  againstName: string;
-  propertyId: string;
-  propertyName: string;
-  unit: string;
-  category: 'Security Deposit Deduction' | 'Maintenance Quality' | 'Unauthorized Charges' | 'Lease Breach';
-  amountDisputed: number;
-  currency: string;
-  statement: string;
-  evidenceNotes: string;
-  status: 'filed' | 'under_review' | 'mediation_in_progress' | 'resolved';
-  managerResolution?: string;
-  resolvedAt?: string;
-  createdAt: string;
-}
-
 export interface MobileStaffMember {
   id: string;
   name: string;
@@ -712,12 +690,30 @@ export interface MobilePlatformInvoice {
   paymentMethod?: string;
   transactionRef?: string;
   issuerName?: string;
+  issuerAddress?: string;
+  issuerEmail?: string;
+  issuerPhone?: string;
   issuerTaxNo?: string;
   ownerTaxNo?: string;
   termsAndConditions?: string;
   includeTerms?: boolean;
   signatoryName?: string;
   signatoryRole?: string;
+}
+
+export interface MobilePlatformInvoiceTemplateConfig {
+  issuerName: string;
+  issuerTaxNo: string;
+  issuerAddress: string;
+  issuerPhone: string;
+  issuerEmail: string;
+  taxLabel?: string;
+  taxPercent?: number;
+  termsAndConditions: string;
+  includeTerms?: boolean;
+  signatoryName: string;
+  signatoryRole?: string;
+  notes: string;
 }
 
 export interface MobileInvoiceTemplateConfig {

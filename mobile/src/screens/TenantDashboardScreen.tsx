@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   Alert,
   Modal,
@@ -13,7 +12,10 @@ import {
   TextInput,
   RefreshControl,
   Linking,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { Header } from '../components/Header';
@@ -59,6 +61,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
   const { format, viewCurrency, setViewCurrency, convert } = useMobileCurrency();
   const { showToast } = useMobileToast();
   const [refreshing, setRefreshing] = useState(false);
+  const [showCurrencyModal, setShowCurrencyModal] = useState(false);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -454,7 +457,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={styles.safeArea}>
       {/* StatusBar managed globally */}
       <ScreenStatusBar />
 
@@ -465,10 +468,16 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
         onProfilePress={onProfilePress}
       />
 
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
+      >
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -485,23 +494,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
           </Text>
           <TouchableOpacity
             style={styles.currencyPill}
-            onPress={() => {
-              Alert.alert(
-                'Switch Display Currency',
-                `Current currency: ${viewCurrency}`,
-                [
-                  { text: 'USD ($)', onPress: () => setViewCurrency('USD') },
-                  { text: 'EUR (€)', onPress: () => setViewCurrency('EUR') },
-                  { text: 'GBP (£)', onPress: () => setViewCurrency('GBP') },
-                  { text: 'INR (₹)', onPress: () => setViewCurrency('INR') },
-                  { text: 'AED (AED)', onPress: () => setViewCurrency('AED') },
-                  { text: 'CAD ($)', onPress: () => setViewCurrency('CAD') },
-                  { text: 'AUD ($)', onPress: () => setViewCurrency('AUD') },
-                  { text: 'SGD ($)', onPress: () => setViewCurrency('SGD') },
-                  { text: 'Cancel', style: 'cancel' },
-                ]
-              );
-            }}
+            onPress={() => setShowCurrencyModal(true)}
             activeOpacity={0.8}
           >
             <Text style={styles.currencyPillText}>{viewCurrency} ▾</Text>
@@ -1181,9 +1174,10 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
 
         <View style={{ height: 40 }} />
       </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* ─── MODAL: Review Tenancy Request with Photo Gallery & Specs (1-to-1 Web Parity) ─── */}
-      <Modal visible={!!reviewingRequest} transparent animationType="slide">
+      <Modal visible={!!reviewingRequest} transparent animationType="slide" onRequestClose={() => setReviewingRequest(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCardLarge}>
             <View style={styles.modalHead}>
@@ -1380,7 +1374,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
       </Modal>
 
       {/* ─── MODAL: Fullscreen Lightbox ─── */}
-      <Modal visible={!!lightboxUrl} transparent animationType="fade">
+      <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
         <TouchableOpacity
           style={styles.lightboxOverlay}
           onPress={() => setLightboxUrl(null)}
@@ -1396,7 +1390,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
       </Modal>
 
       {/* ─── MODAL: Deposit Settlement Review & Dispute Desk ─── */}
-      <Modal visible={!!reviewingMoveOut} transparent animationType="slide">
+      <Modal visible={!!reviewingMoveOut} transparent animationType="slide" onRequestClose={() => setReviewingMoveOut(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCardLarge}>
             <View style={styles.modalHead}>
@@ -1535,6 +1529,73 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
               >
                 <Text style={styles.modalAcceptBtnText}>Approve Payout</Text>
               </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ─── MODAL: Currency Selector Bottom Sheet ─── */}
+      <Modal
+        visible={showCurrencyModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowCurrencyModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCardLarge, { maxWidth: 360 }]}>
+            <View style={styles.modalHead}>
+              <View>
+                <Text style={[styles.modalTitle, { color: colors.navy }]}>Display Currency</Text>
+                <Text style={[styles.modalSub, { color: colors.inkSoft }]}>Select preferred currency for rent & due estimates</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowCurrencyModal(false)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color={colors.inkSoft} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ gap: 6, marginVertical: 10 }}>
+              {[
+                { code: 'USD', symbol: '$', name: 'US Dollar', flag: '🇺🇸' },
+                { code: 'EUR', symbol: '€', name: 'Euro', flag: '🇪🇺' },
+                { code: 'GBP', symbol: '£', name: 'British Pound', flag: '🇬🇧' },
+                { code: 'INR', symbol: '₹', name: 'Indian Rupee', flag: '🇮🇳' },
+                { code: 'AED', symbol: 'AED', name: 'UAE Dirham', flag: '🇦🇪' },
+                { code: 'CAD', symbol: '$', name: 'Canadian Dollar', flag: '🇨🇦' },
+                { code: 'AUD', symbol: '$', name: 'Australian Dollar', flag: '🇦🇺' },
+                { code: 'SGD', symbol: '$', name: 'Singapore Dollar', flag: '🇸🇬' },
+              ].map((c) => {
+                const isSelected = viewCurrency === c.code;
+                return (
+                  <TouchableOpacity
+                    key={c.code}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      paddingVertical: 11,
+                      paddingHorizontal: 14,
+                      borderRadius: 10,
+                      backgroundColor: isSelected ? (isDark ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5') : colors.surfaceSunken,
+                      borderWidth: 1,
+                      borderColor: isSelected ? '#10B981' : colors.line,
+                    }}
+                    onPress={() => {
+                      setViewCurrency(c.code as any);
+                      setShowCurrencyModal(false);
+                      showToast(`Currency changed to ${c.code} (${c.symbol})`, 'info');
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <Text style={{ fontSize: 18 }}>{c.flag}</Text>
+                      <Text style={{ fontSize: 13.5, fontWeight: isSelected ? '700' : '500', color: isSelected ? (isDark ? '#34D399' : '#047857') : colors.navy }}>
+                        {c.code} ({c.symbol}) • {c.name}
+                      </Text>
+                    </View>
+                    {isSelected && <Feather name="check" size={16} color={isDark ? '#34D399' : '#059669'} />}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
         </View>

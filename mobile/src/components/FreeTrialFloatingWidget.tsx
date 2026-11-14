@@ -5,15 +5,16 @@ import {
   TouchableOpacity,
   StyleSheet,
   Modal,
-  SafeAreaView,
   ScrollView,
   PanResponder,
   Animated,
-  Dimensions,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { usePlanLimits } from '../hooks/usePlanLimits';
 import { useMobileTheme } from '../context/MobileThemeContext';
+import { ThemePalette } from '../theme/colors';
 
 interface FreeTrialFloatingWidgetProps {
   onNavigateToPlans: () => void;
@@ -24,6 +25,7 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
   onNavigateToPlans,
   currentScreenKey,
 }) => {
+  const insets = useSafeAreaInsets();
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const { isTrial, daysLeft, isExpired, trialEnds, currentPlan, usage } = usePlanLimits();
@@ -99,6 +101,8 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
   }
 
   const isUrgent = daysLeft <= 3 || isExpired;
+  // Sit 10px above the 58px tab bar + bottom safe area, on the left to stay clear of bottom-right FABs/CTAs
+  const bottomOffset = 58 + insets.bottom + 10;
 
   return (
     <>
@@ -107,6 +111,7 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
         style={[
           styles.floatingContainer,
           {
+            bottom: bottomOffset,
             transform: pan.getTranslateTransform(),
           },
         ]}
@@ -121,17 +126,20 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
           <View style={[styles.pillIconWrap, isUrgent ? styles.pillIconWrapUrgent : styles.pillIconWrapNormal]}>
             <Feather
               name={isUrgent ? 'alert-triangle' : 'zap'}
-              size={13}
-              color={isUrgent ? (isDark ? '#F87171' : '#DC2626') : (isDark ? '#FBBF24' : '#D97706')}
+              size={11}
+              color={isUrgent ? colors.crimson : colors.amber}
             />
           </View>
-          <Text style={[styles.pillText, isUrgent ? styles.pillTextUrgent : styles.pillTextNormal]}>
+          <Text
+            style={[styles.pillText, isUrgent ? styles.pillTextUrgent : styles.pillTextNormal]}
+            numberOfLines={1}
+          >
             {daysLeft === 1 ? '1d left' : `${daysLeft}d left`}
           </Text>
           <Feather
             name="chevron-up"
-            size={14}
-            color={isUrgent ? (isDark ? '#F87171' : '#DC2626') : (isDark ? '#FBBF24' : '#78350F')}
+            size={12}
+            color={isUrgent ? colors.crimson : isDark ? colors.amber : '#78350F'}
           />
         </TouchableOpacity>
       </Animated.View>
@@ -149,11 +157,11 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
           onPress={() => setIsExpanded(false)}
         >
           <TouchableOpacity
-            style={styles.sheetCard}
+            style={[styles.sheetCard, { paddingBottom: Math.max(24, insets.bottom + 16) }]}
             activeOpacity={1}
             onPress={(e) => e.stopPropagation()}
           >
-            <SafeAreaView>
+            <View>
               {/* Grab Handle */}
               <View style={styles.handleBar} />
 
@@ -164,14 +172,14 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
                     <Feather
                       name={isUrgent ? 'alert-triangle' : 'gift'}
                       size={20}
-                      color={isUrgent ? '#DC2626' : '#D97706'}
+                      color={isUrgent ? colors.crimson : colors.amber}
                     />
                   </View>
                   <View>
-                    <Text style={styles.sheetTitle}>
+                    <Text style={styles.sheetTitle} numberOfLines={1}>
                       {isExpired ? 'Trial Expired' : 'Free Trial Active'}
                     </Text>
-                    <Text style={styles.sheetSub}>
+                    <Text style={styles.sheetSub} numberOfLines={1}>
                       {currentPlan?.name || 'Free Trial Plan'}
                     </Text>
                   </View>
@@ -192,7 +200,7 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
                     <Feather
                       name="clock"
                       size={16}
-                      color={isUrgent ? (isDark ? '#F87171' : '#DC2626') : (isDark ? '#FBBF24' : '#D97706')}
+                      color={isUrgent ? colors.crimson : colors.amber}
                       style={{ marginRight: 8 }}
                     />
                     <Text style={[styles.expiryText, isUrgent ? styles.expiryTextUrgent : styles.expiryTextNormal]}>
@@ -299,7 +307,7 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
                   <Feather name="arrow-right" size={16} color="#FFFFFF" style={{ marginLeft: 6 }} />
                 </TouchableOpacity>
               </ScrollView>
-            </SafeAreaView>
+            </View>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
@@ -307,21 +315,32 @@ export const FreeTrialFloatingWidget: React.FC<FreeTrialFloatingWidgetProps> = (
   );
 };
 
-const createStyles = (colors: any, isDark: boolean) =>
+const createStyles = (colors: ThemePalette, isDark: boolean) =>
   StyleSheet.create({
     floatingContainer: {
       position: 'absolute',
-      bottom: 84, // Sits comfortably above bottom tab navigator
-      right: 16,
-      zIndex: 999,
+      bottom: 68,
+      left: 14,
+      zIndex: 99,
     },
     pill: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingVertical: 7,
-      paddingHorizontal: 11,
+      paddingVertical: 5,
+      paddingHorizontal: 9,
       borderRadius: 999,
       borderWidth: 1,
+      ...Platform.select({
+        ios: {
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: isDark ? 0.35 : 0.1,
+          shadowRadius: 4,
+        },
+        android: {
+          elevation: 3,
+        },
+      }),
     },
     pillNormal: {
       backgroundColor: isDark ? '#2D1B06' : '#FFFBEB',
@@ -332,12 +351,12 @@ const createStyles = (colors: any, isDark: boolean) =>
       borderColor: isDark ? '#991B1B' : '#FCA5A5',
     },
     pillIconWrap: {
-      width: 20,
-      height: 20,
-      borderRadius: 10,
+      width: 18,
+      height: 18,
+      borderRadius: 9,
       justifyContent: 'center',
       alignItems: 'center',
-      marginRight: 6,
+      marginRight: 5,
     },
     pillIconWrapNormal: {
       backgroundColor: isDark ? '#451A03' : '#FEF3C7',
@@ -346,9 +365,9 @@ const createStyles = (colors: any, isDark: boolean) =>
       backgroundColor: isDark ? '#450A0A' : '#FEE2E2',
     },
     pillText: {
-      fontSize: 12,
+      fontSize: 11.5,
       fontWeight: '700',
-      marginRight: 4,
+      marginRight: 3,
     },
     pillTextNormal: {
       color: isDark ? '#FBBF24' : '#92400E',
@@ -488,7 +507,7 @@ const createStyles = (colors: any, isDark: boolean) =>
       fontWeight: '700',
     },
     quotaValFull: {
-      color: '#DC2626',
+      color: colors.crimson,
     },
     quotaBarBg: {
       height: 6,
@@ -502,7 +521,7 @@ const createStyles = (colors: any, isDark: boolean) =>
       borderRadius: 999,
     },
     quotaBarFull: {
-      backgroundColor: '#DC2626',
+      backgroundColor: colors.crimson,
     },
     upgradeBtn: {
       backgroundColor: '#D97706',

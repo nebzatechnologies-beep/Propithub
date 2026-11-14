@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PlatformInvoice } from '../../types';
 import { useAppData } from '../../context/AppDataContext';
+import { PlatformInvoiceDocument } from './PlatformInvoiceDocument';
 import {
   Printer,
   Eye,
@@ -20,6 +21,7 @@ import {
 import { getTodayDateString } from '../../lib/dates';
 import { ButtonProcessing } from '../common/Spinner';
 import { downloadSinglePlatformInvoicePDF } from '../../lib/pdf';
+import { getCurrencySymbol } from '../../lib/currencyService';
 
 interface PlatformInvoiceStudioModalProps {
   isOpen: boolean;
@@ -89,8 +91,10 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
 4. All software licenses are governed by the Propithub Master Software License Agreement (MSLA).
 5. For corporate accounting reconciliations, wire confirmation must reference the Invoice ID above.`;
   const [termsAndConditions, setTermsAndConditions] = useState(defaultTerms);
+  const [includeTerms, setIncludeTerms] = useState(true);
   const [notes, setNotes] = useState('Monthly SaaS Subscription & Platform Cloud License');
   const [signatoryName, setSignatoryName] = useState('Platform Chief Financial Controller');
+  const [signatoryRole, setSignatoryRole] = useState('Authorized Officer');
 
   useEffect(() => {
     if (!isOpen) return;
@@ -114,7 +118,9 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
       setIssuerTaxNo(initialInvoice.issuerTaxNo || 'US-EIN: 84-2918472 • VAT: EU372008492');
       setOwnerTaxNo(initialInvoice.ownerTaxNo || '');
       setTermsAndConditions(initialInvoice.termsAndConditions || defaultTerms);
-      setSignatoryName(initialInvoice.signatoryName || 'Platform Chief Financial Controller');
+      setIncludeTerms(initialInvoice.includeTerms !== false && state.platformInvoiceTemplate?.includeTerms !== false);
+      setSignatoryName(initialInvoice.signatoryName || state.platformInvoiceTemplate?.signatoryName || 'Platform Chief Financial Controller');
+      setSignatoryRole(initialInvoice.signatoryRole || state.platformInvoiceTemplate?.signatoryRole || 'Authorized Officer');
       setActiveTab(initialMode === 'edit' ? 'edit' : 'preview');
     } else {
       const newId = `PINV-${Date.now().toString().slice(-6)}`;
@@ -138,8 +144,10 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
       setNotes('Monthly SaaS Subscription & Platform Cloud License');
       setIssuerTaxNo('US-EIN: 84-2918472 • VAT: EU372008492');
       setOwnerTaxNo('');
-      setTermsAndConditions(defaultTerms);
-      setSignatoryName('Platform Chief Financial Controller');
+      setTermsAndConditions(state.platformInvoiceTemplate?.termsAndConditions || defaultTerms);
+      setIncludeTerms(state.platformInvoiceTemplate?.includeTerms !== false);
+      setSignatoryName(state.platformInvoiceTemplate?.signatoryName || 'Platform Chief Financial Controller');
+      setSignatoryRole(state.platformInvoiceTemplate?.signatoryRole || 'Authorized Officer');
       setActiveTab('edit');
     }
   }, [isOpen, initialInvoice, initialMode]);
@@ -165,6 +173,13 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
   };
 
   const total = Number(amount) + Number(tax);
+  const currencySymbol = getCurrencySymbol(currency);
+
+  const safeIsoDate = (val?: string, fallbackIso?: string): string => {
+    if (!val || !val.trim()) return fallbackIso || new Date().toISOString();
+    const parsed = new Date(val);
+    return Number.isNaN(parsed.getTime()) ? (fallbackIso || new Date().toISOString()) : parsed.toISOString();
+  };
 
   const builtInvoice: PlatformInvoice = {
     id: invoiceId || initialInvoice?.id || 'PINV-PREVIEW',
@@ -173,20 +188,26 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
     ownerEmail: ownerEmail || '',
     planId: selectedPlanId,
     planName,
-    periodStart: periodStart ? new Date(periodStart).toISOString() : new Date().toISOString(),
-    periodEnd: periodEnd ? new Date(periodEnd).toISOString() : new Date().toISOString(),
+    periodStart: safeIsoDate(periodStart),
+    periodEnd: safeIsoDate(periodEnd),
     amount: Number(amount) || 0,
     tax: Number(tax) || 0,
     total,
     currency,
     status,
-    issueDate: issueDate ? new Date(issueDate).toISOString() : getTodayDateString(),
-    dueDate: dueDate ? new Date(dueDate).toISOString() : getTodayDateString(),
+    issueDate: safeIsoDate(issueDate),
+    dueDate: safeIsoDate(dueDate),
     notes,
+    issuerName: initialInvoice?.issuerName || state.platformInvoiceTemplate?.issuerName,
+    issuerAddress: initialInvoice?.issuerAddress || state.platformInvoiceTemplate?.issuerAddress,
+    issuerEmail: initialInvoice?.issuerEmail || state.platformInvoiceTemplate?.issuerEmail,
+    issuerPhone: initialInvoice?.issuerPhone || state.platformInvoiceTemplate?.issuerPhone,
     issuerTaxNo,
     ownerTaxNo,
     termsAndConditions,
+    includeTerms,
     signatoryName,
+    signatoryRole,
     paidAt: initialInvoice?.paidAt,
     paymentMethod: initialInvoice?.paymentMethod || (status === 'paid' ? 'Bank Wire / Reconciled' : undefined),
     transactionRef: initialInvoice?.transactionRef,
@@ -210,15 +231,15 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
       ownerEmail: ownerEmail || '',
       planId: selectedPlanId,
       planName,
-      periodStart: new Date(periodStart).toISOString(),
-      periodEnd: new Date(periodEnd).toISOString(),
+      periodStart: safeIsoDate(periodStart),
+      periodEnd: safeIsoDate(periodEnd),
       amount: Number(amount),
       tax: Number(tax),
       total,
       currency,
       status: finalStatus,
-      issueDate: new Date(issueDate).toISOString(),
-      dueDate: new Date(dueDate).toISOString(),
+      issueDate: safeIsoDate(issueDate),
+      dueDate: safeIsoDate(dueDate),
       notes,
       issuerTaxNo,
       ownerTaxNo,
@@ -290,7 +311,7 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                 <button
                   type="button"
                   className="btn secondary small"
-                  onClick={() => downloadSinglePlatformInvoicePDF(builtInvoice)}
+                  onClick={() => downloadSinglePlatformInvoicePDF(builtInvoice, state.platformInvoiceTemplate)}
                   title="Download official PDF invoice directly"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
@@ -512,14 +533,14 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                       <select value={selectedPlanId} onChange={(e) => handlePlanChange(e.target.value)}>
                         {state.plans.map((p) => (
                           <option key={p.id} value={p.id}>
-                            {p.name} — ${p.price}/mo
+                            {p.name} — {getCurrencySymbol((p as any).currency || currency)}{p.price}/mo
                           </option>
                         ))}
                         <option value="custom">Custom Billing Agreement</option>
                       </select>
                     </div>
                     <div className="field" style={{ margin: 0 }}>
-                      <label>Subscription License Fee ($)</label>
+                      <label>Subscription License Fee ({currencySymbol})</label>
                       <input
                         type="number"
                         min="0"
@@ -533,7 +554,7 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                       />
                     </div>
                     <div className="field" style={{ margin: 0 }}>
-                      <label>Cloud Infrastructure Tax ($)</label>
+                      <label>Cloud Infrastructure Tax ({currencySymbol})</label>
                       <input
                         type="number"
                         min="0"
@@ -550,10 +571,10 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
 
                   <div style={{ background: '#F4F6F4', padding: '14px 18px', borderRadius: '4px', marginTop: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <b>Total Billed:</b> ${amount} + ${tax} Tax
+                      <b>Total Billed:</b> {currencySymbol}{amount} + {currencySymbol}{tax} Tax
                     </div>
                     <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--ink)' }}>
-                      Total Due: <span style={{ color: 'var(--brass)' }}>${total.toFixed(2)}</span>
+                      Total Due: <span style={{ color: 'var(--brass)' }}>{currencySymbol}{total.toFixed(2)}</span>
                     </div>
                   </div>
                 </div>
@@ -569,7 +590,18 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                 </div>
                 <div className="panel-body" style={{ padding: '16px 18px' }}>
                   <div className="field" style={{ marginBottom: '14px' }}>
-                    <label style={{ fontWeight: 600 }}>SaaS License Terms & Conditions (T&C Clauses on Voucher)</label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <label style={{ fontWeight: 600, margin: 0 }}>SaaS License Terms & Conditions (T&C Clauses on Voucher)</label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 600, color: 'var(--ink)', cursor: 'pointer', margin: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={includeTerms}
+                          onChange={(e) => setIncludeTerms(e.target.checked)}
+                          style={{ width: '15px', height: '15px', accentColor: 'var(--brass)', cursor: 'pointer' }}
+                        />
+                        Show on invoice
+                      </label>
+                    </div>
                     <textarea
                       rows={5}
                       value={termsAndConditions}
@@ -578,7 +610,7 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                     />
                   </div>
 
-                  <div className="grid grid-2" style={{ gap: '14px' }}>
+                  <div className="grid grid-2" style={{ gap: '14px', marginBottom: '14px' }}>
                     <div className="field" style={{ margin: 0 }}>
                       <label>Platform Authorized Signatory</label>
                       <input
@@ -588,13 +620,21 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                       />
                     </div>
                     <div className="field" style={{ margin: 0 }}>
-                      <label>License Notes & Remarks</label>
+                      <label>Signatory role / title</label>
                       <input
                         type="text"
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
+                        value={signatoryRole}
+                        onChange={(e) => setSignatoryRole(e.target.value)}
                       />
                     </div>
+                  </div>
+                  <div className="field" style={{ margin: 0 }}>
+                    <label>License Notes & Remarks</label>
+                    <input
+                      type="text"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                    />
                   </div>
                 </div>
               </div>
@@ -656,221 +696,7 @@ export const PlatformInvoiceStudioModal: React.FC<PlatformInvoiceStudioModalProp
                 ['--line-strong' as any]: '#D1D5DB',
               }}
             >
-              {/* Header */}
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start',
-                  borderBottom: '2px solid var(--line-strong)',
-                  paddingBottom: '20px',
-                  marginBottom: '24px',
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: '24px', fontWeight: 800, letterSpacing: '-0.5px' }}>
-                    PROPIT<span style={{ color: 'var(--brass)' }}>HUB</span>
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)', marginTop: '4px' }}>
-                    {state.platformInvoiceTemplate?.issuerName || 'Propithub SaaS Technologies Inc.'}
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '2px', lineHeight: '1.4' }}>
-                    {issuerAddress && <>{issuerAddress}<br /></>}
-                    {issuerEmail && <>{issuerEmail}<br /></>}
-                    {issuerPhone && <>{issuerPhone}<br /></>}
-                    {issuerTaxNo && <div style={{ color: 'var(--ledger)', fontWeight: 600, marginTop: '2px' }}>{issuerTaxNo}</div>}
-                    {!issuerAddress && !issuerEmail && !issuerPhone && !issuerTaxNo && 'Platform billing office address, email & phone'}
-                  </div>
-                </div>
-
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink)', letterSpacing: '0.04em' }}>
-                    TAX INVOICE
-                  </div>
-                  <div style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '15px', color: 'var(--brass)', marginTop: '2px' }}>
-                    {invoiceId}
-                  </div>
-                  <div style={{ marginTop: '8px' }}>
-                    <span
-                      className={`invoice-stamp ${
-                        status === 'paid' ? 'paid' : status === 'issued' ? 'issued' : status === 'overdue' ? 'overdue' : 'draft'
-                      }`}
-                    >
-                      {status.toUpperCase()}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Recipient & Timeline */}
-              <div className="grid grid-2" style={{ marginBottom: '24px', gap: '20px', fontSize: '13px', lineHeight: '1.6' }}>
-                <div style={{ background: '#FAFAF7', padding: '14px 16px', borderRadius: '4px', border: '1px solid var(--line)' }}>
-                  <div style={{ fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '11px', marginBottom: '4px' }}>
-                    BILLED TO (PROPERTY OWNER):
-                  </div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)' }}>{ownerName || 'Property Owner'}</div>
-                  <div>Account Email: <b>{ownerEmail || 'owner@propithub.com'}</b></div>
-                  <div style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Account ID: {targetOwnerId}</div>
-                  {ownerTaxNo && <div style={{ color: 'var(--ink-soft)', fontSize: '12px' }}>Tax ID: <b>{ownerTaxNo}</b></div>}
-                </div>
-
-                <div style={{ background: '#FAFAF7', padding: '14px 16px', borderRadius: '4px', border: '1px solid var(--line)', textAlign: 'right' }}>
-                  <div style={{ fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', fontSize: '11px', marginBottom: '4px' }}>
-                    SUBSCRIPTION TIMELINE:
-                  </div>
-                  <div>Billing Period: <b>{periodStart}</b> to <b>{periodEnd}</b></div>
-                  <div>Issue Date: <b>{issueDate}</b></div>
-                  <div style={{ color: status === 'overdue' ? 'var(--danger)' : 'inherit' }}>
-                    Payment Due Date: <b>{dueDate}</b>
-                  </div>
-                  {status === 'paid' && (
-                    <div style={{ color: 'var(--ledger)', fontWeight: 700, marginTop: '4px' }}>
-                      ✓ Payment Settled & Cleared
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Table */}
-              <table style={{ width: '100%', marginBottom: '20px', borderCollapse: 'collapse', fontSize: '13.5px' }}>
-                <thead>
-                  <tr style={{ background: 'var(--surface-sunken)', borderBottom: '2px solid var(--line-strong)' }}>
-                    <th style={{ textAlign: 'left', padding: '11px 14px' }}>Subscription Service Description</th>
-                    <th style={{ textAlign: 'center', padding: '11px 14px' }}>Period</th>
-                    <th style={{ textAlign: 'right', padding: '11px 14px' }}>Total Amount ({currency})</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                    <td style={{ padding: '14px' }}>
-                      <b>Propithub {planName} SaaS License</b>
-                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginTop: '3px' }}>
-                        {notes || 'Cloud property management engine, tenant portals, and lease accounting'}
-                      </div>
-                    </td>
-                    <td style={{ textAlign: 'center', padding: '14px', fontSize: '13px' }}>
-                      {periodStart} – {periodEnd}
-                    </td>
-                    <td style={{ textAlign: 'right', padding: '14px', fontWeight: 700, fontSize: '15px' }}>
-                      ${amount.toFixed(2)}
-                    </td>
-                  </tr>
-                  {tax > 0 && (
-                    <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                      <td colSpan={2} style={{ padding: '9px 14px', color: 'var(--ink-soft)' }}>
-                        Cloud Infrastructure Tax / VAT ({issuerTaxNo})
-                      </td>
-                      <td style={{ textAlign: 'right', padding: '9px 14px', color: 'var(--ink-soft)' }}>
-                        ${tax.toFixed(2)}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-
-              {/* Summary */}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '24px' }}>
-                <div style={{ width: '260px', fontSize: '14px', lineHeight: '1.8' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ink-soft)' }}>
-                    <span>Subtotal:</span>
-                    <span>${amount.toFixed(2)}</span>
-                  </div>
-                  {tax > 0 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ink-soft)' }}>
-                      <span>Tax / VAT:</span>
-                      <span>${tax.toFixed(2)}</span>
-                    </div>
-                  )}
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      borderTop: '2px solid var(--ink)',
-                      paddingTop: '8px',
-                      marginTop: '6px',
-                      fontWeight: 800,
-                      fontSize: '18px',
-                      color: 'var(--ink)',
-                    }}
-                  >
-                    <span>Total Due:</span>
-                    <span style={{ color: 'var(--brass)' }}>${total.toFixed(2)} {currency}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Settlement Remittance Details */}
-              {(state.platformInvoiceTemplate?.bankName || state.platformInvoiceTemplate?.accountNumber) && (
-                <div
-                  style={{
-                    background: '#F9FAFB',
-                    border: '1px solid var(--line)',
-                    borderRadius: '6px',
-                    padding: '12px 16px',
-                    marginBottom: '20px',
-                    fontSize: '11.5px',
-                    lineHeight: '1.5',
-                  }}
-                >
-                  <div style={{ fontWeight: 700, color: '#059669', fontSize: '10.5px', textTransform: 'uppercase', marginBottom: '3px' }}>
-                    OFFICIAL SETTLEMENT BANK & REMITTANCE DETAILS:
-                  </div>
-                  <div>
-                    Bank: <b>{state.platformInvoiceTemplate?.bankName || '—'}</b> · Beneficiary: <b>{state.platformInvoiceTemplate?.accountName || '—'}</b>
-                  </div>
-                  <div>
-                    A/C No: <b>{state.platformInvoiceTemplate?.accountNumber || '—'}</b> · SWIFT / Routing: <b>{state.platformInvoiceTemplate?.swiftCode || '—'}</b>
-                  </div>
-                </div>
-              )}
-
-              {/* Terms & Conditions (T&C) */}
-              {builtInvoice.includeTerms !== false && termsAndConditions && (
-                <div
-                  style={{
-                    background: 'var(--surface)',
-                    border: '1px solid var(--line)',
-                    borderRadius: '4px',
-                    padding: '14px 18px',
-                    marginBottom: '24px',
-                    fontSize: '11px',
-                    lineHeight: '1.5',
-                    color: 'var(--ink-soft)',
-                  }}
-                >
-                  <div style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: '10.5px', color: 'var(--ink)', marginBottom: '4px' }}>
-                    SUBSCRIPTION TERMS & CONDITIONS:
-                  </div>
-                  {termsAndConditions.split('\n').filter(Boolean).map((t, idx) => (
-                    <div key={idx} style={{ marginBottom: '2px' }}>{t}</div>
-                  ))}
-                </div>
-              )}
-
-              {/* Signatory */}
-              <div
-                style={{
-                  borderTop: '1px dashed var(--line-strong)',
-                  paddingTop: '16px',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-end',
-                  fontSize: '11px',
-                  color: 'var(--ink-soft)',
-                }}
-              >
-                <div>
-                  Propithub SaaS Technologies Inc. • Global Billing Operations<br />
-                  Electronic presentation valid without physical stamp under the Electronic Signatures in Global Commerce Act.
-                </div>
-                <div style={{ textAlign: 'center', minWidth: '170px' }}>
-                  <div style={{ height: '32px' }}></div>
-                  <div style={{ borderTop: '1.5px solid var(--ink)', paddingTop: '4px', fontWeight: 600, color: 'var(--ink)' }}>
-                    {signatoryName}
-                  </div>
-                  <div style={{ fontSize: '10px' }}>Authorized Officer</div>
-                </div>
-              </div>
+              <PlatformInvoiceDocument invoice={builtInvoice} />
             </div>
           </div>
         )}

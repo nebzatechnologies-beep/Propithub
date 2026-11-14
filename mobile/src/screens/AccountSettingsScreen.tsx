@@ -1,18 +1,22 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   TextInput,
   Switch,
   Alert,
   Modal,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  RefreshControl,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubLogo, PropithubIcon } from '../components/PropithubLogo';
@@ -21,6 +25,8 @@ import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
+import { useMobileToast } from '../context/MobileToastContext';
+import { auth, isFirebaseConfigured } from '../lib/firebase';
 
 interface AccountSettingsProps {
   currentRole?: UserRole;
@@ -47,9 +53,16 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
   const { user, updateUserProfile, logout, checkDeletionEligibility, requestAccountDeletion } = useMobileAuth();
   const { viewCurrency, setViewCurrency } = useMobileCurrency();
   const { themeMode, setThemeMode, isDark, colors } = useMobileTheme();
+  const { showToast } = useMobileToast();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
   const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'notifications'>('profile');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 600);
+  }, []);
 
   // Account Deletion state
   const [isCheckingEligibility, setIsCheckingEligibility] = useState(false);
@@ -70,6 +83,7 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
   const [showCurrent, setShowCurrent] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
 
   // Notification preferences (Exact 1-to-1 match with web AccountSettingsPage.tsx)
   const [emailInvoices, setEmailInvoices] = useState(user.notificationPreferences?.emailInvoices ?? true);
@@ -200,9 +214,13 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
     Alert.alert('Profile Updated', 'Your profile details have been saved successfully.');
   };
 
-  const handleChangePassword = () => {
+  const handleChangePassword = async () => {
     if (!currentPassword) {
       Alert.alert('Validation Error', 'Please enter your current password.');
+      return;
+    }
+    if ((user as any)?.tempPassword && currentPassword !== (user as any).tempPassword) {
+      Alert.alert('Incorrect Password', 'Current password does not match your record.');
       return;
     }
     if (!newPassword || newPassword.length < 6) {
@@ -213,10 +231,33 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
       Alert.alert('Validation Error', 'New password and confirmation do not match.');
       return;
     }
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
-    Alert.alert('Password Changed', 'Your security password has been updated successfully.');
+
+    setIsChangingPassword(true);
+    try {
+      if (isFirebaseConfigured && auth.currentUser) {
+        if (auth.currentUser.email) {
+          const cred = EmailAuthProvider.credential(auth.currentUser.email, currentPassword);
+          await reauthenticateWithCredential(auth.currentUser, cred);
+        }
+        await updatePassword(auth.currentUser, newPassword);
+      }
+      await updateUserProfile({ tempPassword: newPassword } as any);
+
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      showToast('Password updated successfully ✓', 'success');
+      Alert.alert('Password Changed ✓', 'Your security password has been updated successfully.');
+    } catch (err: any) {
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('wrong-password') || msg.includes('invalid-credential')) {
+        Alert.alert('Authentication Failed', 'Your current password is incorrect.');
+      } else {
+        Alert.alert('Password Update Failed', err?.message || 'Could not update password. Please try again.');
+      }
+    } finally {
+      setIsChangingPassword(false);
+    }
   };
 
   const handleSignOut = async () => {
@@ -228,7 +269,7 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.surface} />
 
       {/* Real Screen Status Bar */}
@@ -270,7 +311,25 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={[styles.scroll, { backgroundColor: colors.background }]} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
+      >
+      <ScrollView
+        style={[styles.scroll, { backgroundColor: colors.background }]}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
+      >
         {/* User Identity Banner */}
         <View style={[styles.identityRow, { backgroundColor: colors.surface, borderColor: colors.line }]}>
           <View style={[styles.avatar, isDark && { backgroundColor: 'rgba(16, 185, 129, 0.18)', borderColor: 'rgba(16, 185, 129, 0.35)' }]}>
@@ -710,9 +769,20 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={styles.saveBtn} onPress={handleChangePassword} activeOpacity={0.85}>
-              <Feather name="lock" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.saveBtnText}>Update Password</Text>
+            <TouchableOpacity
+              style={[styles.saveBtn, isChangingPassword && { opacity: 0.7 }]}
+              onPress={handleChangePassword}
+              disabled={isChangingPassword}
+              activeOpacity={0.85}
+            >
+              {isChangingPassword ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Feather name="lock" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.saveBtnText}>Update Password</Text>
+                </>
+              )}
             </TouchableOpacity>
 
             {/* Delete Account */}
@@ -990,6 +1060,7 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
         {/* Footer */}
         <Text style={[styles.versionFooter, { color: colors.inkSoft }]}>Propithub Mobile v2.4.0 • Built with Expo & React Native</Text>
       </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* MODAL 1: Account Deletion Blocked Modal */}
       <Modal visible={showBlockedModal} transparent animationType="fade" onRequestClose={() => setShowBlockedModal(false)}>

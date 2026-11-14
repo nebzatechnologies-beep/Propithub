@@ -1,20 +1,22 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
-  StatusBar,
   Modal,
   TextInput,
   Alert,
   Share,
+  KeyboardAvoidingView,
+  Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
+import { ScreenContainer } from '../components/ScreenContainer';
 import { PropithubIcon } from '../components/PropithubLogo';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { useMobileAppData } from '../context/MobileAppDataContext';
@@ -54,12 +56,19 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
 
   // Add Manager Modal State
   const [showAddModal, setShowAddModal] = useState(false);
+  const [isSavingManager, setIsSavingManager] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [assignedPropertyId, setAssignedPropertyId] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 600);
+  }, []);
 
   // Credentials Dialog State (Matching Web)
   const [credentialsModal, setCredentialsModal] = useState<{
@@ -130,12 +139,16 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
           p.id === payingManager.propertyId ||
           p.id === payingManager.assignedPropertyId ||
           p.assignedManagerId === payingManager.id ||
-          p.name === payingManager.assignedProperty
+          p.name === payingManager.assignedProperty ||
+          (Array.isArray(payingManager.assignedProperties) && payingManager.assignedProperties.includes(p.id))
       ) || null
     );
   }, [payingManager, state.properties]);
 
   const payoutCurrency = payingManagerProp?.currency || payingManager?.currency || viewCurrency;
+  const maxManagers = usage.managers.max;
+  const canHaveManagers = maxManagers > 0;
+  const isLimitReached = usage.managers.isFull;
 
   // Payout calculation
   const totalPaidDisbursed = myPayouts
@@ -151,7 +164,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
   };
 
   const handleOpenAddManager = () => {
-    if (usage.managers.isFull) {
+    if (isLimitReached) {
       setLimitModalType('managers');
       return;
     }
@@ -163,22 +176,32 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
     setShowAddModal(true);
   };
 
-  const handleSaveManager = () => {
+  const handleSaveManager = async () => {
+    if (isSavingManager) return;
+    if (isLimitReached) {
+      setLimitModalType('managers');
+      return;
+    }
     const cleanName = name.trim();
     const cleanEmail = email.trim().toLowerCase();
     const cleanPhone = phone.trim();
+    const phoneDigits = cleanPhone.replace(/\D/g, '');
     const cleanPass = password.trim() || generateRandomPassword();
 
     if (!cleanName) {
       Alert.alert('Missing Name', 'Please enter the property manager full name.');
       return;
     }
-    if (!cleanEmail || !cleanEmail.includes('@')) {
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       Alert.alert('Invalid Email', 'Please enter a valid email address.');
       return;
     }
-    if (!cleanPhone) {
-      Alert.alert('Missing Phone', 'Please enter the manager contact phone number.');
+    if (!cleanPhone || phoneDigits.length < 7 || phoneDigits.length > 15) {
+      Alert.alert('Invalid Phone Number', 'Please enter a valid phone number (7 to 15 digits).');
+      return;
+    }
+    if (cleanPass.length < 6) {
+      Alert.alert('Invalid Password', 'Initial login password must be at least 6 characters long.');
       return;
     }
 
@@ -197,17 +220,32 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
       ownerName: user?.displayName || 'Property Owner',
     };
 
-    saveManager(newManager, cleanPass);
-    setShowAddModal(false);
+    setIsSavingManager(true);
+    try {
+      await saveManager(newManager, cleanPass);
+      setShowAddModal(false);
+      setName('');
+      setEmail('');
+      setPhone('');
+      setPassword('');
+      setAssignedPropertyId('');
 
-    // Show Credentials Modal (Matching Web)
-    setCredentialsModal({
-      visible: true,
-      name: cleanName,
-      email: cleanEmail,
-      pass: cleanPass,
-      propertyName: assignedProp?.name || 'All Properties',
-    });
+      // Show Credentials Modal only after saveManager succeeds
+      setCredentialsModal({
+        visible: true,
+        name: cleanName,
+        email: cleanEmail,
+        pass: cleanPass,
+        propertyName: assignedProp?.name || 'All Properties',
+      });
+    } catch (err: any) {
+      Alert.alert(
+        'Provisioning Failed',
+        err?.message || 'Unable to provision property manager account. Please try again.'
+      );
+    } finally {
+      setIsSavingManager(false);
+    }
   };
 
   const handleShareCredentials = async () => {
@@ -240,9 +278,14 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
       Alert.alert('Select Manager', 'Please select a property manager to compensate.');
       return;
     }
-    const numAmount = parseFloat(payAmount) || 0;
-    if (numAmount <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid payout amount.');
+    const cleanMonth = payMonth.trim();
+    if (!cleanMonth) {
+      Alert.alert('Missing Billing Month', 'Please enter the billing month for this payout.');
+      return;
+    }
+    const numAmount = Number(payAmount.replace(/,/g, '').trim());
+    if (!Number.isFinite(numAmount) || numAmount <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter a valid payout amount greater than 0.');
       return;
     }
 
@@ -251,7 +294,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
       managerId: payingManager.id,
       managerName: payingManager.name,
       ownerId: user?.id || 'owner-1',
-      month: payMonth.trim() || 'October 2026',
+      month: cleanMonth,
       amount: numAmount,
       currency: payoutCurrency,
       status: 'paid',
@@ -267,7 +310,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
 
     Alert.alert(
       'Payout Recorded ✓',
-      `Disbursed ${format(numAmount, payoutCurrency)} to ${payingManager.name} for ${payMonth}. Ref: ${newPayout.utrReference}`,
+      `Disbursed ${format(numAmount, payoutCurrency)} to ${payingManager.name} for ${cleanMonth}. Ref: ${newPayout.utrReference}`,
       [{ text: 'OK' }]
     );
   };
@@ -275,21 +318,22 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScreenStatusBar />
-
-      {/* Screen Header */}
-      <Header
-        title="Team"
-        onNotificationPress={() => onNavigate?.('notifications_center')}
-        onProfilePress={onProfilePress}
-      />
-
-      <ScrollView
-        style={[styles.scroll, { backgroundColor: colors.background }]}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+    <ScreenContainer
+      scrollable
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      contentContainerStyle={styles.content}
+      header={
+        <>
+          <ScreenStatusBar />
+          <Header
+            title="Team"
+            onNotificationPress={() => onNavigate?.('notifications_center')}
+            onProfilePress={onProfilePress}
+          />
+        </>
+      }
+    >
         {/* Compact Field Staff / Maintenance Shortcut */}
         <TouchableOpacity
           style={[
@@ -354,23 +398,59 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
         {/* ==================================================== */}
         {subTab === 'managers' && (
           <View>
-            {/* Header Row */}
+            {/* Header Row with Usage Counter */}
             <View style={styles.sectionHeaderRow}>
-              <View>
+              <View style={{ flex: 1, marginRight: 8 }}>
                 <Text style={styles.sectionHeading}>Managers</Text>
+                <Text style={styles.sectionSub}>
+                  {canHaveManagers
+                    ? `${myManagers.length} of ${maxManagers} property managers used`
+                    : `Property managers not included in ${currentPlanName} plan`}
+                </Text>
               </View>
-              <TouchableOpacity
-                style={styles.addManagerBtn}
-                onPress={handleOpenAddManager}
-                activeOpacity={0.85}
-              >
-                <Feather name="plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
-                <Text style={styles.addManagerBtnText}>Onboard Manager</Text>
-              </TouchableOpacity>
+              {canHaveManagers ? (
+                <TouchableOpacity
+                  style={styles.addManagerBtn}
+                  onPress={handleOpenAddManager}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="plus" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
+                  <Text style={styles.addManagerBtnText}>Onboard Manager</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.addManagerBtn, { backgroundColor: colors.brass }]}
+                  onPress={() => onNavigate?.('owner_plan_subscription')}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="arrow-up-circle" size={13} color="#FFFFFF" style={{ marginRight: 4 }} />
+                  <Text style={styles.addManagerBtnText}>Upgrade Plan</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
-            {/* Managers List */}
-            {myManagers.length === 0 ? (
+            {/* Managers List / Tier Gate */}
+            {!canHaveManagers ? (
+              <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+                <View style={[styles.emptyIconCircle, { backgroundColor: colors.surfaceSunken }]}>
+                  <Feather name="lock" size={28} color={colors.brass} />
+                </View>
+                <Text style={[styles.emptyTitle, { color: colors.navy }]}>
+                  Property managers not included in {currentPlanName} plan
+                </Text>
+                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
+                  Upgrade your subscription plan to delegate properties, provision manager logins, and track compensation payouts.
+                </Text>
+                <TouchableOpacity
+                  style={[styles.emptyCtaBtn, { backgroundColor: colors.brass }]}
+                  onPress={() => onNavigate?.('owner_plan_subscription')}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="arrow-up-circle" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.emptyCtaBtnText}>Upgrade Subscription Plan</Text>
+                </TouchableOpacity>
+              </View>
+            ) : myManagers.length === 0 ? (
               <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                 <View style={[styles.emptyIconCircle, { backgroundColor: colors.surfaceSunken }]}>
                   <Feather name="shield" size={32} color="#94A3B8" />
@@ -378,6 +458,17 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                 <Text style={[styles.emptyTitle, { color: colors.ink, textAlign: 'center' }]}>
                   No Property Managers Delegated
                 </Text>
+                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
+                  Delegate operations across your properties (Allowance: {maxManagers} {maxManagers === 1 ? 'manager' : 'managers'}).
+                </Text>
+                <TouchableOpacity
+                  style={styles.emptyCtaBtn}
+                  onPress={handleOpenAddManager}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="plus" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.emptyCtaBtnText}>Onboard Manager</Text>
+                </TouchableOpacity>
               </View>
             ) : (
               myManagers.map((manager) => {
@@ -439,7 +530,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                       <TouchableOpacity
                         style={styles.payBtn}
                         onPress={() => {
-                          setPayingManager({ id: manager.id, name: manager.name });
+                          setPayingManager(manager);
                           setIsPayModalOpen(true);
                         }}
                         activeOpacity={0.8}
@@ -539,7 +630,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
         )}
 
         <View style={{ height: 60 }} />
-      </ScrollView>
 
       {/* ==================================================== */}
       {/* MODAL 1: ONBOARD PROPERTY MANAGER (Web Parity)       */}
@@ -946,7 +1036,7 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
           onNavigate?.('owner_plan_subscription');
         }}
       />
-    </SafeAreaView>
+    </ScreenContainer>
   );
 };
 

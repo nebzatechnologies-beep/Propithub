@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   CurrencyMeta,
   GLOBAL_CURRENCIES,
@@ -54,9 +55,21 @@ export const MobileCurrencyProvider: React.FC<{ children: React.ReactNode }> = (
   const [lastUpdated, setLastUpdated] = useState<string>('Initializing...');
   const [viewCurrency, setViewCurrencyState] = useState<string>(getInitialCurrency);
 
-  // Load live rates on mount
+  // Hydrate saved view currency from AsyncStorage on native & load live rates
   useEffect(() => {
     let isMounted = true;
+    AsyncStorage.multiGet([STORAGE_VIEW_CURRENCY_MOB, STORAGE_VIEW_CURRENCY_WEB])
+      .then((entries) => {
+        if (!isMounted) return;
+        const savedMob = entries[0]?.[1];
+        const savedWeb = entries[1]?.[1];
+        const saved = savedMob || savedWeb;
+        if (saved) {
+          setViewCurrencyState(normalizeCurrencyCode(saved));
+        }
+      })
+      .catch(() => {});
+
     getLiveRates().then((result) => {
       if (!isMounted) return;
       setRates(result.rates);
@@ -72,6 +85,10 @@ export const MobileCurrencyProvider: React.FC<{ children: React.ReactNode }> = (
   const setViewCurrency = useCallback((code: string) => {
     const clean = normalizeCurrencyCode(code);
     setViewCurrencyState(clean);
+    AsyncStorage.setItem(STORAGE_VIEW_CURRENCY_MOB, clean).catch((e) => {
+      console.warn('Failed to persist view currency to AsyncStorage:', e);
+    });
+    AsyncStorage.setItem(STORAGE_VIEW_CURRENCY_WEB, clean).catch(() => {});
     try {
       if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
         (globalThis as any).localStorage.setItem(STORAGE_VIEW_CURRENCY_MOB, clean);

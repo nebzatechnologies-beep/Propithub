@@ -156,34 +156,44 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
               marginBottom: '20px',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', fontSize: '13px' }}>
-              <span style={{ fontWeight: 600, color: 'var(--text-muted, #64748b)' }}>
-                Current Plan Quota: <strong style={{ color: 'var(--text-main, #0f172a)' }}>{planName}</strong>
-              </span>
-              <span style={{ fontWeight: 700, color: '#ea580c' }}>
-                {currentUsage} of {limit} used (100%)
-              </span>
-            </div>
+            {(() => {
+              const isZeroLimit = limit <= 0;
+              const pct = isZeroLimit ? 0 : Math.min(100, Math.round((currentUsage / limit) * 100));
+              return (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', fontSize: '13px', gap: '8px', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 600, color: 'var(--text-muted, #64748b)' }}>
+                      Current Plan Quota: <strong style={{ color: 'var(--text-main, #0f172a)' }}>{planName}</strong>
+                    </span>
+                    <span style={{ fontWeight: 700, color: '#ea580c' }}>
+                      {isZeroLimit
+                        ? 'Not included in current plan (0 allowed)'
+                        : `${currentUsage} of ${limit} used (${pct}%)`}
+                    </span>
+                  </div>
 
-            {/* Quota Progress Bar */}
-            <div
-              style={{
-                width: '100%',
-                height: '8px',
-                borderRadius: '4px',
-                background: 'var(--border-color, #e2e8f0)',
-                overflow: 'hidden',
-              }}
-            >
-              <div
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  background: 'linear-gradient(90deg, #f97316, #ef4444)',
-                  borderRadius: '4px',
-                }}
-              />
-            </div>
+                  {/* Quota Progress Bar */}
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '8px',
+                      borderRadius: '4px',
+                      background: 'var(--border-color, #e2e8f0)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${pct}%`,
+                        height: '100%',
+                        background: 'linear-gradient(90deg, #f97316, #ef4444)',
+                        borderRadius: '4px',
+                      }}
+                    />
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           {/* Upgrade Benefits */}

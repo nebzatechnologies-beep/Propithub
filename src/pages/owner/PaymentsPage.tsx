@@ -6,6 +6,7 @@ import { db, isFirebaseConfigured } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { getDaysFromNowString, getTodayDateString } from '../../lib/dates';
 import { RentalInvoiceStudioModal, DEFAULT_DEPOSIT_TERMS } from '../../components/invoices/RentalInvoiceStudioModal';
+import { RentalInvoiceDocument } from '../../components/invoices/RentalInvoiceDocument';
 import { downloadSingleInvoicePDF, downloadBulkInvoicesPDF, exportInvoicesCSV } from '../../lib/pdf';
 import {
   pingGatewayEndpoint,
@@ -60,7 +61,7 @@ import {
 } from 'lucide-react';
 
 export const PaymentsPage: React.FC = () => {
-  const { state, updateState, saveAgreement, saveInvoice, savePayment, markInvoicePaid, waiveInvoiceLateFee, saveOwnerSettings, confirmCashClaim, rejectCashClaim, submitCashClaim, logCommunication, showToast } = useAppData();
+  const { state, updateState, saveAgreement, saveInvoice, savePayment, markInvoicePaid, waiveInvoiceLateFee, saveOwnerSettings, saveNotification, confirmCashClaim, rejectCashClaim, submitCashClaim, logCommunication, showToast } = useAppData();
   const { user } = useAuth();
   const ownerId = user?.id || '';
 
@@ -155,6 +156,25 @@ export const PaymentsPage: React.FC = () => {
   const [isSavingReminder, setIsSavingReminder] = useState(false);
   const [isSavingLateFee, setIsSavingLateFee] = useState(false);
   const [expandedGateway, setExpandedGateway] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!ownerSettings) return;
+    const lf = ownerSettings.lateFeeConfig || state.lateFeeSettings;
+    if (lf) {
+      setLateFeeGrace(lf.graceDays ?? 5);
+      setLateFeeType((lf.type as any) === 'flat' ? 'flat' : 'percent');
+      setLateFeeValue(lf.value ?? 2);
+      setLateFeeCap(lf.cap ?? 1000);
+      setLateFeeEnabled(lf.enabled ?? false);
+    }
+    const remDays = ownerSettings.rentReminderDaysPrior ?? ownerSettings.rentalReminderConfig?.daysPrior;
+    if (typeof remDays === 'number') {
+      setReminderDays(remDays);
+    }
+    if (typeof ownerSettings.rentalReminderConfig?.enabled === 'boolean') {
+      setReminderEnabled(ownerSettings.rentalReminderConfig.enabled);
+    }
+  }, [ownerSettings, state.lateFeeSettings]);
 
   // Stripe
   const [stripePub, setStripePub] = useState(m.stripe?.pubKey || '');
@@ -1556,9 +1576,13 @@ export const PaymentsPage: React.FC = () => {
       await saveInvoice(autoInv);
     }
 
+    await savePayment(newTxn);
+
     updateState((prev) => ({
       ...prev,
-      payments: [newTxn, ...prev.payments],
+      payments: prev.payments.some((p) => p.id === newTxn.id)
+        ? prev.payments
+        : [newTxn, ...prev.payments],
     }));
 
     setIsRecordingOffline(false);
@@ -1583,6 +1607,19 @@ export const PaymentsPage: React.FC = () => {
       await confirmCashClaim(linkedClaim.id);
     }
 
+    const notif = {
+      id: `notif_${Date.now()}`,
+      userId: inv.tenantId || '',
+      title: 'Payment Confirmed & Invoice Settled',
+      body: `Your payment of ${getCurrencySymbol(inv.currency) || DEFAULT_CURRENCY_SYMBOL}${inv.total.toLocaleString()} for Unit ${inv.unit} has been verified and settled by the landlord. Tax invoice voucher is available.`,
+      link: '/tenant/payments',
+      isRead: false,
+      createdAt: new Date().toISOString(),
+    };
+    if (inv.tenantId) {
+      await saveNotification(notif);
+    }
+
     updateState((prev) => {
       const updatedPayments = prev.payments.map((p) => {
         if (
@@ -1594,20 +1631,9 @@ export const PaymentsPage: React.FC = () => {
         return p;
       });
 
-      const notif = {
-        id: `notif_${Date.now()}`,
-        userId: inv.tenantId || '',
-        title: 'Payment Confirmed & Invoice Settled',
-        body: `Your payment of ${getCurrencySymbol(inv.currency) || DEFAULT_CURRENCY_SYMBOL}${inv.total.toLocaleString()} for Unit ${inv.unit} has been verified and settled by the landlord. Tax invoice voucher is available.`,
-        link: '/tenant/payments',
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
-
       return {
         ...prev,
         payments: updatedPayments,
-        notifications: inv.tenantId ? [...prev.notifications, notif] : prev.notifications,
       };
     });
 
@@ -1624,8 +1650,8 @@ export const PaymentsPage: React.FC = () => {
       ...inv,
       status: 'sent',
       paymentProofNotes: rejectionReason,
-      paymentMethodUsed: undefined,
     };
+    delete revertedInvoice.paymentMethodUsed;
     await saveInvoice(revertedInvoice);
 
     // 1. If there is a linked pending cash claim, reject it
@@ -1659,21 +1685,18 @@ export const PaymentsPage: React.FC = () => {
       }
     }
 
-    updateState((prev) => {
+    if (inv.tenantId) {
       const notif = {
         id: `notif_${Date.now()}`,
-        userId: inv.tenantId || '',
+        userId: inv.tenantId,
         title: 'Payment Verification Failed / Declined',
         body: `Your payment for invoice ${inv.id} was declined by your landlord: ${rejectionReason}`,
         link: '/tenant/payments?tab=invoices',
         isRead: false,
         createdAt: new Date().toISOString(),
       };
-      return {
-        ...prev,
-        notifications: inv.tenantId ? [...prev.notifications, notif] : prev.notifications,
-      };
-    });
+      await saveNotification(notif);
+    }
 
     setIsRejectingProof(false);
     showToast(`Proof rejected. Invoice ${inv.id} reverted to SENT status.`);
@@ -2124,7 +2147,8 @@ export const PaymentsPage: React.FC = () => {
                                         item.dueDateFormatted,
                                         item.daysDiff,
                                         item.tenantEmail,
-                                        item.tenantPhone
+                                        item.tenantPhone,
+                                        item.currency
                                       )
                                     }
                                     title="Send 1-Click Payment Reminder to Tenant"
@@ -2257,7 +2281,8 @@ export const PaymentsPage: React.FC = () => {
                                 item.dueDateFormatted,
                                 item.daysDiff,
                                 item.tenantEmail,
-                                item.tenantPhone
+                                item.tenantPhone,
+                                item.currency
                               )
                             }
                             style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
@@ -3242,7 +3267,7 @@ export const PaymentsPage: React.FC = () => {
                                 <button
                                   type="button"
                                   className="btn secondary small"
-                                  onClick={() => downloadSingleInvoicePDF(i)}
+                                  onClick={() => downloadSingleInvoicePDF(i, (i.invoiceType === 'deposit' || i.type === 'deposit') ? (state.ownerSettings[i.ownerId]?.depositTemplate || state.ownerSettings[i.ownerId]?.invoiceTemplate) : state.ownerSettings[i.ownerId]?.invoiceTemplate)}
                                   title="Download single PDF invoice"
                                 >
                                   <Download size={13} /> PDF
@@ -3364,7 +3389,7 @@ export const PaymentsPage: React.FC = () => {
                         <button
                           type="button"
                           className="btn secondary small btn-mobile-full"
-                          onClick={() => downloadSingleInvoicePDF(i)}
+                          onClick={() => downloadSingleInvoicePDF(i, (i.invoiceType === 'deposit' || i.type === 'deposit') ? (state.ownerSettings[i.ownerId]?.depositTemplate || state.ownerSettings[i.ownerId]?.invoiceTemplate) : state.ownerSettings[i.ownerId]?.invoiceTemplate)}
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
                         >
                           <Download size={13} /> PDF
@@ -3674,144 +3699,61 @@ export const PaymentsPage: React.FC = () => {
                     <span style={{ fontSize: '11px', color: 'var(--ink-soft)' }}>Sample amounts</span>
                   </div>
 
-                  <div
-                    className="invoice-sheet invoice-template-preview-sheet"
-                    style={{
-                      background: '#FFFFFF',
-                      border: '1px solid #E5E7EB',
-                      borderRadius: '8px',
-                      padding: '28px 30px',
-                      boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
-                      fontSize: '12.5px',
-                      color: '#111827',
-                      fontFamily: "'Inter', sans-serif",
-                    }}
-                  >
-                    {/* Header */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px', marginBottom: '18px' }}>
-                      <div>
-                        <div style={{ fontSize: '16px', fontWeight: 800, color: '#111827' }}>
-                          {tmplIssuerName || 'Your Name or Business'}
-                        </div>
-                        <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '2px', lineHeight: '1.4' }}>
-                          {tmplIssuerAddress ? <>{tmplIssuerAddress}<br /></> : null}
-                          {tmplIssuerEmail ? <>{tmplIssuerEmail}<br /></> : null}
-                          {tmplIssuerPhone ? <>{tmplIssuerPhone}<br /></> : null}
-                          {tmplIssuerTaxNo ? <div style={{ color: '#059669', fontWeight: 600 }}>{tmplIssuerTaxNo}</div> : null}
-                          {!tmplIssuerAddress && !tmplIssuerEmail && !tmplIssuerPhone && !tmplIssuerTaxNo && 'Your address, email & phone'}
-                        </div>
+                  {(() => {
+                    const sampleRent = sampleUnit?.rent || 30000;
+                    const sampleTax = tmplTaxPercent > 0 ? Math.round((sampleRent * tmplTaxPercent) / 100) : 0;
+                    const sampleTotal = sampleRent + sampleTax;
+                    const sampleCurrency = sampleUnit?.currency || DEFAULT_CURRENCY;
+                    const sampleInvoice: Invoice = {
+                      id: 'INV-0089',
+                      ownerId,
+                      tenant: sampleTenant?.name || 'Resident Tenant',
+                      tenantId: sampleTenant?.id || 'sample-tenant',
+                      tenantEmail: sampleTenant?.email || '',
+                      tenantPhone: sampleTenant?.phone || '',
+                      unit: sampleUnit?.unitNumber || '101',
+                      propertyName: sampleUnit?.propertyName || 'Property Premises',
+                      amount: sampleRent,
+                      tax: sampleTax,
+                      total: sampleTotal,
+                      due: new Date().toISOString().split('T')[0],
+                      issueDate: new Date().toISOString().split('T')[0],
+                      status: 'sent',
+                      currency: sampleCurrency,
+                      invoiceType: 'rent',
+                      items: [{ description: 'Monthly rent', amount: sampleRent }],
+                      includeTerms: tmplIncludeTerms,
+                      termsAndConditions: tmplIncludeTerms ? tmplTerms : '',
+                      notes: tmplNotes || 'Thank you.',
+                      signatoryName: tmplSignatory,
+                    };
+                    return (
+                      <div className="invoice-template-preview-sheet" style={{ padding: 0 }}>
+                        <RentalInvoiceDocument
+                          invoice={sampleInvoice}
+                          template={{
+                            issuerName: tmplIssuerName || 'Your Name or Business',
+                            issuerAddress: tmplIssuerAddress,
+                            issuerEmail: tmplIssuerEmail,
+                            issuerPhone: tmplIssuerPhone,
+                            issuerTaxNo: tmplIssuerTaxNo,
+                            bankName: tmplBankName,
+                            accountName: tmplAccountName,
+                            accountNumber: tmplAccountNumber,
+                            ifscOrRouting: tmplIfsc,
+                            upiId: tmplUpiId,
+                            taxLabel: tmplTaxLabel,
+                            taxPercent: tmplTaxPercent,
+                            includeTerms: tmplIncludeTerms,
+                            termsAndConditions: tmplIncludeTerms ? tmplTerms : '',
+                            notes: tmplNotes || 'Thank you.',
+                            signatoryName: tmplSignatory,
+                          }}
+                          style={{ padding: '24px 26px', maxWidth: '100%' }}
+                        />
                       </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#111827' }}>INVOICE</div>
-                        <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '2px' }}>
-                          No. INV-0089<br />
-                          {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Two-Column Bill To & Due */}
-                    {(() => {
-                      const sampleRent = sampleUnit?.rent || 30000;
-                      const sampleTax = tmplTaxPercent > 0 ? Math.round((sampleRent * tmplTaxPercent) / 100) : 0;
-                      const sampleTotal = sampleRent + sampleTax;
-                      const curr = sampleUnit?.currency || DEFAULT_CURRENCY_SYMBOL;
-
-                      return (
-                        <>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '18px', fontSize: '12px' }}>
-                            <div>
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
-                                BILL TO
-                              </div>
-                              <b style={{ color: '#111827' }}>{sampleTenant?.name || 'Resident Tenant'}</b>
-                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
-                                Unit {sampleUnit?.unitNumber || '101'} · {sampleUnit?.propertyName || 'Property Premises'}
-                              </div>
-                            </div>
-                            <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
-                                DUE
-                              </div>
-                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
-                                On the due date in the lease
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Line Items Table */}
-                          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
-                            <tbody>
-                              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-                                <td style={{ padding: '8px 0', fontWeight: 600, color: '#111827' }}>
-                                  Monthly rent
-                                </td>
-                                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827' }}>
-                                  {curr}{sampleRent.toLocaleString('en-IN')}
-                                </td>
-                              </tr>
-                              {tmplTaxPercent > 0 && (
-                                <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-                                  <td style={{ padding: '8px 0', color: '#6B7280' }}>
-                                    {tmplTaxLabel || 'Tax'} {tmplTaxPercent}%
-                                  </td>
-                                  <td style={{ padding: '8px 0', textAlign: 'right', color: '#6B7280' }}>
-                                    {curr}{sampleTax.toLocaleString('en-IN')}
-                                  </td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
-
-                          {/* Total */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #E5E7EB', paddingTop: '10px', marginBottom: '18px' }}>
-                            <span style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280' }}>Total to pay</span>
-                            <b style={{ fontSize: '17px', color: '#111827' }}>
-                              {curr}{sampleTotal.toLocaleString('en-IN')}
-                            </b>
-                          </div>
-                        </>
-                      );
-                    })()}
-
-                    {/* Pay To */}
-                    <div style={{ background: '#F9FAFB', padding: '10px 12px', borderRadius: '6px', marginBottom: '16px', fontSize: '11.5px', color: '#4B5563' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
-                        PAY TO
-                      </div>
-                      <div>
-                        {[
-                          tmplBankName,
-                          tmplAccountName && `A/C ${tmplAccountName}`,
-                          tmplAccountNumber && `(${tmplAccountNumber})`,
-                          tmplIfsc && `IFSC: ${tmplIfsc}`,
-                          tmplUpiId && `UPI: ${tmplUpiId}`,
-                        ].filter(Boolean).join(' · ') || 'Bank or UPI details'}
-                      </div>
-                    </div>
-
-                    {/* Terms & Conditions (one per line) */}
-                    {tmplIncludeTerms && tmplTerms && (
-                      <div style={{ borderTop: '1px solid #E5E7EB', paddingTop: '10px', marginBottom: '14px', fontSize: '11px', color: '#4B5563', lineHeight: '1.5' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '4px' }}>
-                          TERMS & CONDITIONS
-                        </div>
-                        {tmplTerms.split('\n').filter(Boolean).map((clause, idx) => (
-                          <div key={idx} style={{ marginBottom: '2px' }}>{clause.trim()}</div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Footer */}
-                    <div style={{ borderTop: '1px solid #E5E7EB', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '11px', color: '#6B7280' }}>
-                      <div>{tmplNotes || 'Thank you.'}</div>
-                      {tmplSignatory && (
-                        <div style={{ textAlign: 'right', fontWeight: 600, color: '#111827' }}>
-                          {tmplSignatory}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -4044,23 +3986,23 @@ export const PaymentsPage: React.FC = () => {
                   <div
                     className="invoice-sheet invoice-template-preview-sheet"
                     style={{
-                      background: '#FFFFFF',
-                      border: '1px solid #E5E7EB',
+                      background: 'var(--surface)',
+                      border: '1px solid var(--line)',
                       borderRadius: '8px',
                       padding: '28px 30px',
                       boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
                       fontSize: '12.5px',
-                      color: '#111827',
+                      color: 'var(--ink)',
                       fontFamily: "'Inter', sans-serif",
                     }}
                   >
                     {/* Header */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px', marginBottom: '18px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid var(--line)', paddingBottom: '16px', marginBottom: '18px' }}>
                       <div>
-                        <div style={{ fontSize: '16px', fontWeight: 800, color: '#111827' }}>
+                        <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--ink)' }}>
                           {depTmplIssuerName || 'Your Name or Business'}
                         </div>
-                        <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '2px', lineHeight: '1.4' }}>
+                        <div style={{ fontSize: '11.5px', color: 'var(--ink-soft)', marginTop: '2px', lineHeight: '1.4' }}>
                           {depTmplIssuerAddress ? <>{depTmplIssuerAddress}<br /></> : null}
                           {depTmplIssuerEmail ? <>{depTmplIssuerEmail}<br /></> : null}
                           {depTmplIssuerPhone ? <>{depTmplIssuerPhone}<br /></> : null}
@@ -4069,8 +4011,8 @@ export const PaymentsPage: React.FC = () => {
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#111827' }}>DEPOSIT RECEIPT</div>
-                        <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '2px' }}>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--ink)' }}>DEPOSIT RECEIPT</div>
+                        <div style={{ fontSize: '11px', color: 'var(--ink-soft)', marginTop: '2px' }}>
                           No. DEP-0042<br />
                           {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
                         </div>
@@ -4086,42 +4028,44 @@ export const PaymentsPage: React.FC = () => {
                         <>
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '18px', fontSize: '12px' }}>
                             <div>
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', marginBottom: '2px' }}>
                                 RECEIVED FROM
                               </div>
-                              <b style={{ color: '#111827' }}>{sampleTenant?.name || 'Resident Tenant'}</b>
-                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                              <b style={{ color: 'var(--ink)' }}>{sampleTenant?.name || 'Resident Tenant'}</b>
+                              <div style={{ color: 'var(--ink-soft)', fontSize: '11.5px' }}>
                                 Unit {sampleUnit?.unitNumber || '101'} · {sampleUnit?.propertyName || 'Property Premises'}
                               </div>
                             </div>
                             <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9CA3AF', textTransform: 'uppercase', marginBottom: '2px' }}>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', marginBottom: '2px' }}>
                                 REFUND TIMELINE
                               </div>
-                              <div style={{ color: '#6B7280', fontSize: '11.5px' }}>
+                              <div style={{ color: 'var(--ink-soft)', fontSize: '11.5px' }}>
                                 Within {depTmplRefundTimeline || 14} days of move-out
                               </div>
                             </div>
                           </div>
 
                           {/* Line Items Table */}
-                          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
-                            <tbody>
-                              <tr style={{ borderBottom: '1px solid #F3F4F6' }}>
-                                <td style={{ padding: '8px 0', fontWeight: 600, color: '#111827' }}>
-                                  Security deposit (Held in trust)
-                                </td>
-                                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#111827' }}>
-                                  {curr}{sampleDeposit.toLocaleString('en-IN')}
-                                </td>
-                              </tr>
-                            </tbody>
-                          </table>
+                          <div className="table-wrap">
+                            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '14px', fontSize: '12px' }}>
+                              <tbody>
+                                <tr style={{ borderBottom: '1px solid var(--line)' }}>
+                                  <td style={{ padding: '8px 0', fontWeight: 600, color: 'var(--ink)' }}>
+                                    Security deposit (Held in trust)
+                                  </td>
+                                  <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: 'var(--ink)' }}>
+                                    {curr}{sampleDeposit.toLocaleString('en-IN')}
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
 
                           {/* Total */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #E5E7EB', paddingTop: '10px', marginBottom: '18px' }}>
-                            <span style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280' }}>Held for you</span>
-                            <b style={{ fontSize: '17px', color: '#111827' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid var(--line)', paddingTop: '10px', marginBottom: '18px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Held for you</span>
+                            <b style={{ fontSize: '17px', color: 'var(--ink)' }}>
                               {curr}{sampleDeposit.toLocaleString('en-IN')}
                             </b>
                           </div>
@@ -4191,7 +4135,7 @@ export const PaymentsPage: React.FC = () => {
                     style={{
                       border: '1px solid var(--line-strong, #E2E8F0)',
                       borderRadius: '10px',
-                      background: '#FFFFFF',
+                      background: 'var(--surface)',
                       overflow: 'hidden',
                     }}
                   >
@@ -4202,7 +4146,7 @@ export const PaymentsPage: React.FC = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         cursor: 'pointer',
-                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                        background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                       }}
                       onClick={() => setExpandedGateway(isOpen ? null : 'razorpay')}
                     >
@@ -4305,7 +4249,7 @@ export const PaymentsPage: React.FC = () => {
                     style={{
                       border: '1px solid var(--line-strong, #E2E8F0)',
                       borderRadius: '10px',
-                      background: '#FFFFFF',
+                      background: 'var(--surface)',
                       overflow: 'hidden',
                     }}
                   >
@@ -4316,7 +4260,7 @@ export const PaymentsPage: React.FC = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         cursor: 'pointer',
-                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                        background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                       }}
                       onClick={() => setExpandedGateway(isOpen ? null : 'stripe')}
                     >
@@ -4429,7 +4373,7 @@ export const PaymentsPage: React.FC = () => {
                     style={{
                       border: '1px solid var(--line-strong, #E2E8F0)',
                       borderRadius: '10px',
-                      background: '#FFFFFF',
+                      background: 'var(--surface)',
                       overflow: 'hidden',
                     }}
                   >
@@ -4440,7 +4384,7 @@ export const PaymentsPage: React.FC = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         cursor: 'pointer',
-                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                        background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                       }}
                       onClick={() => setExpandedGateway(isOpen ? null : 'paypal')}
                     >
@@ -4553,7 +4497,7 @@ export const PaymentsPage: React.FC = () => {
                     style={{
                       border: '1px solid var(--line-strong, #E2E8F0)',
                       borderRadius: '10px',
-                      background: '#FFFFFF',
+                      background: 'var(--surface)',
                       overflow: 'hidden',
                     }}
                   >
@@ -4564,7 +4508,7 @@ export const PaymentsPage: React.FC = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         cursor: 'pointer',
-                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                        background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                       }}
                       onClick={() => setExpandedGateway(isOpen ? null : 'easebuzz')}
                     >
@@ -4694,7 +4638,7 @@ export const PaymentsPage: React.FC = () => {
                     style={{
                       border: '1px solid var(--line-strong, #E2E8F0)',
                       borderRadius: '10px',
-                      background: '#FFFFFF',
+                      background: 'var(--surface)',
                       overflow: 'hidden',
                     }}
                   >
@@ -4705,7 +4649,7 @@ export const PaymentsPage: React.FC = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         cursor: 'pointer',
-                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                        background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                       }}
                       onClick={() => setExpandedGateway(isOpen ? null : 'upi')}
                     >
@@ -4797,7 +4741,7 @@ export const PaymentsPage: React.FC = () => {
                               <img
                                 src={upiQr}
                                 alt="UPI QR"
-                                style={{ width: '100px', height: '100px', objectFit: 'contain', border: '1px solid #CBD5E1', borderRadius: '6px', padding: '4px', background: '#fff' }}
+                                style={{ width: '100px', height: '100px', objectFit: 'contain', border: '1px solid var(--line)', borderRadius: '6px', padding: '4px', background: 'var(--surface)' }}
                               />
                             </div>
                           )}
@@ -4854,7 +4798,7 @@ export const PaymentsPage: React.FC = () => {
                     style={{
                       border: '1px solid var(--line-strong, #E2E8F0)',
                       borderRadius: '10px',
-                      background: '#FFFFFF',
+                      background: 'var(--surface)',
                       overflow: 'hidden',
                     }}
                   >
@@ -4865,7 +4809,7 @@ export const PaymentsPage: React.FC = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         cursor: 'pointer',
-                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                        background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                       }}
                       onClick={() => setExpandedGateway(isOpen ? null : 'bank')}
                     >
@@ -5004,7 +4948,7 @@ export const PaymentsPage: React.FC = () => {
                     style={{
                       border: '1px solid var(--line-strong, #E2E8F0)',
                       borderRadius: '10px',
-                      background: '#FFFFFF',
+                      background: 'var(--surface)',
                       overflow: 'hidden',
                     }}
                   >
@@ -5015,7 +4959,7 @@ export const PaymentsPage: React.FC = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         cursor: 'pointer',
-                        background: isOpen ? '#F8FAFC' : '#FFFFFF',
+                        background: isOpen ? 'var(--surface-sunken)' : 'var(--surface)',
                       }}
                       onClick={() => setExpandedGateway(isOpen ? null : 'cash')}
                     >
@@ -5093,20 +5037,20 @@ export const PaymentsPage: React.FC = () => {
           {/* Card 1: Rental payment reminder rule */}
           <div
             style={{
-              backgroundColor: '#FFFFFF',
+              backgroundColor: 'var(--surface)',
               borderRadius: '12px',
-              border: '1px solid #E5E7EB',
+              border: '1px solid var(--line)',
               padding: '24px 28px',
               marginBottom: '24px',
             }}
           >
-            <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A', margin: '0 0 18px 0' }}>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--ink)', margin: '0 0 18px 0' }}>
               Rental payment reminder rule
             </h3>
 
             <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '18px' }}>
               <div style={{ flex: '1 1 180px', minWidth: '150px' }}>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginBottom: '6px' }}>
                   Send reminders
                 </label>
                 <select
@@ -5117,15 +5061,15 @@ export const PaymentsPage: React.FC = () => {
                     height: '42px',
                     padding: '8px 12px',
                     fontSize: '14px',
-                    color: '#0F172A',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #D1D5DB',
+                    color: 'var(--ink)',
+                    backgroundColor: 'var(--surface)',
+                    border: '1px solid var(--line)',
                     borderRadius: '8px',
                     outline: 'none',
                     cursor: 'pointer',
                   }}
                   onFocus={(e) => (e.target.style.borderColor = '#10B981')}
-                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                  onBlur={(e) => (e.target.style.borderColor = 'var(--line)')}
                 >
                   <option value="yes">Yes</option>
                   <option value="no">No</option>
@@ -5133,7 +5077,7 @@ export const PaymentsPage: React.FC = () => {
               </div>
 
               <div style={{ flex: '1 1 200px', minWidth: '160px' }}>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginBottom: '6px' }}>
                   Reminder lead time (days prior)
                 </label>
                 <input
@@ -5152,14 +5096,14 @@ export const PaymentsPage: React.FC = () => {
                     height: '42px',
                     padding: '8px 12px',
                     fontSize: '14px',
-                    color: '#0F172A',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #D1D5DB',
+                    color: 'var(--ink)',
+                    backgroundColor: 'var(--surface)',
+                    border: '1px solid var(--line)',
                     borderRadius: '8px',
                     outline: 'none',
                   }}
                   onFocus={(e) => (e.target.style.borderColor = '#10B981')}
-                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                  onBlur={(e) => (e.target.style.borderColor = 'var(--line)')}
                 />
               </div>
             </div>
@@ -5191,20 +5135,20 @@ export const PaymentsPage: React.FC = () => {
           {/* Card 2: Late fee rule */}
           <div
             style={{
-              backgroundColor: '#FFFFFF',
+              backgroundColor: 'var(--surface)',
               borderRadius: '12px',
-              border: '1px solid #E5E7EB',
+              border: '1px solid var(--line)',
               padding: '24px 28px',
               marginBottom: '24px',
             }}
           >
-            <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A', margin: '0 0 18px 0' }}>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--ink)', margin: '0 0 18px 0' }}>
               Late fee rule
             </h3>
 
             <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '18px' }}>
               <div style={{ flex: '1 1 160px', minWidth: '140px' }}>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginBottom: '6px' }}>
                   Charge late fees
                 </label>
                 <select
@@ -5215,15 +5159,15 @@ export const PaymentsPage: React.FC = () => {
                     height: '42px',
                     padding: '8px 12px',
                     fontSize: '14px',
-                    color: '#0F172A',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #D1D5DB',
+                    color: 'var(--ink)',
+                    backgroundColor: 'var(--surface)',
+                    border: '1px solid var(--line)',
                     borderRadius: '8px',
                     outline: 'none',
                     cursor: 'pointer',
                   }}
                   onFocus={(e) => (e.target.style.borderColor = '#10B981')}
-                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                  onBlur={(e) => (e.target.style.borderColor = 'var(--line)')}
                 >
                   <option value="yes">Yes</option>
                   <option value="no">No</option>
@@ -5231,7 +5175,7 @@ export const PaymentsPage: React.FC = () => {
               </div>
 
               <div style={{ flex: '1 1 180px', minWidth: '160px' }}>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginBottom: '6px' }}>
                   Type
                 </label>
                 <select
@@ -5242,15 +5186,15 @@ export const PaymentsPage: React.FC = () => {
                     height: '42px',
                     padding: '8px 12px',
                     fontSize: '14px',
-                    color: '#0F172A',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #D1D5DB',
+                    color: 'var(--ink)',
+                    backgroundColor: 'var(--surface)',
+                    border: '1px solid var(--line)',
                     borderRadius: '8px',
                     outline: 'none',
                     cursor: 'pointer',
                   }}
                   onFocus={(e) => (e.target.style.borderColor = '#10B981')}
-                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                  onBlur={(e) => (e.target.style.borderColor = 'var(--line)')}
                 >
                   <option value="percent">Percent of rent</option>
                   <option value="flat">Flat amount</option>
@@ -5258,7 +5202,7 @@ export const PaymentsPage: React.FC = () => {
               </div>
 
               <div style={{ flex: '1 1 140px', minWidth: '120px' }}>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginBottom: '6px' }}>
                   Value {lateFeeType === 'percent' ? '(%)' : `(${dominantRentCurrency})`}
                 </label>
                 <input
@@ -5277,19 +5221,19 @@ export const PaymentsPage: React.FC = () => {
                     height: '42px',
                     padding: '8px 12px',
                     fontSize: '14px',
-                    color: '#0F172A',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #D1D5DB',
+                    color: 'var(--ink)',
+                    backgroundColor: 'var(--surface)',
+                    border: '1px solid var(--line)',
                     borderRadius: '8px',
                     outline: 'none',
                   }}
                   onFocus={(e) => (e.target.style.borderColor = '#10B981')}
-                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                  onBlur={(e) => (e.target.style.borderColor = 'var(--line)')}
                 />
               </div>
 
               <div style={{ flex: '1 1 160px', minWidth: '140px' }}>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginBottom: '6px' }}>
                   Grace period (days)
                 </label>
                 <input
@@ -5308,19 +5252,19 @@ export const PaymentsPage: React.FC = () => {
                     height: '42px',
                     padding: '8px 12px',
                     fontSize: '14px',
-                    color: '#0F172A',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #D1D5DB',
+                    color: 'var(--ink)',
+                    backgroundColor: 'var(--surface)',
+                    border: '1px solid var(--line)',
                     borderRadius: '8px',
                     outline: 'none',
                   }}
                   onFocus={(e) => (e.target.style.borderColor = '#10B981')}
-                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                  onBlur={(e) => (e.target.style.borderColor = 'var(--line)')}
                 />
               </div>
 
               <div style={{ flex: '1 1 160px', minWidth: '140px' }}>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#475569', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: 'var(--ink-soft)', marginBottom: '6px' }}>
                   Max cap ({dominantRentCurrency})
                 </label>
                 <input
@@ -5338,14 +5282,14 @@ export const PaymentsPage: React.FC = () => {
                     height: '42px',
                     padding: '8px 12px',
                     fontSize: '14px',
-                    color: '#0F172A',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #D1D5DB',
+                    color: 'var(--ink)',
+                    backgroundColor: 'var(--surface)',
+                    border: '1px solid var(--line)',
                     borderRadius: '8px',
                     outline: 'none',
                   }}
                   onFocus={(e) => (e.target.style.borderColor = '#10B981')}
-                  onBlur={(e) => (e.target.style.borderColor = '#D1D5DB')}
+                  onBlur={(e) => (e.target.style.borderColor = 'var(--line)')}
                 />
               </div>
             </div>

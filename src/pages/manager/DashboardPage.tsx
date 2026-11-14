@@ -39,36 +39,39 @@ export const ManagerDashboardPage: React.FC = () => {
   const assignedPropertyId = (user as any)?.propertyId || (user as any)?.assignedPropertyId || managerRecord?.propertyId || '';
   const ownerId = user?.ownerId || (managerRecord as any)?.ownerId || '';
 
+  const assignedPropertyIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (assignedPropertyId) ids.add(String(assignedPropertyId));
+    const extra = (user as any)?.assignedProperties || managerRecord?.assignedProperties;
+    if (Array.isArray(extra)) {
+      extra.forEach((pid: any) => pid && ids.add(String(pid)));
+    }
+    return ids;
+  }, [assignedPropertyId, user, managerRecord]);
+
   const myProperties = useMemo(() => {
     let props = state.properties;
     if (ownerId) {
       props = props.filter((p) => p.ownerId === ownerId);
     }
-    if (assignedPropertyId) {
-      return props.filter((p) => p.id === assignedPropertyId || p.assignedManagerId === user?.id);
+    if (assignedPropertyIds.size > 0) {
+      return props.filter((p) => assignedPropertyIds.has(p.id) || p.assignedManagerId === user?.id);
     }
     const explicitlyAssigned = props.filter((p) => p.assignedManagerId === user?.id);
     return explicitlyAssigned.length > 0 ? explicitlyAssigned : props;
-  }, [state.properties, ownerId, assignedPropertyId, user?.id]);
+  }, [state.properties, ownerId, assignedPropertyIds, user?.id]);
 
   const myPropertyIds = useMemo(() => new Set(myProperties.map((p) => p.id)), [myProperties]);
 
   const myUnits = useMemo(() => {
-    if (!ownerId && myPropertyIds.size === 0) return [];
-    return state.units.filter((u) => {
-      const matchOwner = ownerId ? u.ownerId === ownerId : false;
-      const matchProp = Boolean(u.propertyId && myPropertyIds.has(u.propertyId));
-      return matchOwner || matchProp;
-    });
-  }, [state.units, ownerId, myPropertyIds]);
+    if (myPropertyIds.size === 0) return [];
+    return state.units.filter((u) => Boolean(u.propertyId && myPropertyIds.has(u.propertyId)));
+  }, [state.units, myPropertyIds]);
 
   const myTickets = useMemo(() => {
-    if (!ownerId && myPropertyIds.size === 0) return [];
-    return state.tickets.filter((t) => {
-      if (t.ownerId && ownerId && t.ownerId !== ownerId) return false;
-      return !t.propertyId || myPropertyIds.has(t.propertyId);
-    });
-  }, [state.tickets, ownerId, myPropertyIds]);
+    if (myPropertyIds.size === 0) return [];
+    return state.tickets.filter((t) => Boolean(t.propertyId && myPropertyIds.has(t.propertyId)));
+  }, [state.tickets, myPropertyIds]);
 
   const myStaff = ownerId ? state.staff.filter((s) => s.ownerId === ownerId) : [];
   const activeTickets = myTickets.filter((t) => t.status !== 'resolved');
@@ -124,7 +127,11 @@ export const ManagerDashboardPage: React.FC = () => {
       .filter((a) => {
         if (a.status !== 'published') return false;
         if (dismissedNoticeIds.has(a.id)) return false;
-        if (!a.targetScope?.targetRoles?.includes('manager')) return false;
+        const targetRoles = a.targetScope?.targetRoles || (a as any).targetRoles;
+        const hasManagerRole = Array.isArray(targetRoles)
+          ? targetRoles.includes('manager') || (targetRoles as string[]).includes('all')
+          : false;
+        if (!hasManagerRole) return false;
 
         const isSystem = a.ownerId === 'system' || a.ownerId === 'superadmin' || (a.category as string) === 'system';
         // Strict landlord isolation: Block if manager has no owner association or if announcement belongs to another landlord
@@ -358,16 +365,24 @@ export const ManagerDashboardPage: React.FC = () => {
                       </td>
                       <td>
                         <span
-                          className={`badge ${t.priority === 'High' ? 'amber' : 'grey'
-                            }`}
-                          style={{ fontSize: '11px' }}
+                          className={`badge ${
+                            t.priority === 'Emergency'
+                              ? 'red'
+                              : t.priority === 'High'
+                              ? 'amber'
+                              : 'grey'
+                          }`}
+                          style={{
+                            fontSize: '11px',
+                            ...(t.priority === 'Emergency' ? { background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', fontWeight: 700 } : {})
+                          }}
                         >
-                          {t.priority}
+                          {t.priority === 'Emergency' ? '🚨 Emergency' : t.priority}
                         </span>
                       </td>
                       <td>
-                        <span style={{ fontSize: '12.5px', color: t.assignedTo ? 'inherit' : 'var(--ink-soft)' }}>
-                          {t.assignedTo || 'Unassigned'}
+                        <span style={{ fontSize: '12.5px', color: (t.assignedStaffName || t.assignedTo) ? 'inherit' : 'var(--ink-soft)' }}>
+                          {t.assignedStaffName || t.assignedTo || 'Unassigned'}
                         </span>
                       </td>
                     </tr>

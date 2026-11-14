@@ -1,14 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   ActivityIndicator,
   Alert,
+  ScrollView,
+  RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
@@ -18,7 +22,13 @@ export const AccountPendingDeletionScreen: React.FC = () => {
   const { user, cancelAccountDeletion, logout } = useMobileAuth();
   const { isDark, colors } = useMobileTheme();
   const [isRestoring, setIsRestoring] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [timeLeft, setTimeLeft] = useState<{ hours: number; minutes: number }>({ hours: 72, minutes: 0 });
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 500);
+  }, []);
 
   // Calculate live remaining time
   useEffect(() => {
@@ -84,7 +94,24 @@ export const AccountPendingDeletionScreen: React.FC = () => {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? colors.background : '#F8FAFC' }]}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={isDark ? colors.background : '#F8FAFC'} />
-      <View style={styles.contentWrap}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
+      >
+        <ScrollView
+          contentContainerStyle={styles.contentWrap}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.primary}
+              colors={[colors.primary]}
+            />
+          }
+        >
         {/* Brand Header */}
         <View style={styles.header}>
           <PropithubLogo size={36} showText={true} />
@@ -156,7 +183,8 @@ export const AccountPendingDeletionScreen: React.FC = () => {
         <Text style={[styles.helpText, { color: colors.inkSoft }]}>
           Need help? Contact support at <Text style={{ color: '#10B981' }}>support@propithub.com</Text>
         </Text>
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
@@ -166,7 +194,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contentWrap: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,

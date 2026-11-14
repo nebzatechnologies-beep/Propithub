@@ -646,7 +646,7 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
 
   const handleConfirmUploadSigned = () => {
     if (!targetAgreementForUpload) return;
-    if (!uploadedFileName.trim()) {
+    if (!uploadedFileData) {
       Alert.alert('File Required', 'Please attach your signed agreement document.');
       return;
     }
@@ -662,7 +662,7 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
         ? targetAgreementForUpload.requiredIdTypes.map((t, i) => ({ id: `req_${i}`, name: t }))
         : (targetAgreementForUpload.requiredIdType
           ? [{ id: 'req_0', name: targetAgreementForUpload.requiredIdType }]
-          : []));
+          : (targetAgreementForUpload.requireTenantId ? [{ id: 'req_0', name: 'Voter ID' }] : [])));
     if (targetAgreementForUpload.requireTenantId && requiredIds.length > 0) {
       const missing = requiredIds.filter((r) => !uploadedIdsState[r.id]);
       if (missing.length > 0) {
@@ -783,11 +783,14 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
         moveOutDate: noticeMoveOutDate,
         depositHeld: dynamicDeposit,
         currency: primaryAgreement?.currency || activeCurrency,
-        status: 'notice_filed',
+        status: 'requested',
         inspectionChecklist: [
           { room: 'Living Area', item: 'Paint, Walls & Ceilings', condition: 'good', deduction: 0 },
           { room: 'Kitchen', item: 'Plumbing & Fixtures', condition: 'good', deduction: 0 },
           { room: 'Bedrooms', item: 'Flooring & Windows', condition: 'good', deduction: 0 },
+          { room: 'Bathrooms', item: 'Tiles, Sanitaryware & Geyser', condition: 'good', deduction: 0 },
+          { room: 'Electrical', item: 'Switches, Lights & Appliances', condition: 'good', deduction: 0 },
+          { room: 'Keys & Access', item: 'Main Keys, Fobs & Parking Pass', condition: 'good', deduction: 0 },
         ],
         totalDeductions: 0,
         unpaidBills: 0,
@@ -798,6 +801,14 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
       } as any;
 
       addMoveOut(newMo);
+      const openRenewal = (state.renewals || []).find(
+        (r) =>
+          (r.unit === targetUnit || (r as any).agreementId === primaryAgreement?.id) &&
+          (r.status === 'renewal_offered' || r.status === 'pending_decision' || r.status === 'renewal_requested')
+      );
+      if (openRenewal) {
+        respondToLeaseRenewal(targetUnit, 'rejected', 'Tenant submitted move-out notice', openRenewal.propertyId || primaryAgreement?.propertyId);
+      }
       setIsSubmittingNotice(false);
       setShowNoticeModal(false);
       Alert.alert(

@@ -1,24 +1,24 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Modal,
   ActivityIndicator,
   StatusBar,
   Alert,
-  Dimensions,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { Colors } from '../theme/colors';
 import { UserRole } from '../types';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileAppData } from '../context/MobileAppDataContext';
-import { PropithubLogo, PropithubIcon } from '../components/PropithubLogo';
+import { PropithubLogo } from '../components/PropithubLogo';
 import { FreeTrialFloatingWidget } from '../components/FreeTrialFloatingWidget';
+import { registerPlanLimitFallbackNavigate } from '../components/PlanLimitModal';
+import { initializeDeepLinking } from '../lib/deepLinking';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { useMobileTour, TourTarget } from '../context/MobileTourContext';
 import { MobileGuidedTourOverlay } from '../components/tour/MobileGuidedTourOverlay';
@@ -130,7 +130,7 @@ const ROLE_MORE_ITEMS: Record<UserRole, MoreMenuItem[]> = {
     { key: 'vacates_moveout',            label: 'Move-Outs',     sublabel: '', icon: 'log-out',        iconLib: 'feather', color: '#DC2626' },
     { key: 'owner_maintenance_dispatch', label: 'Maintenance',   sublabel: '', icon: 'tool',           iconLib: 'feather', color: '#D97706' },
     { key: 'owner_messages',             label: 'Announcements', sublabel: '', icon: 'message-square', iconLib: 'feather', color: '#059669' },
-    { key: 'owner_team_managers',        label: 'Team',          sublabel: '', icon: 'briefcase',      iconLib: 'feather', color: '#0284C7' },
+    { key: 'owner_team_managers',        label: 'Managers',      sublabel: '', icon: 'briefcase',      iconLib: 'feather', color: '#0284C7' },
     { key: 'owner_disputes_reviews',     label: 'Reputation',    sublabel: '', icon: 'award',          iconLib: 'feather', color: '#9333EA' },
     { key: 'owner_helpdesk',             label: 'Helpdesk',      sublabel: '', icon: 'headphones',     iconLib: 'feather', color: '#0891B2' },
     { key: 'owner_plan_subscription',    label: 'Subscription',  sublabel: '', icon: 'zap',            iconLib: 'feather', color: '#CA8A04' },
@@ -147,6 +147,7 @@ const ROLE_MORE_ITEMS: Record<UserRole, MoreMenuItem[]> = {
 
 interface RootNavigatorProps {
   initialRole?: UserRole;
+  onRegisterNavigate?: (navigate: (screenKey: string) => void) => void;
 }
 
 // ─── Helper: render a tab bar icon ───────────────────────────────────────────
@@ -181,45 +182,112 @@ const ROLE_META: Record<UserRole, { label: string; emoji: string; color: string;
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export const RootNavigator: React.FC<RootNavigatorProps> = () => {
+export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate }) => {
   const { user, role, isAuthenticated, isLoading, logout } = useMobileAuth();
   const { isOwnerPlanActive, state } = useMobileAppData();
   const { colors, isDark, toggleTheme } = useMobileTheme();
   const { registerNavigate, isActive: isTourActive, isMinimized: isTourMinimized } = useMobileTour();
-  const [activeScreenKey, setActiveScreenKey] = useState<string>('owner_dashboard');
+
+  const isOwnerActive = role === 'owner' ? isOwnerPlanActive(user?.id) : true;
+  const isGuidedTourExploring = isTourActive && !isTourMinimized;
+
+  const getHomeScreenForRole = (r: UserRole | string | undefined, ownerActive: boolean): string => {
+    if (r === 'owner') return ownerActive ? 'owner_dashboard' : 'owner_plan_subscription';
+    if (r === 'tenant') return 'tenant_dashboard';
+    if (r === 'manager') return 'manager_operations';
+    if (r === 'staff') return 'staff_job_queue';
+    if (r === 'superadmin') return 'account_settings';
+    return 'owner_dashboard';
+  };
+
+  const [activeScreenKey, setActiveScreenKey] = useState<string>(() =>
+    getHomeScreenForRole(role, isOwnerActive)
+  );
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [selectedMoveOutId, setSelectedMoveOutId] = useState<string>('');
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const historyRef = useRef<string[]>([]);
+
+  // Enforce owner paywall synchronously on render (matching Web ProtectedRoute.tsx)
+  const isOwnerPaywalled = role === 'owner' && !isOwnerActive && !isGuidedTourExploring;
+  const isPaywallAllowedScreen =
+    activeScreenKey === 'owner_plan_subscription' || activeScreenKey === 'account_settings';
+  const effectiveScreenKey =
+    isOwnerPaywalled && !isPaywallAllowedScreen
+      ? 'owner_plan_subscription'
+      : activeScreenKey;
+
+  // Synchronize active screen whenever role or owner plan status changes
+  useEffect(() => {
+    if (isGuidedTourExploring) return;
+    historyRef.current = [];
+    setActiveScreenKey(getHomeScreenForRole(role, isOwnerActive));
+  }, [role, isOwnerActive, isGuidedTourExploring]);
+
+  // Keep activeScreenKey aligned when paywalled
+  useEffect(() => {
+    if (isOwnerPaywalled && !isPaywallAllowedScreen) {
+      setActiveScreenKey('owner_plan_subscription');
+    }
+  }, [isOwnerPaywalled, isPaywallAllowedScreen]);
+
+  const navigate = (key: string) => {
+    setShowMoreMenu(false);
+    let resolvedKey = key;
+    if (resolvedKey === 'financial_ledger' && role === 'tenant') {
+      resolvedKey = 'tenant_payments';
+    } else if (resolvedKey === 'tenant_lease') {
+      if (role === 'owner') resolvedKey = 'leasing_hub';
+      else if (role === 'manager') resolvedKey = 'manager_lease_documents';
+    }
+    if (role === 'owner' && !isOwnerActive) {
+      if (resolvedKey !== 'owner_plan_subscription' && resolvedKey !== 'account_settings') {
+        Alert.alert(
+          'Workspace Locked 🔒',
+          'Your portfolio access is suspended because your subscription or free trial has expired. Please choose a plan to unlock all operational tools.',
+          [
+            {
+              text: 'View Plans',
+              onPress: () => setActiveScreenKey('owner_plan_subscription'),
+            },
+          ]
+        );
+        setActiveScreenKey('owner_plan_subscription');
+        return;
+      }
+    }
+    if (resolvedKey !== effectiveScreenKey) {
+      historyRef.current = [...historyRef.current.slice(-19), effectiveScreenKey];
+    }
+    setActiveScreenKey(resolvedKey);
+  };
+
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
 
   // Register screen switcher with tour context
   useEffect(() => {
     registerNavigate(setActiveScreenKey);
   }, [registerNavigate]);
 
-  const isOwnerActive = role === 'owner' ? isOwnerPlanActive(user?.id) : true;
-  const isGuidedTourExploring = isTourActive && !isTourMinimized;
-
-  // Synchronize active screen whenever role changes
+  // Register fallback upgrade navigation for PlanLimitModal & optional external navigator (e.g. App.tsx deep linking)
   useEffect(() => {
-    if (isGuidedTourExploring) return;
-    if (role === 'owner') {
-      setActiveScreenKey(isOwnerActive ? 'owner_dashboard' : 'owner_plan_subscription');
-    }
-    else if (role === 'tenant') setActiveScreenKey('tenant_dashboard');
-    else if (role === 'manager') setActiveScreenKey('manager_operations');
-    else if (role === 'staff') setActiveScreenKey('staff_job_queue');
-  }, [role, isOwnerActive, isGuidedTourExploring]);
+    const handler = (screenKey: string) => navigateRef.current(screenKey);
+    registerPlanLimitFallbackNavigate(handler);
+    onRegisterNavigate?.(handler);
+    return () => {
+      registerPlanLimitFallbackNavigate(null);
+    };
+  }, [onRegisterNavigate]);
 
-  // Strict paywall for Owner: if subscription and trial have expired, block access to all routes
-  // except owner_plan_subscription (to renew) and account_settings (unless taking the initial guided tour)
+  // Fallback deep linking listener when not wired externally via onRegisterNavigate
   useEffect(() => {
-    if (isGuidedTourExploring) return;
-    if (role === 'owner' && !isOwnerActive) {
-      if (activeScreenKey !== 'owner_plan_subscription' && activeScreenKey !== 'account_settings') {
-        setActiveScreenKey('owner_plan_subscription');
-      }
-    }
-  }, [role, isOwnerActive, activeScreenKey, isGuidedTourExploring]);
+    if (!isAuthenticated || onRegisterNavigate) return;
+    const cleanup = initializeDeepLinking((screenKey) => {
+      navigateRef.current(screenKey);
+    }, role);
+    return () => cleanup();
+  }, [isAuthenticated, role, onRegisterNavigate]);
 
   // Memoized 3-column grid rows for the "More / Workspaces" menu modal (unconditional Hook)
   const moreItems = (role && ROLE_MORE_ITEMS[role]) ? ROLE_MORE_ITEMS[role] : [];
@@ -262,24 +330,32 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
     !isOwnerPlanActive(user.ownerId)
   ) {
     return (
-      <SafeAreaView style={styles.lockedContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
-        <View style={styles.lockedCard}>
-          <View style={styles.lockedIconWrap}>
-            <Feather name="lock" size={38} color="#EF4444" />
+      <SafeAreaView style={[styles.lockedContainer, { backgroundColor: colors.background }]}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
+        <View style={[styles.lockedCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+          <View
+            style={[
+              styles.lockedIconWrap,
+              {
+                backgroundColor: colors.crimsonBg,
+                borderColor: isDark ? 'rgba(248, 113, 113, 0.3)' : '#FEE2E2',
+              },
+            ]}
+          >
+            <Feather name="lock" size={38} color={colors.crimson} />
           </View>
-          <Text style={styles.lockedTitle}>Organization Subscription Inactive</Text>
-          <Text style={styles.lockedSubtitle}>
+          <Text style={[styles.lockedTitle, { color: colors.navy }]}>Organization Subscription Inactive</Text>
+          <Text style={[styles.lockedSubtitle, { color: colors.inkSoft }]}>
             Access to this management workspace is currently paused because your portfolio owner’s Propithub subscription or free trial has expired.
             Please contact your organization administrator or property owner to renew the account.
           </Text>
           <TouchableOpacity
-            style={styles.lockedSignOutBtn}
+            style={[styles.lockedSignOutBtn, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}
             onPress={() => logout()}
             activeOpacity={0.8}
           >
-            <Feather name="log-out" size={16} color="#0F172A" style={{ marginRight: 8 }} />
-            <Text style={styles.lockedSignOutBtnText}>Sign Out</Text>
+            <Feather name="log-out" size={16} color={colors.navy} style={{ marginRight: 8 }} />
+            <Text style={[styles.lockedSignOutBtnText, { color: colors.navy }]}>Sign Out</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -288,32 +364,28 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
 
   // ── Screen renderer ────────────────────────────────────────────────────────
 
-  const navigate = (key: string) => {
-    setShowMoreMenu(false);
-    if (role === 'owner' && !isOwnerActive) {
-      if (key !== 'owner_plan_subscription' && key !== 'account_settings') {
-        Alert.alert(
-          'Workspace Locked 🔒',
-          'Your portfolio access is suspended because your subscription or free trial has expired. Please choose a plan to unlock all operational tools.',
-          [
-            {
-              text: 'View Plans',
-              onPress: () => setActiveScreenKey('owner_plan_subscription'),
-            },
-          ]
-        );
-        setActiveScreenKey('owner_plan_subscription');
+  const goBack = () => {
+    while (historyRef.current.length > 0) {
+      const prev = historyRef.current.pop()!;
+      if (prev && prev !== effectiveScreenKey) {
+        if (
+          role === 'owner' &&
+          !isOwnerActive &&
+          prev !== 'owner_plan_subscription' &&
+          prev !== 'account_settings'
+        ) {
+          continue;
+        }
+        setActiveScreenKey(prev);
         return;
       }
     }
-    setActiveScreenKey(key);
-  };
-
-  const goBack = () => {
     if (role === 'tenant') navigate('tenant_dashboard');
     else if (role === 'manager') navigate('manager_operations');
     else if (role === 'staff') navigate('staff_job_queue');
-    else navigate('owner_dashboard');
+    else if ((role as string) === 'superadmin') {
+      navigate(effectiveScreenKey === 'account_settings' ? 'owner_dashboard' : 'account_settings');
+    } else navigate('owner_dashboard');
   };
 
   const handleLogoutPress = () => {
@@ -335,7 +407,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
   };
 
   const renderActiveScreen = () => {
-    switch (activeScreenKey) {
+    switch (effectiveScreenKey) {
       // ── Owner ──────────────────────────────────────────────────────────────
       case 'owner_dashboard':
         return (
@@ -391,7 +463,6 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
               if (mId) setSelectedMoveOutId(mId);
               navigate('moveout_inspection_checklist');
             }}
-            onFileDisputePress={() => navigate('file_formal_dispute')}
             onNavigate={navigate}
           />
         );
@@ -530,14 +601,6 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
             onNavigate={navigate}
           />
         );
-      case 'disputes_desk':
-      case 'manager_operational_disputes':
-        return (
-          <ManagerOperationsScreen
-            onProfilePress={() => setShowMoreMenu(true)}
-            onNavigate={navigate}
-          />
-        );
 
       // ── Staff ──────────────────────────────────────────────────────────────
       case 'staff_dashboard':
@@ -616,9 +679,6 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
           />
         );
       }
-      case 'file_formal_dispute': {
-        return <OwnerDisputesReviewsScreen />;
-      }
       case 'online_payment_checkout': {
         const ret = role === 'tenant' ? 'tenant_payments' : 'financial_ledger';
         return (
@@ -646,7 +706,12 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
         );
 
       default:
-        return <OwnerDashboardScreen />;
+        return (
+          <OwnerDashboardScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNavigate={navigate}
+          />
+        );
     }
   };
 
@@ -664,7 +729,8 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
   // A tab is "active" if the active screen belongs to that tab
   // "More" tab is active when current screen is in moreItems list
   const moreScreenKeys = new Set(moreItems.map((m) => m.key));
-  const isMoreActive = moreScreenKeys.has(activeScreenKey);
+  const isMoreActive = moreScreenKeys.has(effectiveScreenKey);
+  const activeTabAccent = isDark ? colors.primaryText : '#059669';
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -674,17 +740,20 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
       {/* ── Free Trial Floating Widget for Owner ────────────────────────────── */}
       {role === 'owner' && (
         <FreeTrialFloatingWidget
-          currentScreenKey={activeScreenKey}
-          onNavigateToPlans={() => setActiveScreenKey('owner_plan_subscription')}
+          currentScreenKey={effectiveScreenKey}
+          onNavigateToPlans={() => navigate('owner_plan_subscription')}
         />
       )}
 
       {/* ── Bottom Tab Bar ─────────────────────────────────────────────────── */}
-      <SafeAreaView style={[styles.tabBarSafe, { backgroundColor: colors.surface, borderTopColor: colors.line }]}>
+      <SafeAreaView
+        edges={['bottom']}
+        style={[styles.tabBarSafe, { backgroundColor: colors.surface, borderTopColor: colors.line }]}
+      >
         <View style={[styles.tabBar, { backgroundColor: colors.surface }]}>
           {tabs.map((tab) => {
-            const isActive = tab.isMore ? isMoreActive : activeScreenKey === tab.key;
-            const color = isActive ? '#10B981' : colors.inkSoft;
+            const isActive = tab.isMore ? isMoreActive : effectiveScreenKey === tab.key;
+            const color = isActive ? activeTabAccent : colors.inkSoft;
 
             if (tab.isMore) {
               return (
@@ -707,9 +776,12 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                     <Text
                       style={[
                         styles.tabLabel,
-                        { color: isActive ? '#10B981' : colors.inkSoft },
+                        { color },
                         isActive && styles.tabLabelActive,
                       ]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
                     >
                       More
                     </Text>
@@ -750,24 +822,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
               <TourTarget key={tab.key} id={`tab-${tab.key}`} style={styles.tabItem}>
                 <TouchableOpacity
                   style={{ alignItems: 'center', justifyContent: 'center', width: '100%' }}
-                  onPress={() => {
-                    setShowMoreMenu(false);
-                    if (role === 'owner' && !isOwnerActive && tab.key !== '__more__') {
-                      Alert.alert(
-                        'Workspace Locked 🔒',
-                        'Your portfolio access is suspended because your subscription or free trial has expired. Please select a plan to renew and unlock your workspace.',
-                        [
-                          {
-                            text: 'View Plans',
-                            onPress: () => setActiveScreenKey('owner_plan_subscription'),
-                          },
-                        ]
-                      );
-                      setActiveScreenKey('owner_plan_subscription');
-                      return;
-                    }
-                    setActiveScreenKey(tab.key);
-                  }}
+                  onPress={() => navigate(tab.key)}
                   activeOpacity={0.7}
                 >
                   <View
@@ -778,7 +833,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                       },
                     ]}
                   >
-                    <TabIcon tab={tab} color={isActive ? '#059669' : color} />
+                    <TabIcon tab={tab} color={color} />
                     {showTabDot && (
                       <View
                         style={{
@@ -798,9 +853,12 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                   <Text
                     style={[
                       styles.tabLabel,
-                      { color: isActive ? '#059669' : colors.inkSoft },
+                      { color },
                       isActive && styles.tabLabelActive,
                     ]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
                   >
                     {tab.label}
                   </Text>
@@ -809,13 +867,6 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
             );
           })}
         </View>
-        {/* iOS home indicator */}
-        <View
-          style={[
-            styles.homeIndicator,
-            { backgroundColor: isDark ? '#FFFFFF' : '#0F172A', opacity: isDark ? 0.25 : 0.15 },
-          ]}
-        />
       </SafeAreaView>
 
       {/* ── Compact Slide-Up More & Profile Bottom Sheet ───────────────────── */}
@@ -946,7 +997,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                     {moreItemRows.map((row, rIdx) => (
                       <View key={`row-${rIdx}`} style={styles.gridMenuRow}>
                         {row.map((item) => {
-                          const isActive = activeScreenKey === item.key;
+                          const isActive = effectiveScreenKey === item.key;
                           const accentColor = item.color ?? '#059669';
                           return (
                             <TouchableOpacity
@@ -966,10 +1017,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                                     : colors.line,
                                 },
                               ]}
-                              onPress={() => {
-                                setShowMoreMenu(false);
-                                setActiveScreenKey(item.key);
-                              }}
+                              onPress={() => navigate(item.key)}
                               activeOpacity={0.75}
                             >
                               <View
@@ -1013,10 +1061,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
                       borderColor: isDark ? 'rgba(255,255,255,0.08)' : colors.line,
                     },
                   ]}
-                  onPress={() => {
-                    setShowMoreMenu(false);
-                    setActiveScreenKey('account_settings');
-                  }}
+                  onPress={() => navigate('account_settings')}
                   activeOpacity={0.8}
                 >
                   <Feather name="settings" size={15} color={colors.ink} />
@@ -1057,7 +1102,6 @@ export const RootNavigator: React.FC<RootNavigatorProps> = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.surface,
   },
   screenContainer: {
     flex: 1,
@@ -1127,9 +1171,11 @@ const styles = StyleSheet.create({
   },
   tabItem: {
     flex: 1,
+    minWidth: 0,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 5,
+    paddingHorizontal: 2,
   },
   tabIconWrap: {
     width: 44,
@@ -1147,20 +1193,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 2,
     letterSpacing: -0.1,
+    textAlign: 'center',
   },
   tabLabelActive: {
     color: '#059669',
     fontWeight: '800',
-  },
-  homeIndicator: {
-    width: 120,
-    height: 4,
-    backgroundColor: '#0F172A',
-    borderRadius: 2,
-    alignSelf: 'center',
-    marginTop: 4,
-    marginBottom: 4,
-    opacity: 0.15,
   },
 
   // ── Compact Bottom Sheet ───────────────────────────────────────────────────

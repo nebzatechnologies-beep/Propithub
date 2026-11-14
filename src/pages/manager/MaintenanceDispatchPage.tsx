@@ -42,6 +42,8 @@ export const MaintenanceDispatchPage: React.FC = () => {
   const [assigneeName, setAssigneeName] = useState('');
   const [assignPayer, setAssignPayer] = useState<'owner' | 'tenant'>('owner');
   const [assignAmount, setAssignAmount] = useState<number | ''>(500);
+  const [priorityFilter, setPriorityFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
 
   const managerRecord = (state.propertyManagers || (state as any).managers || []).find(
     (m: any) =>
@@ -108,6 +110,14 @@ export const MaintenanceDispatchPage: React.FC = () => {
       return !t.propertyId || myPropertyIds.has(t.propertyId);
     });
   }, [state.tickets, ownerId, myPropertyIds]);
+
+  const filteredTickets = useMemo(() => {
+    return myTickets.filter((t) => {
+      if (priorityFilter !== 'all' && t.priority !== priorityFilter) return false;
+      if (statusFilter !== 'all' && t.status !== statusFilter) return false;
+      return true;
+    });
+  }, [myTickets, priorityFilter, statusFilter]);
 
   const handleOnboardStaff = async () => {
     if (isStaffLimitReached) {
@@ -250,7 +260,35 @@ export const MaintenanceDispatchPage: React.FC = () => {
       {subTab === 'tickets' ? (
         <div className="panel">
           <div className="panel-body">
-            {myTickets.length === 0 ? (
+            {/* Priority & Status Filter Chips */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {['all', 'Emergency', 'High', 'Medium', 'Low'].map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className={`btn small ${priorityFilter === p ? 'brass' : 'secondary'}`}
+                    onClick={() => setPriorityFilter(p)}
+                  >
+                    {p === 'all' ? 'All Priorities' : p === 'Emergency' ? '🚨 Emergency' : p}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {['all', 'open', 'assigned', 'resolved'].map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    className={`btn small ${statusFilter === st ? 'brass' : 'secondary'}`}
+                    onClick={() => setStatusFilter(st)}
+                    style={{ textTransform: 'capitalize' }}
+                  >
+                    {st === 'all' ? 'All Statuses' : st}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {filteredTickets.length === 0 ? (
               <div style={{ color: 'var(--ink-soft)', padding: '24px 16px', textAlign: 'center' }}>
                 No repair tickets reported for your managed units.
               </div>
@@ -274,7 +312,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {myTickets.map((t) => (
+                        {filteredTickets.map((t) => (
                           <tr key={t.id}>
                             <td><b>{t.id}</b></td>
                             <td>{t.unit}</td>
@@ -283,15 +321,32 @@ export const MaintenanceDispatchPage: React.FC = () => {
                             <td>
                               <span
                                 className={`badge ${
-                                  t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'
+                                  t.priority === 'Emergency' || t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'
                                 }`}
                               >
-                                {t.priority}
+                                {t.priority === 'Emergency' ? '🚨 Emergency' : t.priority}
                               </span>
                             </td>
                             <td>
-                              {t.assignedTo ? (
-                                <span style={{ fontWeight: 600 }}>{t.assignedTo}</span>
+                              {(t.assignedStaffName || t.assignedTo) ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                  <span style={{ fontWeight: 600 }}>{t.assignedStaffName || t.assignedTo}</span>
+                                  {t.status !== 'resolved' && (
+                                    <button
+                                      type="button"
+                                      className="btn secondary small"
+                                      style={{ fontSize: '11px', padding: '2px 7px' }}
+                                      onClick={() => {
+                                        setAssigningTicket(t);
+                                        setAssigneeName(t.assignedStaffName || t.assignedTo || myStaff[0]?.name || '');
+                                        setAssignPayer(t.payment?.payer || 'owner');
+                                        setAssignAmount(typeof t.payment?.amount === 'number' ? t.payment.amount : 500);
+                                      }}
+                                    >
+                                      Reassign
+                                    </button>
+                                  )}
+                                </div>
                               ) : (
                                 <button
                                   type="button"
@@ -337,7 +392,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
                               </span>
                             </td>
                             <td>
-                              {t.status !== 'resolved' && t.assignedTo ? (
+                              {t.status !== 'resolved' ? (
                                 <button
                                   type="button"
                                   className="btn secondary small"
@@ -363,17 +418,17 @@ export const MaintenanceDispatchPage: React.FC = () => {
 
                 {/* Mobile Ticket Cards (<=640px) */}
                 <div className="mobile-card-view">
-                  {myTickets.map((t) => (
+                  {filteredTickets.map((t) => (
                     <div key={t.id} className="staff-card">
                       <div className="staff-card-header">
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <b style={{ fontSize: '14px', color: 'var(--ink)' }}>{t.id}</b>
                           <span
                             className={`badge ${
-                              t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'
+                              t.priority === 'Emergency' || t.priority === 'High' ? 'red' : t.priority === 'Medium' ? 'amber' : 'grey'
                             }`}
                           >
-                            {t.priority}
+                            {t.priority === 'Emergency' ? '🚨 Emergency' : t.priority}
                           </span>
                         </div>
                         <span
@@ -405,7 +460,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', padding: '8px 10px', background: 'var(--surface-sunken)', borderRadius: '6px', fontSize: '12px', marginTop: '8px' }}>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Technician</div>
-                          <b style={{ color: 'var(--ink)' }}>{t.assignedTo || 'Unassigned'}</b>
+                          <b style={{ color: 'var(--ink)' }}>{t.assignedStaffName || t.assignedTo || 'Unassigned'}</b>
                         </div>
                         <div>
                           <div style={{ color: 'var(--ink-soft)', fontSize: '11px' }}>Who Pays / Cost</div>
@@ -422,26 +477,27 @@ export const MaintenanceDispatchPage: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="staff-card-footer">
-                        {!t.assignedTo ? (
+                      <div className="staff-card-footer" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        {t.status !== 'resolved' && (
                           <button
                             type="button"
-                            className="btn secondary small btn-mobile-full"
-                            style={{ fontWeight: 600 }}
+                            className="btn secondary small"
+                            style={{ fontWeight: 600, flex: 1 }}
                             onClick={() => {
                               setAssigningTicket(t);
-                              setAssigneeName(t.assignedTo || myStaff[0]?.name || '');
+                              setAssigneeName(t.assignedStaffName || t.assignedTo || myStaff[0]?.name || '');
                               setAssignPayer(t.payment?.payer || 'owner');
                               setAssignAmount(typeof t.payment?.amount === 'number' ? t.payment.amount : 500);
                             }}
                           >
-                            Assign Technician
+                            {t.assignedTo ? 'Reassign' : 'Assign Technician'}
                           </button>
-                        ) : t.status !== 'resolved' ? (
+                        )}
+                        {t.status !== 'resolved' ? (
                           <button
                             type="button"
-                            className="btn secondary small btn-mobile-full"
-                            style={{ fontWeight: 600 }}
+                            className="btn secondary small"
+                            style={{ fontWeight: 600, flex: 1 }}
                             disabled={resolvingTicketId === t.id}
                             onClick={() => handleResolveTicket(t.id)}
                           >
@@ -526,7 +582,7 @@ export const MaintenanceDispatchPage: React.FC = () => {
                   </div>
                   <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
                     <span className="k" style={{ color: 'var(--ink-soft)' }}>Active tickets</span>
-                    <span>{s.activeTickets}</span>
+                    <span>{myTickets.filter((t) => t.status !== 'resolved' && (t.assignedStaffId === s.id || t.assignedTo === s.name)).length}</span>
                   </div>
                   <div className="kv" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: '13px' }}>
                     <span className="k" style={{ color: 'var(--ink-soft)' }}>Completed</span>

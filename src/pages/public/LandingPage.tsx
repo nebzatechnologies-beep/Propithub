@@ -5,6 +5,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { PropithubLogo } from '../../components/common/PropithubLogo';
 import { HeroArt } from '../../components/common/HeroArt';
 import { AppStoreBadges } from '../../components/common/AppStoreBadges';
+import { GooglePlacesAddressPicker } from '../../components/GooglePlacesAddressPicker';
 import {
   getAllListings,
   formatMoney,
@@ -182,6 +183,7 @@ export const LandingPage: React.FC = () => {
 
   // Search form fields
   const [searchWhere, setSearchWhere] = useState('');
+  const [searchGeo, setSearchGeo] = useState<{ lat?: number; lng?: number; city?: string } | null>(null);
   const [searchBeds, setSearchBeds] = useState('');
   const [searchMaxRent, setSearchMaxRent] = useState('');
 
@@ -408,7 +410,12 @@ export const LandingPage: React.FC = () => {
   const handleHeroSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const params = new URLSearchParams();
-    if (searchWhere.trim()) params.set('q', searchWhere.trim());
+    const queryText = (searchGeo?.city || searchWhere).trim();
+    if (queryText) params.set('q', queryText);
+    if (searchGeo?.lat && searchGeo?.lng) {
+      params.set('lat', String(searchGeo.lat));
+      params.set('lng', String(searchGeo.lng));
+    }
     if (searchBeds) params.set('beds', searchBeds);
     if (searchMaxRent) params.set('max', searchMaxRent);
     navigate(`/homes?${params.toString()}`);
@@ -692,14 +699,25 @@ export const LandingPage: React.FC = () => {
 
             {/* 4-Column Search Box */}
             <form className="hsearch" onSubmit={handleHeroSearch} aria-label="Search rental homes">
-              <label>
+              <label style={{ overflow: 'visible' }}>
                 <span className="hsearch-title">Where</span>
-                <input
-                  type="text"
+                <GooglePlacesAddressPicker
+                  variant="hero"
+                  initialValue={searchWhere}
                   placeholder="City, area, or address..."
-                  value={searchWhere}
-                  onChange={(e) => setSearchWhere(e.target.value)}
-                  autoComplete="off"
+                  onQueryChange={(val) => {
+                    setSearchWhere(val);
+                    setSearchGeo(null);
+                  }}
+                  onAddressSelect={(addr) => {
+                    const label = addr.city && addr.country ? `${addr.city}, ${addr.country}` : addr.formattedAddress;
+                    setSearchWhere(label);
+                    setSearchGeo({
+                      lat: addr.lat || undefined,
+                      lng: addr.lng || undefined,
+                      city: addr.city || undefined,
+                    });
+                  }}
                 />
               </label>
               <label>

@@ -12,7 +12,6 @@ import {
   PropertyManager,
   Ticket,
   MoveOut,
-  Dispute,
   ReviewItem,
   InAppNotification,
   AuditLogItem,
@@ -62,7 +61,6 @@ export interface AppState {
   managerPayouts: ManagerPayoutRecord[];
   tickets: Ticket[];
   moveouts: MoveOut[];
-  disputes: Dispute[];
   reviews: { owners: any[]; tenants: any[] };
   renewals: RenewalItem[];
   staffSchedules: StaffScheduleItem[];
@@ -202,7 +200,6 @@ export const INITIAL_STATE: AppState = {
   managerPayouts: [],
   tickets: [],
   moveouts: [],
-  disputes: [],
   reviews: { owners: [], tenants: [] },
   renewals: [],
   staffSchedules: [],
@@ -833,7 +830,6 @@ export function loadState(): AppState {
       invoices: [],
       tickets: [],
       moveouts: [],
-      disputes: [],
       renewals: [],
       notifications: [],
       managerPayouts: [],

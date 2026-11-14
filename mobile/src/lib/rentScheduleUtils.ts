@@ -54,8 +54,11 @@ export function buildRentSchedule(
   ownerSettings?: any | undefined | null,
   isVacated?: boolean
 ): RentScheduleResult {
-  // If tenancy is vacated, or lease is terminated/draft/cancelled, do not generate rent dues
-  if (isVacated || (agreement && (agreement.status === 'terminated' || agreement.status === 'cancelled' || agreement.status === 'draft' || agreement.status === 'awaiting_tenant_upload' || agreement.status === 'pending_approval'))) {
+  // If resident is vacated without an agreement, or lease is still in pre-active/cancelled state, return empty schedule
+  if (
+    (isVacated && !agreement) ||
+    (agreement && (agreement.status === 'cancelled' || agreement.status === 'draft' || agreement.status === 'awaiting_tenant_upload' || agreement.status === 'pending_approval'))
+  ) {
     return {
       currentDueItem: null,
       upcomingDues: [],
@@ -119,7 +122,28 @@ export function buildRentSchedule(
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const reminderDaysPrior = 10;
+  // Resolve reminder window: Agreement override -> Owner Settings -> System Default: 10 days prior
+  let resolvedOwnerSettings: any = undefined;
+  if (ownerSettings) {
+    if ('ownerId' in ownerSettings) {
+      resolvedOwnerSettings = ownerSettings;
+    } else {
+      const targetOwnerId = agreement?.ownerId || tenantRecord?.ownerId;
+      if (targetOwnerId && ownerSettings[targetOwnerId]) {
+        resolvedOwnerSettings = ownerSettings[targetOwnerId];
+      }
+    }
+  }
+
+  const reminderDaysPrior = Math.max(
+    1,
+    Number(
+      (agreement as any)?.rentReminderDaysPrior ??
+      resolvedOwnerSettings?.rentReminderDaysPrior ??
+      resolvedOwnerSettings?.rentalReminderConfig?.daysPrior ??
+      10
+    )
+  );
   const effectiveAgreementId = agreement?.id || `tenancy_${effectiveTenantId}_${effectiveUnit}`;
 
   // Check if this tenancy requires a move-in security deposit that has not yet been paid
@@ -278,27 +302,29 @@ export function buildRentSchedule(
   const isTenancyConcluded = Boolean(
     isVacated ||
     agreement?.status === 'terminated' ||
-    (agreement?.status as any) === 'concluded'
+    (agreement?.status as any) === 'concluded' ||
+    (!agreement && tenantRecord?.unit === 'Unassigned')
   );
 
-  const upcomingDues = cycles.filter((c) => c.status !== 'paid');
-  const historyDues = cycles.filter((c) => c.status === 'paid').reverse();
+  const historyDues = cycles
+    .filter((c) => c.status === 'paid')
+    .sort((a, b) => (b.paidAt || b.dueDate).localeCompare(a.paidAt || a.dueDate));
 
-  // Pick current due item: prioritize overdue, due_now, due_soon, pending_confirmation
-  const currentDueItem = isTenancyConcluded
-    ? null
-    : upcomingDues.find((c) => c.status === 'overdue' || c.status === 'due_now') ||
-      upcomingDues.find((c) => c.status === 'due_soon') ||
-      upcomingDues.find((c) => c.status === 'pending_confirmation') ||
-      upcomingDues[0] ||
-      null;
+  const upcomingDues = isTenancyConcluded
+    ? []
+    : cycles
+        .filter((c) => c.status !== 'paid')
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  // Current due item is the first unpaid item (strictly null if tenancy is vacated/concluded)
+  const currentDueItem = isTenancyConcluded ? null : (upcomingDues[0] || null);
 
   return {
     currentDueItem,
     upcomingDues,
     historyDues,
-    totalCyclesCount: cycles.length,
+    totalCyclesCount: isTenancyConcluded ? historyDues.length : cycles.length,
     paidCyclesCount: historyDues.length,
-    pendingCyclesCount: upcomingDues.length,
+    pendingCyclesCount: isTenancyConcluded ? 0 : upcomingDues.length,
   };
 }

@@ -142,10 +142,22 @@ export function usePlanLimits(explicitOwnerId?: string) {
     (!latestPaidInvoice.periodEnd || new Date(latestPaidInvoice.periodEnd).getTime() > Date.now())
   );
 
+  // Align active/trial/expired resolution across Web & Mobile:
+  // `owners/{uid}` (`ownerSettings`) is updated by both Superadmin overrides (MasterUsersPage) and checkout,
+  // while `platformInvoices` covers paid invoice history if `ownerSettings` hasn't hydrated yet.
+  const isExplicitlyInactive =
+    ownerSettings?.planStatus === 'expired' || ownerSettings?.planStatus === 'past_due';
+  const isOwnerSettingsExpired = Boolean(
+    ownerSettings?.planStatus === 'active' &&
+    ownerSettings?.subscriptionEndsAt &&
+    new Date(ownerSettings.subscriptionEndsAt).getTime() <= Date.now()
+  );
+  const isOwnerSettingsActive = Boolean(
+    ownerSettings?.planStatus === 'active' && !isOwnerSettingsExpired
+  );
   const hasActivePaidSubscription = Boolean(
-    hasPaidInvoice &&
-    isPaidInvoiceUnexpired &&
-    (ownerSettings?.planStatus === 'active' || !ownerSettings?.subscriptionEndsAt || new Date(ownerSettings.subscriptionEndsAt).getTime() > Date.now())
+    !isExplicitlyInactive &&
+    (isOwnerSettingsActive || (isPaidInvoiceUnexpired && !isOwnerSettingsExpired && ownerSettings?.planStatus !== 'trialing'))
   );
 
   const cachedTrialDays = loadCachedTrialDays();
@@ -153,9 +165,11 @@ export function usePlanLimits(explicitOwnerId?: string) {
     ? state.defaultTrialDays
     : (cachedTrialDays !== null ? cachedTrialDays : 14);
 
-  const isTrial = !hasActivePaidSubscription &&
+  const isTrial = Boolean(
+    !hasActivePaidSubscription &&
     dynamicTrialDays > 0 &&
-    (ownerSettings?.planStatus === 'trialing' || !hasPaidInvoice);
+    (ownerSettings?.planStatus === 'trialing' || (!ownerSettings?.planStatus && !hasPaidInvoice))
+  );
 
   const trialEnds = isTrial && ownerSettings?.trialEndsAt ? new Date(ownerSettings.trialEndsAt) : null;
   const daysLeft = isTrial && trialEnds
@@ -163,17 +177,16 @@ export function usePlanLimits(explicitOwnerId?: string) {
     : (isTrial ? dynamicTrialDays : 0);
 
   const isSubscriptionExpired = Boolean(
-    (ownerSettings?.planStatus === 'active' &&
-      ownerSettings?.subscriptionEndsAt &&
-      new Date(ownerSettings.subscriptionEndsAt).getTime() <= Date.now()) ||
+    isOwnerSettingsExpired ||
     (hasPaidInvoice && !isPaidInvoiceUnexpired)
   );
 
   const isExpired = !hasActivePaidSubscription && (
     ownerSettings
       ? ownerSettings.planStatus === 'expired' ||
+        ownerSettings.planStatus === 'past_due' ||
         (dynamicTrialDays === 0 && ownerSettings.planStatus !== 'active') ||
-        (ownerSettings.trialEndsAt && new Date(ownerSettings.trialEndsAt).getTime() <= Date.now()) ||
+        (Boolean(ownerSettings.trialEndsAt) && new Date(ownerSettings.trialEndsAt!).getTime() <= Date.now()) ||
         isSubscriptionExpired
       : (hasPaidInvoice ? false : dynamicTrialDays === 0)
   );

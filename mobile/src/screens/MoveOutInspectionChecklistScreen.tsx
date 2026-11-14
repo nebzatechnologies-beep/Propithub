@@ -18,7 +18,7 @@ import { useMobileAppData } from '../context/MobileAppDataContext';
 import { useMobileAuth } from '../context/MobileAuthContext';
 import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { useMobileTheme } from '../context/MobileThemeContext';
-import { MobileMoveOutCheckItem, MobileDispute } from '../types';
+import { MobileMoveOutCheckItem } from '../types';
 
 interface MoveOutInspectionChecklistScreenProps {
   moveOutId?: string;
@@ -32,7 +32,7 @@ export const MoveOutInspectionChecklistScreen: React.FC<MoveOutInspectionCheckli
   onSuccess,
 }) => {
   const { colors, isDark } = useMobileTheme();
-  const { state, updateMoveOut, createDepositSettlement, saveDispute } = useMobileAppData();
+  const { state, updateMoveOut, createDepositSettlement } = useMobileAppData();
   const { user } = useMobileAuth();
   const { format, viewCurrency, currencySymbol } = useMobileCurrency();
 
@@ -240,47 +240,6 @@ export const MoveOutInspectionChecklistScreen: React.FC<MoveOutInspectionCheckli
         ]
       );
     }
-  };
-
-  const handleEscalateDispute = () => {
-    const newDispute: MobileDispute = {
-      id: `DSP-${Date.now().toString().slice(-4)}`,
-      raisedById: activeMoveOut.tenantId || user.id,
-      raisedByName: activeMoveOut.tenantName || user.displayName || 'Resident',
-      raisedByRole: 'tenant',
-      againstName: 'Property Owner',
-      propertyId: activeMoveOut?.propertyId || '',
-      propertyName: activeMoveOut?.propertyName || 'Property',
-      unit: activeMoveOut?.unit || '',
-      category: 'Security Deposit Deduction',
-      amountDisputed: totalDeductions,
-      currency,
-      statement: `Tenant contested ${format(totalDeductions, currency)} deductions for move-out damages. Claims normal wear and tear.`,
-      evidenceNotes: 'Move-in inspection checklist comparison submitted.',
-
-      status: 'filed',
-      createdAt: new Date().toISOString(),
-    };
-
-    saveDispute(newDispute);
-    updateMoveOut(activeMoveOut.id, {
-      status: 'disputed',
-      tenantDisputeRaised: true,
-    });
-
-    Alert.alert(
-      'Dispute Registered',
-      `Deductions of ${format(totalDeductions, currency)} have been contested. Dispute ticket ${newDispute.id} is now queued for manager mediation.`,
-      [
-        {
-          text: 'OK',
-          onPress: () => {
-            if (onSuccess) onSuccess();
-            else if (onBack) onBack();
-          },
-        },
-      ]
-    );
   };
 
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);

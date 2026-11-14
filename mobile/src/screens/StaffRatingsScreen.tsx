@@ -1,12 +1,15 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  SafeAreaView,
   TouchableOpacity,
+  RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { PropithubIcon } from '../components/PropithubLogo';
@@ -28,6 +31,11 @@ export const StaffRatingsScreen: React.FC<StaffRatingsScreenProps> = ({
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const { state } = useMobileAppData();
   const { user } = useMobileAuth();
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 600);
+  }, []);
 
   const currentStaff = useMemo(
     () =>
@@ -73,7 +81,7 @@ export const StaffRatingsScreen: React.FC<StaffRatingsScreenProps> = ({
   }, [ratedTickets, currentStaff, resolvedTickets.length]);
 
   const unreadNotificationsCount = useMemo(
-    () => (state.notifications || []).filter((n) => !n.read).length,
+    () => (state.notifications || []).filter((n) => !n.isRead).length,
     [state.notifications]
   );
 
@@ -90,7 +98,7 @@ export const StaffRatingsScreen: React.FC<StaffRatingsScreenProps> = ({
   }, [user.displayName, user.email]);
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <ScreenStatusBar />
 
       {/* Minimal Top App Bar (.topbar) */}
@@ -144,10 +152,24 @@ export const StaffRatingsScreen: React.FC<StaffRatingsScreenProps> = ({
         </View>
       </View>
 
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
+      >
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
       >
         {/* 2-Column KPI Row (.stats2 from Propithub Role Simulator.html) */}
         <TourTarget id="staff-ratings-hero">
@@ -220,6 +242,7 @@ export const StaffRatingsScreen: React.FC<StaffRatingsScreenProps> = ({
           })
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
@@ -315,6 +338,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     statCard: {
       flex: 1,
+      minWidth: 0,
       borderRadius: 14,
       borderWidth: 1,
       padding: 14,

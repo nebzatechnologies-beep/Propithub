@@ -30,8 +30,41 @@ const DEFAULT_AMENITIES = [
   'Electrical, Lighting & Fixtures',
 ];
 
+const cleanFirestoreObject = (obj: any): any => {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(cleanFirestoreObject);
+  const cleaned: any = {};
+  Object.entries(obj).forEach(([key, value]) => {
+    if (value !== undefined) {
+      cleaned[key] = cleanFirestoreObject(value);
+    }
+  });
+  return cleaned;
+};
+
+const computeCombinedDeductions = (
+  checklist: MoveOutAmenityCheck[],
+  extraDeductions: MoveOutDeduction[]
+): { checklistDeductions: MoveOutDeduction[]; extraOnly: MoveOutDeduction[]; allDeductions: MoveOutDeduction[] } => {
+  const checklistDeductions: MoveOutDeduction[] = (checklist || [])
+    .filter((c) => (Number(c.deduction) || 0) > 0)
+    .map((c) => ({
+      reason: `${c.room || 'General'} - ${c.item || c.amenity}${c.notes ? ` (${c.notes})` : ''}`,
+      amount: Number(c.deduction) || 0,
+      amenity: c.item || c.amenity || 'Inspection Item',
+    }));
+  const extraOnly = (extraDeductions || []).filter(
+    (d) => !checklistDeductions.some((cd) => cd.amenity === d.amenity && cd.amount === Number(d.amount))
+  );
+  return {
+    checklistDeductions,
+    extraOnly,
+    allDeductions: [...checklistDeductions, ...extraOnly],
+  };
+};
+
 export const VacatesPage: React.FC = () => {
-  const { state, updateState, saveMoveout, createDepositSettlement, executeDepositRefund, submitCashClaim, showToast } = useAppData();
+  const { state, updateState, saveMoveout, savePayment, saveInvoice, saveNotification, saveReview, submitCashClaim, showToast } = useAppData();
   const { user } = useAuth();
   const { viewCurrency, convert, format } = useCurrency();
   const ownerId = user?.id || '';
@@ -203,10 +236,10 @@ export const VacatesPage: React.FC = () => {
 
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'depositSettlements', updatedSettlement.id), updatedSettlement, { merge: true });
-        await setDoc(doc(db, 'moveouts', updatedMoveout.id), updatedMoveout, { merge: true });
+        await setDoc(doc(db, 'depositSettlements', updatedSettlement.id), cleanFirestoreObject(updatedSettlement), { merge: true });
+        await setDoc(doc(db, 'moveouts', updatedMoveout.id), cleanFirestoreObject(updatedMoveout), { merge: true });
         if (notif.userId) {
-          await setDoc(doc(db, 'notifications', notif.id), notif);
+          await setDoc(doc(db, 'notifications', notif.id), cleanFirestoreObject(notif));
         }
       } catch (err) {
         console.warn('Firestore recalculation sync error:', err);
@@ -338,10 +371,7 @@ export const VacatesPage: React.FC = () => {
     await saveMoveout(updatedMoveout);
 
     if (notif) {
-      updateState((prev) => ({
-        ...prev,
-        notifications: [...(prev.notifications || []), notif],
-      }));
+      await saveNotification(notif);
     }
 
     setSchedulingMoveOut(null);
@@ -354,29 +384,26 @@ export const VacatesPage: React.FC = () => {
   const openInspectionModal = (m: MoveOut) => {
     setInspectingMoveOut(m);
     // Seed standard items if missing, or normalize existing items
-    if (m.inspectionChecklist && m.inspectionChecklist.length > 0) {
-      setInspectionChecklist(
-        m.inspectionChecklist.map((item, idx) => ({
-          ...item,
-          id: item.id || `chk-${idx}-${Date.now()}`,
-          room: item.room || 'General',
-          item: item.item || item.amenity || 'Inspection Item',
-          amenity: item.amenity || item.item || 'Inspection Item',
-          condition: item.condition || 'good',
-          deduction: Number(item.deduction) || 0,
-          photos: item.photos || (item.photo ? [item.photo] : []),
-          notes: item.notes || '',
-        }))
-      );
-    } else {
-      setInspectionChecklist(
-        DEFAULT_INSPECTION_ITEMS.map((item, idx) => ({
-          ...item,
-          id: `chk-${idx}-${Date.now()}`,
-        }))
-      );
-    }
-    setDeductions(m.deductions || []);
+    const seededChecklist: MoveOutAmenityCheck[] =
+      m.inspectionChecklist && m.inspectionChecklist.length > 0
+        ? m.inspectionChecklist.map((item, idx) => ({
+            ...item,
+            id: item.id || `chk-${idx}-${Date.now()}`,
+            room: item.room || 'General',
+            item: item.item || item.amenity || 'Inspection Item',
+            amenity: item.amenity || item.item || 'Inspection Item',
+            condition: item.condition || 'good',
+            deduction: Number(item.deduction) || 0,
+            photos: item.photos || (item.photo ? [item.photo] : []),
+            notes: item.notes || '',
+          }))
+        : DEFAULT_INSPECTION_ITEMS.map((item, idx) => ({
+            ...item,
+            id: `chk-${idx}-${Date.now()}`,
+          }));
+    const { extraOnly } = computeCombinedDeductions(seededChecklist, m.deductions || []);
+    setInspectionChecklist(seededChecklist);
+    setDeductions(extraOnly);
     setInspectionDateInput(m.inspectionDate || getDaysFromNowString(5));
     setRefundDateInput(m.refundDate || getDaysFromNowString(10));
     setCustomDeductReason('');
@@ -519,18 +546,7 @@ export const VacatesPage: React.FC = () => {
     setIsProcessingInspection(true);
     try {
 
-    const checklistDeductions: MoveOutDeduction[] = inspectionChecklist
-      .filter((c) => (c.deduction || 0) > 0)
-      .map((c) => ({
-        reason: `${c.room || 'General'} - ${c.item || c.amenity}${c.notes ? ` (${c.notes})` : ''}`,
-        amount: Number(c.deduction) || 0,
-        amenity: c.item || c.amenity || 'Inspection Item',
-      }));
-
-    const allDeductions: MoveOutDeduction[] = [
-      ...checklistDeductions,
-      ...deductions.filter((d) => !checklistDeductions.some((cd) => cd.amenity === d.amenity && cd.amount === d.amount)),
-    ];
+    const { allDeductions } = computeCombinedDeductions(inspectionChecklist, deductions);
 
     const totalDeductions = allDeductions.reduce((sum, d) => sum + d.amount, 0);
     const finalRefund = Math.max(0, inspectingMoveOut.deposit - totalDeductions);
@@ -606,9 +622,8 @@ export const VacatesPage: React.FC = () => {
       createdAt: new Date().toISOString(),
     };
 
-    updateState((prev) => {
-      const notif = inspectingMoveOut.tenantId
-        ? {
+    const inspNotif: InAppNotification | null = inspectingMoveOut.tenantId
+      ? {
           id: `notif_${Date.now()}`,
           userId: inspectingMoveOut.tenantId,
           title: 'Move-Out Inspection Completed — Settlement Ready',
@@ -617,23 +632,25 @@ export const VacatesPage: React.FC = () => {
           isRead: false,
           createdAt: new Date().toISOString(),
         }
-        : null;
+      : null;
 
-      return {
-        ...prev,
-        moveouts: prev.moveouts.map((m) => (m.id === inspectingMoveOut.id ? updatedMoveout : m)),
-        depositSettlements: [
-          ...(prev.depositSettlements || []).filter((s) => s.id !== settlementObj.id),
-          settlementObj,
-        ],
-        notifications: notif ? [...(prev.notifications || []), notif] : prev.notifications,
-      };
-    });
+    updateState((prev) => ({
+      ...prev,
+      moveouts: prev.moveouts.map((m) => (m.id === inspectingMoveOut.id ? updatedMoveout : m)),
+      depositSettlements: [
+        ...(prev.depositSettlements || []).filter((s) => s.id !== settlementObj.id),
+        settlementObj,
+      ],
+    }));
+
+    if (inspNotif) {
+      await saveNotification(inspNotif);
+    }
 
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'moveouts', inspectingMoveOut.id), updatedMoveout, { merge: true });
-        await setDoc(doc(db, 'depositSettlements', settlementObj.id), settlementObj, { merge: true });
+        await setDoc(doc(db, 'moveouts', inspectingMoveOut.id), cleanFirestoreObject(updatedMoveout), { merge: true });
+        await setDoc(doc(db, 'depositSettlements', settlementObj.id), cleanFirestoreObject(settlementObj), { merge: true });
       } catch (err) {
         console.warn('Firestore moveout and settlement sync warning:', err);
       }
@@ -662,6 +679,14 @@ export const VacatesPage: React.FC = () => {
         showToast('⚠️ Please enter the 6-digit Cheque Number.');
         return;
       }
+      if (!refundBankName.trim()) {
+        showToast('⚠️ Please enter the Drawee / Issuing Bank.');
+        return;
+      }
+      if (!refundChequeDate.trim()) {
+        showToast('⚠️ Please enter the Cheque Date.');
+        return;
+      }
       finalTxRef = `CHQ-${refundChequeNo.trim()}`;
     } else if (refundPayoutMethod === 'UPI') {
       if (!finalTxRef) {
@@ -678,7 +703,25 @@ export const VacatesPage: React.FC = () => {
         showToast('⚠️ Please enter the PayPal Transaction ID.');
         return;
       }
+    } else if (refundPayoutMethod === 'SEPA Wire (IBAN)') {
+      if (!finalTxRef) {
+        showToast('⚠️ Please enter the SWIFT / MT103 Wire Reference.');
+        return;
+      }
+    } else if (refundPayoutMethod === 'US ACH Transfer') {
+      if (!finalTxRef) {
+        showToast('⚠️ Please enter the ACH Trace Number / Direct Deposit ID.');
+        return;
+      }
     } else if (refundPayoutMethod === 'Cash') {
+      if (!refundCashDate.trim()) {
+        showToast('⚠️ Please enter the Handover Date.');
+        return;
+      }
+      if (!refundCashLocation.trim()) {
+        showToast('⚠️ Please enter the Handover Location.');
+        return;
+      }
       finalTxRef = finalTxRef || `CASH-${refundCashDate || completedAt.split('T')[0]}`;
     }
 
@@ -770,6 +813,81 @@ export const VacatesPage: React.FC = () => {
       : undefined;
     const targetTenantId = targetTenant?.id;
 
+    const methodLabel =
+      refundPayoutMethod === 'Cash'
+        ? `Cash Handover (${refundCashLocation || 'On-Site'}${refundCashWitness ? ` • Witness: ${refundCashWitness}` : ''})`
+        : refundPayoutMethod === 'Cheque'
+        ? `Cheque #${refundChequeNo || finalTxRef} (${refundBankName || 'Bank Cheque'})`
+        : refundPayoutMethod === 'UPI'
+        ? `UPI (${refundUpiApp || 'UPI'} • UTR: ${finalTxRef})`
+        : refundPayoutMethod === 'Bank Wire'
+        ? `Bank Wire (${refundBankName || 'NEFT/IMPS'} • UTR: ${finalTxRef})`
+        : `${refundPayoutMethod} (Ref: ${finalTxRef})`;
+
+    const refundTx: PaymentTransaction = {
+      id: `TXN-REFUND-${Date.now().toString().slice(-6)}`,
+      ownerId,
+      tenant: targetMoveout.tenant,
+      tenantId: targetMoveout.tenantId || '',
+      unit: targetMoveout.unit,
+      amount: finalAmount,
+      date: completedAt.split('T')[0],
+      dueDate: targetMoveout.refundDate || completedAt.split('T')[0],
+      status: 'paid',
+      method: methodLabel,
+      type: 'deposit',
+      currency: targetMoveout.currency || DEFAULT_CURRENCY,
+      notes: `Final security deposit refund settlement for Unit ${targetMoveout.unit}. Deductions applied: ${getCurrencySymbol(targetMoveout.currency) || DEFAULT_CURRENCY_SYMBOL}${(targetMoveout.deductions || []).reduce((s, d) => s + d.amount, 0).toLocaleString('en-IN')}.${refundProofUrl ? ' Proof receipt attached.' : ''}`,
+    };
+
+    const newReview = {
+      id: `rev-${Date.now()}`,
+      tenant: targetMoveout.tenant,
+      tenantId: targetMoveout.tenantId || targetTenantId || '',
+      ownerId,
+      ownerName: user?.displayName || 'Property Owner',
+      unit: targetMoveout.unit,
+      propertyId: targetUnit?.propertyId || targetPropId || '',
+      by: user?.displayName || 'Property Owner',
+      rating: tenantRating,
+      text: tenantReview.trim() || 'Tenancy concluded smoothly. Move-out inspection and deposit refund completed.',
+      createdAt: completedAt.split('T')[0],
+    };
+
+    const refundNotif: InAppNotification | null = targetMoveout.tenantId
+      ? {
+          id: `notif_${Date.now()}`,
+          userId: targetMoveout.tenantId,
+          title: 'Security Deposit Refund Settled',
+          body: `Your deposit refund of ${getCurrencySymbol(targetMoveout.currency) || DEFAULT_CURRENCY_SYMBOL}${finalAmount.toLocaleString('en-IN')} has been disbursed via ${refundPayoutMethod}. Tenancy concluded.`,
+          link: '/tenant/payments?tab=deposit',
+          isRead: false,
+          createdAt: completedAt,
+        }
+      : null;
+
+    const voidedInvoices = (state.invoices || [])
+      .filter((inv) => {
+        const isForThisUnit =
+          inv.unit === targetMoveout.unit ||
+          cleanUnitStr(inv.unit) === cleanUnitStr(targetMoveout.unit) ||
+          inv.unit === targetUnitId ||
+          (targetMoveout.agreementId && inv.leaseAgreementId === targetMoveout.agreementId);
+        const isForThisTenant =
+          (targetMoveout.tenantId && inv.tenantId === targetMoveout.tenantId) ||
+          (targetMoveout.tenantEmail && inv.tenantEmail?.toLowerCase() === targetMoveout.tenantEmail.toLowerCase()) ||
+          (targetMoveout.tenant && inv.tenant?.toLowerCase() === targetMoveout.tenant.toLowerCase());
+        const sameOwner = !ownerId || !inv.ownerId || inv.ownerId === ownerId;
+        const sameProp = !targetPropId || !inv.propertyId || inv.propertyId === targetPropId;
+        return sameOwner && sameProp && isForThisUnit && isForThisTenant && inv.status !== 'paid' && inv.status !== 'void';
+      })
+      .map((inv) => ({
+        ...inv,
+        status: 'void' as const,
+        notes: 'Voided automatically upon move-out deposit refund disbursement and tenancy conclusion.',
+      }));
+    const voidedInvIds = new Set(voidedInvoices.map((v) => v.id));
+
     updateState((prev) => {
       // 1. Mark moveout refund_completed
       const updatedMoveouts = prev.moveouts.map((m) =>
@@ -809,7 +927,6 @@ export const VacatesPage: React.FC = () => {
       });
 
       // 5. Update tenant record: clear active unit or shift to remaining rented unit
-      // Only match by tenantId — never by name or unit number alone (prevents cross-owner collision)
       const updatedTenants = prev.tenants.map((t) => {
         if (targetMoveout.tenantId && t.id === targetMoveout.tenantId) {
           const pastItem = {
@@ -839,43 +956,6 @@ export const VacatesPage: React.FC = () => {
         }
         return t;
       });
-
-      const methodLabel =
-        refundPayoutMethod === 'Cash'
-          ? `Cash Handover (${refundCashLocation || 'On-Site'}${refundCashWitness ? ` • Witness: ${refundCashWitness}` : ''})`
-          : refundPayoutMethod === 'Cheque'
-          ? `Cheque #${refundChequeNo || finalTxRef} (${refundBankName || 'Bank Cheque'})`
-          : refundPayoutMethod === 'UPI'
-          ? `UPI (${refundUpiApp || 'UPI'} • UTR: ${finalTxRef})`
-          : refundPayoutMethod === 'Bank Wire'
-          ? `Bank Wire (${refundBankName || 'NEFT/IMPS'} • UTR: ${finalTxRef})`
-          : `${refundPayoutMethod} (Ref: ${finalTxRef})`;
-
-      // 6. Create refund payment transaction record
-      const refundTx: PaymentTransaction = {
-        id: `TXN-REFUND-${Date.now().toString().slice(-6)}`,
-        ownerId,
-        tenant: targetMoveout.tenant,
-        tenantId: targetMoveout.tenantId || '',
-        unit: targetMoveout.unit,
-        amount: finalAmount,
-        date: completedAt.split('T')[0],
-        dueDate: targetMoveout.refundDate || completedAt.split('T')[0],
-        status: 'paid',
-        method: methodLabel,
-        type: 'deposit',
-        notes: `Final security deposit refund settlement for Unit ${targetMoveout.unit}. Deductions applied: ${getCurrencySymbol(targetMoveout.currency) || DEFAULT_CURRENCY_SYMBOL}${(targetMoveout.deductions || []).reduce((s, d) => s + d.amount, 0).toLocaleString('en-IN')}.${refundProofUrl ? ' Proof receipt attached.' : ''}`,
-      };
-
-      // 7. Record tenant review
-      const newReview = {
-        id: `rev-${Date.now()}`,
-        tenant: targetMoveout.tenant,
-        by: user?.displayName || 'Property Owner',
-        rating: tenantRating,
-        text: tenantReview.trim() || 'Tenancy concluded smoothly. Move-out inspection and deposit refund completed.',
-        createdAt: completedAt.split('T')[0],
-      };
 
       // 8. Construct Deposit Settlement entity
       const existingSettle = (state.depositSettlements || []).find(
@@ -914,31 +994,8 @@ export const VacatesPage: React.FC = () => {
         createdAt: existingSettle?.createdAt || completedAt,
       };
 
-      // 9. Notify tenant
-      const notif = targetMoveout.tenantId
-        ? {
-          id: `notif_${Date.now()}`,
-          userId: targetMoveout.tenantId,
-          title: 'Security Deposit Refund Settled',
-          body: `Your deposit refund of ${getCurrencySymbol(targetMoveout.currency) || DEFAULT_CURRENCY_SYMBOL}${finalAmount.toLocaleString('en-IN')} has been disbursed via ${refundPayoutMethod}. Tenancy concluded.`,
-          link: '/tenant/payments?tab=deposit',
-          isRead: false,
-          createdAt: completedAt,
-        }
-        : null;
-
-      // Void any pending/overdue rent/deposit invoices for this tenant & unit upon moveout refund
       const updatedInvoices = (prev.invoices || []).map((inv) => {
-        const isForThisUnit =
-          inv.unit === targetMoveout.unit ||
-          cleanUnitStr(inv.unit) === cleanUnitStr(targetMoveout.unit) ||
-          inv.unit === targetUnitId ||
-          (targetMoveout.agreementId && inv.leaseAgreementId === targetMoveout.agreementId);
-        const isForThisTenant =
-          (targetMoveout.tenantId && inv.tenantId === targetMoveout.tenantId) ||
-          (targetMoveout.tenantEmail && inv.tenantEmail?.toLowerCase() === targetMoveout.tenantEmail.toLowerCase()) ||
-          (targetMoveout.tenant && inv.tenant?.toLowerCase() === targetMoveout.tenant.toLowerCase());
-        if (isForThisUnit && isForThisTenant && inv.status !== 'paid') {
+        if (voidedInvIds.has(inv.id)) {
           return {
             ...inv,
             status: 'void' as const,
@@ -966,14 +1023,17 @@ export const VacatesPage: React.FC = () => {
           ),
           settlementObj,
         ],
-        payments: [refundTx, ...prev.payments],
-        reviews: {
-          ...prev.reviews,
-          tenants: [newReview, ...prev.reviews.tenants],
-        },
-        notifications: notif ? [...(prev.notifications || []), notif] : prev.notifications,
       };
     });
+
+    await savePayment(cleanFirestoreObject(refundTx) as PaymentTransaction);
+    await saveReview(newReview, 'tenants');
+    for (const vInv of voidedInvoices) {
+      await saveInvoice(vInv);
+    }
+    if (refundNotif) {
+      await saveNotification(refundNotif);
+    }
 
     if (isFirebaseConfigured) {
       try {
@@ -1008,14 +1068,14 @@ export const VacatesPage: React.FC = () => {
           status: 'refunded',
           chosenPayoutDetails: existingSettle?.chosenPayoutDetails,
           disbursementMethod: refundPayoutMethod === 'Cash' ? 'cash_handover' : refundPayoutMethod.toLowerCase().includes('gateway') ? 'gateway_automated' : 'bank_manual_transfer',
-          paymentReference: refundTxRef || `UTR-${Math.floor(100000 + Math.random() * 900000)}`,
+          paymentReference: finalTxRef || `UTR-${Math.floor(100000 + Math.random() * 900000)}`,
           proofDocumentUrl: refundProofUrl || undefined,
           disbursedAt: completedAt,
           createdAt: existingSettle?.createdAt || completedAt,
         };
-        await setDoc(doc(db, 'depositSettlements', settlementObj.id), settlementObj, { merge: true });
+        await setDoc(doc(db, 'depositSettlements', settlementObj.id), cleanFirestoreObject(settlementObj), { merge: true });
         if (existingSettle && existingSettle.id !== settlementObj.id) {
-          await setDoc(doc(db, 'depositSettlements', existingSettle.id), { ...settlementObj, id: existingSettle.id }, { merge: true });
+          await setDoc(doc(db, 'depositSettlements', existingSettle.id), cleanFirestoreObject({ ...settlementObj, id: existingSettle.id }), { merge: true });
         }
       } catch (err) {
         console.warn('Firestore depositSettlement sync error:', err);
@@ -1024,10 +1084,10 @@ export const VacatesPage: React.FC = () => {
 
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'moveouts', targetMoveout.id), updatedMoveout, { merge: true });
+        await setDoc(doc(db, 'moveouts', targetMoveout.id), cleanFirestoreObject(updatedMoveout), { merge: true });
         const finalUnitId = targetUnitId || targetUnit?.id;
         if (finalUnitId) {
-          await setDoc(doc(db, 'units', finalUnitId), { status: 'vacant', tenant: null, currentTenantId: null }, { merge: true });
+          await setDoc(doc(db, 'units', finalUnitId), cleanFirestoreObject({ status: 'vacant', tenant: null, currentTenantId: null }), { merge: true });
           const propId = targetUnit?.propertyId || targetPropId;
           if (propId) {
             const propUnits = state.units
@@ -1037,28 +1097,28 @@ export const VacatesPage: React.FC = () => {
             const total = propUnits.length || 1;
             await setDoc(
               doc(db, 'properties', propId),
-              {
+              cleanFirestoreObject({
                 occupied: occ,
                 unitCount: total,
-              },
+              }),
               { merge: true }
             );
           }
         }
         for (const ag of matchedAgreements) {
-          await setDoc(doc(db, 'agreements', ag.id), { status: 'terminated' }, { merge: true });
+          await setDoc(doc(db, 'agreements', ag.id), cleanFirestoreObject({ status: 'terminated' }), { merge: true });
         }
         if (targetTenantId) {
           const remainingUnits = (targetTenant?.unitsRented || []).filter((u) => u !== targetMoveout.unit && u !== targetUnitId);
           const nextUnit = remainingUnits[0] || 'Unassigned';
-          await setDoc(doc(db, 'tenants', targetTenantId), {
+          await setDoc(doc(db, 'tenants', targetTenantId), cleanFirestoreObject({
             unit: nextUnit,
             owner: nextUnit === 'Unassigned' ? 'Unassigned' : (targetTenant?.owner || 'Unassigned'),
             ownerId: nextUnit === 'Unassigned' ? '' : (targetTenant?.ownerId || ''),
             leaseStart: nextUnit === 'Unassigned' ? '' : (targetTenant?.leaseStart || ''),
             leaseEnd: nextUnit === 'Unassigned' ? '' : (targetTenant?.leaseEnd || ''),
             unitsRented: remainingUnits,
-          }, { merge: true });
+          }), { merge: true });
         }
       } catch (err) {
         console.warn('Firestore vacate settlement warning:', err);
@@ -1129,9 +1189,8 @@ export const VacatesPage: React.FC = () => {
       createdAt: new Date().toISOString(),
     };
 
-    updateState((prev) => {
-      const notif = unitObj.currentTenantId
-        ? {
+    const initiateNotif: InAppNotification | null = unitObj.currentTenantId
+      ? {
           id: `notif_${Date.now()}`,
           userId: unitObj.currentTenantId,
           title: 'Move-Out Notice Initiated',
@@ -1140,18 +1199,20 @@ export const VacatesPage: React.FC = () => {
           isRead: false,
           createdAt: new Date().toISOString(),
         }
-        : null;
+      : null;
 
-      return {
-        ...prev,
-        moveouts: [newMoveOut, ...prev.moveouts],
-        notifications: notif ? [...(prev.notifications || []), notif] : prev.notifications,
-      };
-    });
+    updateState((prev) => ({
+      ...prev,
+      moveouts: [newMoveOut, ...prev.moveouts],
+    }));
+
+    if (initiateNotif) {
+      await saveNotification(initiateNotif);
+    }
 
     if (isFirebaseConfigured) {
       try {
-        await setDoc(doc(db, 'moveouts', moveOutId), newMoveOut, { merge: true });
+        await setDoc(doc(db, 'moveouts', moveOutId), cleanFirestoreObject(newMoveOut), { merge: true });
       } catch (err) {
         console.warn('Firestore initiate moveout warning:', err);
       }
@@ -2070,9 +2131,10 @@ export const VacatesPage: React.FC = () => {
 
                 {/* Balance Summary */}
                 {(() => {
-                  const chkDeductTotal = (inspectionChecklist || []).reduce((s, c) => s + (Number(c.deduction) || 0), 0);
-                  const extraDeductTotal = (deductions || []).reduce((s, d) => s + (Number(d.amount) || 0), 0);
-                  const totalDeductionsVal = chkDeductTotal + extraDeductTotal;
+                  const { checklistDeductions, extraOnly, allDeductions } = computeCombinedDeductions(inspectionChecklist, deductions);
+                  const chkDeductTotal = checklistDeductions.reduce((s, c) => s + c.amount, 0);
+                  const extraDeductTotal = extraOnly.reduce((s, d) => s + (Number(d.amount) || 0), 0);
+                  const totalDeductionsVal = allDeductions.reduce((s, d) => s + (Number(d.amount) || 0), 0);
                   const finalRefundVal = Math.max(0, (inspectingMoveOut.deposit ?? 0) - totalDeductionsVal);
                   return (
                     <div style={{ borderTop: '1px solid var(--line)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
@@ -2082,13 +2144,13 @@ export const VacatesPage: React.FC = () => {
                       </div>
                       {chkDeductTotal > 0 && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', color: 'var(--danger)' }}>
-                          <span>Inspection Checklist Deductions ({inspectionChecklist.filter(c => (Number(c.deduction) || 0) > 0).length} items):</span>
+                          <span>Inspection Checklist Deductions ({checklistDeductions.length} items):</span>
                           <b>- {getCurrencySymbol(inspectingMoveOut.currency)}{chkDeductTotal.toLocaleString()}</b>
                         </div>
                       )}
                       {extraDeductTotal > 0 && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', color: 'var(--danger)' }}>
-                          <span>Additional / Preset Deductions ({deductions.length} items):</span>
+                          <span>Additional / Preset Deductions ({extraOnly.length} items):</span>
                           <b>- {getCurrencySymbol(inspectingMoveOut.currency)}{extraDeductTotal.toLocaleString()}</b>
                         </div>
                       )}

@@ -14,6 +14,7 @@ import {
   Image,
   Platform,
   LayoutAnimation,
+  Share,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
@@ -24,6 +25,7 @@ import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { getCurrencySymbol, normalizeCurrencyCode, DEFAULT_CURRENCY, DEFAULT_CURRENCY_SYMBOL } from '../lib/currencyService';
 import { MobilePaymentTransaction, MobilePaymentMethodsConfig, MobileCashHandoverClaim, MobileInvoice } from '../types';
 import { RentalInvoiceDocument } from '../components/RentalInvoiceDocument';
+import { MobileRentalInvoiceDocument } from '../components/MobileRentalInvoiceDocument';
 import { pickSingleImage } from '../lib/nativePicker';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { TourTarget } from '../context/MobileTourContext';
@@ -63,7 +65,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
     waiveInvoiceLateFee,
     logCommunication,
   } = useMobileAppData();
-  const { format, viewCurrency } = useMobileCurrency();
+  const { format, convert, viewCurrency } = useMobileCurrency();
 
   const [activeTab, setActiveTab] = useState<'due' | 'deposits' | 'transactions' | 'approvals' | 'invoices' | 'methods' | 'template' | 'rules'>(initialTab);
 
@@ -145,8 +147,8 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   }, [state.payments, ownerId]);
 
   const totalCollected = myPayments
-    .filter((p) => p.status === 'paid' && !isDepositPayment(p, state.invoices))
-    .reduce((sum, p) => sum + p.amount, 0);
+    .filter((p) => p.status === 'paid' && p.direction !== 'outflow' && p.type !== 'deposit_refund' && !isDepositPayment(p, state.invoices))
+    .reduce((sum, p) => sum + convert(p.amount, p.currency || viewCurrency, selectedProperty?.currency || viewCurrency), 0);
 
   // Pending offline approvals
   const pendingOfflinePayments = myPayments.filter((p) => p.status === 'pending');
@@ -168,7 +170,8 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   const [remindingTenantId, setRemindingTenantId] = useState<string | null>(null);
 
   const ownerSettingsObj = state.ownerSettings[user.id];
-  const effectiveGrace = Number(ownerSettingsObj?.lateFeeConfig?.graceDays) || 5;
+  const lateFeeEnabledFlag = ownerSettingsObj?.lateFeeConfig?.enabled !== false;
+  const effectiveGrace = ownerSettingsObj?.lateFeeConfig?.graceDays !== undefined ? Number(ownerSettingsObj.lateFeeConfig.graceDays) : 5;
   const effectiveLateType: string = (ownerSettingsObj?.lateFeeConfig?.type as string) || 'daily_fixed';
   const effectiveLateVal = Number(ownerSettingsObj?.lateFeeConfig?.value) || 100;
   const effectiveLateCapVal = Number(ownerSettingsObj?.lateFeeConfig?.cap) || 2500;
@@ -361,7 +364,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
           status = 'overdue';
           const daysLate = Math.abs(daysDiff) || 1;
           statusLabel = `Overdue by ${daysLate} days`;
-          if (daysLate > effectiveGrace) {
+          if (lateFeeEnabledFlag && !unpaidThisMonthInvoice?.lateFeeWaived && daysLate > effectiveGrace) {
             const billableDays = daysLate - effectiveGrace;
             if (effectiveLateType === 'daily_fixed') {
               accruedLateFee = Math.min(billableDays * effectiveLateVal, effectiveLateCapVal);
@@ -388,7 +391,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
         status = 'overdue';
         const daysLate = Math.abs(daysDiff);
         statusLabel = `Overdue by ${daysLate} days`;
-        if (daysLate > effectiveGrace) {
+        if (lateFeeEnabledFlag && !unpaidThisMonthInvoice?.lateFeeWaived && daysLate > effectiveGrace) {
           const billableDays = daysLate - effectiveGrace;
           if (effectiveLateType === 'daily_fixed') {
             accruedLateFee = Math.min(billableDays * effectiveLateVal, effectiveLateCapVal);
@@ -541,6 +544,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
   const [offlineDate, setOfflineDate] = useState(new Date().toISOString().split('T')[0]);
   const [offlineAmount, setOfflineAmount] = useState('25000');
   const [offlineMethod, setOfflineMethod] = useState<'Bank Transfer' | 'UPI Direct' | 'Cash Handover' | 'Cheque' | 'Direct Deposit'>('Bank Transfer');
+  const [offlineCategory, setOfflineCategory] = useState<'rent' | 'deposit'>('rent');
   const [isOfflineMethodDropdownOpen, setIsOfflineMethodDropdownOpen] = useState(false);
   const [offlineRef, setOfflineRef] = useState('');
   const [offlineNotes, setOfflineNotes] = useState('Monthly rental remittance');
@@ -579,17 +583,18 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
       return;
     }
     const cleanRef = offlineRef.trim();
-    if (!cleanRef) {
+    if (!cleanRef && offlineMethod !== 'Cash Handover') {
       Alert.alert(
         'Payment Proof Required',
         'Please enter a valid transaction reference, bank transfer ID, or check number as proof of offline settlement.'
       );
       return;
     }
+    const effectiveRef = cleanRef || `CASH-${Date.now().toString().slice(-6)}`;
     const unitObj = myUnits.find((u) => u.unitNumber === offlineUnit || u.id === offlineUnit) || myUnits[0];
     const tenantName = unitObj?.tenant || 'Resident';
     const tenantId = unitObj?.currentTenantId || `TEN-${Date.now().toString().slice(-4)}`;
-    const payId = `TXN-${cleanRef}`;
+    const payId = `TXN-${effectiveRef}`;
 
     // Cash Handover Protocol:
     if (offlineMethod === 'Cash Handover') {
@@ -597,7 +602,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
       const cLocale = resolveItemLocale(unitObj?.currency, offlineUnit, unitObj?.propertyId);
       submitCashClaim({
         direction: 'inflow',
-        type: 'rent',
+        type: offlineCategory,
         amount: numAmt,
         currency: cSymbol,
         ownerId: user.id,
@@ -640,8 +645,8 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
       direction: 'inflow',
       status: 'paid',
       method: offlineMethod,
-      type: 'rent',
-      referenceNo: cleanRef,
+      type: offlineCategory,
+      referenceNo: effectiveRef,
       notes: offlineNotes.trim() || 'Offline payment confirmed by landlord',
     };
 
@@ -722,7 +727,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
     const processedVoucherIds = new Set<string>();
 
-    (state.agreements || []).forEach((ag) => {
+    myAgreements.forEach((ag) => {
       const depInv = (filteredInvoices || []).find(
         (i) =>
           i.type === 'deposit' &&
@@ -1167,7 +1172,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
         },
         lateFeeConfig: {
           enabled: lateFeeEnabled,
-          graceDays: parseInt(lateFeeGrace, 10) || 5,
+          graceDays: Number.isNaN(parseInt(lateFeeGrace, 10)) ? 5 : parseInt(lateFeeGrace, 10),
           type: lateFeeType,
           value: parseFloat(lateFeeValue) || 2,
           cap: parseFloat(lateFeeCap) || 1000,
@@ -1292,12 +1297,20 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
     Alert.alert('Settings Saved', 'Payment gateway credentials and bank transfer details have been updated.');
   };
 
-  const handleExportCSV = () => {
-    Alert.alert(
-      'Export Invoices Ledger (CSV)',
-      `Generating CSV file containing ${filteredInvoices.length} invoices and ${myPayments.length} ledger transactions. Download ready.`,
-      [{ text: 'Download CSV' }, { text: 'Cancel', style: 'cancel' }]
+  const handleExportCSV = async () => {
+    const header = 'ID,Type,Unit,Tenant,Amount,Currency,Status,Date';
+    const rows = filteredInvoices.map(
+      (i) => `"${i.id}","${i.type || 'rent'}","${i.unit || ''}","${i.tenant || ''}",${i.total},"${i.currency || viewCurrency}","${i.status}","${i.due || ''}"`
     );
+    const csv = [header, ...rows].join('\n');
+    try {
+      await Share.share({
+        title: 'Invoices Ledger CSV',
+        message: csv,
+      });
+    } catch (err: any) {
+      Alert.alert('Export Error', err?.message || 'Unable to share CSV export.');
+    }
   };
 
   return (
@@ -4295,11 +4308,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                         />
                       </View>
                     </View>
-
-                    <View style={[styles.sandboxInfoBox, { marginTop: 12 }]}>
-                      <Text style={styles.sandboxInfoText}>
-                      </Text>
-                    </View>
                   </View>
                 )}
               </View>
@@ -4420,7 +4428,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={[styles.fieldLabel, { color: colors.ink }]}>Select Unit *</Text>
               <View style={styles.unitSelectorRow}>
-                {myUnits.slice(0, 6).map((u) => {
+                {myUnits.map((u) => {
                   const uName = u.unitNumber || u.id;
                   const active = offlineUnit === uName;
                   return (
@@ -4614,7 +4622,28 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 </View>
               )}
 
-              <Text style={[styles.fieldLabel, { color: colors.ink }]}>Bank Reference / UTR Number / Cheque No *</Text>
+              <Text style={[styles.fieldLabel, { color: colors.ink }]}>Payment Category</Text>
+              <View style={styles.unitSelectorRow}>
+                {(['rent', 'deposit'] as const).map((cat) => (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[
+                      styles.unitPill,
+                      { backgroundColor: colors.surfaceSunken, borderColor: colors.line },
+                      offlineCategory === cat && { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.2)' : '#ECFDF5', borderColor: colors.primary },
+                    ]}
+                    onPress={() => setOfflineCategory(cat)}
+                  >
+                    <Text style={[styles.unitPillText, { color: colors.ink }, offlineCategory === cat && { color: isDark ? '#34D399' : '#059669', fontWeight: '700' }]}>
+                      {cat === 'rent' ? 'Monthly Rent' : 'Security Deposit'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.fieldLabel, { color: colors.ink }]}>
+                Bank Reference / UTR Number / Cheque No {offlineMethod === 'Cash Handover' ? '(Optional)' : '*'}
+              </Text>
               <TextInput
                 style={[styles.input, { backgroundColor: colors.surfaceSunken, color: colors.text, borderColor: colors.line }]}
                 value={offlineRef}
@@ -4672,19 +4701,11 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
       </Modal>
 
       {/* OFFICIAL INVOICE & VOUCHER PREVIEW MODAL */}
-      <Modal visible={Boolean(viewingInvoice)} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { maxHeight: '90%', backgroundColor: colors.surface }]}>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <RentalInvoiceDocument
-                invoice={viewingInvoice}
-                ownerName={selectedProperty?.name || user?.displayName || 'Propithub Real Estate Management'}
-                onClose={() => setViewingInvoice(null)}
-              />
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      <MobileRentalInvoiceDocument
+        visible={Boolean(viewingInvoice)}
+        invoice={viewingInvoice}
+        onClose={() => setViewingInvoice(null)}
+      />
     </SafeAreaView>
   );
 };

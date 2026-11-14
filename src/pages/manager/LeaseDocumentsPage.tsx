@@ -521,8 +521,13 @@ export const LeaseDocumentsPage: React.FC = () => {
     const matchAgreement =
       specificAgreement ||
       myAgreements.find((a) => (a.unit === unitNumber || a.id === unitNumber) && (a.status === 'active' || a.status === 'signed'));
-    const matchUnit = myUnits.find((u) => u.id === unitNumber || u.unitNumber === unitNumber);
+    const matchUnit = myUnits.find(
+      (u) =>
+        (u.id === unitNumber || u.unitNumber === unitNumber) &&
+        (!specificAgreement?.propertyId || u.propertyId === specificAgreement.propertyId)
+    );
     const rentVal = matchAgreement?.rent || matchUnit?.rent || 25000;
+    const itemCurrency = matchAgreement?.currency || matchUnit?.currency || defaultCurrency;
     const currentEnd = matchAgreement?.end || new Date().toISOString().split('T')[0];
 
     const nextDay = new Date(new Date(currentEnd).getTime() + 86400000);
@@ -547,7 +552,8 @@ export const LeaseDocumentsPage: React.FC = () => {
       tenant: matchAgreement?.tenant || 'Resident',
       tenantId: matchAgreement?.tenantId,
       ownerId: matchAgreement?.ownerId || ownerId,
-      propertyId: matchAgreement?.propertyId,
+      propertyId: matchAgreement?.propertyId || matchUnit?.propertyId,
+      currency: itemCurrency,
       currentRent: rentVal,
       leaseEnd: currentEnd,
       daysLeft: Math.max(0, Math.ceil((new Date(currentEnd).getTime() - Date.now()) / (1000 * 3600 * 24))),
@@ -567,6 +573,8 @@ export const LeaseDocumentsPage: React.FC = () => {
         newLeaseStart: renewalStartDate,
         newLeaseEnd: renewalEndDate,
         ownerNotes: renewalManagerNotes.trim() || undefined,
+        propertyId: renewalModalItem.propertyId,
+        currency: (renewalModalItem as any).currency,
       });
 
       showToast(`✓ Renewal offer dispatched for Unit ${renewalModalItem.unit} at ${defaultCurrency}${renewalNewRent.toLocaleString()}/mo.`);
@@ -2140,6 +2148,59 @@ export const LeaseDocumentsPage: React.FC = () => {
                 <Download size={13} /> Download PDF
               </button>
               <button type="button" className="btn secondary" onClick={() => setViewingAgreement(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Template Preview Modal */}
+      {previewingTemplate && (
+        <div className="modal-backdrop" onClick={() => setPreviewingTemplate(null)}>
+          <div className="modal" style={{ maxWidth: '720px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{previewingTemplate.title}</h3>
+              <button type="button" className="btn secondary small" onClick={() => setPreviewingTemplate(null)}>
+                ✕
+              </button>
+            </div>
+            <div className="modal-body">
+              <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '12px' }}>
+                {previewingTemplate.fileName || 'Document'} • {previewingTemplate.fileSizeKb || 0} KB • Uploaded {new Date(previewingTemplate.uploadedAt).toLocaleDateString()}
+              </div>
+              {previewingTemplate.fileData ? (
+                previewingTemplate.fileData.startsWith('data:image/') ? (
+                  <img
+                    src={previewingTemplate.fileData}
+                    alt={previewingTemplate.title}
+                    style={{ maxWidth: '100%', maxHeight: '480px', objectFit: 'contain', display: 'block', margin: '0 auto' }}
+                  />
+                ) : (
+                  <iframe
+                    src={previewingTemplate.fileData}
+                    title={previewingTemplate.title}
+                    style={{ width: '100%', height: '480px', border: '1px solid var(--line)', borderRadius: '8px' }}
+                  />
+                )
+              ) : (
+                <div style={{ padding: '32px', textAlign: 'center', color: 'var(--ink-soft)' }}>
+                  No previewable file data attached to this template.
+                </div>
+              )}
+            </div>
+            <div className="modal-foot" style={{ borderTop: '1px solid var(--line)', padding: '12px 18px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              {previewingTemplate.fileData && (
+                <a
+                  href={previewingTemplate.fileData}
+                  download={previewingTemplate.fileName || 'agreement-template.pdf'}
+                  className="btn brass small"
+                  style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                >
+                  <Download size={13} /> Download
+                </a>
+              )}
+              <button type="button" className="btn secondary" onClick={() => setPreviewingTemplate(null)}>
+                Close
+              </button>
             </div>
           </div>
         </div>
