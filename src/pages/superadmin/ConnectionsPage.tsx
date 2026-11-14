@@ -302,6 +302,11 @@ export const ConnectionsPage: React.FC = () => {
   };
 
   const saveBird = async () => {
+    const trimmedKey = birdKey.trim();
+    if (trimmedKey && !trimmedKey.includes('•••') && !/^b[km]_[a-z0-9]+_[A-Za-z0-9_-]{16,}$/.test(trimmedKey)) {
+      showToast('That is not a complete Bird API key. Copy the FULL key (starts with bk_us1_) - the list in the Bird dashboard only shows a shortened version ending in "…".');
+      return;
+    }
     setSavingKey('bird');
     try {
       const isConn = Boolean(birdKey.trim());
