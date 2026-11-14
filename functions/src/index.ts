@@ -399,7 +399,24 @@ async function getUserContact(userId?: string): Promise<{ phone?: string; email?
  * The key is stored server-side only in /platformSecrets/comms (field birdApiKey) and set from
  * Superadmin -> Integrations, or via the BIRD_API_KEY environment variable.
  */
+const BIRD_KEY_PATTERN = /^b[km]_[a-z0-9]+_[A-Za-z0-9_-]{16,}$/;
+/** Why a saved Bird key can't be used (null when it looks fine or is simply absent). */
+function birdKeyProblem(comms: any): string | null {
+  const raw = String(comms?.birdApiKey || '').trim();
+  if (!raw || raw.includes('•••')) return null;
+  if (!BIRD_KEY_PATTERN.test(raw)) {
+    return /[^\x20-\x7e]/.test(raw)
+      ? 'The saved Bird API key contains a truncated "…" or other invalid characters. Re-enter the FULL key in Superadmin → Integrations → Bird.'
+      : 'The saved Bird API key is not in the expected format (bk_us1_…). Re-enter the full key in Superadmin → Integrations → Bird.';
+  }
+  return null;
+}
 function getBirdApiKey(comms: any): string {
+  const problem = birdKeyProblem(comms);
+  if (problem) {
+    functions.logger.error(`[Bird] ${problem}`);
+    return String(process.env.BIRD_API_KEY || '').trim();
+  }
   const key = String(comms?.birdApiKey || process.env.BIRD_API_KEY || '').trim();
   if (!key || key.includes('•••')) return '';
   return key;
@@ -797,69 +814,16 @@ export const setClaimsOnRequest = functions.firestore
           const uOwnerName = uData.ownerName || 'Property Management';
           const uTempPw = claimTempPw || uData.tempPassword;
 
-          const roleNameMap: Record<string, string> = {
-            tenant: 'Resident Tenant',
-            manager: 'Property Manager',
-            staff: 'Maintenance Technician',
-          };
-          const roleTitle = roleNameMap[uRole] || uRole;
-
-          const welcomeSubject = `Welcome to Propithub — Your ${roleTitle} Account Credentials`;
-          const welcomeHtml = renderPropithubEmail(
-            welcomeSubject,
-            `<p>Hello <strong>${uName}</strong>,</p>
-             <p>Your <strong>${roleTitle}</strong> portal account has been created by <strong>${uOwnerName}</strong>.</p>
-             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 20px 0;">
-               <div style="font-size: 12px; font-weight: 700; color: #64748b; margin-bottom: 8px; text-transform: uppercase;">Your Login Credentials</div>
-               <div style="font-size: 14px; margin-bottom: 6px;">Email: <strong>${uEmail}</strong></div>
-               <div style="font-size: 14px; margin-bottom: 6px;">Temporary Password: <strong style="font-family: monospace; color: #2563eb; background: #eff6ff; padding: 2px 6px; border-radius: 4px;">${uTempPw}</strong></div>
-               <div style="font-size: 12px; color: #94a3b8; margin-top: 8px;">Please sign in and set your personal password under Settings.</div>
-             </div>
-             <p>Use your portal to review leases, view invoices, dispatch maintenance, and track building communications.</p>`,
-            { text: 'Login to Propithub Portal', url: 'https://propithub.web.app/login' }
-          );
-
-          let eStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
-          let sStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
-          let sid: string | undefined;
-
-          if (uEmail) {
-            const eRes = await sendSendGridEmail(
-              uEmail,
-              welcomeSubject,
-              `Hello ${uName}, your Propithub account has been created. Login email: ${uEmail}, Temporary Password: ${uTempPw}. Login at https://propithub.web.app/login`,
-              welcomeHtml
-            );
-            eStatus = eRes.success ? 'delivered' : 'failed';
-          }
-
-          const uSms = `Propithub: Hello ${uName}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login using ${uEmail} and PIN: ${uTempPw}`;
-          if (uPhone) {
-            const sRes = await sendEventSms('SMS: Welcome message', uPhone, uSms);
-            sStatus = sRes.skipped ? 'skipped' : sRes.success ? 'delivered' : 'failed';
-            sid = sRes.sid;
-          }
-
-          await db.collection('users').doc(uid).update({ inviteSent: true });
-          // Scrub the password from the claim request now that the invite is out.
-          await db.collection('userClaimRequests').doc(uid).update({
-            tempPassword: admin.firestore.FieldValue.delete(),
+          const inv = await dispatchAccountInvite({
+            uid, name: uName, email: uEmail, phone: uPhone, role: uRole,
+            ownerName: uOwnerName, ownerId: ownerId || null, password: uTempPw,
           });
-
-          await logCommunication({
-            type: 'ACCOUNT_INVITE_DISPATCHED',
-            category: 'custom',
-            title: `Account Invite: ${uName} (${roleTitle})`,
-            body: uSms,
-            channels: ['email', 'sms'],
-            recipientId: uid,
-            recipientName: uName,
-            recipientRole: uRole as any,
-            recipientContact: { email: uEmail, phone: uPhone },
-            ownerId: ownerId || null,
-            deliveryStatus: { email: eStatus, sms: sStatus, inApp: 'delivered' },
-            smsSid: sid,
-          });
+          const sent = inv.emailStatus === 'delivered' || inv.smsStatus === 'delivered';
+          await db.collection('users').doc(uid).update({ inviteSent: sent });
+          if (sent) {
+            // Scrub the password from the claim request now that the invite is out.
+            await db.collection('userClaimRequests').doc(uid).update({ tempPassword: admin.firestore.FieldValue.delete() });
+          }
         }
       }
     } catch (err: any) {
@@ -1305,6 +1269,79 @@ async function resolveCallerRole(context: functions.https.CallableContext): Prom
 }
 
 /**
+ * ONE shared path for every "your account is ready" message: tenant onboarding, managers and maintenance staff.
+ * Sends the credentials email (checked against Bird's real status) + SMS, then writes the communication log.
+ */
+async function dispatchAccountInvite(p: {
+  uid: string; name: string; email: string; phone?: string; role: string;
+  ownerName?: string; ownerId?: string | null; password: string;
+}): Promise<{ emailStatus: 'delivered' | 'failed' | 'skipped'; smsStatus: 'delivered' | 'failed' | 'skipped'; emailError: string; birdStatus: string }> {
+  const roleNameMap: Record<string, string> = { tenant: 'Resident Tenant', manager: 'Property Manager', staff: 'Maintenance Technician' };
+  const roleTitle = roleNameMap[p.role] || p.role;
+  const esc = (v: string) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  const subject = `Welcome to Propithub — Your ${roleTitle} Account Credentials`;
+  const html = renderPropithubEmail(
+    subject,
+    `<p>Hello <strong>${esc(p.name)}</strong>,</p>
+     <p>Your <strong>${roleTitle}</strong> account has been created by <strong>${esc(p.ownerName || 'Property Management')}</strong>.</p>
+     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:18px;margin:20px 0;">
+       <div style="font-size:12px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;">Your Login Credentials</div>
+       <div style="font-size:14px;margin-bottom:6px;">Email: <strong>${esc(p.email)}</strong></div>
+       <div style="font-size:14px;margin-bottom:6px;">Temporary Password: <strong style="font-family:monospace;color:#2563eb;background:#eff6ff;padding:2px 6px;border-radius:4px;">${esc(p.password)}</strong></div>
+       <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Please sign in and change your password under Settings.</div>
+     </div>`,
+    { text: 'Login to Propithub', url: 'https://propithub.web.app/login' }
+  );
+  let emailStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
+  let emailError = '';
+  let birdStatus = '';
+  if (p.email) {
+    emailStatus = 'failed';
+    try {
+      const comms = await getPlatformCommsConfig();
+      const problem = birdKeyProblem(comms);
+      if (problem) {
+        emailError = problem;
+      } else {
+        const r = await sendSendGridEmail(p.email, subject, `Hello ${p.name}, your Propithub ${roleTitle} account is ready. Login: ${p.email} / Temporary password: ${p.password}. Sign in at https://propithub.web.app/login`, html);
+        if (r.success) {
+          emailStatus = 'delivered';
+          const key = getBirdApiKey(comms);
+          if (r.id && key) {
+            await new Promise((res) => setTimeout(res, 3000));
+            birdStatus = await birdEmailStatus(key, r.id);
+            if (['bounced', 'rejected', 'complained', 'canceled', 'partial_failure'].includes(birdStatus)) {
+              emailStatus = 'failed';
+              emailError = `Bird reports the email was ${birdStatus}`;
+            }
+          }
+        } else {
+          emailError = String((r as any).error || 'send failed');
+        }
+      }
+    } catch (e: any) { emailError = e?.message || 'send failed'; }
+  }
+  let smsStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
+  const phone = (p.phone || '').trim();
+  const smsText = `Propithub: Hello ${p.name}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login with ${p.email} and password ${p.password}`;
+  if (phone) {
+    try {
+      const sr = await sendTwilioSms(phone, smsText);
+      smsStatus = sr.skipped ? 'skipped' : sr.success ? 'delivered' : 'failed';
+    } catch { smsStatus = 'failed'; }
+  }
+  await logCommunication({
+    type: 'ACCOUNT_INVITE_DISPATCHED', category: 'custom', title: `Account Invite: ${p.name} (${roleTitle})`,
+    body: `Credentials invite for ${p.email}`, channels: ['email', 'sms'], recipientId: p.uid, recipientName: p.name,
+    recipientRole: p.role as any, recipientContact: { email: p.email, phone }, ownerId: p.ownerId || null,
+    deliveryStatus: { email: emailStatus, sms: smsStatus, inApp: 'delivered' },
+    errorMessage: emailError || undefined,
+  }).catch(() => {});
+  functions.logger.info(`[dispatchAccountInvite] ${p.role} ${p.email}: email=${emailStatus} sms=${smsStatus} ${emailError}`);
+  return { emailStatus, smsStatus, emailError, birdStatus };
+}
+
+/**
  * provisionTeamMember (Callable)
  * Creates (or safely re-uses) the login for a manager / maintenance staff member using the Admin SDK,
  * so it works even if an earlier attempt left a half-created account behind. The credentials email + SMS
@@ -1367,57 +1404,9 @@ export const provisionTeamMember = functions.https.onCall(async (data, context) 
     uid, role, ownerId, requestedAt: new Date().toISOString(), processed: true,
   });
 
-  // Send the credentials email + SMS RIGHT HERE (no dependency on any other trigger).
-  const roleTitle = role === 'manager' ? 'Property Manager' : 'Maintenance Technician';
-  const subject = `Welcome to Propithub — Your ${roleTitle} Account Credentials`;
-  const esc = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
-  const html = renderPropithubEmail(
-    subject,
-    `<p>Hello <strong>${esc(name)}</strong>,</p>
-     <p>You have been added as <strong>${roleTitle}</strong> by <strong>${esc(ownerName)}</strong> on Propithub.</p>
-     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:18px;margin:20px 0;">
-       <div style="font-size:12px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;">Your Login Credentials</div>
-       <div style="font-size:14px;margin-bottom:6px;">Email: <strong>${esc(email)}</strong></div>
-       <div style="font-size:14px;margin-bottom:6px;">Temporary Password: <strong style="font-family:monospace;color:#2563eb;background:#eff6ff;padding:2px 6px;border-radius:4px;">${esc(password)}</strong></div>
-       <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Please sign in and change your password under Settings.</div>
-     </div>`,
-    { text: 'Login to Propithub', url: 'https://propithub.web.app/login' }
-  );
-  let emailStatus: 'delivered' | 'failed' = 'failed';
-  let emailError = '';
-  let birdStatus = '';
-  try {
-    const r = await sendSendGridEmail(email, subject, `Hello ${name}, you were added as ${roleTitle} on Propithub. Login: ${email} / Temporary password: ${password}. Sign in at https://propithub.web.app/login`, html);
-    emailStatus = r.success ? 'delivered' : 'failed';
-    if (!r.success) emailError = String((r as any).error || 'send failed');
-    if (r.success && r.id) {
-      // Ask Bird what it actually did with the message a few seconds later.
-      const key = getBirdApiKey(await getPlatformCommsConfig());
-      if (key) {
-        await new Promise((res) => setTimeout(res, 4000));
-        birdStatus = await birdEmailStatus(key, r.id);
-        if (['bounced', 'rejected', 'complained', 'canceled', 'partial_failure'].includes(birdStatus)) {
-          emailStatus = 'failed';
-          emailError = `Bird reports the email was ${birdStatus}`;
-        }
-      }
-    }
-  } catch (e: any) { emailError = e?.message || 'send failed'; }
-  let smsStatus: 'delivered' | 'failed' | 'skipped' = 'skipped';
-  if (phone) {
-    try {
-      const sr = await sendTwilioSms(phone, `Propithub: Hello ${name}, your ${roleTitle} account is ready. Login at https://propithub.web.app/login with ${email} and password ${password}`);
-      smsStatus = sr.skipped ? 'skipped' : sr.success ? 'delivered' : 'failed';
-    } catch { smsStatus = 'failed'; }
-  }
-  await db.collection('users').doc(uid).set({ inviteSent: emailStatus === 'delivered' }, { merge: true });
-  await logCommunication({
-    type: 'ACCOUNT_INVITE_DISPATCHED', category: 'custom', title: `Account Invite: ${name} (${roleTitle})`,
-    body: `Credentials invite for ${email}`, channels: ['email', 'sms'], recipientId: uid, recipientName: name,
-    recipientRole: role as any, recipientContact: { email, phone }, ownerId,
-    deliveryStatus: { email: emailStatus, sms: smsStatus, inApp: 'delivered' },
-  }).catch(() => {});
-  functions.logger.info(`[provisionTeamMember] ${role} ${email}: email=${emailStatus} sms=${smsStatus} ${emailError}`);
+  const inv = await dispatchAccountInvite({ uid, name, email, phone, role, ownerName, ownerId, password });
+  await db.collection('users').doc(uid).set({ inviteSent: inv.emailStatus === 'delivered' || inv.smsStatus === 'delivered' }, { merge: true });
+  const { emailStatus, smsStatus, emailError, birdStatus } = inv;
   return { success: true, uid, emailStatus, smsStatus, emailError, birdStatus };
 });
 
@@ -1554,6 +1543,8 @@ export const onPaymentOwnerActivity = functions.firestore
     const after = change.after.data() || {};
     const before = change.before.exists ? change.before.data() || {} : null;
     if (!after.ownerId || after.direction === 'outflow') return;
+    // Offline deposits recorded while sending an invitation are not a tenant action; stay silent.
+    if (after.suppressNotify) return;
     const id = context.params.paymentId;
     const who = after.tenant || after.tenantName || 'Your tenant';
     const unit = after.unit || 'the unit';
