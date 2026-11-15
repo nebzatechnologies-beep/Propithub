@@ -7224,3 +7224,52 @@ input[type="file"]::-webkit-file-upload-button:hover,
   border-color: var(--teal);
   box-shadow: 0 10px 30px rgba(16, 185, 129, 0.2);
 }
+
+/* ===== Mobile landing simplification (phones only; desktop/tablet unchanged) ===== */
+@media (max-width: 640px) {
+  .shero {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 28px 20px 24px;
+  }
+  .shero > div:first-child {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+  .shero h1 {
+    font-size: 34px;
+    margin: 6px 0 12px;
+  }
+  .shero p {
+    font-size: 16px;
+    margin: 0 0 4px;
+  }
+  /* Primary actions first, search second */
+  .shero .hero-cta {
+    order: 2;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    margin: 18px 0 6px;
+  }
+  .shero .hero-cta .btn {
+    width: 100%;
+    justify-content: center;
+    min-height: 52px;
+  }
+  .shero .hsearch {
+    order: 3;
+    margin: 16px 0 0;
+  }
+  /* Less clutter above the fold */
+  .shero .chips-row,
+  .shero .hart {
+    display: none;
+  }
+  /* Country marquee adds length without helping a phone visitor decide */
+  #sec-world {
+    display: none;
+  }
+}
