@@ -7273,3 +7273,23 @@ input[type="file"]::-webkit-file-upload-button:hover,
     display: none;
   }
 }
+
+/* ===== Mobile landing, pass 2: shorter page on phones ===== */
+@media (max-width: 640px) {
+  .shero h1 {
+    font-size: 30px;
+    line-height: 1.12;
+  }
+  /* Features overlap the landlord and roles sections; keep the page focused */
+  #sec-features {
+    display: none;
+  }
+  /* Decorative dashboard mock-up under the landlord pitch */
+  #sec-landlords .mock {
+    display: none;
+  }
+  /* Three featured homes is plenty; "See all" button covers the rest */
+  #sec-homes .lrow > :nth-child(n + 4) {
+    display: none;
+  }
+}
