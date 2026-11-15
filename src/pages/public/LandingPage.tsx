@@ -767,7 +767,7 @@ export const LandingPage: React.FC = () => {
                 {cfg?.ctaText || 'List and manage your property'}
               </Link>
               <Link to="/homes" className="btn secondary lg">
-                Browse {allListings.length} homes →
+                {allListings.length > 0 ? `Browse ${allListings.length} homes →` : 'Browse homes →'}
               </Link>
             </div>
           </div>
@@ -805,7 +805,7 @@ export const LandingPage: React.FC = () => {
           <div className="sechead">
             <h2>{cfg?.listingsTitle || 'Featured homes around the world'}</h2>
             <button className="btn secondary sm" onClick={() => navigate('/homes')}>
-              See all {allListings.length} homes →
+              {allListings.length > 0 ? `See all ${allListings.length} homes →` : 'See all homes →'}
             </button>
           </div>
 
