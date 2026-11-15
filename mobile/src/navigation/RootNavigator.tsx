@@ -50,6 +50,7 @@ import { ManagerOperationsScreen } from '../screens/ManagerOperationsScreen';
 import { ManagerRepairDispatchScreen } from '../screens/ManagerRepairDispatchScreen';
 import { ManagerPropertiesScreen } from '../screens/ManagerPropertiesScreen';
 import { ManagerLeaseDocumentsScreen } from '../screens/ManagerLeaseDocumentsScreen';
+import { ManagerPaymentApprovalsScreen } from '../screens/ManagerPaymentApprovalsScreen';
 
 // Staff Screens
 import { StaffJobQueueScreen } from '../screens/StaffJobQueueScreen';
@@ -112,6 +113,7 @@ const ROLE_TABS: Record<UserRole, TabConfig[]> = {
     { key: 'manager_properties',      label: 'Properties', icon: 'grid',      iconLib: 'feather' },
     { key: 'manager_lease_documents', label: 'Leasing',    icon: 'file-text', iconLib: 'feather' },
     { key: 'manager_repair_dispatch', label: 'Repairs',    icon: 'tool',      iconLib: 'feather' },
+    { key: 'manager_payments',        label: 'Approvals',  icon: 'check-circle', iconLib: 'feather' },
   ],
   staff: [
     { key: 'staff_job_queue',  label: 'Jobs',     icon: 'list',        iconLib: 'feather' },
@@ -589,6 +591,13 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'manager_properties':
         return (
           <ManagerPropertiesScreen
+            onProfilePress={() => setShowMoreMenu(true)}
+            onNavigate={navigate}
+          />
+        );
+      case 'manager_payments':
+        return (
+          <ManagerPaymentApprovalsScreen
             onProfilePress={() => setShowMoreMenu(true)}
             onNavigate={navigate}
           />

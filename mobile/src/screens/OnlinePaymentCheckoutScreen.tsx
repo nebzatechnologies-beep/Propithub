@@ -185,12 +185,12 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
 
     // 1. Easebuzz Live Production Gateway
     if (paymentRail === 'easebuzz' || paymentRail === 'netbanking') {
-      const ebKey = ownerMethods.easebuzz?.merchantKey || state.platformGateways.easebuzz?.merchantKey || '';
-      const ebSalt = ownerMethods.easebuzz?.salt || state.platformGateways.easebuzz?.salt || '';
+      const ebKey = ownerMethods.easebuzz?.merchantKey || '';
+      const ebSalt = ownerMethods.easebuzz?.salt || '';
       if (!ebKey || ebKey === 'LIVE_EBZ_PROD') {
         // If netbanking requested and Easebuzz not configured, try Razorpay
-        if (paymentRail === 'netbanking' && (ownerMethods.razorpay?.keyId || state.platformGateways.razorpay?.keyId)) {
-          const rzpKey = ownerMethods.razorpay?.keyId || state.platformGateways.razorpay?.keyId || '';
+        if (paymentRail === 'netbanking' && ownerMethods.razorpay?.keyId) {
+          const rzpKey = ownerMethods.razorpay?.keyId || '';
           await launchRazorpayPayment({
             keyId: rzpKey,
             amount: payAmount,
@@ -245,7 +245,7 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
 
     // 3. Razorpay Official Gateway
     if (paymentRail === 'razorpay') {
-      const rzpKey = ownerMethods.razorpay?.keyId || state.platformGateways.razorpay?.keyId || '';
+      const rzpKey = ownerMethods.razorpay?.keyId || '';
       if (!rzpKey || rzpKey === 'rzp_live_sample' || rzpKey === 'rzp_test_sample') {
         setIsProcessing(false);
         Alert.alert(
@@ -278,10 +278,10 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
 
     // 4. Stripe 256-Bit SSL Rail or Card
     if (paymentRail === 'stripe' || paymentRail === 'card') {
-      const stripePub = ownerMethods.stripe?.pubKey || (ownerMethods.stripe as any)?.publishableKey || state.platformGateways.stripe?.pubKey || '';
+      const stripePub = ownerMethods.stripe?.pubKey || (ownerMethods.stripe as any)?.publishableKey || '';
       if (!stripePub || stripePub === 'pk_live_sample' || stripePub === 'pk_test_sample') {
         // Fallback to Razorpay Card if Razorpay is configured
-        const rzpKey = ownerMethods.razorpay?.keyId || state.platformGateways.razorpay?.keyId || '';
+        const rzpKey = ownerMethods.razorpay?.keyId || '';
         if (rzpKey && rzpKey !== 'rzp_live_sample' && rzpKey !== 'rzp_test_sample') {
           await launchRazorpayPayment({
             keyId: rzpKey,
@@ -334,7 +334,7 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
 
     // 5. PayPal Global Checkout
     if (paymentRail === 'paypal') {
-      const ppClientId = ownerMethods.paypal?.clientId || state.platformGateways.paypal?.clientId || '';
+      const ppClientId = ownerMethods.paypal?.clientId || '';
       if (!ppClientId || ppClientId === 'paypal_live_sample') {
         setIsProcessing(false);
         Alert.alert(
@@ -376,7 +376,7 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
       }
 
       // If Razorpay available, launch Razorpay UPI
-      const rzpKey = ownerMethods.razorpay?.keyId || state.platformGateways.razorpay?.keyId || '';
+      const rzpKey = ownerMethods.razorpay?.keyId || '';
       if (rzpKey && rzpKey !== 'rzp_live_sample' && rzpKey !== 'rzp_test_sample') {
         await launchRazorpayPayment({
           keyId: rzpKey,
