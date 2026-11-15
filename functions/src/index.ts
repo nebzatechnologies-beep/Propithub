@@ -169,6 +169,25 @@ async function getPlatformCommsConfig() {
  * - Admin <-> Owner (Owner paying platform plan/subscription fees): Always uses Platform Gateway directly.
  * - Tenant <-> Owner (Tenant paying rent/deposits to Landlord): Prioritizes Landlord credentials if valid and configured, falling back to Platform Gateway.
  */
+/**
+ * Subscription end date to store when a platform invoice is confirmed paid by a gateway webhook.
+ * The plan screen already writes the correct end date (30 days monthly / 365 annual) when the owner buys;
+ * the webhook must never overwrite that with a longer period. It only fills in a date when none is active.
+ */
+async function computePlanEndIso(ownerId: string, invoice: any): Promise<string> {
+  const now = Date.now();
+  try {
+    const ownerSnap = await db.collection('owners').doc(ownerId).get();
+    const existing = ownerSnap.data()?.subscriptionEndsAt;
+    const existingMs = existing
+      ? (typeof existing.toMillis === 'function' ? existing.toMillis() : new Date(existing).getTime())
+      : 0;
+    if (existingMs && existingMs > now) return new Date(existingMs).toISOString();
+  } catch (_) {}
+  const annual = String(invoice?.billingCycle || '').toLowerCase() === 'annual';
+  return new Date(now + (annual ? 365 : 30) * 86400000).toISOString();
+}
+
 async function resolveGatewayConfig(
   gateway: 'stripe' | 'razorpay' | 'paypal' | 'easebuzz',
   ownerId?: string,
@@ -4641,6 +4660,33 @@ export const verifyRazorpayPayment = functions.https.onCall(async (data, context
     throw new functions.https.HttpsError('permission-denied', 'Cryptographic payment signature mismatch.');
   }
 
+  // The signature only proves this order/payment pair is genuine. Also confirm the order was created for THIS
+  // payment record and was actually paid, so a cheap real payment cannot be replayed against a bigger invoice.
+  if (paymentRecordId) {
+    const verifyKeyId = rzpCfg?.keyId || process.env.RAZORPAY_KEY_ID;
+    let rzpOrder: any = null;
+    try {
+      rzpOrder = await new Razorpay({ key_id: verifyKeyId, key_secret: keySecret }).orders.fetch(orderId);
+    } catch (fetchErr: any) {
+      functions.logger.error('Razorpay order fetch failed during verification:', fetchErr?.message || fetchErr);
+      throw new functions.https.HttpsError('unavailable', 'Could not confirm the payment with Razorpay. Please retry.');
+    }
+    const receiptOk = String(rzpOrder?.receipt || '') === String(paymentRecordId).substring(0, 40);
+    const paidOk = rzpOrder?.status === 'paid' || Number(rzpOrder?.amount_paid || 0) >= Number(rzpOrder?.amount || 0);
+    if (!receiptOk || !paidOk) {
+      functions.logger.warn(`Razorpay order ${orderId} does not match record ${paymentRecordId} (receiptOk=${receiptOk}, paidOk=${paidOk})`);
+      throw new functions.https.HttpsError('permission-denied', 'This payment does not match the invoice being settled.');
+    }
+    const recDoc = await db.collection('payments').doc(paymentRecordId).get();
+    const recAmount = Number(recDoc.data()?.amount || 0);
+    const recCur = String(recDoc.data()?.currency || '').toUpperCase();
+    if (recDoc.exists && recAmount > 0 && recCur && recCur === String(rzpOrder?.currency || '').toUpperCase()
+        && Number(rzpOrder?.amount || 0) < Math.round(recAmount * 100)) {
+      functions.logger.warn(`Razorpay order ${orderId} amount ${rzpOrder?.amount} is below record ${paymentRecordId} amount ${recAmount}`);
+      throw new functions.https.HttpsError('permission-denied', 'The amount paid is lower than the amount due.');
+    }
+  }
+
   // Update payment record in Firestore to 'paid'
   if (paymentRecordId) {
     const payRef = db.collection('payments').doc(paymentRecordId);
@@ -5160,7 +5206,7 @@ export const stripeWebhook = functions.https.onRequest(async (req, res) => {
       const pInvData = pInvDoc.data();
       const resolvedOwnerId = ownerId || pInvData?.ownerId;
       if (resolvedOwnerId) {
-        const oneYearFromNow = new Date(Date.now() + 365 * 86400000).toISOString();
+        const oneYearFromNow = await computePlanEndIso(resolvedOwnerId, pInvData);
         await db.collection('owners').doc(resolvedOwnerId).set({
           planStatus: 'active',
           subscriptionEndsAt: oneYearFromNow,
@@ -5213,7 +5259,9 @@ export const razorpayWebhook = functions.https.onRequest(async (req, res) => {
     return;
   }
 
-  const bodyString = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  // Razorpay signs the exact bytes it sent, so verify against the raw body rather than a re-serialised copy.
+  const rawBody: any = (req as any).rawBody;
+  const bodyString = rawBody ? rawBody.toString('utf8') : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
   const expectedSig = crypto
     .createHmac('sha256', webhookSecret)
     .update(bodyString)
@@ -5269,7 +5317,7 @@ export const razorpayWebhook = functions.https.onRequest(async (req, res) => {
         const pInvData = pInvDoc.data();
         const ownerId = pInvData?.ownerId || payment?.notes?.ownerId;
         if (ownerId) {
-          const oneYearFromNow = new Date(Date.now() + 365 * 86400000).toISOString();
+          const oneYearFromNow = await computePlanEndIso(ownerId, pInvData);
           await db.collection('owners').doc(ownerId).set({
             planStatus: 'active',
             subscriptionEndsAt: oneYearFromNow,
@@ -5385,7 +5433,7 @@ export const easebuzzWebhook = functions.https.onRequest(async (req, res) => {
         const pInvData = pInvDoc.data();
         const ownerId = pInvData?.ownerId;
         if (ownerId) {
-          const oneYearFromNow = new Date(Date.now() + 365 * 86400000).toISOString();
+          const oneYearFromNow = await computePlanEndIso(ownerId, pInvData);
           await db.collection('owners').doc(ownerId).set({
             planStatus: 'active',
             subscriptionEndsAt: oneYearFromNow,
