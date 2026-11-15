@@ -5481,6 +5481,18 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return;
     }
 
+    // Dual confirmation: whoever made the claim can never approve it themselves, and a tenant can never approve a
+    // payment that a tenant recorded. Owners and managers approve tenant claims; tenants confirm owner claims.
+    const actorUid = auth.currentUser?.uid;
+    if (actorUid) {
+      const actorRole = String((state.users || []).find((u) => u.id === actorUid)?.role || '').toLowerCase();
+      const isClaimant = claim.claimedBy === actorUid || (claim.claimedByRole === 'tenant' && claim.tenantId === actorUid);
+      if (isClaimant || (claim.claimedByRole === 'tenant' && actorRole === 'tenant')) {
+        showToast('This must be approved by the other party, not by the person who recorded it.');
+        return;
+      }
+    }
+
     const now = new Date().toISOString();
     const currentUserId = auth.currentUser?.uid || (claim.claimedByRole === 'tenant' ? claim.ownerId : claim.tenantId) || '';
     const currentUser = (state.users || []).find(

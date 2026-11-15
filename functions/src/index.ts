@@ -233,9 +233,10 @@ async function resolveGatewayConfig(
     }
   }
 
-  // Fallback to Platform Gateway
-  const platform = await getPlatformGatewaysConfig();
-  return platform?.[gateway] || {};
+  // Rent and deposits are paid to the property owner's own account. Never fall back to the platform's
+  // gateway here, or a tenant's money would land with the platform instead of the owner. An empty config makes
+  // the caller reject the request ("not configured") and the tenant pays by cash, bank or UPI instead.
+  return {};
 }
 
 const NOTIFICATION_RULE_ALIASES: Record<string, string[]> = {

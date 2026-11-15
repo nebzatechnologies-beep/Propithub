@@ -60,6 +60,7 @@ const ReviewsDisputesPage = lazyNamed(() => import('./pages/tenant/ReviewsDisput
 const ManagerDashboardPage = lazyNamed(() => import('./pages/manager/DashboardPage'), 'ManagerDashboardPage');
 const ManagedPropertiesPage = lazyNamed(() => import('./pages/manager/ManagedPropertiesPage'), 'ManagedPropertiesPage');
 const LeaseDocumentsPage = lazyNamed(() => import('./pages/manager/LeaseDocumentsPage'), 'LeaseDocumentsPage');
+const ManagerPaymentApprovalsPage = lazyNamed(() => import('./pages/manager/PaymentApprovalsPage'), 'ManagerPaymentApprovalsPage');
 const MaintenanceDispatchPage = lazyNamed(() => import('./pages/manager/MaintenanceDispatchPage'), 'MaintenanceDispatchPage');
 
 // Staff Pages
@@ -154,12 +155,13 @@ export const App: React.FC = () => {
                   <Route path="settings" element={<AccountSettingsPage />} />
                 </Route>
 
-                {/* Property Manager Workspace (Zero Financial Access) */}
+                {/* Property Manager Workspace (approves tenant-recorded offline payments; no gateway or bank settings) */}
                 <Route path="/manager" element={<ProtectedRoute allowedRoles={['manager']} />}>
                   <Route index element={<Navigate to="/manager/dashboard" replace />} />
                   <Route path="dashboard" element={<ManagerDashboardPage />} />
                   <Route path="properties" element={<ManagedPropertiesPage />} />
                   <Route path="leasing" element={<LeaseDocumentsPage />} />
+                  <Route path="payments" element={<ManagerPaymentApprovalsPage />} />
                   <Route path="maintenance" element={<MaintenanceDispatchPage />} />
                   <Route path="disputes" element={<Navigate to="/manager/dashboard" replace />} />
                   <Route path="settings" element={<AccountSettingsPage />} />
