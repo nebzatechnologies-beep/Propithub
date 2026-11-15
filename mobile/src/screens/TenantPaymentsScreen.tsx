@@ -1140,35 +1140,24 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
     const m = ownerMethods;
     const list: Array<{ key: string; label: string; icon: string; subtitle: string }> = [];
 
-    // 0. Easebuzz — owner key OR platform key
-    const ebOwner = m.easebuzz?.enabled !== false && m.easebuzz?.merchantKey;
-    const ebPlatform = state.platformGateways.easebuzz?.enabled !== false && state.platformGateways.easebuzz?.merchantKey;
-    if (ebOwner || ebPlatform || m.easebuzz?.enabled) {
+    // Only the methods the property owner has enabled (and, for gateways, fully configured) are offered.
+    // There is no fallback to the platform's gateways: rent is paid to the owner.
+    if (m.easebuzz?.enabled === true && m.easebuzz?.merchantKey?.trim() && m.easebuzz?.salt?.trim()) {
       list.push({ key: 'easebuzz', label: 'Easebuzz', icon: '⚡', subtitle: 'UPI • Cards • Netbanking' });
     }
-
-    // 1. UPI Direct — show unless explicitly disabled (matches web: m.upi?.enabled !== false)
-    if (m.upi?.enabled !== false) {
+    if (m.upi?.enabled === true) {
       list.push({ key: 'upi', label: 'UPI / QR', icon: '📱', subtitle: m.upi?.upiId || 'GPay • PhonePe • QR' });
     }
-
-    // 2. Razorpay — needs explicit enable flag (or platform)
-    if (m.razorpay?.enabled !== false && (m.razorpay?.enabled || state.platformGateways.razorpay?.enabled)) {
+    if (m.razorpay?.enabled === true && m.razorpay?.keyId?.trim()) {
       list.push({ key: 'razorpay', label: 'Razorpay', icon: '⚡', subtitle: 'Cards • Netbanking • UPI' });
     }
-
-    // 3. Stripe — needs explicit enable flag (or platform)
-    if (m.stripe?.enabled !== false && (m.stripe?.enabled || state.platformGateways.stripe?.enabled)) {
+    if (m.stripe?.enabled === true && ((m.stripe as any)?.pubKey?.trim() || (m.stripe as any)?.publishableKey?.trim())) {
       list.push({ key: 'stripe', label: 'Stripe', icon: '💳', subtitle: 'Visa • Mastercard • Amex' });
     }
-
-    // 4. PayPal — needs explicit enable flag (or platform)
-    if (m.paypal?.enabled !== false && (m.paypal?.enabled || state.platformGateways.paypal?.enabled)) {
+    if (m.paypal?.enabled === true && (m.paypal?.clientId?.trim() || m.paypal?.email?.trim())) {
       list.push({ key: 'paypal', label: 'PayPal', icon: '🅿️', subtitle: m.paypal?.email || 'International' });
     }
-
-    // 5. Bank Wire — show unless explicitly disabled (matches web: m.bank?.enabled !== false)
-    if (m.bank?.enabled !== false) {
+    if (m.bank?.enabled === true) {
       list.push({
         key: 'bank',
         label: 'Bank Wire',
@@ -1178,14 +1167,12 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
           : 'NEFT · IMPS · RTGS',
       });
     }
-
-    // 6. Cash — show unless explicitly disabled (matches web: m.cash?.enabled !== false)
-    if (m.cash?.enabled !== false) {
+    if (m.cash?.enabled === true) {
       list.push({ key: 'cash', label: 'Cash', icon: '💵', subtitle: 'In-person handover' });
     }
 
     return list;
-  }, [ownerMethods, state.platformGateways]);
+  }, [ownerMethods]);
 
 
   // Auto-select first available gateway when modal opens or gateways change
@@ -1560,6 +1547,15 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
 
     // ── Route by Gateway / Method ──────────────────────────────────────────
 
+    // The owner decides how rent is paid: refuse a method they have not enabled.
+    if (!availableGateways.some((g) => g.key === payMethod)) {
+      Alert.alert(
+        'No payment method available',
+        'Your landlord has not enabled this way of paying yet. Please contact your landlord or property manager.'
+      );
+      return;
+    }
+
     // 1. Offline Manual: Bank Wire
     if (payMethod === 'bank') {
       await finalizeOfflinePayment('NEFT/IMPS');
@@ -1580,7 +1576,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
 
     // 4. Stripe Live Checkout (Real Gateway)
     if (payMethod === 'stripe') {
-      const stripePub = ownerMethods.stripe?.pubKey || (ownerMethods.stripe as any)?.publishableKey || state.platformGateways.stripe?.pubKey || '';
+      const stripePub = ownerMethods.stripe?.pubKey || (ownerMethods.stripe as any)?.publishableKey || '';
       if (!stripePub || stripePub === 'pk_test_sample' || stripePub === 'pk_live_sample') {
         setIsSubmittingPayment(false);
         Alert.alert(
@@ -1611,7 +1607,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
 
     // 6. Razorpay Live Checkout (Real Gateway)
     if (payMethod === 'razorpay') {
-      const rzpKey = ownerMethods.razorpay?.keyId || state.platformGateways.razorpay?.keyId || '';
+      const rzpKey = ownerMethods.razorpay?.keyId || '';
       if (!rzpKey || rzpKey === 'rzp_live_sample' || rzpKey === 'rzp_test_sample') {
         setIsSubmittingPayment(false);
         Alert.alert(
@@ -1644,8 +1640,8 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
 
     // 7. Easebuzz Live Checkout (Real Gateway)
     if (payMethod === 'easebuzz') {
-      const ebKey = ownerMethods.easebuzz?.merchantKey || state.platformGateways.easebuzz?.merchantKey || '';
-      const ebSalt = ownerMethods.easebuzz?.salt || state.platformGateways.easebuzz?.salt || '';
+      const ebKey = ownerMethods.easebuzz?.merchantKey || '';
+      const ebSalt = ownerMethods.easebuzz?.salt || '';
       if (!ebKey || ebKey === 'LIVE_EBZ_PROD') {
         setIsSubmittingPayment(false);
         Alert.alert(
@@ -1679,7 +1675,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
 
     // 8. PayPal Live Checkout (Real Gateway)
     if (payMethod === 'paypal') {
-      const ppClientId = ownerMethods.paypal?.clientId || state.platformGateways.paypal?.clientId || '';
+      const ppClientId = ownerMethods.paypal?.clientId || '';
       if (!ppClientId || ppClientId === 'paypal_live_sample') {
         setIsSubmittingPayment(false);
         Alert.alert(
@@ -2931,6 +2927,12 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                       overflow: 'hidden',
                     }}
                   >
+                    {availableGateways.length === 0 && (
+                      <Text style={{ padding: 12, color: colors.inkSoft, fontSize: 13 }}>
+                        Your landlord has not enabled any payment method for this property yet. Please contact your
+                        landlord or property manager to arrange payment.
+                      </Text>
+                    )}
                     {availableGateways.map((gw) => {
                       const isSelected = payMethod === gw.key;
                       return (

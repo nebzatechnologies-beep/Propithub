@@ -3359,6 +3359,17 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
   const confirmCashClaim = (claimOrMoveOutId: string) => {
     const now = new Date().toISOString();
     const targetClaim = (rawState.cashClaims || []).find((c) => c.id === claimOrMoveOutId);
+
+    // Dual confirmation: whoever made the claim can never approve it themselves, and a tenant can never approve a
+    // payment that a tenant recorded. Owners and managers approve tenant claims; tenants confirm owner claims.
+    if (targetClaim && user?.id) {
+      const isClaimant =
+        targetClaim.claimedBy === user.id || (targetClaim.claimedByRole === 'tenant' && targetClaim.tenantId === user.id);
+      if (isClaimant || (targetClaim.claimedByRole === 'tenant' && role === 'tenant')) {
+        Alert.alert('Not allowed', 'This must be approved by the other party, not by the person who recorded it.');
+        return;
+      }
+    }
     let updatedCashClaims = rawState.cashClaims || [];
     let updatedPayments = rawState.payments;
     let updatedInvoices = rawState.invoices;
@@ -3376,7 +3387,8 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         ...targetClaim,
         status: 'confirmed',
         confirmedAt: now,
-        confirmedByName: 'Property Owner',
+        confirmedBy: user?.id,
+        confirmedByName: role === 'manager' ? 'Property Manager' : 'Property Owner',
       };
       confirmedClaimToPersist = confirmedClaim;
       updatedCashClaims = updatedCashClaims.map((c) => (c.id === claimOrMoveOutId ? confirmedClaim : c));
