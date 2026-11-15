@@ -20,6 +20,7 @@ import {
   LogOut,
   LayoutDashboard,
   FileText,
+  Receipt,
   CreditCard,
   Layers,
   Settings,
@@ -322,6 +323,9 @@ export const WorkspaceLayout: React.FC = () => {
               </NavLink>
               <NavLink to="/manager/leasing" data-tour="manager-nav-leasing" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <FileText size={16} /> Leases
+              </NavLink>
+              <NavLink to="/manager/payments" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                <Receipt size={16} /> Payment Approvals
               </NavLink>
               <NavLink to="/manager/maintenance" data-tour="manager-nav-maintenance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Wrench size={16} /> Repair Dispatch
