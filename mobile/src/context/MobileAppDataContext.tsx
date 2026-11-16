@@ -213,6 +213,7 @@ interface MobileAppDataContextType {
   saveAgreementTemplate: (template: MobileAgreementTemplate) => Promise<void>;
   deleteAgreementTemplate: (templateId: string) => Promise<void>;
   deleteAgreement: (agreementId: string) => Promise<void>;
+  deleteTenancyRequest: (requestId: string) => Promise<void>;
   addAgreement: (agreement: MobileAgreement) => void;
   updateAgreement: (agreementId: string, updates: Partial<MobileAgreement>) => void;
   saveInvoice: (invoice: MobileInvoice) => void;
@@ -2112,6 +2113,16 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     setState((prev) => ({
       ...prev,
       agreements: prev.agreements.filter((a) => a.id !== agreementId),
+    }));
+  };
+
+  const deleteTenancyRequest = async (requestId: string) => {
+    if (isFirebaseConfigured) {
+      deleteDoc(doc(db, 'tenancyRequests', requestId)).catch(console.warn);
+    }
+    setState((prev) => ({
+      ...prev,
+      tenancyRequests: (prev.tenancyRequests || []).filter((r) => r.id !== requestId),
     }));
   };
 
@@ -6025,6 +6036,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
         saveAgreementTemplate,
         deleteAgreementTemplate,
         deleteAgreement,
+        deleteTenancyRequest,
         addAgreement: saveAgreement,
         updateAgreement,
         saveInvoice,
