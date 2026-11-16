@@ -1,0 +1,60 @@
+name: Build Android app (EAS)
+
+# Builds the signed Android App Bundle (.aab) for Google Play on Expo's servers.
+# Run it by hand: GitHub > Actions > "Build Android app (EAS)" > Run workflow.
+# Needs one repository secret, EXPO_TOKEN (an Expo access token from the
+# nebzas-team account). The finished build appears at
+# https://expo.dev/accounts/nebzas-team/projects/propithub-mobile/builds
+# and its download link is printed at the end of this job's log.
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'EAS build profile'
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - preview
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eas-android-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Check Expo token
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Add the EXPO_TOKEN repository secret first (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build on EAS
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_NO_VCS: '0'
+        run: npx --yes eas-cli@latest build --platform android --profile "${{ inputs.profile }}" --non-interactive --wait
