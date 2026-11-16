@@ -84,6 +84,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
     addAgreement,
     saveAgreement,
     deleteAgreement,
+    deleteTenancyRequest,
     saveAgreementTemplate,
     deleteAgreementTemplate,
     updateTenancyRequest,
@@ -829,6 +830,52 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               showToast('Lease draft deleted', 'success');
             } catch (err: any) {
               showAlert({ title: 'Error', message: err?.message || 'Failed to delete draft', type: 'error' });
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Leases that have not started yet can be deleted by the owner (frees the unit and clears the invitation).
+  // Mirrors the web Leasing page.
+  const canDeletePendingLease = (a: MobileAgreement) =>
+    ['awaiting_tenant_signature', 'awaiting_tenant_upload', 'pending_approval', 'pending_deposit', 'pending_countersign', 'rejected'].includes(
+      a.status as string
+    ) ||
+    (a.status === 'terminated' && !(a as any).counterSignedAt && (a as any).depositStatus !== 'paid');
+
+  const handleDeletePendingLease = (a: MobileAgreement) => {
+    Alert.alert(
+      'Delete pending lease',
+      `Delete this pending lease for ${a.tenant} (Unit ${a.unit})? The unit becomes vacant again and the invitation is removed. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              (state.units || [])
+                .filter(
+                  (u) =>
+                    u.unitNumber === a.unit &&
+                    (!a.propertyId || !(u as any).propertyId || (u as any).propertyId === a.propertyId) &&
+                    u.status === 'reserved'
+                )
+                .forEach((u) => saveUnit({ ...u, status: 'vacant' as any, tenant: null as any, currentTenantId: null as any }));
+              for (const r of state.tenancyRequests || []) {
+                const sameEmail =
+                  !!(r as any).tenantEmail &&
+                  (r as any).tenantEmail.toLowerCase() === ((a as any).tenantEmail || '').toLowerCase();
+                if ((r.unitNumber || (r as any).unit) === a.unit && (r.tenantId === a.tenantId || sameEmail)) {
+                  await deleteTenancyRequest(r.id);
+                }
+              }
+              await deleteAgreement(a.id);
+              showToast(`Pending lease for Unit ${a.unit} deleted`, 'success');
+            } catch (err: any) {
+              showAlert({ title: 'Error', message: err?.message || 'Failed to delete pending lease', type: 'error' });
             }
           },
         },
@@ -2025,6 +2072,17 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                           >
                             <Feather name="calendar" size={13} color="#2563EB" />
                             <Text style={styles.renewalActionText}>Renew</Text>
+                          </TouchableOpacity>
+                        )}
+
+                        {canDeletePendingLease(ag) && (
+                          <TouchableOpacity
+                            style={styles.noticeActionBtn}
+                            onPress={() => handleDeletePendingLease(ag)}
+                            activeOpacity={0.8}
+                          >
+                            <Feather name="trash-2" size={13} color="#DC2626" />
+                            <Text style={styles.noticeActionText}>Delete</Text>
                           </TouchableOpacity>
                         )}
 
