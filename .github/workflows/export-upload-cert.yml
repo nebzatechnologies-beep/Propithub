@@ -1,0 +1,31 @@
+name: Export upload certificate from an AAB
+
+# Prints the PUBLIC signing certificate (PEM) and its fingerprints from a built .aab.
+# Used for Play Console "Request upload key reset". Contains no secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      aab_url:
+        description: 'URL of the .aab built by EAS'
+        required: true
+        type: string
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download AAB and extract the signing certificate
+        run: |
+          curl -fsSL "${{ inputs.aab_url }}" -o app.aab
+          mkdir x && cd x && unzip -q ../app.aab 'META-INF/*'
+          ls META-INF
+          SIG=$(ls META-INF/*.RSA META-INF/*.DSA META-INF/*.EC 2>/dev/null | head -1)
+          echo "signature block: $SIG"
+          openssl pkcs7 -inform DER -in "$SIG" -print_certs -out ../upload_certificate.pem
+          cd ..
+          echo "-----PEM-----"; cat upload_certificate.pem; echo "-----END PEM-----"
+          keytool -printcert -file upload_certificate.pem | grep -E "Owner|SHA1|SHA256|Valid"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upload_certificate
+          path: upload_certificate.pem
