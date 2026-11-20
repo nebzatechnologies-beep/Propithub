@@ -33,7 +33,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
       },
-      "package": "com.propithub.app",
+      "package": "com.propithub.rentmanager",
       "versionCode": 1,
       "googleServicesFile": "./google-services.json",
       "permissions": [
