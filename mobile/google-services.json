@@ -43,6 +43,25 @@
           "other_platform_oauth_client": []
         }
       }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1070308411122:android:42e8eee4533229ad68b26b",
+        "android_client_info": {
+          "package_name": "com.propithub.rentalhub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAnLLleoEfLTcNVq2jrLUldjw5w9qT6g5A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
     }
   ],
   "configuration_version": "1"
