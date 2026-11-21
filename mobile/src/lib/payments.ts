@@ -51,6 +51,38 @@ export const loadRazorpayScript = (): Promise<boolean> => {
   });
 };
 
+export interface RazorpayLinkResult {
+  paid: boolean;
+  paymentId: string;
+  orderId: string;
+  status: string;
+}
+
+/**
+ * Asks the server (which asks Razorpay) whether the hosted payment link was really paid.
+ * Closing the checkout window is NOT proof of payment, so the app only reports success when this says paid.
+ */
+export const confirmRazorpayLinkPaid = async (
+  args: { paymentLinkId: string; paymentRecordId: string; ownerId?: string; role?: string },
+  attempts = 4
+): Promise<RazorpayLinkResult> => {
+  const fn = httpsCallable<any, any>(functions, 'getRazorpayPaymentLinkStatus');
+  let last: RazorpayLinkResult = { paid: false, paymentId: '', orderId: '', status: '' };
+  for (let i = 0; i < attempts; i++) {
+    const res = await fn(args);
+    const d = res.data || {};
+    last = {
+      paid: Boolean(d.paid),
+      paymentId: String(d.paymentId || ''),
+      orderId: String(d.orderId || ''),
+      status: String(d.status || ''),
+    };
+    if (last.paid || last.status === 'cancelled' || last.status === 'expired') break;
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 2000));
+  }
+  return last;
+};
+
 export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Promise<void> => {
   if (!params.keyId || params.keyId.trim() === '') {
     params.onError('Razorpay Key ID is not configured. Please save your Razorpay keys in settings.');
@@ -60,6 +92,9 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
   // 1. If Cloud Functions active, create server-side order first for signature verification
   let serverOrderId = '';
   let serverPaymentUrl = '';
+  let serverPaymentLinkId = '';
+  let serverLinkError = '';
+  let serverCallError = '';
   if (isFirebaseConfigured) {
     try {
       const createOrderFn = httpsCallable<any, any>(functions, 'createRazorpayOrder');
@@ -84,7 +119,10 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
       });
       serverOrderId = res.data?.orderId || '';
       serverPaymentUrl = res.data?.paymentUrl || '';
+      serverPaymentLinkId = res.data?.paymentLinkId || '';
+      serverLinkError = res.data?.paymentLinkError || '';
     } catch (err: any) {
+      serverCallError = err?.message || 'Could not reach the payment server.';
       if (err?.code === 'already-exists' || err?.message?.includes('already') || err?.message?.includes('subscribed')) {
         params.onError(err.message || 'You are already actively subscribed to this plan.');
         return;
@@ -160,6 +198,17 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
     return;
   }
 
+  // On the Android/iOS app a payment can only be trusted if the server created a Razorpay payment link,
+  // because that is the only thing we can later check with Razorpay. Never fall back to an unverifiable checkout.
+  if (Platform.OS !== 'web' && (!serverPaymentUrl || !serverPaymentLinkId)) {
+    params.onError(
+      serverCallError ||
+        serverLinkError ||
+        'Could not start a secure Razorpay checkout. Please try again, or contact support.'
+    );
+    return;
+  }
+
   // 3. In-App Mobile Sheet Mode: Open native sheet directly in React Native
   if (globalPaymentSheetLauncher) {
     globalPaymentSheetLauncher({
@@ -171,6 +220,8 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
       keyId: params.keyId,
       orderId: serverOrderId,
       checkoutUrl: serverPaymentUrl,
+      paymentLinkId: serverPaymentLinkId,
+      role: params.role,
       paymentRecordId: params.paymentRecordId,
       customerName: params.customerName,
       customerEmail: params.customerEmail,
@@ -182,35 +233,30 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
     return;
   }
 
-  // 4. Native mobile mode: Live Razorpay In-App Browser Checkout
-  const rzpCurr = (params.currency || 'INR').toUpperCase();
-  const checkoutUrl =
-    serverPaymentUrl ||
-    `https://api.razorpay.com/v1/checkout/public?key_id=${encodeURIComponent(params.keyId.trim())}${
-      serverOrderId ? `&order_id=${encodeURIComponent(serverOrderId)}` : ''
-    }&amount=${Math.round(params.amount * 100)}&currency=${encodeURIComponent(rzpCurr)}&name=${encodeURIComponent(
-      params.name || 'Propithub Real Estate'
-    )}&description=${encodeURIComponent(
-      params.description || `Payment Ref: ${params.paymentRecordId}`
-    )}&prefill[name]=${encodeURIComponent(params.customerName || '')}&prefill[email]=${encodeURIComponent(
-      params.customerEmail || ''
-    )}&prefill[contact]=${encodeURIComponent(params.customerPhone || '')}&callback_url=propithub://payment-callback`;
-
+  // 4. Native mobile mode: Razorpay hosted payment link in the in-app browser
   try {
     const browserRes = await WebBrowser.openAuthSessionAsync(
-      checkoutUrl,
+      serverPaymentUrl,
       'propithub://payment-callback'
     );
-    if (browserRes.type === 'success' || browserRes.type === 'dismiss') {
+    const confirmed = await confirmRazorpayLinkPaid(
+      {
+        paymentLinkId: serverPaymentLinkId,
+        paymentRecordId: params.paymentRecordId,
+        ownerId: params.ownerId,
+        role: params.role,
+      },
+      browserRes.type === 'success' ? 5 : 2
+    );
+    if (confirmed.paid) {
       params.onSuccess({
-        paymentId: `pay_rzp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-        orderId: serverOrderId || `order_rzp_${Date.now().toString(36)}`,
+        paymentId: confirmed.paymentId || serverPaymentLinkId,
+        orderId: confirmed.orderId || serverOrderId,
       });
-      return;
     } else {
-      params.onError('Razorpay checkout session closed by user.');
-      return;
+      params.onError('Razorpay has not confirmed this payment, so it was not recorded. If money was deducted, contact support with your payment reference.');
     }
+    return;
   } catch (err: any) {
     console.warn('[Razorpay] Native browser checkout note:', err?.message);
     params.onError(`Razorpay error: ${err?.message || 'Could not launch checkout'}`);

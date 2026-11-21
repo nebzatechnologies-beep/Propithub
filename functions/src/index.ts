@@ -4463,6 +4463,8 @@ export const createRazorpayOrder = functions.https.onCall(async (data, context) 
     });
 
     let paymentUrl = '';
+    let paymentLinkId = '';
+    let paymentLinkError = '';
     try {
       if ((instance as any).paymentLink?.create) {
         const pl = await (instance as any).paymentLink.create({
@@ -4471,13 +4473,16 @@ export const createRazorpayOrder = functions.https.onCall(async (data, context) 
           accept_partial: false,
           reference_id: (receipt || `rcpt_${Date.now()}`).substring(0, 40),
           description: `Payment for ${receipt || 'Invoice'}`,
-          callback_url: 'propithub://payment-callback',
+          // Razorpay only accepts an https callback. This page hands the result back to the app (propithub://).
+          callback_url: 'https://propithub.web.app/payment-callback.html',
           callback_method: 'get',
         });
         paymentUrl = pl.short_url || '';
+        paymentLinkId = pl.id || '';
       }
     } catch (_plErr: any) {
-      functions.logger.info('Razorpay payment link optional generation note:', _plErr?.message);
+      paymentLinkError = _plErr?.error?.description || _plErr?.message || 'Razorpay payment link could not be created.';
+      functions.logger.warn('Razorpay payment link generation failed:', paymentLinkError);
     }
 
     return {
@@ -4486,10 +4491,60 @@ export const createRazorpayOrder = functions.https.onCall(async (data, context) 
       currency: order.currency,
       keyId,
       paymentUrl,
+      paymentLinkId,
+      paymentLinkError,
     };
   } catch (err: any) {
     functions.logger.error('Razorpay order creation failed:', err);
     throw new functions.https.HttpsError('internal', err.message || 'Razorpay order creation failed.');
+  }
+});
+
+/**
+ * 15a. getRazorpayPaymentLinkStatus (Callable)
+ * Asks Razorpay (server to server) whether a hosted payment link was really paid. The mobile app calls this after
+ * the checkout browser closes, so closing the window can never be mistaken for a successful payment.
+ */
+export const getRazorpayPaymentLinkStatus = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+  const { paymentLinkId, paymentRecordId, ownerId, role } = data || {};
+  if (!paymentLinkId || typeof paymentLinkId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'paymentLinkId is required.');
+  }
+
+  const rec = String(paymentRecordId || '');
+  const isOwnerTxn = String(role || '').toLowerCase() === 'owner' || /^(sub_|pinv-)/i.test(rec);
+  const rzpCfg = isOwnerTxn
+    ? ((await getPlatformGatewaysConfig())?.razorpay || {})
+    : await resolveGatewayConfig('razorpay', ownerId, isOwnerTxn ? 'owner' : role);
+  const keyId = rzpCfg?.keyId || process.env.RAZORPAY_KEY_ID;
+  const keySecret = rzpCfg?.keySecret || process.env.RAZORPAY_KEY_SECRET;
+  if (!keyId || !keySecret || keySecret.includes('•••')) {
+    throw new functions.https.HttpsError('failed-precondition', 'Razorpay API keys are not configured.');
+  }
+
+  try {
+    const instance: any = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    const link = await instance.paymentLink.fetch(paymentLinkId);
+    if (rec && String(link?.reference_id || '') !== rec.substring(0, 40)) {
+      functions.logger.warn(`Razorpay link ${paymentLinkId} reference ${link?.reference_id} does not match record ${rec}`);
+      throw new functions.https.HttpsError('permission-denied', 'This payment link does not belong to this invoice.');
+    }
+    const paid = link?.status === 'paid';
+    const firstPayment = Array.isArray(link?.payments) ? link.payments[0] : link?.payments;
+    return {
+      paid,
+      status: String(link?.status || ''),
+      paymentId: paid ? String(firstPayment?.payment_id || '') : '',
+      orderId: paid ? String(link?.order_id || '') : '',
+      amountPaid: Number(link?.amount_paid || 0),
+    };
+  } catch (err: any) {
+    if (err instanceof functions.https.HttpsError) throw err;
+    functions.logger.error('Razorpay payment link status check failed:', err?.error?.description || err?.message || err);
+    throw new functions.https.HttpsError('unavailable', 'Could not confirm the payment with Razorpay. Please retry.');
   }
 });
 

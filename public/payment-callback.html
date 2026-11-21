@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Returning to Propithub</title>
+<style>body{font-family:system-ui,sans-serif;background:#111827;color:#fff;display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;margin:0;padding:24px}a{color:#10b981}</style>
+</head>
+<body>
+<div>
+<p>Returning to the Propithub app…</p>
+<p><a id="open" href="propithub://payment-callback">Tap here if the app does not open</a></p>
+</div>
+<script>
+  var target = 'propithub://payment-callback' + (location.search || '');
+  document.getElementById('open').setAttribute('href', target);
+  location.replace(target);
+</script>
+</body>
+</html>
