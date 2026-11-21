@@ -15,6 +15,7 @@ import { httpsCallable } from 'firebase/functions';
 import { functions, isFirebaseConfigured } from '../lib/firebase';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { getCurrencySymbol } from '../lib/currencyService';
+import { confirmRazorpayLinkPaid } from '../lib/payments';
 
 export interface PaymentSheetRequest {
   gateway: 'stripe' | 'razorpay' | 'easebuzz' | 'paypal';
@@ -30,6 +31,7 @@ export interface PaymentSheetRequest {
   clientSecret?: string;
   paymentIntentId?: string;
   checkoutUrl?: string;
+  paymentLinkId?: string;
   keyId?: string;
   orderId?: string;
   merchantKey?: string;
@@ -195,39 +197,36 @@ export const MobilePaymentSheetModal: React.FC<MobilePaymentSheetModalProps> = (
     try {
       let checkoutUrl = request.checkoutUrl || '';
       let orderId = request.orderId || '';
+      let paymentLinkId = request.paymentLinkId || '';
 
-      if (!checkoutUrl && isFirebaseConfigured) {
+      if ((!checkoutUrl || !paymentLinkId) && isFirebaseConfigured) {
         const createOrderFn = httpsCallable<any, any>(functions, 'createRazorpayOrder');
         const res = await createOrderFn({
           amount: request.amount,
           currency: (request.currency || 'INR').toUpperCase(),
           receipt: request.paymentRecordId,
           ownerId: request.ownerId,
+          role: request.role,
           customerName: request.customerName,
           customerEmail: request.customerEmail,
           customerPhone: request.customerPhone,
+          notes: {
+            paymentRecordId: request.paymentRecordId,
+            ownerId: request.ownerId || '',
+            role: request.role || '',
+          },
         });
         orderId = res.data?.orderId || orderId;
         checkoutUrl = res.data?.paymentUrl || '';
+        paymentLinkId = res.data?.paymentLinkId || '';
+        if (!checkoutUrl || !paymentLinkId) {
+          throw new Error(res.data?.paymentLinkError || 'Could not start a secure Razorpay checkout. Please try again.');
+        }
       }
 
-      if (!checkoutUrl) {
-        const rzpCurr = (request.currency || 'INR').toUpperCase();
-        checkoutUrl = `https://api.razorpay.com/v1/checkout/public?key_id=${encodeURIComponent(
-          (request.keyId || '').trim()
-        )}${orderId ? `&order_id=${encodeURIComponent(orderId)}` : ''}&amount=${Math.round(
-          request.amount * 100
-        )}&currency=${encodeURIComponent(rzpCurr)}&name=${encodeURIComponent(
-          request.name || 'Propithub Real Estate'
-        )}&description=${encodeURIComponent(
-          request.description || `Payment Ref: ${request.paymentRecordId}`
-        )}&prefill[name]=${encodeURIComponent(
-          request.customerName || ''
-        )}&prefill[email]=${encodeURIComponent(
-          request.customerEmail || ''
-        )}&prefill[contact]=${encodeURIComponent(
-          request.customerPhone || ''
-        )}&callback_url=propithub://payment-callback`;
+      // A payment is only real if Razorpay says so. Without a server-created link we cannot check it, so we stop here.
+      if (!checkoutUrl || !paymentLinkId) {
+        throw new Error('Could not start a secure Razorpay checkout. Please try again, or contact support.');
       }
 
       setStatusMessage('Waiting for Razorpay completion...');
@@ -236,17 +235,30 @@ export const MobilePaymentSheetModal: React.FC<MobilePaymentSheetModalProps> = (
         'propithub://payment-callback'
       );
 
+      setStatusMessage('Confirming your payment with Razorpay...');
+      const confirmed = await confirmRazorpayLinkPaid(
+        {
+          paymentLinkId,
+          paymentRecordId: request.paymentRecordId,
+          ownerId: request.ownerId,
+          role: request.role,
+        },
+        browserRes.type === 'success' ? 5 : 2
+      );
+
       setIsSubmitting(false);
       setStatusMessage('');
 
-      if (browserRes.type === 'success' || browserRes.type === 'dismiss') {
+      if (confirmed.paid) {
         onClose();
         request.onSuccess({
-          paymentId: `pay_rzp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-          orderId: orderId || request.orderId,
+          paymentId: confirmed.paymentId || paymentLinkId,
+          orderId: confirmed.orderId || orderId || request.orderId,
         });
       } else {
-        setErrorMessage('Razorpay checkout was dismissed.');
+        setErrorMessage(
+          'Razorpay has not confirmed this payment, so it was not recorded. If money was deducted, contact support with your payment reference.'
+        );
       }
     } catch (err: any) {
       setIsSubmitting(false);
