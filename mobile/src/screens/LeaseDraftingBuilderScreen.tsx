@@ -855,7 +855,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   scopeBtnText: {
     fontSize: 11.5,
-    fontWeight: '600',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   scopeBtnTextActive: {

@@ -816,9 +816,6 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
                     <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.navy }}>
                       Save as Active Mandate for Monthly Autopay
                     </Text>
-                    <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }}>
-                      48h advance WhatsApp alert sent before each debit • Skip if paid early
-                    </Text>
                   </View>
                 </TouchableOpacity>
               )}
@@ -1027,7 +1024,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   upiAppText: {
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   upiAppTextActive: {

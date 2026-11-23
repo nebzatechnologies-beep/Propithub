@@ -718,7 +718,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   condText: {
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   condTextActive: {
@@ -860,7 +860,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   roomPillText: {
     fontSize: 11,
     color: colors.inkSoft,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   roomPillTextActive: {
     color: '#059669',

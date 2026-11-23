@@ -309,9 +309,6 @@ export const NotificationsCenterScreen: React.FC<NotificationsCenterScreenProps>
         >
           <View style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
             <Text style={[styles.modalTitle, { color: colors.navy }]}>Decline Cash Receipt</Text>
-            <Text style={[styles.modalSub, { color: colors.inkSoft }]}>
-              Please state the reason for declining this cash claim (e.g. cash not received or incorrect amount).
-            </Text>
             <TextInput
               style={[
                 styles.modalInput,
@@ -437,7 +434,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     filterPillText: {
       fontSize: 11,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     filterPillTextActive: {

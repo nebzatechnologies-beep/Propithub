@@ -1058,7 +1058,7 @@ export const AccountSettingsScreen: React.FC<AccountSettingsProps> = ({
         )}
 
         {/* Footer */}
-        <Text style={[styles.versionFooter, { color: colors.inkSoft }]}>Propithub Mobile v2.4.0 • Built with Expo & React Native</Text>
+        <Text style={[styles.versionFooter, { color: colors.inkSoft }]}>Propithub v2.4.0</Text>
       </ScrollView>
       </KeyboardAvoidingView>
 

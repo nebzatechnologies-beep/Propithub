@@ -312,7 +312,6 @@ export const CreateMaintenanceTicketScreen: React.FC<{ onBack?: () => void; onSu
           <View style={[styles.photoAttachBox, { backgroundColor: colors.surfaceSunken }]}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.photoBoxTitle, { color: colors.navy }]}>📸 Evidence Photos Attached ({photos.length})</Text>
-              <Text style={[styles.photoBoxSub, { color: colors.inkSoft }]}>Photos help technician bring proper replacement parts</Text>
             </View>
             <TouchableOpacity
               style={[styles.attachBtn, { backgroundColor: colors.surface, borderColor: colors.line }]}

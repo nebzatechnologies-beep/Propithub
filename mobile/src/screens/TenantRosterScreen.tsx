@@ -1212,7 +1212,6 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
             <View style={styles.modalHeader}>
               <View>
                 <Text style={[styles.modalTitle, { color: colors.navy }]}>Onboard Tenant</Text>
-                <Text style={styles.modalSub}>Search an existing resident or add a new one</Text>
               </View>
               <TouchableOpacity
                 style={styles.closeBtn}
@@ -1660,7 +1659,6 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
             <View style={styles.modalHeader}>
               <View>
                 <Text style={[styles.modalTitle, { color: colors.navy }]}>Search & Invite Tenant</Text>
-                <Text style={styles.modalSub}>Find registered candidates and dispatch offer</Text>
               </View>
               <TouchableOpacity
                 style={styles.closeBtn}
@@ -2071,7 +2069,6 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
                     <Feather name="shield" size={18} color={reqRequireId ? '#2563EB' : '#64748B'} />
                     <View style={{ marginLeft: 8, flex: 1 }}>
                       <Text style={{ fontSize: 13, fontWeight: '700', color: '#1E293B' }}>Mandate Resident Government ID</Text>
-                      <Text style={{ fontSize: 11, color: '#64748B' }}>Require resident to upload official ID documents with signed lease</Text>
                     </View>
                   </View>
                   <TouchableOpacity
@@ -2281,7 +2278,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 13,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -2845,7 +2842,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     dropdownItemText: {
       fontSize: 12.5,
-      color: colors.ink,
+      color: colors.inkSoft,
       fontWeight: '500',
     },
     dropdownItemTextActive: {
@@ -2872,7 +2869,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     unitPickText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     unitPickTextActive: {

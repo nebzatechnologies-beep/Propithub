@@ -1900,9 +1900,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                   <Text style={styles.depositRequiredStatusTag}>DEPOSIT DUE</Text>
                 </View>
                 <Text style={styles.depositRequiredTitle}>Refundable Security Deposit</Text>
-                <Text style={styles.depositRequiredSub}>
-                  Required before monthly rent begins.
-                </Text>
                 <View style={styles.depositRequiredAmountRow}>
                   <View style={styles.depositRequiredAmountInfo}>
                     <Text style={styles.depositRequiredAmountLabel}>Deposit Amount</Text>
@@ -2673,9 +2670,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                         <Text style={[styles.cycleStatusPillText, styles.badgeAmberText]}>PENDING PAYMENT</Text>
                       </View>
                     </View>
-                    <Text style={styles.depositHeroSub}>
-                      Held in trust for move-in.
-                    </Text>
                   </View>
                 </View>
 
@@ -2998,9 +2992,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                               style={{ width: 200, height: 200, maxWidth: '100%' }}
                               resizeMode="contain"
                             />
-                            <Text style={{ fontSize: 11, color: '#64748B', marginTop: 6, fontWeight: '600' }}>
-                              Scan with GPay, PhonePe, or Paytm
-                            </Text>
                           </View>
                         ) : null}
                         <TouchableOpacity
@@ -3026,9 +3017,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                           <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>Open UPI App</Text>
                         </TouchableOpacity>
                       </>
-                    ) : (
-                      <Text style={[styles.detailBoxSub, { color: colors.inkSoft }]}>Open GPay / PhonePe / Paytm and scan or enter the landlord's UPI ID.</Text>
-                    )}
+                    ) : null}
 
                     {/* Upload Payment Screenshot (Recommended / Easy Proof) */}
                     <Text style={[styles.modalInputLabel, { color: colors.ink, marginTop: 10 }]}>
@@ -3222,9 +3211,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                         : payMethod === 'razorpay' ? 'Razorpay'
                           : payMethod === 'stripe' ? 'Credit / Debit Card'
                             : 'PayPal'}
-                    </Text>
-                    <Text style={[styles.detailBoxSub, { color: colors.inkSoft }]}>
-                      Tap "Confirm & Settle" to launch the secure payment gateway.
                     </Text>
                   </View>
                 )}
@@ -3532,9 +3518,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <Text style={{ fontSize: 12, color: colors.inkSoft, marginBottom: 14 }}>
-                Select a payment method below. Propithub automatically revokes your old mandate with zero double-charging.
-              </Text>
 
               {/* Autopay Gateway Dropdown Selector */}
               <TouchableOpacity
@@ -4015,7 +3998,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabBtnText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabBtnTextActive: {
@@ -4505,8 +4488,8 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     methodCardText: {
       fontSize: 12,
-      fontWeight: '700',
-      color: colors.navy,
+      fontWeight: '500',
+      color: colors.inkSoft,
     },
     methodCardTextActive: {
       color: '#059669',
@@ -4651,7 +4634,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     decisionTabText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     decisionTabTextActive: {
@@ -4865,7 +4848,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     rentDueCapsuleText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     rentDueCapsuleTextActive: {

@@ -1236,7 +1236,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     filterPillText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
       flexShrink: 1,
     },
@@ -1774,7 +1774,8 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     modalItemText: {
       fontSize: 13,
-      color: colors.ink,
+      color: colors.inkSoft,
+      fontWeight: '500',
     },
     modalItemTextActive: {
       fontWeight: '700',

@@ -3363,9 +3363,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 </Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2, marginBottom: 12 }}>
                   <Feather name="check-circle" size={13} color="#10B981" style={{ marginRight: 5 }} />
-                  <Text style={{ fontSize: 11.5, color: '#10B981', fontWeight: '600' }}>
-                    Ready to use · Tenant, unit, amount and dates fill in automatically.
-                  </Text>
                 </View>
 
                 {/* View Mode Pills */}
@@ -3498,7 +3495,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             </View>
                             <View>
                               <Text style={styles.gatewayTitle}>2. How should tenants pay?</Text>
-                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Settlement instructions printed on invoice</Text>
                             </View>
                           </View>
                         </View>
@@ -3566,7 +3562,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             </View>
                             <View style={{ flex: 1 }}>
                               <Text style={styles.gatewayTitle}>More options</Text>
-                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Tax ID, signatory, notes, terms & stamp</Text>
                             </View>
                           </View>
                           <Feather name={showMoreRentOptions ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkSoft} />
@@ -3908,7 +3903,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             </View>
                             <View>
                               <Text style={styles.gatewayTitle}>2. How should tenants pay?</Text>
-                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Deposit settlement instructions printed on voucher</Text>
                             </View>
                           </View>
                         </View>
@@ -3976,7 +3970,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                             </View>
                             <View style={{ flex: 1 }}>
                               <Text style={styles.gatewayTitle}>More options</Text>
-                              <Text style={{ fontSize: 11, color: colors.inkSoft }}>Tax ID, title, custody classification & terms</Text>
                             </View>
                           </View>
                           <Feather name={showMoreDepOptions ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkSoft} />
@@ -4637,9 +4630,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
 
               {offlineMethod === 'Cash Handover' && (
                 <View style={[styles.sandboxInfoBox, { backgroundColor: isDark ? 'rgba(245, 158, 11, 0.12)' : '#FFFBEB', borderColor: isDark ? 'rgba(245, 158, 11, 0.3)' : '#F59E0B' }]}>
-                  <Text style={[styles.sandboxInfoText, { color: isDark ? '#FCD34D' : '#92400E' }]}>
-                    ⚡ Cash Handover Protocol: Recording physical currency generates a dual-signoff handover receipt sent to the tenant to confirm on their dashboard.
-                  </Text>
                 </View>
               )}
 
@@ -4815,7 +4805,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 12,
-      fontWeight: '700',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -5511,7 +5501,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     modeBtnText: {
       fontSize: 12,
-      fontWeight: '700',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     modeBtnTextActive: {
@@ -5535,7 +5525,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     gracePillBtnText: {
       fontSize: 12,
-      fontWeight: '700',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     gracePillBtnTextActive: {
@@ -5812,7 +5802,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     docTypeSwitcherBtnText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     docTypeSwitcherBtnTextActive: {
@@ -6260,7 +6250,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     filterChipText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     filterChipTextActive: {
@@ -6496,7 +6486,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     unitPillText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     unitPillTextActive: {
@@ -6522,7 +6512,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     roleChipText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     roleChipTextActive: {
@@ -6758,7 +6748,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     rentDueChipText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     rentDueChipTextActive: {
@@ -6995,7 +6985,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     propFilterChipText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     propFilterChipTextActive: {

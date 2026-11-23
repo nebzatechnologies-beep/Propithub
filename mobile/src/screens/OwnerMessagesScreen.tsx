@@ -1415,7 +1415,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 10.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -1691,7 +1691,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     pillOptionText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     pillOptionTextActive: {
