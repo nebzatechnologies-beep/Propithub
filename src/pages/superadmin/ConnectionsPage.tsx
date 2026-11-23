@@ -168,8 +168,12 @@ export const ConnectionsPage: React.FC = () => {
         enabled: nextVal,
       },
     };
-    await savePlatformGateways(updated);
-    showToast(`${gw.toUpperCase()} ${nextVal ? 'enabled' : 'disabled'}.`);
+    try {
+      await savePlatformGateways(updated);
+      showToast(`${gw.toUpperCase()} ${nextVal ? 'enabled' : 'disabled'}.`);
+    } catch (e: any) {
+      showToast(`Could not change ${gw.toUpperCase()}: ${e?.message || 'save failed'}`);
+    }
   };
 
   const saveEasebuzzKeys = async () => {
@@ -189,7 +193,9 @@ export const ConnectionsPage: React.FC = () => {
       };
       await savePlatformGateways(updated);
       await fetchSecretsStatus();
-      showToast('✓ Easebuzz live production credentials saved and connected.');
+      showToast('✓ Easebuzz credentials saved.');
+    } catch (e: any) {
+      showToast(`Easebuzz credentials NOT saved: ${e?.message || 'save failed'}`);
     } finally {
       setSavingKey(null);
     }
@@ -221,7 +227,9 @@ export const ConnectionsPage: React.FC = () => {
       };
       await savePlatformGateways(updated);
       await fetchSecretsStatus();
-      showToast('✓ Stripe keys saved and persisted to platform configuration.');
+      showToast('✓ Stripe keys saved.');
+    } catch (e: any) {
+      showToast(`Stripe keys NOT saved: ${e?.message || 'save failed'}`);
     } finally {
       setSavingKey(null);
     }
@@ -239,9 +247,12 @@ export const ConnectionsPage: React.FC = () => {
           connected: Boolean(razorpayKey.trim() && razorpaySecret.trim()),
         },
       };
-      await savePlatformGateways(updated);
+      const res = await savePlatformGateways(updated);
       await fetchSecretsStatus();
-      showToast('✓ Razorpay keys saved and persisted to platform configuration.');
+      const v = res.verification.razorpay;
+      showToast(v && !v.ok ? `Razorpay keys saved, but they do not work: ${v.message}` : '✓ Razorpay keys saved and verified with Razorpay.');
+    } catch (e: any) {
+      showToast(`Razorpay keys NOT saved: ${e?.message || 'save failed'}`);
     } finally {
       setSavingKey(null);
     }
@@ -260,9 +271,12 @@ export const ConnectionsPage: React.FC = () => {
           enabled: state.platformGateways.paypal?.enabled ?? true,
         },
       };
-      await savePlatformGateways(updated);
+      const res = await savePlatformGateways(updated);
       await fetchSecretsStatus();
-      showToast('✓ PayPal keys saved and persisted to platform configuration.');
+      const v = res.verification.paypal;
+      showToast(v && !v.ok ? `PayPal keys saved, but they do not work: ${v.message}` : '✓ PayPal keys saved and verified with PayPal.');
+    } catch (e: any) {
+      showToast(`PayPal keys NOT saved: ${e?.message || 'save failed'}`);
     } finally {
       setSavingKey(null);
     }
