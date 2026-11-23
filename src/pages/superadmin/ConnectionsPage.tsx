@@ -235,6 +235,20 @@ export const ConnectionsPage: React.FC = () => {
     }
   };
 
+  const checkStoredKeys = async (gw: 'razorpay' | 'paypal') => {
+    setSavingKey(`check-${gw}`);
+    try {
+      const res = await httpsCallable<any, any>(functions, 'getPlatformSecretsStatus')({ verify: true });
+      const v = res.data?.verification?.[gw];
+      const label = gw === 'razorpay' ? 'Razorpay' : 'PayPal';
+      showToast(!v ? `No ${label} keys are stored yet.` : v.ok ? `✓ The ${label} keys stored right now work.` : `The ${label} keys stored right now do NOT work: ${v.message}`);
+    } catch (e: any) {
+      showToast(`Could not check the stored keys: ${e?.message || 'failed'}`);
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
   const saveRazorpayKeys = async () => {
     setSavingKey('razorpay');
     try {
@@ -250,7 +264,7 @@ export const ConnectionsPage: React.FC = () => {
       const res = await savePlatformGateways(updated);
       await fetchSecretsStatus();
       const v = res.verification.razorpay;
-      showToast(v && !v.ok ? `Razorpay keys saved, but they do not work: ${v.message}` : '✓ Razorpay keys saved and verified with Razorpay.');
+      showToast(v && !v.saved ? `Razorpay keys NOT saved: ${v.message}` : v && !v.ok ? `Razorpay keys saved, but could not be verified: ${v.message}` : '✓ Razorpay keys saved and verified with Razorpay.');
     } catch (e: any) {
       showToast(`Razorpay keys NOT saved: ${e?.message || 'save failed'}`);
     } finally {
@@ -274,7 +288,7 @@ export const ConnectionsPage: React.FC = () => {
       const res = await savePlatformGateways(updated);
       await fetchSecretsStatus();
       const v = res.verification.paypal;
-      showToast(v && !v.ok ? `PayPal keys saved, but they do not work: ${v.message}` : '✓ PayPal keys saved and verified with PayPal.');
+      showToast(v && !v.saved ? `PayPal credentials NOT saved: ${v.message}` : v && !v.ok ? `PayPal credentials saved, but could not be verified: ${v.message}` : '✓ PayPal credentials saved and verified with PayPal.');
     } catch (e: any) {
       showToast(`PayPal keys NOT saved: ${e?.message || 'save failed'}`);
     } finally {
@@ -682,6 +696,15 @@ export const ConnectionsPage: React.FC = () => {
                           loadingText="Saving..."
                           defaultText="Save"
                         />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ marginLeft: '8px' }}
+                        onClick={() => checkStoredKeys('razorpay')}
+                        disabled={savingKey === 'check-razorpay'}
+                      >
+                        {savingKey === 'check-razorpay' ? 'Checking...' : 'Check stored keys'}
                       </button>
                     </div>
                   )}
