@@ -1485,9 +1485,6 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
               <Text style={[styles.sectionHeading, { color: colors.inkSoft, marginBottom: 4 }]}>
                 🔥 POPULAR LISTING BOOST PLANS
               </Text>
-              <Text style={{ fontSize: 12, color: colors.inkSoft, marginBottom: 12 }}>
-                Promote all your vacant listings to the top of search with a verified Popular badge.
-              </Text>
 
               {isBoostPassActive && (
                 <View
@@ -2042,9 +2039,6 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <Text style={{ fontSize: 12, color: colors.inkSoft, marginBottom: 14 }}>
-                Select a payment method. Propithub automatically cancels your previous mandate so you are never double-billed.
-              </Text>
 
               {Platform.OS === 'ios' ? (
                 <View style={{ padding: 14, backgroundColor: isDark ? '#1E293B' : '#F0F9FF', borderRadius: 10, borderWidth: 1, borderColor: '#BAE6FD', marginBottom: 14 }}>
@@ -2134,12 +2128,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
 
                   {/* Gateway SDK Info / Optional Prefill */}
                   <View style={{ backgroundColor: colors.surfaceSunken, borderRadius: 10, padding: 14, marginVertical: 10, borderWidth: 1, borderColor: colors.line }}>
-                    {selectedNewGateway === 'stripe' && (
-                      <Text style={{ fontSize: 12, color: colors.ink, lineHeight: 18 }}>
-                        Card details are collected securely inside Stripe's PCI-DSS checkout sheet when you authorize.
-                      </Text>
-                    )}
-
+                    
                     {selectedNewGateway === 'razorpay' && (
                       <View style={{ gap: 10 }}>
                         <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -2181,11 +2170,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                             value={mandateUpiId}
                             onChangeText={setMandateUpiId}
                           />
-                        ) : (
-                          <Text style={{ fontSize: 12, color: colors.ink, lineHeight: 18 }}>
-                            Card details are verified directly via Razorpay's live checkout sheet.
-                          </Text>
-                        )}
+                        ) : null}
                       </View>
                     )}
 
@@ -2368,15 +2353,9 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
             <View style={{ gap: 8, marginBottom: 16 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Feather name="check-circle" size={14} color="#10B981" />
-                <Text style={{ fontSize: 12, color: colors.ink, flex: 1 }}>
-                  Top-ranked placement with gold flame badge on Search
-                </Text>
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Feather name="check-circle" size={14} color="#10B981" />
-                <Text style={{ fontSize: 12, color: colors.ink, flex: 1 }}>
-                  Free 1-click ON/OFF toggle in Portfolio anytime
-                </Text>
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Feather name="check-circle" size={14} color="#10B981" />
@@ -2399,9 +2378,6 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
               </View>
             ) : (
               <>
-                <Text style={{ fontSize: 11, fontWeight: '700', color: colors.navy, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                  Select Payment Method
-                </Text>
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
                   {[
                     { key: 'stripe', label: 'Stripe', icon: 'credit-card' },
@@ -2716,7 +2692,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -3070,7 +3046,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     cycleBtnText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     cycleBtnTextActive: {

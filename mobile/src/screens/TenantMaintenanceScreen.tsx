@@ -922,7 +922,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     categoryPillText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     categoryPillTextActive: {
@@ -945,7 +945,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     priorityPillText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     priorityPillTextActive: {
@@ -987,8 +987,8 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     payMethodBtnText: {
       fontSize: 13,
-      fontWeight: '700',
-      color: colors.navy,
+      fontWeight: '500',
+      color: colors.inkSoft,
     },
     payMethodBtnTextActive: {
       color: '#FFFFFF',

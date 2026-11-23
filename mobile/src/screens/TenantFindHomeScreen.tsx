@@ -1179,7 +1179,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 13,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -1226,7 +1226,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     filterChipText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     filterChipTextActive: {

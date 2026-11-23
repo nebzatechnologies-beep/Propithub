@@ -686,9 +686,6 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                   </Text>
                 </View>
               </View>
-              <Text style={{ fontSize: 11, color: isDark ? '#FCD34D' : '#78350F', marginTop: 2, lineHeight: 15 }}>
-                All available listings are boosted to Popular on search. You can also toggle individual units ON/OFF anytime below.
-              </Text>
             </View>
           </View>
         )}
@@ -2345,8 +2342,8 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   tabText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#64748B',
+    fontWeight: '500',
+    color: colors.inkSoft,
   },
   tabTextActive: {
     color: '#0F172A',
@@ -2771,7 +2768,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   editDropdownOptionText: {
     fontSize: 12.5,
-    color: colors.ink,
+    color: colors.inkSoft,
     fontWeight: '500',
   },
   editDropdownOptionTextActive: {

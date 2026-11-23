@@ -1409,9 +1409,6 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                           Move-Out Notice Active • Effective {activeMoveOut.moveOutDate}
                         </Text>
                       </View>
-                      <Text style={styles.moveOutActiveNoticeSub}>
-                        Notice received by landlord. Awaiting walkthrough inspection schedule.
-                      </Text>
                       <TouchableOpacity
                         style={styles.fullWidthChecklistBtn}
                         onPress={() => setShowChecklistModal(true)}
@@ -1885,9 +1882,6 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                         </Text>
                       </View>
                     </View>
-                    <Text style={{ fontSize: 11.5, color: '#78350F', marginBottom: 10, lineHeight: 16 }}>
-                      The landlord has requested the following ID documents. All are mandatory.
-                    </Text>
                     <View style={{ gap: 10 }}>
                       {requiredIds.map((reqId, idx) => {
                         const uploaded = uploadedIdsState[reqId.id];
@@ -2029,9 +2023,6 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
 
               <View style={styles.noticeInfoBox}>
                 <Feather name="info" size={14} color="#D97706" style={{ marginRight: 6, marginTop: 2 }} />
-                <Text style={styles.noticeInfoText}>
-                  Upon submitting notice, your landlord will schedule a physical inspection before handover. Your refundable deposit will be calculated minus verified deductions.
-                </Text>
               </View>
 
               <TouchableOpacity
@@ -2183,12 +2174,7 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                     <View style={{ flex: 1 }}>
                       <Text style={styles.checklistName}>{item.name}</Text>
                       <Text style={styles.checklistSpec}>{item.spec}</Text>
-                      {currentMoveOutStep < 3 && (
-                        <Text style={{ fontSize: 10, color: '#94A3B8', marginTop: 2 }}>
-                          Criteria will be evaluated during walkthrough
-                        </Text>
-                      )}
-                    </View>
+                                          </View>
                     <View
                       style={[
                         styles.checklistStatusTag,
@@ -2584,9 +2570,6 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
               contentContainerStyle={{ paddingBottom: 24 }}
               keyboardShouldPersistTaps="handled"
             >
-              <Text style={{ fontSize: 13, color: '#64748B', marginBottom: 12 }}>
-                Please select or provide a reason for declining. Your landlord will be notified.
-              </Text>
 
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
                 {[
@@ -3016,7 +2999,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     subTabText: {
       fontSize: 12.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     subTabTextActive: {
@@ -3109,7 +3092,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     filterPillText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     filterPillTextActive: {
@@ -3849,7 +3832,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     settleDecisionTabText: {
       fontSize: 12,
-      fontWeight: '700',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     settleDecisionTabTextActive: {
@@ -3897,7 +3880,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     payoutRailPillText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     payoutRailPillTextActive: {

@@ -1035,9 +1035,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                   <Text style={{ fontWeight: '700', fontSize: 13, color: selectedReassignPropId === '' ? '#2563EB' : colors.navy }}>
                     None (Unassigned / Floating Manager)
                   </Text>
-                  <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 2 }}>
-                    Detaches manager from properties without deleting their account.
-                  </Text>
                 </View>
                 {selectedReassignPropId === '' && <Feather name="check-circle" size={18} color="#2563EB" />}
               </TouchableOpacity>
@@ -1231,7 +1228,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 12.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -1608,7 +1605,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     propSelectText: {
       fontSize: 12,
-      color: colors.ink,
+      color: colors.inkSoft,
       fontWeight: '500',
     },
     propSelectTextActive: {
@@ -1744,8 +1741,8 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     methodChipText: {
       fontSize: 12,
-      color: colors.ink,
-      fontWeight: '600',
+      color: colors.inkSoft,
+      fontWeight: '500',
     },
     methodChipTextActive: {
       color: isDark ? '#34D399' : '#059669',

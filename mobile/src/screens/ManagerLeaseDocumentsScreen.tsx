@@ -1945,7 +1945,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     subTabPillText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     subTabPillTextActive: {
@@ -2016,7 +2016,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     filterPillText: {
       fontSize: 11,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     filterPillTextActive: {

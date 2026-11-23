@@ -1412,7 +1412,7 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
   },
   roleChipActive: { backgroundColor: '#10B981', borderColor: '#10B981' },
-  roleChipText: { fontSize: 12, fontWeight: '600', color: '#475569' },
+  roleChipText: { fontSize: 12, fontWeight: '500', color: '#64748B' },
   roleChipTextActive: { color: '#FFFFFF', fontWeight: '700' },
 
   // ── Dev Modal ──────────────────────────────────────────────────────────────

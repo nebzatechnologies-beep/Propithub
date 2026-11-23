@@ -670,9 +670,6 @@ export const VacatesMoveoutScreen: React.FC<VacatesMoveoutScreenProps> = ({
 
               <View style={styles.scheduleTipBox}>
                 <Feather name="info" size={14} color="#0284C7" style={{ marginRight: 6 }} />
-                <Text style={styles.scheduleTipText}>
-                  Scheduling an inspection notifies the resident to prepare the unit for walkthrough and queues the damage checklist.
-                </Text>
               </View>
 
               <TouchableOpacity
@@ -1486,7 +1483,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   unitPickText: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   unitPickTextActive: {
@@ -1533,7 +1530,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   railBtnText: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   railBtnTextActive: {

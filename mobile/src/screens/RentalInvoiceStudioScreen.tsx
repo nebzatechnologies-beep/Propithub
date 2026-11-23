@@ -398,9 +398,6 @@ export const RentalInvoiceStudioScreen: React.FC<{
                   <Text style={{ fontSize: 13, fontWeight: '700', color: '#92400E' }}>
                     100% Refundable Security Deposit
                   </Text>
-                  <Text style={{ fontSize: 11.5, color: '#B45309', marginTop: 3 }}>
-                    Held in fiduciary trust custody. Non-taxable trust asset refundable within 14 business days of checkout clearance.
-                  </Text>
                 </View>
 
                 <Text style={styles.inputLabel}>Security Deposit Amount ({getSymbol(effectiveCurrency)})</Text>
@@ -816,7 +813,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -856,7 +853,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     categoryBtnText: {
       fontSize: 12.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     categoryBtnTextActive: {
@@ -890,7 +887,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     currChipText: {
       fontSize: 11,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     currChipTextActive: {

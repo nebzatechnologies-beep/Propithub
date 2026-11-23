@@ -2106,9 +2106,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 {/* Web Banner Notice */}
                 <View style={styles.renewalNoticeBanner}>
                   <Feather name="info" size={15} color="#2563EB" style={{ marginRight: 8, marginTop: 1 }} />
-                  <Text style={styles.renewalNoticeText}>
-                    Propithub flags leases 60 and 30 days before expiry automatically. Offer early renewal terms with dynamic rent escalation.
-                  </Text>
                 </View>
 
                 {myRenewals.length === 0 ? (
@@ -2283,9 +2280,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <View style={{ flex: 1, marginRight: 10 }}>
                     <Text style={{ fontSize: 14, fontWeight: '700', color: colors.navy }}>
                       Agreement Library ({filteredTemplates.length})
-                    </Text>
-                    <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }} numberOfLines={1}>
-                      Reusable legal templates & contracts
                     </Text>
                   </View>
 
@@ -3172,9 +3166,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <Text style={styles.approvalInspectionFile}>
                     {inspectingSignedAgreement?.signedDocumentName || 'Executed_Tenancy_Lease.pdf'}
                   </Text>
-                  <Text style={styles.approvalInspectionSub}>
-                    Resident uploaded ink-signed agreement on file.
-                  </Text>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <TouchableOpacity
@@ -3380,9 +3371,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
               contentContainerStyle={{ paddingBottom: 20 }}
               keyboardShouldPersistTaps="handled"
             >
-              <Text style={{ fontSize: 13, color: '#475569', marginBottom: 10, lineHeight: 18 }}>
-                Please specify why the uploaded agreement is being rejected. The resident will receive this reason and will be prompted to re-upload.
-              </Text>
 
               <Text style={styles.modalFieldLabel}>Reason for Rejection *</Text>
               <TextInput
@@ -3697,9 +3685,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.approvalInspectionFile}>
                     {inspectingSignedRenewal?.tenantSignedFileName || `Signed_Renewal_Unit_${inspectingSignedRenewal?.unit}.pdf`}
-                  </Text>
-                  <Text style={styles.approvalInspectionSub}>
-                    Uploaded by resident for landlord review and approval.
                   </Text>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -4845,9 +4830,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                             <Text style={{ fontSize: 13, fontWeight: '600', color: colors.navy }}>
                               No agreement document attached
                             </Text>
-                            <Text style={{ fontSize: 11, color: colors.inkSoft, marginTop: 1 }}>
-                              Tap to browse & attach agreement (PDF or Image)
-                            </Text>
                           </View>
                           <View style={[styles.readyBadge, { backgroundColor: isDark ? colors.surface : '#F1F5F9' }]}>
                             <Text style={[styles.readyBadgeText, { color: colors.navy }]}>Browse</Text>
@@ -5539,7 +5521,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     tabText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     tabTextActive: {
@@ -5635,7 +5617,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     filterText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     filterTextActive: {
@@ -6371,7 +6353,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     escalationPillText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     escalationPillTextActive: {
@@ -6418,7 +6400,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     durationPillText: {
       fontSize: 11,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     durationPillTextActive: {
@@ -6461,7 +6443,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     unitSelectChipText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     unitSelectChipTextActive: {
@@ -6483,7 +6465,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     autoRenewPillText: {
       fontSize: 12,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     autoRenewPillTextActive: {
@@ -6786,7 +6768,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     wizardStepText: {
       fontSize: 11,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     wizardStepTextActive: {

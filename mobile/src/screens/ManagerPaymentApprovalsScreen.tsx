@@ -153,9 +153,6 @@ export const ManagerPaymentApprovalsScreen: React.FC<Props> = ({ onProfilePress,
         onProfilePress={onProfilePress}
       />
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={{ color: colors.inkSoft, marginBottom: 12 }}>
-          Payments tenants recorded as cash, UPI or bank transfer. They count as paid only after you approve them.
-        </Text>
 
         {!ownerId && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>

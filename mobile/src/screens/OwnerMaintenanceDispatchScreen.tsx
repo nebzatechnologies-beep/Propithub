@@ -752,8 +752,8 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   tabText: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#64748B',
+    fontWeight: '500',
+    color: colors.inkSoft,
   },
   tabTextActive: {
     color: '#0F172A',
@@ -1189,8 +1189,8 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   payerBtnText: {
     fontSize: 11.5,
-    fontWeight: '600',
-    color: colors.ink,
+    fontWeight: '500',
+    color: colors.inkSoft,
   },
   payerBtnTextActive: {
     color: '#059669',
@@ -1216,8 +1216,9 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   rolePillText: {
     fontSize: 11,
-    color: colors.ink,
-  },
+    color: colors.inkSoft,
+      fontWeight: '500',
+    },
   rolePillTextActive: {
     color: '#059669',
     fontWeight: '700',

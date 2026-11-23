@@ -588,7 +588,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   modeTabText: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   modeTabTextActive: {
@@ -614,7 +614,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   roleOptionText: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   roleOptionTextActive: {

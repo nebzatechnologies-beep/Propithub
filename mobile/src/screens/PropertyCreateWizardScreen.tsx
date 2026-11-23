@@ -825,7 +825,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         {/* ========================================================================= */}
         {step === 1 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Text style={[styles.cardTitle, { color: colors.navy }]}>1. Identity & Physical Structure</Text>
 
             {/* Property Name */}
             <Text style={[styles.inputLabel, fieldErrors.propName && { color: '#EF4444' }]}>
@@ -981,10 +980,10 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
               )}
             </View>
 
-            {/* Property Structure & Leasing Model * (Exact 1:1 Web Parity) */}
+            {/* Property Type * (Exact 1:1 Web Parity) */}
             <View style={[styles.structureBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
               <Text style={[styles.structureBoxTitle, { color: colors.navy }]}>
-                Property Structure & Leasing Model *
+                Property Type *
               </Text>
 
               <View style={styles.structureCardsRow}>
@@ -1005,7 +1004,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     <View style={[styles.radioCircle, propStructure === 'single_unit' && styles.radioCircleActive]}>
                       {propStructure === 'single_unit' && <View style={styles.radioDot} />}
                     </View>
-                    <Text style={[styles.structureCardName, { color: colors.navy }]}>🏡 Single-Unit Asset</Text>
+                    <Text style={[styles.structureCardName, propStructure === 'single_unit' ? { color: colors.navy } : { color: colors.inkSoft, fontWeight: '500' }]}>🏡 Single-Unit Asset</Text>
                   </View>
                 </TouchableOpacity>
 
@@ -1026,7 +1025,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     <View style={[styles.radioCircle, propStructure === 'multi_unit' && styles.radioCircleActive]}>
                       {propStructure === 'multi_unit' && <View style={styles.radioDot} />}
                     </View>
-                    <Text style={[styles.structureCardName, { color: colors.navy }]}>🏢 Multi-Unit Complex</Text>
+                    <Text style={[styles.structureCardName, propStructure === 'multi_unit' ? { color: colors.navy } : { color: colors.inkSoft, fontWeight: '500' }]}>🏢 Multi-Unit Complex</Text>
                   </View>
                 </TouchableOpacity>
               </View>
@@ -1112,10 +1111,10 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
               )}
             </View>
 
-            {/* Google Maps Places Address * */}
+            {/* Address * */}
             <View style={{ marginBottom: 14 }}>
               <Text style={[styles.inputLabel, fieldErrors.propAddress && { color: '#EF4444' }]}>
-                Google Maps Places Address *
+                Address *
               </Text>
 
               <View style={[styles.placesSearchBox, fieldErrors.propAddress && styles.inputError]}>
@@ -1260,10 +1259,9 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         {/* ========================================================================= */}
         {step === 2 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Text style={[styles.cardTitle, { color: colors.navy }]}>2. Policies & Amenities</Text>
 
             {/* Operational Rental Currency - 160+ Global Search Dropdown (Web Parity) */}
-            <Text style={styles.inputLabel}>Operational Rental Currency (160+ Global Currencies)</Text>
+            <Text style={styles.inputLabel}>Currency</Text>
             {(() => {
               const selectedCurrencyObj =
                 GLOBAL_CURRENCIES.find((c) => c.code === propCurrency || c.symbol === propCurrency) ||
@@ -1590,9 +1588,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         {/* ========================================================================= */}
         {step === 3 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Text style={[styles.cardTitle, { color: colors.navy }]}>
-              3. {propStructure === 'single_unit' ? 'Single-Unit Asset Configuration' : 'Units Builder & Generator'}
-            </Text>
 
             {/* SINGLE-UNIT ASSET MODE (Whole House / Villa / Facility) */}
             {propStructure === 'single_unit' ? (
@@ -1603,12 +1598,9 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                       <Text style={styles.brassBadgeText}>🏡 Single-Unit Asset Mode</Text>
                     </View>
                     <Text style={{ fontSize: 13, fontWeight: '700', color: colors.navy }}>
-                      Lease Terms & Property Specifications
+                      Property Details
                     </Text>
                   </View>
-                  <Text style={{ fontSize: 12, color: colors.inkSoft, lineHeight: 17 }}>
-                    This entire property will be leased as a single unified asset without managing internal sub-units.
-                  </Text>
                 </View>
 
                 {/* Layout Type & Property Identifier */}
@@ -1752,7 +1744,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     onPress={() => setUnitsBuilderMode('bulk')}
                   >
                     <Text style={[styles.modeTabText, unitsBuilderMode === 'bulk' && styles.modeTabTextActive]}>
-                      ⚡ Bulk Unit Generator
+                      Bulk Generate
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -1761,7 +1753,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                 {unitsBuilderMode === 'bulk' && (
                   <View style={[styles.bulkBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
                     <Text style={[styles.bulkBoxTitle, { color: colors.navy }]}>
-                      ⚡ Multi-Unit Automated Batch Generator
+                      Generate Units
                     </Text>
 
                     <View style={styles.grid3}>
@@ -2075,7 +2067,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
         {/* ========================================================================= */}
         {step === 4 && (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.line }]}>
-            <Text style={[styles.cardTitle, { color: colors.navy }]}>4. Photos & Final Review</Text>
 
             {/* Property Photos Gallery */}
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
@@ -2100,7 +2091,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
               >
                 <Feather name="camera" size={24} color={colors.inkSoft} />
                 <Text style={[styles.galleryEmptyText, { color: colors.navy }]}>No property photos added yet</Text>
-                <Text style={{ fontSize: 11, color: colors.inkSoft }}>Select exterior, lobby, or facade photos</Text>
               </TouchableOpacity>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.galleryScroll}>
@@ -2583,8 +2573,8 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     dropdownItemText: {
       fontSize: 13,
-      fontWeight: '600',
-      color: colors.ink,
+      fontWeight: '500',
+      color: colors.inkSoft,
     },
     dropdownItemTextActive: {
       color: '#059669',
@@ -2815,7 +2805,7 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     smallSegText: {
       fontSize: 11,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     smallSegTextActive: {
@@ -2842,7 +2832,7 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     amenityBadgeText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     amenityBadgeTextActive: {
@@ -3030,7 +3020,7 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     },
     modeTabText: {
       fontSize: 11.5,
-      fontWeight: '700',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     modeTabTextActive: {

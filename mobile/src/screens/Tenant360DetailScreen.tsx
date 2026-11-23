@@ -497,7 +497,7 @@ const createStyles = (colors: any, isDark: boolean) =>
   },
   tPillText: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
     color: colors.inkSoft,
   },
   tPillTextActive: {

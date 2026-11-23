@@ -1546,7 +1546,6 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
             <View style={styles.modalHead}>
               <View>
                 <Text style={[styles.modalTitle, { color: colors.navy }]}>Display Currency</Text>
-                <Text style={[styles.modalSub, { color: colors.inkSoft }]}>Select preferred currency for rent & due estimates</Text>
               </View>
               <TouchableOpacity onPress={() => setShowCurrencyModal(false)} style={styles.modalCloseBtn}>
                 <Ionicons name="close" size={20} color={colors.inkSoft} />
@@ -2465,7 +2464,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     galleryPillText: {
       fontSize: 10.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     galleryPillTextActive: {
@@ -2707,7 +2706,7 @@ const createStyles = (colors: any, isDark: boolean) =>
     },
     payoutText: {
       fontSize: 11.5,
-      fontWeight: '600',
+      fontWeight: '500',
       color: colors.inkSoft,
     },
     payoutTextActive: {
