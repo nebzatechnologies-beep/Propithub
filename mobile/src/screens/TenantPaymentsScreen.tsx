@@ -5,15 +5,15 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   TextInput,
-  Modal,
   Alert,
   RefreshControl,
   Linking,
   Image,
 } from 'react-native';
+import { Modal } from '../components/Modal';
+import { SafeAreaView } from '../components/SafeScreen';
 import { pickSingleImage } from '../lib/nativePicker';
 import { uploadOrCompressDocument } from '../lib/imageUploader';
 import { Ionicons, Feather, FontAwesome5 } from '@expo/vector-icons';
@@ -2052,9 +2052,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
               <View style={styles.noScheduleCard}>
                 <Feather name="calendar" size={26} color="#94A3B8" style={{ marginBottom: 6 }} />
                 <Text style={styles.noScheduleTitle}>No Active Rent Schedule Found</Text>
-                <Text style={styles.noScheduleSub}>
-                  Monthly rent schedule appears once your lease is active.
-                </Text>
               </View>
             )}
 
@@ -2662,9 +2659,6 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
               <View style={styles.noScheduleCard}>
                 <Feather name="shield" size={28} color="#94A3B8" style={{ marginBottom: 8 }} />
                 <Text style={styles.noScheduleTitle}>No Active Custody Deposit</Text>
-                <Text style={styles.noScheduleSub}>
-                  Security deposits and trust custody accounts will appear here once you have an active leased property.
-                </Text>
               </View>
             ) : !isDepositPaid ? (
               <View style={[styles.depositHeroCard, { borderColor: '#F59E0B' }]}>

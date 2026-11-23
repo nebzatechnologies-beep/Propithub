@@ -5,9 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
-  Modal,
   TextInput,
   Switch,
   Alert,
@@ -16,6 +14,8 @@ import {
   LayoutAnimation,
   Share,
 } from 'react-native';
+import { Modal } from '../components/Modal';
+import { SafeAreaView } from '../components/SafeScreen';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -1564,7 +1564,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                   <Feather name="calendar" size={32} color={colors.inkSoft} />
                   <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Rent Receivables</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>No active rent cycles matching the selected filter or search query.</Text>
                 </View>
               ) : (
                 filteredRentDueList.map((item) => (
@@ -2223,7 +2222,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                   <Feather name="file-text" size={32} color={colors.inkSoft} />
                   <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Invoices Found</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>No rental invoices matching the selected status or query.</Text>
                 </View>
               ) : (
                 filteredInvoicesList.map((inv) => {
@@ -2474,7 +2472,6 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                   <Feather name="shield" size={32} color={colors.inkSoft} />
                   <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Deposit Records</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>No security deposits matching the selected filter or query.</Text>
                 </View>
               ) : (
                 filteredDepositLedgerList.map((item) => (

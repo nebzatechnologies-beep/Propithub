@@ -9,12 +9,12 @@ import {
   TextInput,
   Switch,
   Alert,
-  Modal,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
 import { Ionicons, Feather } from '@expo/vector-icons';

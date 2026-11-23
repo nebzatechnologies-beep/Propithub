@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Modal,
   Alert,
   ActivityIndicator,
   TextInput,
@@ -13,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Share,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -1217,7 +1217,6 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                   <Feather name="repeat" size={16} color={colors.brass} />
                   <View>
                     <Text style={{ fontSize: 14, fontWeight: '700', color: colors.navy }}>Subscription Autopay</Text>
-                    <Text style={{ fontSize: 11, color: colors.inkSoft }}>Single active mandate • Zero double-billing</Text>
                   </View>
                 </View>
                 <View
@@ -1597,9 +1596,6 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
               <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                 <Feather name="file-text" size={32} color={colors.inkSoft} />
                 <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Invoices Issued Yet</Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                  Official tax invoices and downloadable receipts will appear here whenever your subscription is settled.
-                </Text>
               </View>
             ) : (
               myInvoices.map((inv) => {

@@ -5,12 +5,12 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   TextInput,
-  Modal,
   Alert,
 } from 'react-native';
+import { Modal } from '../components/Modal';
+import { SafeAreaView } from '../components/SafeScreen';
 import { Ionicons, Feather, FontAwesome5 } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { Header } from '../components/Header';
@@ -1584,9 +1584,6 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
               <View style={[styles.emptyCard, { marginTop: 12 }]}>
                 <Feather name="repeat" size={24} color={isDark ? '#94A3B8' : '#64748B'} />
                 <Text style={styles.emptyTitle}>No Active Lease</Text>
-                <Text style={styles.emptySub}>
-                  Renewal and vacate options appear once your lease is active.
-                </Text>
               </View>
             ) : (
               <>

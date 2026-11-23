@@ -3,13 +3,13 @@ import {
   View,
   Text,
   StyleSheet,
-  Modal,
   Animated,
   TouchableOpacity,
   TouchableWithoutFeedback,
   Platform,
   Alert,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { Feather, MaterialIcons, Ionicons } from '@expo/vector-icons';
 import { useMobileTheme } from './MobileThemeContext';
 

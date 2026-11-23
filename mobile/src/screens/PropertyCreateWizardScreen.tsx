@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   TextInput,
   Image,
   Alert,
@@ -15,6 +14,7 @@ import {
   RefreshControl,
   KeyboardAvoidingView,
 } from 'react-native';
+import { SafeAreaView } from '../components/SafeScreen';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { useMobileAppData } from '../context/MobileAppDataContext';
@@ -986,9 +986,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
               <Text style={[styles.structureBoxTitle, { color: colors.navy }]}>
                 Property Structure & Leasing Model *
               </Text>
-              <Text style={[styles.hintText, { marginBottom: 12 }]}>
-                Choose whether this asset is leased as a single unified property or partitioned into individual rentable units.
-              </Text>
 
               <View style={styles.structureCardsRow}>
                 {/* Option 1: Single-Unit Asset */}
@@ -1010,9 +1007,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     </View>
                     <Text style={[styles.structureCardName, { color: colors.navy }]}>🏡 Single-Unit Asset</Text>
                   </View>
-                  <Text style={[styles.structureCardDesc, { color: colors.inkSoft }]}>
-                    Entire house, standalone 4BHK villa, bungalow, or single shop leased as 1 complete property.
-                  </Text>
                 </TouchableOpacity>
 
                 {/* Option 2: Multi-Unit Complex */}
@@ -1034,9 +1028,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                     </View>
                     <Text style={[styles.structureCardName, { color: colors.navy }]}>🏢 Multi-Unit Complex</Text>
                   </View>
-                  <Text style={[styles.structureCardDesc, { color: colors.inkSoft }]}>
-                    Apartment building, gated villa community, or office plaza with multiple leasable units.
-                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1125,9 +1116,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
             <View style={{ marginBottom: 14 }}>
               <Text style={[styles.inputLabel, fieldErrors.propAddress && { color: '#EF4444' }]}>
                 Google Maps Places Address *
-              </Text>
-              <Text style={styles.hintText}>
-                Search and select location to auto-populate city, state, country, and coordinates.
               </Text>
 
               <View style={[styles.placesSearchBox, fieldErrors.propAddress && styles.inputError]}>
@@ -1458,9 +1446,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
             {/* Property Amenities & Perks */}
             <View style={{ marginTop: 16 }}>
               <Text style={styles.inputLabel}>Property Amenities & Perks</Text>
-              <Text style={styles.hintText}>
-                Select existing amenities or add custom perks unique to this property.
-              </Text>
 
               <View style={styles.chipGrid}>
                 {PREDEFINED_AMENITIES.map((am) => {
@@ -1527,9 +1512,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                 <View style={{ marginTop: 18, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.line }}>
                   <Text style={[styles.sectionHeader, { color: colors.navy }]}>
                     Upload Amenity Photos ({Object.keys(propAmenityPhotos).length}/{propAmenities.length} with photos)
-                  </Text>
-                  <Text style={styles.hintText}>
-                    Attach photos for active amenities to showcase on public listings and verification pages.
                   </Text>
 
                   <View style={styles.amenityPhotoGrid}>
@@ -1780,9 +1762,6 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                   <View style={[styles.bulkBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line }]}>
                     <Text style={[styles.bulkBoxTitle, { color: colors.navy }]}>
                       ⚡ Multi-Unit Automated Batch Generator
-                    </Text>
-                    <Text style={styles.bulkBoxSub}>
-                      Instantly generate units across your floors. Existing units in table will be replaced by this batch.
                     </Text>
 
                     <View style={styles.grid3}>

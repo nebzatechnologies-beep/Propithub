@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
@@ -9,6 +8,7 @@ import {
   ScrollView,
   Platform,
 } from 'react-native';
+import { Modal } from './Modal';
 import { Ionicons, Feather, FontAwesome5 } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import { httpsCallable } from 'firebase/functions';

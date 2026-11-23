@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
@@ -9,6 +8,7 @@ import {
   Image,
   Dimensions,
 } from 'react-native';
+import { Modal } from './Modal';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import {
   DocumentDownloadItem,

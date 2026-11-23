@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Propithub Mobile Simulator</title>
+<style>
+  :root {
+    --bg: #eef2f1; --panel: #ffffff; --ink: #0f172a; --soft: #64748b; --line: #dbe3e1;
+    --accent: #059669; --accent-ink: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b1210; --panel: #121c19; --ink: #e8f0ee; --soft: #8aa39c; --line: #22312d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; display: flex; gap: 40px;
+    align-items: center; justify-content: center; padding: 24px; flex-wrap: wrap; }
+  .stage { display: flex; align-items: center; justify-content: center; }
+  .phone { width: 414px; height: 884px; border-radius: 52px; background: #0b0f0e; padding: 12px;
+    box-shadow: 0 30px 60px rgba(0,0,0,.28), inset 0 0 0 2px #2a3330; position: relative;
+    transform-origin: top center; }
+  .screen { width: 390px; height: 860px; border-radius: 40px; overflow: hidden; position: relative; background: #fff; }
+  iframe { position: absolute; inset: 0; width: 390px; height: 860px; border: 0; background: #fff; }
+  .statusbar { position: absolute; top: 0; left: 0; right: 0; height: 34px; z-index: 3; display: flex;
+    align-items: center; justify-content: space-between; padding: 0 22px; font-size: 13px; font-weight: 600;
+    color: #0f172a; background: #ffffff; pointer-events: none; }
+  .statusbar .icons { display: flex; gap: 6px; align-items: center; }
+  .cam { position: absolute; top: 10px; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%;
+    background: #0b0f0e; z-index: 4; }
+  .navbar { position: absolute; bottom: 0; left: 0; right: 0; height: 22px; z-index: 3; background: #ffffff; pointer-events: none;
+    display: flex; align-items: center; justify-content: center; }
+  .navbar i { width: 120px; height: 4px; border-radius: 4px; background: #0f172a; opacity: .75; }
+  .panel { width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 0 0 14px; color: var(--soft); }
+  .cred { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+  .cred b { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--soft); margin-bottom: 4px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  code { font: 13px ui-monospace, Menlo, monospace; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line); background: transparent;
+    color: var(--ink); padding: 6px 10px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); width: 100%; padding: 10px; font-weight: 600; }
+  ul { padding-left: 18px; margin: 14px 0; color: var(--soft); }
+  li { margin-bottom: 6px; }
+  .note { font-size: 12px; color: var(--soft); border-top: 1px solid var(--line); padding-top: 12px; margin-top: 14px; }
+  @media (max-width: 860px) { .panel { width: 100%; max-width: 414px; } }
+</style>
+</head>
+<body>
+  <div class="stage" id="stage">
+    <div class="phone" id="phone">
+      <div class="screen">
+        <div class="statusbar"><span id="clock">9:41</span>
+          <span class="icons"><span>5G</span><span>&#9646;&#9646;&#9646;</span><span>86%</span></span></div>
+        <div class="cam"></div>
+        <iframe id="app" title="Propithub app" src="/simulator/app/?frame=android"></iframe>
+        <div class="navbar"><i></i></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h1>Propithub mobile simulator</h1>
+    <p>The real app running in your browser with practice data. Nothing here touches live accounts.</p>
+
+    <div class="cred"><b>Demo owner login</b>
+      <div class="row"><code id="em">owner@demo.propithub</code><button data-copy="em">Copy</button></div>
+      <div class="row" style="margin-top:6px"><code id="pw">demo1234</code><button data-copy="pw">Copy</button></div>
+    </div>
+
+    <button class="primary" id="reset">Reset demo data</button>
+
+    <ul>
+      <li>Add a property, then lease it: More &rarr; Leasing &rarr; New Lease.</li>
+      <li>The lease sheet shows a login for the new tenant. Sign out and use it to see the tenant side.</li>
+      <li>The status bar and bottom bar are drawn by this frame so you can check nothing overlaps.</li>
+    </ul>
+
+    <div class="note">Payments, email, SMS and push notifications are switched off here. Data is stored only in this browser.</div>
+  </div>
+
+<script>
+  var phone = document.getElementById('phone');
+  function fit() {
+    var s = Math.min(1, (window.innerHeight - 48) / 884);
+    phone.style.transform = 'scale(' + s + ')';
+    document.getElementById('stage').style.height = (884 * s) + 'px';
+    document.getElementById('stage').style.width = (414 * s) + 'px';
+  }
+  fit(); window.addEventListener('resize', fit);
+
+  function tick() {
+    var d = new Date(), h = d.getHours() % 12 || 12, m = ('0' + d.getMinutes()).slice(-2);
+    document.getElementById('clock').textContent = h + ':' + m;
+  }
+  tick(); setInterval(tick, 20000);
+
+  document.querySelectorAll('[data-copy]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var t = document.getElementById(b.dataset.copy).textContent;
+      var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1200); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, function () {});
+      else done();
+    });
+  });
+
+  document.getElementById('reset').addEventListener('click', function () {
+    try {
+      localStorage.removeItem('propithub-demo-db-v1');
+      localStorage.removeItem('propithub-demo-auth-v1');
+    } catch (e) {}
+    document.getElementById('app').src = '/simulator/app/?frame=android&t=' + Date.now();
+  });
+</script>
+</body>
+</html>

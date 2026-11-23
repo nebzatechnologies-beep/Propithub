@@ -1,15 +1,15 @@
 import React, { useMemo } from 'react';
 import {
-  Modal,
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   Platform,
   StatusBar,
 } from 'react-native';
+import { Modal } from './Modal';
+import { SafeAreaView } from './SafeScreen';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { ResourceQuotaType } from '../hooks/usePlanLimits';
 import { useMobileTheme } from '../context/MobileThemeContext';
@@ -113,7 +113,7 @@ export const PlanLimitModal: React.FC<PlanLimitModalProps> = ({
       onRequestClose={onClose}
     >
       <View style={styles.overlay}>
-        <SafeAreaView style={styles.safeArea}>
+        <SafeAreaView edges={[]} style={styles.safeArea}>
           <View style={styles.card}>
             {/* Header: Icon + Close Button */}
             <View style={styles.headerRow}>
@@ -244,7 +244,7 @@ const createStyles = (colors: ThemePalette, isDark: boolean) =>
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 28) + 16 : 48,
+    paddingTop: 16,
     paddingBottom: Platform.OS === 'android' ? 24 : 36,
   },
   safeArea: {

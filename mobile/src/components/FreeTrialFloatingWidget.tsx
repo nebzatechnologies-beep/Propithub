@@ -4,12 +4,12 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Modal,
   ScrollView,
   PanResponder,
   Animated,
   Platform,
 } from 'react-native';
+import { Modal } from './Modal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { usePlanLimits } from '../hooks/usePlanLimits';

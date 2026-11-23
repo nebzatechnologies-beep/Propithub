@@ -167,9 +167,6 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
         {/* Support SLA Banner (Dark Card) */}
         <View style={styles.darkCard}>
           <Text style={styles.slaTitle}>Enterprise Support Desk</Text>
-          <Text style={styles.slaDesc}>
-            Our team assists property owners, managers, and tenants with guaranteed 24-hour response turnaround.
-          </Text>
           <View style={styles.directContactRow}>
             <Feather name="mail" size={14} color="#10B981" style={{ marginRight: 6 }} />
             <Text style={styles.directEmail}>support@propithub.com</Text>
