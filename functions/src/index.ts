@@ -178,7 +178,7 @@ const RAZORPAY_BAD_KEYS_MESSAGE =
   'Razorpay rejected the API keys (authentication failed). In Connections, re-enter the Key ID and Key Secret copied together from the same Razorpay mode (Test or Live), then save again.';
 
 /** Checks a Razorpay key pair against Razorpay itself. Never throws. */
-async function verifyRazorpayKeys(keyId: string, keySecret: string): Promise<{ ok: boolean; message: string }> {
+async function verifyRazorpayKeys(keyId: string, keySecret: string): Promise<{ ok: boolean; message: string; rejected?: boolean }> {
   if (!keyId || !keySecret) return { ok: false, message: 'Key ID and Key Secret are both required.' };
   try {
     const rz: any = new Razorpay({ key_id: keyId, key_secret: keySecret });
@@ -186,12 +186,13 @@ async function verifyRazorpayKeys(keyId: string, keySecret: string): Promise<{ o
     return { ok: true, message: 'Razorpay accepted the keys.' };
   } catch (err: any) {
     const d = razorpayErrorDetail(err);
-    return { ok: false, message: d.status === 401 ? RAZORPAY_BAD_KEYS_MESSAGE : `Razorpay error: ${d.description}` };
+    // rejected = Razorpay positively said these credentials are wrong (as opposed to being unreachable)
+    return { ok: false, rejected: d.status === 401, message: d.status === 401 ? RAZORPAY_BAD_KEYS_MESSAGE : `Razorpay error: ${d.description}` };
   }
 }
 
 /** Checks PayPal client credentials by asking PayPal for an access token. Never throws. */
-async function verifyPaypalKeys(clientId: string, secret: string, mode: string): Promise<{ ok: boolean; message: string }> {
+async function verifyPaypalKeys(clientId: string, secret: string, mode: string): Promise<{ ok: boolean; message: string; rejected?: boolean }> {
   if (!clientId || !secret) return { ok: false, message: 'Client ID and Client Secret are both required.' };
   try {
     const host = mode === 'test' || mode === 'sandbox' ? 'api-m.sandbox.paypal.com' : 'api-m.paypal.com';
@@ -206,6 +207,7 @@ async function verifyPaypalKeys(clientId: string, secret: string, mode: string):
     if (res.ok) return { ok: true, message: 'PayPal accepted the credentials.' };
     return {
       ok: false,
+      rejected: res.status === 401,
       message: res.status === 401
         ? `PayPal rejected the credentials for ${host.includes('sandbox') ? 'Sandbox' : 'Live'} mode. Check the Client ID and Secret are from that same mode.`
         : `PayPal returned status ${res.status}.`,
@@ -3784,6 +3786,34 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
     activeBillingGateway: activeBillingGateway || 'stripe',
   };
 
+  // 0. Never overwrite a stored key pair with one the gateway positively rejects. A mistyped or mismatched
+  //    pair would otherwise replace keys that were working and break every payment.
+  const verification: Record<string, { ok: boolean; message: string; saved: boolean }> = {};
+  if (fullSecrets.razorpay.keyId && fullSecrets.razorpay.keySecret) {
+    const v = await verifyRazorpayKeys(fullSecrets.razorpay.keyId, fullSecrets.razorpay.keySecret);
+    verification.razorpay = { ok: v.ok, message: v.message, saved: true };
+    if (v.rejected) {
+      const prev = currentSecrets?.razorpay || {};
+      fullSecrets.razorpay.keyId = prev.keyId || '';
+      fullSecrets.razorpay.keySecret = prev.keySecret || '';
+      fullSecrets.razorpay.connected = Boolean(prev.keyId && prev.keySecret);
+      verification.razorpay.saved = false;
+      verification.razorpay.message += prev.keyId ? ' Your previously stored keys were left unchanged.' : ' Nothing was stored.';
+    }
+  }
+  if (fullSecrets.paypal.clientId && fullSecrets.paypal.secret) {
+    const v = await verifyPaypalKeys(fullSecrets.paypal.clientId, fullSecrets.paypal.secret, fullSecrets.paypal.mode);
+    verification.paypal = { ok: v.ok, message: v.message, saved: true };
+    if (v.rejected) {
+      const prev = currentSecrets?.paypal || {};
+      fullSecrets.paypal.clientId = prev.clientId || '';
+      fullSecrets.paypal.secret = prev.secret || '';
+      fullSecrets.paypal.connected = Boolean(prev.clientId && prev.secret);
+      verification.paypal.saved = false;
+      verification.paypal.message += prev.clientId ? ' Your previously stored credentials were left unchanged.' : ' Nothing was stored.';
+    }
+  }
+
   // 1. Secure storage (Zero client-side access)
   await db.collection('platformSecrets').doc('gateways').set({
     platformGateways: fullSecrets,
@@ -3829,16 +3859,6 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  // 3. Ask each gateway whether the saved keys actually work, so a wrong secret shows up now and not
-  //    later when a customer's payment fails.
-  const verification: Record<string, { ok: boolean; message: string }> = {};
-  if (fullSecrets.razorpay.keyId && fullSecrets.razorpay.keySecret) {
-    verification.razorpay = await verifyRazorpayKeys(fullSecrets.razorpay.keyId, fullSecrets.razorpay.keySecret);
-  }
-  if (fullSecrets.paypal.clientId && fullSecrets.paypal.secret) {
-    verification.paypal = await verifyPaypalKeys(fullSecrets.paypal.clientId, fullSecrets.paypal.secret, fullSecrets.paypal.mode);
-  }
-
   return { success: true, message: 'Platform gateway configurations securely saved.', verification };
 });
 
@@ -3875,7 +3895,19 @@ export const getPlatformSecretsStatus = functions.https.onCall(async (data, cont
   const gateways = await getPlatformGatewaysConfig();
   const comms = await getPlatformCommsConfig();
 
+  // Optional: ask the gateways whether the keys that are stored right now actually work.
+  const stored: Record<string, { ok: boolean; message: string }> = {};
+  if (data?.verify) {
+    if (gateways?.razorpay?.keyId && gateways?.razorpay?.keySecret) {
+      stored.razorpay = await verifyRazorpayKeys(gateways.razorpay.keyId, gateways.razorpay.keySecret);
+    }
+    if (gateways?.paypal?.clientId && gateways?.paypal?.secret) {
+      stored.paypal = await verifyPaypalKeys(gateways.paypal.clientId, gateways.paypal.secret, gateways.paypal.mode || 'live');
+    }
+  }
+
   return {
+    verification: stored,
     gateways: {
       stripe: {
         configured: Boolean(gateways?.stripe?.secretKey),

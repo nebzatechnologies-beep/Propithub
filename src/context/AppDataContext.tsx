@@ -55,7 +55,7 @@ import {
 } from '../types';
 
 export interface GatewaySaveResult {
-  verification: Record<string, { ok: boolean; message: string }>;
+  verification: Record<string, { ok: boolean; message: string; saved: boolean }>;
 }
 
 interface AppDataContextType {
