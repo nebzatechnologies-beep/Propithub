@@ -315,7 +315,7 @@ export const OwnerMaintenanceDispatchScreen: React.FC<OwnerMaintenanceDispatchSc
                       Unit {tck.unit} • {tck.propertyName} • Tenant: {tck.tenant} ({tck.tenantPhone})
                     </Text>
 
-                    {tck.preferredTimeSlot && (
+                    {!!(tck.preferredTimeSlot) && (
                       <Text style={styles.slotDetail}>
                         Preferred Time: {tck.preferredTimeSlot}
                       </Text>

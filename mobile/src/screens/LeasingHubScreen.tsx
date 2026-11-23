@@ -1960,7 +1960,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                           <View style={styles.agGridCol}>
                             <Text style={styles.agGridLabel}>RESIDENT</Text>
                             <Text style={styles.agGridValBold} numberOfLines={1}>{ag.tenant}</Text>
-                            {(ag.tenantEmail || ag.tenantPhone) && (
+                            {!!((ag.tenantEmail || ag.tenantPhone)) && (
                               <Text style={styles.agGridSub} numberOfLines={1}>{ag.tenantPhone || ag.tenantEmail}</Text>
                             )}
                           </View>
@@ -2880,13 +2880,13 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <Text style={styles.detailsLabel}>Resident Name:</Text>
                   <Text style={styles.detailsVal}>{viewingAgreement?.tenant}</Text>
                 </View>
-                {viewingAgreement?.tenantEmail && (
+                {!!(viewingAgreement?.tenantEmail) && (
                   <View style={styles.detailsRow}>
                     <Text style={styles.detailsLabel}>Email:</Text>
                     <Text style={styles.detailsVal}>{viewingAgreement.tenantEmail}</Text>
                   </View>
                 )}
-                {viewingAgreement?.tenantPhone && (
+                {!!(viewingAgreement?.tenantPhone) && (
                   <View style={styles.detailsRow}>
                     <Text style={styles.detailsLabel}>Phone:</Text>
                     <Text style={styles.detailsVal}>{viewingAgreement.tenantPhone}</Text>
@@ -2995,7 +2995,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 </View>
 
                 {/* 2. Resident Signed Copy */}
-                {viewingAgreement?.signedDocumentName && (
+                {!!(viewingAgreement?.signedDocumentName) && (
                   <View style={[styles.detailsDocBox, { marginTop: 8, borderColor: '#A7F3D0', backgroundColor: '#ECFDF5' }]}>
                     <Feather name="check-circle" size={14} color="#059669" />
                     <View style={{ flex: 1, marginLeft: 8 }}>

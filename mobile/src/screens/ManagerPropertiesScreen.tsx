@@ -1484,7 +1484,7 @@ export const ManagerPropertiesScreen: React.FC<ManagerPropertiesScreenProps> = (
 
             {viewingUnit && (
               <ScrollView showsVerticalScrollIndicator={false}>
-                {((viewingUnit.images && viewingUnit.images.length > 0) || viewingUnit.image) && (
+                {!!(((viewingUnit.images && viewingUnit.images.length > 0) || viewingUnit.image)) && (
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -1767,7 +1767,7 @@ export const ManagerPropertiesScreen: React.FC<ManagerPropertiesScreenProps> = (
           activeOpacity={1}
           onPress={() => setLightboxImage(null)}
         >
-          {lightboxImage && (
+          {!!(lightboxImage) && (
             <Image
               source={{ uri: lightboxImage }}
               style={{ width: '90%', height: '65%', borderRadius: 12 }}

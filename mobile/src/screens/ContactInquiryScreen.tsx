@@ -173,7 +173,7 @@ export const ContactInquiryScreen: React.FC<{ onBack?: () => void }> = ({ onBack
           </View>
         </View>
 
-        {submittedRef && (
+        {!!(submittedRef) && (
           <View style={[styles.successBanner, { backgroundColor: isDark ? 'rgba(16,185,129,0.14)' : '#ECFDF5', borderColor: '#10B981' }]}>
             <Feather name="check-circle" size={16} color="#10B981" style={{ marginRight: 8 }} />
             <Text style={{ flex: 1, fontSize: 12.5, fontWeight: '600', color: isDark ? '#A7F3D0' : '#065F46' }}>

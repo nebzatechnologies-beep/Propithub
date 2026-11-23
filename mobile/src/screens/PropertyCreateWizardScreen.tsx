@@ -846,7 +846,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
               placeholder="e.g. Maple Heights Residency, Tower A"
               placeholderTextColor={colors.inkSoft}
             />
-            {fieldErrors.propName && (
+            {!!(fieldErrors.propName) && (
               <Text style={styles.errorText}>⚠️ {fieldErrors.propName}</Text>
             )}
 
@@ -1161,7 +1161,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                   </TouchableOpacity>
                 ) : null}
               </View>
-              {fieldErrors.propAddress && (
+              {!!(fieldErrors.propAddress) && (
                 <Text style={styles.errorText}>⚠️ {fieldErrors.propAddress}</Text>
               )}
 
@@ -1527,7 +1527,7 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
                             <Text style={[styles.amenityCardName, { color: colors.navy }]} numberOfLines={1}>
                               {am}
                             </Text>
-                            {photo && (
+                            {!!(photo) && (
                               <View style={styles.photoAttachedBadge}>
                                 <Text style={styles.photoAttachedBadgeText}>✓ Photo</Text>
                               </View>

@@ -1619,7 +1619,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
                     <View style={[styles.invoiceCardBody, { borderTopColor: colors.line }]}>
                       <View>
                         <Text style={[styles.invoiceAmount, { color: colors.navy }]}>${inv.total.toFixed(2)} USD</Text>
-                        {inv.paymentMethod && (
+                        {!!(inv.paymentMethod) && (
                           <Text style={{ fontSize: 11, color: '#0D9488', fontWeight: '600', marginTop: 2 }}>
                             Mode: {inv.paymentMethod}
                           </Text>

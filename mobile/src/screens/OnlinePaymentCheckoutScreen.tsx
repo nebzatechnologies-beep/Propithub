@@ -791,7 +791,7 @@ export const OnlinePaymentCheckoutScreen: React.FC<{ onBack?: () => void; onSucc
               )}
 
               {/* Autopay Opt-in Checkbox */}
-              {selectedInvoice?.leaseAgreementId && (
+              {!!(selectedInvoice?.leaseAgreementId) && (
                 <TouchableOpacity
                   style={{
                     flexDirection: 'row',

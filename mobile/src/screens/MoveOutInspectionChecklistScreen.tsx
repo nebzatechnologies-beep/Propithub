@@ -414,7 +414,7 @@ export const MoveOutInspectionChecklistScreen: React.FC<MoveOutInspectionCheckli
                 </View>
               )}
 
-              {item.notes && <Text style={styles.notesText}>Note: {item.notes}</Text>}
+              {!!(item.notes) && <Text style={styles.notesText}>Note: {item.notes}</Text>}
             </View>
           );
         })}

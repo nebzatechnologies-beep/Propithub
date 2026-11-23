@@ -859,14 +859,14 @@ export const OwnerMessagesScreen: React.FC<OwnerMessagesScreenProps> = ({
               <Text style={[styles.annTitle, { color: colors.navy }]}>{ann.title}</Text>
               <Text style={[styles.annBody, { color: colors.inkSoft }]}>{ann.body}</Text>
 
-              {(ann.scheduledFor || ann.expiresAt) && (
+              {!!((ann.scheduledFor || ann.expiresAt)) && (
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
-                  {ann.scheduledFor && (
+                  {!!(ann.scheduledFor) && (
                     <Text style={{ fontSize: 11, color: isDark ? '#60A5FA' : '#2563EB', fontWeight: '600' }}>
                       Scheduled: {formatDateTimeInput(ann.scheduledFor)}
                     </Text>
                   )}
-                  {ann.expiresAt && (
+                  {!!(ann.expiresAt) && (
                     <Text style={{ fontSize: 11, color: colors.inkSoft, fontWeight: '600' }}>
                       Expires: {formatDateTimeInput(ann.expiresAt)}
                     </Text>

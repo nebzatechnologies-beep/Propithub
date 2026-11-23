@@ -809,7 +809,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                                   }}
                                   activeOpacity={0.75}
                                 >
-                                  {amPhoto && (
+                                  {!!(amPhoto) && (
                                     <Image
                                       source={{ uri: amPhoto }}
                                       style={{ width: 16, height: 16, borderRadius: 4 }}
@@ -1142,7 +1142,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                           </TouchableOpacity>
                         )}
 
-                        {(resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts) === 'vacant' || (u as any).isListedPublicly) && (
+                        {!!((resolveEffectiveUnitStatus(u, state.agreements, state.tenancyRequests, state.moveOuts) === 'vacant' || (u as any).isListedPublicly)) && (
                           <TouchableOpacity
                             onPress={() => handleToggleUnitPopular(u)}
                             style={{
@@ -1656,7 +1656,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
                 )}
 
                 {/* Detach Tenant Warning */}
-                {editStatus === 'vacant' && editingUnit.tenant && (
+                {!!(editStatus === 'vacant' && editingUnit.tenant) && (
                   <View style={styles.warningNotice}>
                     <Feather name="alert-triangle" size={14} color="#D97706" style={{ marginTop: 1 }} />
                     <Text style={styles.warningNoticeText}>
@@ -1959,7 +1959,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
 
               return (
                 <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 16 }}>
-                  {thumb && (
+                  {!!(thumb) && (
                     <Image
                       source={{ uri: thumb }}
                       style={{ width: '100%', height: 160, borderRadius: 12, marginBottom: 12 }}
@@ -2175,7 +2175,7 @@ export const PropertyPortfolioScreen: React.FC<PropertyPortfolioScreenProps> = (
               <Ionicons name="close" size={20} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
-          {previewImage?.url && (
+          {!!(previewImage?.url) && (
             <Image
               source={{ uri: previewImage.url }}
               style={{ width: '100%', height: 340, borderRadius: 16 }}

@@ -2407,7 +2407,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                   <View style={styles.divider} />
 
                   <View style={styles.invoiceLineItems}>
-                    {((inv as any).utilityCharges || (inv.lateFeeApplied || 0) > 0 || inv.lateFeeWaived) && (
+                    {!!(((inv as any).utilityCharges || (inv.lateFeeApplied || 0) > 0 || inv.lateFeeWaived)) && (
                       <>
                         <View style={styles.invoiceLineItem}>
                           <Text style={styles.lineItemLabel}>Monthly Rent</Text>
@@ -2622,7 +2622,7 @@ export const TenantPaymentsScreen: React.FC<TenantPaymentsScreenProps> = ({
                       </View>
                     </View>
 
-                    {isDeclined && (p.rejectionReason || p.notes) && (
+                    {!!(isDeclined && (p.rejectionReason || p.notes)) && (
                       <View style={styles.declineNoteBox}>
                         <Text style={styles.declineNoteText}>
                           Reason: {p.rejectionReason || p.notes}
