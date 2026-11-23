@@ -54,6 +54,10 @@ import {
   ListingBoostPlan,
 } from '../types';
 
+export interface GatewaySaveResult {
+  verification: Record<string, { ok: boolean; message: string }>;
+}
+
 interface AppDataContextType {
   state: AppState;
   updateState: (updater: (prev: AppState) => AppState) => void;
@@ -110,7 +114,7 @@ interface AppDataContextType {
   savePlatformInvoice: (invoice: PlatformInvoice) => Promise<void>;
   markPlatformInvoicePaid: (invoiceId: string, paymentMethod?: string, transactionRef?: string) => Promise<void>;
   savePlatformInvoiceTemplate: (tmpl: PlatformInvoiceTemplateConfig) => Promise<void>;
-  savePlatformGateways: (gateways: PlatformGateways, activeBillingGateway?: string) => Promise<void>;
+  savePlatformGateways: (gateways: PlatformGateways, activeBillingGateway?: string) => Promise<GatewaySaveResult>;
   saveTicket: (ticket: Ticket) => Promise<void>;
   saveMoveout: (moveout: MoveOut) => Promise<void>;
   saveOwnerSettings: (ownerId: string, settings: Partial<OwnerSettings>) => Promise<void>;
@@ -4072,7 +4076,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  const savePlatformGateways = async (gateways: PlatformGateways, activeBillingGateway?: string) => {
+  const savePlatformGateways = async (gateways: PlatformGateways, activeBillingGateway?: string): Promise<GatewaySaveResult> => {
     const act = (activeBillingGateway || gateways.activeBillingGateway || state.activeBillingGateway || 'stripe') as any;
     // Sanitize in memory: do not keep raw secrets in browser state
     const sanitizedGateways: PlatformGateways = {
@@ -4082,24 +4086,27 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       paypal: gateways.paypal ? { ...gateways.paypal, secret: '' } : undefined as any,
       easebuzz: gateways.easebuzz ? { ...gateways.easebuzz, salt: '' } : undefined as any,
     };
-    setState((prev) => ({
-      ...prev,
-      platformGateways: sanitizedGateways,
-      activeBillingGateway: act,
-    }));
-    if (isFirebaseConfigured) {
-      try {
-        const fn = httpsCallable(functions, 'savePlatformGateways');
-        await fn({ platformGateways: gateways, activeBillingGateway: act });
-      } catch (err) {
-        console.warn('Backend savePlatformGateways error, falling back to sanitized write:', err);
-        await setDoc(doc(db, 'platformConfig', 'gateways'), {
-          platformGateways: sanitizedGateways,
-          activeBillingGateway: act,
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      }
+    if (!isFirebaseConfigured) {
+      setState((prev) => ({ ...prev, platformGateways: sanitizedGateways, activeBillingGateway: act }));
+      return { verification: {} };
     }
+    // The secrets are only stored by the server function. If it fails, say so: never write a
+    // secret-less copy and report success, which is how a saved key could silently go missing.
+    let result: any;
+    try {
+      const fn = httpsCallable(functions, 'savePlatformGateways');
+      result = (await fn({ platformGateways: gateways, activeBillingGateway: act })).data;
+    } catch (err: any) {
+      const code = String(err?.code || '').replace('functions/', '');
+      const reason =
+        code === 'permission-denied' ? 'Only a super admin account can save gateway keys.'
+        : code === 'unauthenticated' ? 'You are signed out. Sign in again and retry.'
+        : code === 'not-found' ? 'The save service is not deployed yet.'
+        : err?.message || 'The server did not respond.';
+      throw new Error(reason);
+    }
+    setState((prev) => ({ ...prev, platformGateways: sanitizedGateways, activeBillingGateway: act }));
+    return { verification: result?.verification || {} };
   };
 
   const saveLandingConfig = async (cfg: Partial<LandingConfig>) => {

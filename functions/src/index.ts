@@ -165,6 +165,57 @@ async function getPlatformCommsConfig() {
 }
 
 /**
+ * Razorpay's SDK rejects with { statusCode, error: { code, description } } and no .message, so a plain
+ * err.message is empty. Pull out the real reason so it reaches the logs and the person who can fix it.
+ */
+function razorpayErrorDetail(err: any): { status: number; description: string } {
+  const status = Number(err?.statusCode || err?.error?.statusCode || 0);
+  const description = String(err?.error?.description || err?.message || 'Razorpay request failed.');
+  return { status, description };
+}
+
+const RAZORPAY_BAD_KEYS_MESSAGE =
+  'Razorpay rejected the API keys (authentication failed). In Connections, re-enter the Key ID and Key Secret copied together from the same Razorpay mode (Test or Live), then save again.';
+
+/** Checks a Razorpay key pair against Razorpay itself. Never throws. */
+async function verifyRazorpayKeys(keyId: string, keySecret: string): Promise<{ ok: boolean; message: string }> {
+  if (!keyId || !keySecret) return { ok: false, message: 'Key ID and Key Secret are both required.' };
+  try {
+    const rz: any = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    await rz.orders.all({ count: 1 });
+    return { ok: true, message: 'Razorpay accepted the keys.' };
+  } catch (err: any) {
+    const d = razorpayErrorDetail(err);
+    return { ok: false, message: d.status === 401 ? RAZORPAY_BAD_KEYS_MESSAGE : `Razorpay error: ${d.description}` };
+  }
+}
+
+/** Checks PayPal client credentials by asking PayPal for an access token. Never throws. */
+async function verifyPaypalKeys(clientId: string, secret: string, mode: string): Promise<{ ok: boolean; message: string }> {
+  if (!clientId || !secret) return { ok: false, message: 'Client ID and Client Secret are both required.' };
+  try {
+    const host = mode === 'test' || mode === 'sandbox' ? 'api-m.sandbox.paypal.com' : 'api-m.paypal.com';
+    const res = await fetch(`https://${host}/v1/oauth2/token`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${clientId}:${secret}`).toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+    });
+    if (res.ok) return { ok: true, message: 'PayPal accepted the credentials.' };
+    return {
+      ok: false,
+      message: res.status === 401
+        ? `PayPal rejected the credentials for ${host.includes('sandbox') ? 'Sandbox' : 'Live'} mode. Check the Client ID and Secret are from that same mode.`
+        : `PayPal returned status ${res.status}.`,
+    };
+  } catch (err: any) {
+    return { ok: false, message: `Could not reach PayPal: ${err?.message || err}` };
+  }
+}
+
+/**
  * Load gateway secrets for a transaction:
  * - Admin <-> Owner (Owner paying platform plan/subscription fees): Always uses Platform Gateway directly.
  * - Tenant <-> Owner (Tenant paying rent/deposits to Landlord): Prioritizes Landlord credentials if valid and configured, falling back to Platform Gateway.
@@ -3778,7 +3829,17 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  return { success: true, message: 'Platform gateway configurations securely saved.' };
+  // 3. Ask each gateway whether the saved keys actually work, so a wrong secret shows up now and not
+  //    later when a customer's payment fails.
+  const verification: Record<string, { ok: boolean; message: string }> = {};
+  if (fullSecrets.razorpay.keyId && fullSecrets.razorpay.keySecret) {
+    verification.razorpay = await verifyRazorpayKeys(fullSecrets.razorpay.keyId, fullSecrets.razorpay.keySecret);
+  }
+  if (fullSecrets.paypal.clientId && fullSecrets.paypal.secret) {
+    verification.paypal = await verifyPaypalKeys(fullSecrets.paypal.clientId, fullSecrets.paypal.secret, fullSecrets.paypal.mode);
+  }
+
+  return { success: true, message: 'Platform gateway configurations securely saved.', verification };
 });
 
 /**
@@ -4495,8 +4556,12 @@ export const createRazorpayOrder = functions.https.onCall(async (data, context) 
       paymentLinkError,
     };
   } catch (err: any) {
-    functions.logger.error('Razorpay order creation failed:', err);
-    throw new functions.https.HttpsError('internal', err.message || 'Razorpay order creation failed.');
+    const d = razorpayErrorDetail(err);
+    functions.logger.error(`Razorpay order creation failed (HTTP ${d.status}): ${d.description}`, { owner: ownerId || null, role: effectiveRole, keyId });
+    if (d.status === 401) {
+      throw new functions.https.HttpsError('failed-precondition', RAZORPAY_BAD_KEYS_MESSAGE);
+    }
+    throw new functions.https.HttpsError('internal', `Razorpay error: ${d.description}`);
   }
 });
 
