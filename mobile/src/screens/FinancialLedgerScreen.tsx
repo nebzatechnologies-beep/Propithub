@@ -1577,15 +1577,15 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                           </View>
                           <Text style={[styles.rentPropName, { color: colors.inkSoft }]}>{item.propertyName}</Text>
                         </View>
-                        {(item.tenantPhone || item.tenantEmail) && (
+                        {!!((item.tenantPhone || item.tenantEmail)) && (
                           <View style={styles.rentContactRow}>
-                            {item.tenantPhone && (
+                            {!!(item.tenantPhone) && (
                               <View style={styles.rentContactItem}>
                                 <Feather name="phone" size={11} color="#64748B" />
                                 <Text style={styles.rentContactText}>{item.tenantPhone}</Text>
                               </View>
                             )}
-                            {item.tenantEmail && (
+                            {!!(item.tenantEmail) && (
                               <View style={styles.rentContactItem}>
                                 <Feather name="mail" size={11} color="#64748B" />
                                 <Text style={styles.rentContactText} numberOfLines={1}>{item.tenantEmail}</Text>
@@ -1685,7 +1685,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                               + {format(item.accruedLateFee, item.currency)}
                             </Text>
                             <Text style={[styles.rentGridSub, { color: '#DC2626' }]}>accrued penalty</Text>
-                            {item.matchingInvoice?.id && (
+                            {!!(item.matchingInvoice?.id) && (
                               <TouchableOpacity
                                 style={{
                                   marginTop: 4,
@@ -1830,7 +1830,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                           <Text style={[styles.cashClaimMetaText, { color: colors.inkSoft }]}>
                             <Text style={{ fontWeight: '700', color: colors.navy }}>Handover Date:</Text> {c.handoverDate} • <Text style={{ fontWeight: '700', color: colors.navy }}>Location:</Text> {c.handoverLocation || 'On-Site'}
                           </Text>
-                          {c.notes && (
+                          {!!(c.notes) && (
                             <Text style={styles.cashClaimNote}>"{c.notes}"</Text>
                           )}
                         </View>
@@ -2003,7 +2003,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                         <View style={{ flex: 1, marginRight: 8 }}>
                           <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                             <Text style={styles.txnId}>{p.id}</Text>
-                            {p.cashClaimId && (
+                            {!!(p.cashClaimId) && (
                               <View style={styles.cashClaimTag}>
                                 <Text style={styles.cashClaimTagText}>Claim #{p.cashClaimId}</Text>
                               </View>
@@ -2251,7 +2251,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                                   ? `Overdue (Due ${inv.due})`
                                   : `Due on ${inv.due}`}
                           </Text>
-                          {inv.paymentMethodUsed && (
+                          {!!(inv.paymentMethodUsed) && (
                             <Text style={{ fontSize: 11, color: '#0D9488', fontWeight: '600', marginTop: 2 }}>
                               Settlement Mode: {inv.paymentMethodUsed}
                             </Text>
@@ -2482,12 +2482,12 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                         <Text style={styles.depositRecordUnit}>
                           Unit {item.unitNumber} • {item.propertyName}
                         </Text>
-                        {(item.tenantPhone || item.tenantEmail) && (
+                        {!!((item.tenantPhone || item.tenantEmail)) && (
                           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 3 }}>
-                            {item.tenantPhone && (
+                            {!!(item.tenantPhone) && (
                               <Text style={{ fontSize: 11, color: '#64748B' }}>📞 {item.tenantPhone}</Text>
                             )}
-                            {item.tenantEmail && (
+                            {!!(item.tenantEmail) && (
                               <Text style={{ fontSize: 11, color: '#64748B' }} numberOfLines={1}>✉ {item.tenantEmail}</Text>
                             )}
                           </View>
@@ -4374,7 +4374,7 @@ export const FinancialLedgerScreen: React.FC<FinancialLedgerScreenProps> = ({
                 <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.date}</Text>
               </View>
 
-              {reviewingPayment?.notes && (
+              {!!(reviewingPayment?.notes) && (
                 <View style={[styles.modalFieldBox, { backgroundColor: colors.surfaceSunken, borderColor: colors.line, padding: 10, borderRadius: 8, borderWidth: 1 }]}>
                   <Text style={[styles.modalFieldLabel, { color: colors.inkSoft }]}>Payer Remarks</Text>
                   <Text style={[styles.modalFieldVal, { color: colors.navy }]}>{reviewingPayment?.notes}</Text>

@@ -750,7 +750,7 @@ export const ManagerRepairDispatchScreen: React.FC<ManagerRepairDispatchScreenPr
           activeOpacity={1}
           onPress={() => setLightboxImage(null)}
         >
-          {lightboxImage && (
+          {!!(lightboxImage) && (
             <Image
               source={{ uri: lightboxImage }}
               style={{ width: '90%', height: '65%', borderRadius: 12 }}

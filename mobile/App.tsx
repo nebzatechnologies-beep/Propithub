@@ -2,6 +2,7 @@ import './src/lib/polyfills';
 import React, { useEffect, useRef, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { Platform, View, ActivityIndicator } from 'react-native';
+import { AppErrorBoundary, installGlobalErrorHandler } from './src/components/AppErrorBoundary';
 import { SafeAreaProvider, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
 import {
@@ -129,10 +130,14 @@ export default function App() {
       ? { top: 34, bottom: 22, left: 0, right: 0 }
       : null;
 
+  installGlobalErrorHandler();
+
   const app = (
-    <MobileThemeProvider>
-      <ThemedApp />
-    </MobileThemeProvider>
+    <AppErrorBoundary>
+      <MobileThemeProvider>
+        <ThemedApp />
+      </MobileThemeProvider>
+    </AppErrorBoundary>
   );
 
   return (

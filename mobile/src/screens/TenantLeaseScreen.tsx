@@ -1716,7 +1716,7 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                               Signed renewal ({matchingRenewal?.tenantSignedFileName || 'Signed_Copy.pdf'}) submitted. Awaiting landlord approval.
                             </Text>
                           </View>
-                          {matchingRenewal?.tenantSignedFileUrl && (
+                          {!!(matchingRenewal?.tenantSignedFileUrl) && (
                             <TouchableOpacity
                               style={styles.cardActionBtnSecondary}
                               onPress={() => {
@@ -2410,7 +2410,7 @@ export const TenantLeaseScreen: React.FC<TenantLeaseScreenProps> = ({ onGiveNoti
                 </View>
 
                 {/* Landlord's Dispatched Draft Agreement (if available) */}
-                {reviewingRenewal?.ownerAgreementFileUrl && (
+                {!!(reviewingRenewal?.ownerAgreementFileUrl) && (
                   <View style={[styles.renewalBreakdownBox, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0', borderWidth: 1 }]}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
                       <Feather name="file-text" size={16} color="#059669" style={{ marginRight: 6 }} />

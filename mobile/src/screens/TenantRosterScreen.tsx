@@ -1153,7 +1153,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
                       </View>
 
                       {/* Document Attached Chip */}
-                      {r.agreementFileName && (
+                      {!!(r.agreementFileName) && (
                         <View style={styles.reqDocChip}>
                           <Feather name="file-text" size={13} color="#059669" />
                           <Text style={styles.reqDocChipText} numberOfLines={1} ellipsizeMode="middle">

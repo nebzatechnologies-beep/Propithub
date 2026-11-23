@@ -634,9 +634,9 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
                 </View>
 
                 {/* Resident Contact Buttons (Phone & Email) */}
-                {(phone || email) && (
+                {!!((phone || email)) && (
                   <View style={styles.residentQuickBtns}>
-                    {phone && (
+                    {!!(phone) && (
                       <TouchableOpacity
                         style={[
                           styles.miniContactBtn,
@@ -652,7 +652,7 @@ export const StaffJobQueueScreen: React.FC<StaffJobQueueScreenProps> = ({
                       </TouchableOpacity>
                     )}
 
-                    {email && (
+                    {!!(email) && (
                       <TouchableOpacity
                         style={[
                           styles.miniContactBtn,

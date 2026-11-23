@@ -1383,7 +1383,7 @@ export const TenantDashboardScreen: React.FC<TenantDashboardScreenProps> = ({
           <TouchableOpacity style={styles.lightboxCloseBtn} onPress={() => setLightboxUrl(null)}>
             <Ionicons name="close" size={24} color="#FFFFFF" />
           </TouchableOpacity>
-          {lightboxUrl && (
+          {!!(lightboxUrl) && (
             <Image source={{ uri: lightboxUrl }} style={styles.lightboxImg} resizeMode="contain" />
           )}
         </TouchableOpacity>

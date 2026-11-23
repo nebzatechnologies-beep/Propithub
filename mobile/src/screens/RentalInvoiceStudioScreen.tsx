@@ -663,7 +663,7 @@ export const RentalInvoiceStudioScreen: React.FC<{
                 <Text style={styles.voucherMetaSub}>
                   Unit {selectedUnit?.unitNumber} • {selectedUnit?.propertyName}
                 </Text>
-                {matchedTenant?.email && <Text style={styles.voucherMetaSub}>{matchedTenant.email}</Text>}
+                {!!(matchedTenant?.email) && <Text style={styles.voucherMetaSub}>{matchedTenant.email}</Text>}
               </View>
 
               <View style={styles.voucherInfoCol}>
