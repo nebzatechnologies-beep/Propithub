@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   StatusBar,
   Alert,
-  Modal,
   Image,
   TextInput,
   RefreshControl,
@@ -15,6 +14,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';

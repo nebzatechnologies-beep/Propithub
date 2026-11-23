@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StatusBar,
-  Modal,
   TextInput,
   Alert,
   LayoutAnimation,
@@ -17,6 +16,7 @@ import {
   Linking,
   RefreshControl,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
@@ -1815,9 +1815,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <Text style={styles.limitWarningTitle}>
                     Tenant limit reached ({state.tenants.length}/{maxTenants} on {currentPlanName} tier)
                   </Text>
-                  <Text style={styles.limitWarningSub}>
-                    Upgrade your plan to add more tenancies and automated agreements.
-                  </Text>
                 </View>
               </View>
             )}
@@ -1900,9 +1897,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                 <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                   <Feather name="file-text" size={32} color={colors.inkSoft} />
                   <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Agreements Found</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    No legal tenancy agreements match your active filter. Use "Create Lease" to record a lease agreement.
-                  </Text>
                 </View>
               ) : (
                 displayedAgreements.map((ag) => {
@@ -2121,9 +2115,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                     <Feather name="calendar" size={32} color={colors.inkSoft} />
                     <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Renewals Due</Text>
-                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                      No active lease renewals on record. Expiring tenancies will automatically appear here.
-                    </Text>
                   </View>
                 ) : (
                   myRenewals.map((r) => {
@@ -2333,9 +2324,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                     <Feather name="folder" size={34} color={colors.inkSoft} />
                     <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Agreements Found</Text>
-                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                      No agreements or templates match your search. Upload standalone agreements to access and dispatch them anytime.
-                    </Text>
                     <TouchableOpacity
                       style={{
                         marginTop: 14,
@@ -2543,9 +2531,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                     <Feather name="bookmark" size={32} color={colors.primary} style={{ opacity: 0.8 }} />
                     <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Draft Leases</Text>
-                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                      You have no in-progress drafts. Create a draft ahead of time for any unit and assign it to an applicant when ready.
-                    </Text>
                   </View>
                 ) : (
                   displayedDrafts.map((d) => {
@@ -2678,9 +2663,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                   <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                     <Feather name="users" size={32} color={colors.primary} style={{ opacity: 0.8 }} />
                     <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Listing Enquiries Yet</Text>
-                    <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                      When prospective tenants discover your vacant units and submit viewing enquiries, they will appear here with direct contact actions.
-                    </Text>
                   </View>
                 ) : (
                   myEnquiries.map((enq) => {
@@ -3920,9 +3902,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                       marginBottom: 16,
                     }}
                   >
-                    <Text style={{ fontSize: 13, color: colors.inkSoft, lineHeight: 18 }}>
-                      Find an existing tenant by name, email, or phone, or add a new one directly below.
-                    </Text>
                   </View>
 
                   {/* Form Mode: Register / Edit Resident Details */}
@@ -3992,9 +3971,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                         placeholder="Leave blank for a random one"
                         placeholderTextColor={colors.inkSoft}
                       />
-                      <Text style={{ fontSize: 11, color: colors.inkSoft, marginBottom: 12 }}>
-                        Tenant will use this password to sign in for the first time and inspect the lease.
-                      </Text>
 
                       <TouchableOpacity
                         style={{
@@ -4389,9 +4365,16 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                         nestedScrollEnabled
                       >
                         {myProperties.length === 0 ? (
-                          <View style={[styles.modalInput, { justifyContent: 'center', paddingVertical: 10 }]}>
-                            <Text style={{ fontSize: 12, color: colors.inkSoft }}>No properties</Text>
-                          </View>
+                          <TouchableOpacity
+                            style={[styles.modalInput, { justifyContent: 'center', paddingVertical: 10, borderColor: '#10B981' }]}
+                            activeOpacity={0.8}
+                            onPress={() => {
+                              setShowUploadAgreementModal(false);
+                              onNavigate?.('property_create_wizard');
+                            }}
+                          >
+                            <Text style={{ fontSize: 12, fontWeight: '700', color: '#059669' }}>+ Add property</Text>
+                          </TouchableOpacity>
                         ) : (
                           myProperties.map((p) => {
                             const isSelected = uploadPropertyId === p.id;
@@ -4449,7 +4432,7 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
                           return (
                             <View style={{ padding: 14 }}>
                               <Text style={{ fontSize: 13, color: colors.inkSoft, textAlign: 'center' }}>
-                                No vacant units available for this property.
+                                No vacant units.
                               </Text>
                             </View>
                           );
@@ -5326,9 +5309,6 @@ export const LeasingHubScreen: React.FC<LeasingHubScreenProps> = ({
             <View style={styles.modalTop}>
               <View style={{ flex: 1, marginRight: 8 }}>
                 <Text style={[styles.modalTitle, { color: colors.navy }]}>Upload Agreement Document</Text>
-                <Text style={[styles.modalSub, { color: colors.inkSoft }]} numberOfLines={1}>
-                  Add reusable templates & legal contracts to your library
-                </Text>
               </View>
               <TouchableOpacity
                 onPress={() => {

@@ -5,11 +5,11 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   TextInput,
   Alert,
   Linking,
 } from 'react-native';
+import { SafeAreaView } from '../components/SafeScreen';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
 import { Header } from '../components/Header';
 import { useMobileAppData } from '../context/MobileAppDataContext';

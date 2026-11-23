@@ -20,9 +20,10 @@ import { useMobileCurrency } from '../context/MobileCurrencyContext';
 import { MobileAgreement } from '../types';
 import { isSingleUnitProperty } from '../lib/propertyTypes';
 
-export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSuccess?: () => void }> = ({
+export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSuccess?: () => void; onAddProperty?: () => void }> = ({
   onBack,
   onSuccess,
+  onAddProperty,
 }) => {
   const { colors, isDark } = useMobileTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
@@ -299,9 +300,18 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
 
         <Text style={styles.inputLabel}>Select Building</Text>
         {properties.length === 0 ? (
-          <Text style={styles.emptyHelperText}>
-            No properties found for your account. Add a property before drafting a lease.
-          </Text>
+          <View style={{ gap: 10, marginVertical: 8 }}>
+            <Text style={styles.emptyHelperText}>No properties yet.</Text>
+            {onAddProperty && (
+              <TouchableOpacity
+                onPress={onAddProperty}
+                activeOpacity={0.85}
+                style={{ backgroundColor: '#059669', borderRadius: 12, paddingVertical: 12, alignItems: 'center' }}
+              >
+                <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>Add Property</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         ) : (
           <View style={styles.pickerRow}>
             {properties.map((p) => {
@@ -432,9 +442,7 @@ export const LeaseDraftingBuilderScreen: React.FC<{ onBack?: () => void; onSucce
           <>
             <Text style={styles.inputLabel}>Select Vacant Unit ({unitsInProp.length} available)</Text>
             {unitsInProp.length === 0 ? (
-              <Text style={styles.emptyHelperText}>
-                No vacant units available in this property. All units are currently occupied or reserved.
-              </Text>
+              <Text style={styles.emptyHelperText}>No vacant units in this property.</Text>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row', marginVertical: 6 }}>
                 {unitsInProp.map((u) => {

@@ -218,9 +218,6 @@ export const OwnerDisputesReviewsScreen: React.FC<OwnerDisputesReviewsScreenProp
         <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.line }]}>
           <Feather name="award" size={32} color={colors.inkSoft} />
           <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Resident Reviews Yet</Text>
-          <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-            When verified residents complete move-out or submit ratings, they will appear here.
-          </Text>
         </View>
       ) : (
         reviews.map((r) => {

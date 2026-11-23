@@ -5,15 +5,15 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   TextInput,
-  Modal,
   Alert,
   Linking,
   LayoutAnimation,
   ActivityIndicator,
 } from 'react-native';
+import { Modal } from '../components/Modal';
+import { SafeAreaView } from '../components/SafeScreen';
 import { Ionicons, Feather, MaterialIcons, FontAwesome5 } from '@expo/vector-icons';
 import { collection, getDocs } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../lib/firebase';
@@ -945,9 +945,6 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
                 <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                   <Feather name="users" size={36} color={colors.inkSoft} />
                   <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Tenants Found</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    Invite registered tenants or onboard new residents to start managing leases.
-                  </Text>
                 </View>
               ) : (
                 filteredResidents.map((t) => {
@@ -1069,9 +1066,6 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
                 <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                   <Feather name="mail" size={36} color={colors.inkSoft} />
                   <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Tenancy Requests Sent</Text>
-                  <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                    Search registered tenants looking for properties and send them a formal lease invitation.
-                  </Text>
                 </View>
               ) : (
                 tenancyRequests.map((r) => {
@@ -2227,6 +2221,7 @@ export const TenantRosterScreen: React.FC<TenantRosterScreenProps> = ({
       {/* 1-to-1 Web Parity: Unified 3-Step Onboard Resident & Lease Wizard */}
       <LeasingHubScreen
         modalOnly={true}
+        onNavigate={onNavigate}
         openOnboardSignal={onboardSignal}
       />
     </SafeAreaView>

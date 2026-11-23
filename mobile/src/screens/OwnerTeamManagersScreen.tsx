@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Modal,
   TextInput,
   Alert,
   Share,
@@ -13,6 +12,7 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../lib/firebase';
@@ -496,9 +496,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                 <Text style={[styles.emptyTitle, { color: colors.navy }]}>
                   Property managers not included in {currentPlanName} plan
                 </Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                  Upgrade your subscription plan to delegate properties, provision manager logins, and track compensation payouts.
-                </Text>
                 <TouchableOpacity
                   style={[styles.emptyCtaBtn, { backgroundColor: colors.brass }]}
                   onPress={() => onNavigate?.('owner_plan_subscription')}
@@ -515,9 +512,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                 </View>
                 <Text style={[styles.emptyTitle, { color: colors.ink, textAlign: 'center' }]}>
                   No Property Managers Delegated
-                </Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                  Delegate operations across your properties (Allowance: {maxManagers} {maxManagers === 1 ? 'manager' : 'managers'}).
                 </Text>
                 <TouchableOpacity
                   style={styles.emptyCtaBtn}
@@ -674,9 +668,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
               <View style={[styles.emptyContainer, { backgroundColor: colors.surface, borderColor: colors.line }]}>
                 <Feather name="credit-card" size={32} color={colors.inkSoft} />
                 <Text style={[styles.emptyTitle, { color: colors.navy }]}>No Disbursed Payouts</Text>
-                <Text style={[styles.emptySub, { color: colors.inkSoft }]}>
-                  Record management fees or commissions under the Managers tab.
-                </Text>
               </View>
             ) : (
               myPayouts.map((payout) => (
@@ -716,7 +707,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
             <View style={styles.modalTop}>
               <View>
                 <Text style={[styles.modalTitle, { color: colors.navy }]}>Onboard Property Manager</Text>
-                <Text style={[styles.modalSub, { color: colors.inkSoft }]}>Provision login credentials and assign buildings</Text>
               </View>
               <TouchableOpacity onPress={() => setShowAddModal(false)}>
                 <Ionicons name="close" size={22} color={colors.inkSoft} />
@@ -794,7 +784,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                   <Feather name={showPassword ? 'eye-off' : 'eye'} size={18} color="#64748B" />
                 </TouchableOpacity>
               </View>
-              <Text style={styles.passHint}>Auto-generated secure password. Manager can reset anytime.</Text>
 
               <TouchableOpacity
                 style={styles.submitBtn}
@@ -825,9 +814,6 @@ export const OwnerTeamManagersScreen: React.FC<OwnerTeamManagersScreenProps> = (
                 <Feather name="check" size={24} color="#16A34A" />
               </View>
               <Text style={[styles.credsTitle, { color: colors.navy }]}>Manager Account Ready! 🎉</Text>
-              <Text style={[styles.credsSub, { color: colors.inkSoft }]}>
-                Share these credentials with {credentialsModal?.name} to log in.
-              </Text>
             </View>
 
             <View style={styles.credsBox}>

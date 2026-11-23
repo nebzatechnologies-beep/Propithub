@@ -6,10 +6,10 @@ import {
   TouchableOpacity,
   ScrollView,
   Image,
-  Modal,
   Alert,
   Platform,
 } from 'react-native';
+import { Modal } from './Modal';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';

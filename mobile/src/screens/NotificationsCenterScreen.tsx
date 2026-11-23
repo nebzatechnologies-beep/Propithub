@@ -8,10 +8,10 @@ import {
   RefreshControl,
   KeyboardAvoidingView,
   Platform,
-  Modal,
   TextInput,
   Alert,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';

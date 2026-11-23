@@ -4,15 +4,15 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  SafeAreaView,
   TextInput,
   TouchableOpacity,
-  Modal,
   Alert,
   Linking,
   ActivityIndicator,
   Image,
 } from 'react-native';
+import { Modal } from '../components/Modal';
+import { SafeAreaView } from '../components/SafeScreen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -1899,6 +1899,7 @@ export const ManagerLeaseDocumentsScreen: React.FC<ManagerLeaseDocumentsScreenPr
       {/* 1-to-1 Web Parity: Unified 3-Step Onboard Resident & Lease Wizard */}
       <LeasingHubScreen
         modalOnly={true}
+        onNavigate={onNavigate}
         openOnboardSignal={onboardSignal}
       />
     </SafeAreaView>

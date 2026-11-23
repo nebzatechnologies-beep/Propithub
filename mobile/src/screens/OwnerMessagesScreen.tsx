@@ -7,11 +7,11 @@ import {
   TouchableOpacity,
   TextInput,
   Switch,
-  Modal,
   Alert,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';

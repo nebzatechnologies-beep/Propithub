@@ -5,12 +5,12 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
-  Modal,
   TextInput,
   Alert,
 } from 'react-native';
+import { Modal } from '../components/Modal';
+import { SafeAreaView } from '../components/SafeScreen';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';

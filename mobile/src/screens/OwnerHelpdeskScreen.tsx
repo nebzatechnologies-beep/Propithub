@@ -5,13 +5,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Modal,
   TextInput,
   Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';

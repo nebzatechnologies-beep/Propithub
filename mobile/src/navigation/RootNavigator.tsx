@@ -5,11 +5,11 @@ import {
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  Modal,
   ActivityIndicator,
   StatusBar,
   Alert,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { UserRole } from '../types';
@@ -207,7 +207,8 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
   );
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [selectedMoveOutId, setSelectedMoveOutId] = useState<string>('');
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [menuMode, setMenuMode] = useState<null | 'more' | 'profile'>(null);
+  const showMoreMenu = menuMode !== null;
   const historyRef = useRef<string[]>([]);
 
   // Enforce owner paywall synchronously on render (matching Web ProtectedRoute.tsx)
@@ -234,7 +235,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
   }, [isOwnerPaywalled, isPaywallAllowedScreen]);
 
   const navigate = (key: string) => {
-    setShowMoreMenu(false);
+    setMenuMode(null);
     let resolvedKey = key;
     if (resolvedKey === 'financial_ledger' && role === 'tenant') {
       resolvedKey = 'tenant_payments';
@@ -400,7 +401,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
           text: 'Log Out',
           style: 'destructive',
           onPress: () => {
-            setShowMoreMenu(false);
+            setMenuMode(null);
             logout();
           },
         },
@@ -414,7 +415,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'owner_dashboard':
         return (
           <OwnerDashboardScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
@@ -422,7 +423,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'property_portfolio':
         return (
           <PropertyPortfolioScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onAddPropertyPress={() => navigate('property_create_wizard')}
             onNavigate={navigate}
           />
@@ -430,7 +431,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'tenant_roster':
         return (
           <TenantRosterScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onSelectTenant360={(tId) => {
               setSelectedTenantId(tId);
               navigate('tenant_360_detail');
@@ -442,7 +443,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'leasing_hub':
         return (
           <LeasingHubScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNewAgreementPress={() => navigate('lease_drafting_builder')}
             onInitiateNoticePress={() => navigate('vacates_moveout')}
             onNavigate={navigate}
@@ -451,7 +452,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'financial_ledger':
         return (
           <FinancialLedgerScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onCreateInvoicePress={() => navigate('rental_invoice_studio')}
             onPaymentPress={() => navigate('online_payment_checkout')}
             onNavigate={navigate}
@@ -460,7 +461,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'vacates_moveout':
         return (
           <VacatesMoveoutScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onInspectPress={(mId) => {
               if (mId) setSelectedMoveOutId(mId);
               navigate('moveout_inspection_checklist');
@@ -471,7 +472,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'owner_maintenance_dispatch':
         return (
           <OwnerMaintenanceDispatchScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onCreateTicketPress={() => navigate('create_maintenance_ticket')}
             onNavigate={navigate}
           />
@@ -479,7 +480,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'owner_messages':
         return (
           <OwnerMessagesScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
@@ -488,7 +489,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
           <OwnerTeamManagersScreen
             initialTab="managers"
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
       case 'manager_compensation':
@@ -496,27 +497,27 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
           <OwnerTeamManagersScreen
             initialTab="payouts"
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
       case 'owner_disputes_reviews':
         return (
           <OwnerDisputesReviewsScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
       case 'owner_helpdesk':
         return (
           <OwnerHelpdeskScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
       case 'owner_plan_subscription':
         return (
           <OwnerPlanSubscriptionScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
             onBack={() => navigate('owner_dashboard')}
           />
@@ -527,7 +528,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
         return (
           <TenantDashboardScreen
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
       case 'tenant_lease':
@@ -535,7 +536,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
           <TenantLeaseScreen
             onGiveNoticePress={() => navigate('vacates_moveout')}
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
       case 'tenant_payments':
@@ -543,7 +544,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
           <TenantPaymentsScreen
             onPayInvoicePress={() => navigate('online_payment_checkout')}
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
       case 'tenant_maintenance':
@@ -552,14 +553,14 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
             onCreateTicketPress={() => navigate('create_maintenance_ticket')}
             onPayChargePress={() => navigate('online_payment_checkout')}
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
       case 'tenant_landlord_reviews':
         return (
           <TenantLandlordReviewsScreen
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
       case 'tenant_find_home':
@@ -567,7 +568,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
           <TenantFindHomeScreen
             onBack={() => navigate('tenant_dashboard')}
             onNavigate={navigate}
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
           />
         );
 
@@ -575,7 +576,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'manager_operations':
         return (
           <ManagerOperationsScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
@@ -583,7 +584,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'manager_repair_dispatch':
         return (
           <ManagerRepairDispatchScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onCreateTicketPress={() => navigate('create_maintenance_ticket')}
             onNavigate={navigate}
           />
@@ -591,21 +592,21 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'manager_properties':
         return (
           <ManagerPropertiesScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
       case 'manager_payments':
         return (
           <ManagerPaymentApprovalsScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
       case 'manager_lease_documents':
         return (
           <ManagerLeaseDocumentsScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onViewPdfPress={() => navigate('document_pdf_viewer')}
             onNavigate={navigate}
           />
@@ -616,7 +617,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'staff_job_queue':
         return (
           <StaffJobQueueScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNotificationsPress={() => navigate('notifications_center')}
           />
         );
@@ -624,14 +625,14 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       case 'staff_earnings':
         return (
           <StaffTaskPaymentsScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNotificationsPress={() => navigate('notifications_center')}
           />
         );
       case 'staff_ratings':
         return (
           <StaffRatingsScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNotificationsPress={() => navigate('notifications_center')}
           />
         );
@@ -668,6 +669,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
           <LeaseDraftingBuilderScreen
             onBack={() => navigate(retLease)}
             onSuccess={() => navigate(retLease)}
+            onAddProperty={() => navigate('property_create_wizard')}
           />
         );
       }
@@ -717,7 +719,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
       default:
         return (
           <OwnerDashboardScreen
-            onProfilePress={() => setShowMoreMenu(true)}
+            onProfilePress={() => setMenuMode('profile')}
             onNavigate={navigate}
           />
         );
@@ -769,7 +771,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
                 <TourTarget key="__more__" id="tab-__more__" style={styles.tabItem}>
                   <TouchableOpacity
                     style={{ alignItems: 'center', justifyContent: 'center', width: '100%' }}
-                    onPress={() => setShowMoreMenu(true)}
+                    onPress={() => setMenuMode('more')}
                     activeOpacity={0.7}
                   >
                     <View
@@ -883,12 +885,12 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
         visible={showMoreMenu}
         animationType="fade"
         transparent={true}
-        onRequestClose={() => setShowMoreMenu(false)}
+        onRequestClose={() => setMenuMode(null)}
       >
         <TouchableOpacity
           style={styles.sheetBackdrop}
           activeOpacity={1}
-          onPress={() => setShowMoreMenu(false)}
+          onPress={() => setMenuMode(null)}
         >
           <TouchableOpacity
             activeOpacity={1}
@@ -909,7 +911,8 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
               bounces={false}
               contentContainerStyle={{ paddingBottom: 8 }}
             >
-              {/* Compact Profile Strip */}
+              {/* Profile strip */}
+              {menuMode === 'profile' && (
               <View
                 style={[
                   styles.profileCard,
@@ -938,7 +941,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
                     </Text>
                   </View>
                   <TouchableOpacity
-                    onPress={() => setShowMoreMenu(false)}
+                    onPress={() => setMenuMode(null)}
                     style={[styles.moreCloseBtn, { backgroundColor: colors.surface }]}
                     activeOpacity={0.8}
                   >
@@ -995,12 +998,13 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
                   </TouchableOpacity>
                 </View>
               </View>
+              )}
 
               {/* ── 3-Column Workspace Grid (Owner & Tenant extra modules) ─── */}
-              {moreItemRows.length > 0 && (
+              {menuMode === 'more' && moreItemRows.length > 0 && (
                 <>
                   <View style={styles.moreSectionLabel}>
-                    <Text style={[styles.moreSectionLabelText, { color: colors.inkSoft }]}>WORKSPACES</Text>
+                    <Text style={[styles.moreSectionLabelText, { color: colors.inkSoft }]}>More</Text>
                   </View>
                   <View style={styles.gridContainer}>
                     {moreItemRows.map((row, rIdx) => (
@@ -1060,7 +1064,8 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
                 </>
               )}
 
-              {/* ── Quick Account & Theme Actions ──────────────────────────── */}
+              {/* Account actions */}
+              {menuMode === 'profile' && (
               <View style={styles.profileActions}>
                 <TouchableOpacity
                   style={[
@@ -1094,6 +1099,7 @@ export const RootNavigator: React.FC<RootNavigatorProps> = ({ onRegisterNavigate
                   </Text>
                 </TouchableOpacity>
               </View>
+              )}
             </ScrollView>
           </TouchableOpacity>
         </TouchableOpacity>

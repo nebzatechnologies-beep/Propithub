@@ -5,9 +5,9 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Modal,
   Alert,
 } from 'react-native';
+import { Modal } from '../components/Modal';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Header } from '../components/Header';
@@ -666,9 +666,6 @@ export const OwnerDashboardScreen: React.FC<OwnerDashboardScreenProps> = ({
                 {myManagers.length === 1
                   ? `${myManagers[0].name} is ready for delegation`
                   : `${myManagers.length} property managers onboarded`}
-              </Text>
-              <Text style={[styles.onboardedManagersSub, isDark && { color: colors.inkSoft }]}>
-                Create your first property to assign management over units, leases, and maintenance tickets.
               </Text>
             </View>
           </View>

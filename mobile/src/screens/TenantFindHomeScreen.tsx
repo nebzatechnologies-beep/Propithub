@@ -5,13 +5,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   TextInput,
   Image,
-  Modal,
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { Modal } from '../components/Modal';
+import { SafeAreaView } from '../components/SafeScreen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, Feather, FontAwesome } from '@expo/vector-icons';
 import { ScreenStatusBar } from '../components/ScreenStatusBar';
@@ -695,9 +695,6 @@ export const TenantFindHomeScreen: React.FC<TenantFindHomeScreenProps> = ({
             <View style={styles.emptyCard}>
               <Feather name="inbox" size={32} color={colors.inkSoft} style={{ opacity: 0.5 }} />
               <Text style={styles.emptyTitle}>No Enquiries Submitted Yet</Text>
-              <Text style={styles.emptySub}>
-                When you find an available home and submit an enquiry, its live status will appear here.
-              </Text>
               <TouchableOpacity
                 onPress={() => setActiveTab('listings')}
                 style={{ marginTop: 8, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#10B981', borderRadius: 8 }}
@@ -781,9 +778,6 @@ export const TenantFindHomeScreen: React.FC<TenantFindHomeScreenProps> = ({
                   <View style={{ flex: 1, marginRight: 8 }}>
                     <Text style={styles.modalTitle}>
                       Unit {detailUnit.unitNumber} · {prop?.name || detailUnit.propertyName || 'Property'}
-                    </Text>
-                    <Text style={styles.modalSub}>
-                      Verified Direct Landlord Listing
                     </Text>
                   </View>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>

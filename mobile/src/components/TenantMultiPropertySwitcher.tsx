@@ -4,10 +4,10 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Modal,
   ScrollView,
-  SafeAreaView,
 } from 'react-native';
+import { Modal } from './Modal';
+import { SafeAreaView } from './SafeScreen';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { MobileUnit } from '../types';
 import { getCurrencySymbol } from '../lib/currencyService';
