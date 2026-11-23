@@ -82,6 +82,10 @@
   </div>
 
 <script>
+  // On a real phone, skip the frame and open the app full-screen.
+  if (/iPhone|iPad|Android/i.test(navigator.userAgent) && window.innerWidth < 600 && location.search.indexOf('frame') < 0) {
+    location.replace('/simulator/app/');
+  }
   var phone = document.getElementById('phone');
   function fit() {
     var s = Math.min(1, (window.innerHeight - 48) / 884);
