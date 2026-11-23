@@ -12,6 +12,9 @@ fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
 rm -rf ../public/simulator/app
 EXPO_PUBLIC_DEMO_BACKEND=1 npx expo export -p web --output-dir ../public/simulator/app
 OUT=../public/simulator/app
+# Firebase Hosting never serves anything under a node_modules folder, so move the icon fonts out of it.
+mv "$OUT/assets/node_modules" "$OUT/assets/vendor"
+grep -rl "assets/node_modules" "$OUT" | xargs sed -i 's#assets/node_modules#assets/vendor#g'
 cp assets/pwa/icon-180.png assets/pwa/icon-192.png assets/pwa/icon-512.png "$OUT/"
 cat > "$OUT/manifest.json" <<'JSON'
 {"name":"Propithub Demo","short_name":"Propithub","start_url":"/simulator/app/","scope":"/simulator/app/","display":"standalone","background_color":"#ffffff","theme_color":"#059669","icons":[{"src":"/simulator/app/icon-192.png","sizes":"192x192","type":"image/png"},{"src":"/simulator/app/icon-512.png","sizes":"512x512","type":"image/png"}]}
