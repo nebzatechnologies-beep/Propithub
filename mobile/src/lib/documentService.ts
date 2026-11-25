@@ -418,7 +418,7 @@ export async function downloadDocument(doc: DocumentDownloadItem): Promise<boole
     const dataUrl = getOrGenerateDocumentDataUrl(doc);
 
     // 1. Web Environment: Direct download anchor click
-    if (Platform.OS === 'web' || typeof window !== 'undefined') {
+    if (Platform.OS === 'web') {
       const link = document.createElement('a');
       link.href = dataUrl;
       link.download = cleanFileName;

@@ -211,7 +211,9 @@ export async function scheduleDeviceReminderAsync(
         sound: true,
         badge: 1,
       },
+      // expo-notifications 0.32 needs an explicit trigger type for dated schedules.
       trigger: {
+        type: (Notifications as any).SchedulableTriggerInputTypes?.DATE ?? 'date',
         date: scheduledDate,
       } as any,
     });

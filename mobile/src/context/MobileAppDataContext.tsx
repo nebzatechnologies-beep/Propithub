@@ -48,6 +48,7 @@ import { calculateMobileInvoiceLateFee } from '../lib/lateFeeService';
 import { DEFAULT_CURRENCY_SYMBOL, formatCurrencyAmount } from '../lib/currencyService';
 import { uploadOrCompressDocument, getObjectByteSize } from '../lib/imageUploader';
 import { generateTempPassword } from '../lib/tempPassword';
+import { docData } from '../lib/firestoreData';
 
 export const DEFAULT_CASH_CLAIMS: MobileCashHandoverClaim[] = [];
 export const DEFAULT_TENANCY_REQUESTS: MobileTenancyRequest[] = [];
@@ -368,7 +369,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const unsubReviews = onSnapshot(collection(db, 'reviews'), (snap) => {
       const items: MobileTenantReview[] = [];
       snap.forEach((d) => {
-        const raw = d.data() as any;
+        const raw = docData(d) as any;
         const ownerVal = raw.owner || raw.ownerName || 'Property Owner';
         const byVal = raw.by || raw.tenantName || 'Verified Resident';
         const textVal = raw.text || raw.comment || '';
@@ -388,7 +389,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubPlans = onSnapshot(collection(db, 'plans'), (snap) => {
       const items: MobilePlan[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePlan));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobilePlan));
       if (items.length > 0) {
         setState((prev) => ({ ...prev, plans: items }));
       }
@@ -396,7 +397,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubBoostPlans = onSnapshot(collection(db, 'listingBoostPlans'), (snap) => {
       const items: ListingBoostPlan[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as ListingBoostPlan));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as ListingBoostPlan));
       if (items.length > 0) {
         setState((prev) => ({ ...prev, boostPlans: items }));
       }
@@ -404,7 +405,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubGateways = onSnapshot(doc(db, 'platformConfig', 'gateways'), (snap) => {
       if (snap.exists()) {
-        const data = snap.data();
+        const data = docData(snap);
         if (data && data.platformGateways) {
           setState((prev) => ({
             ...prev,
@@ -419,7 +420,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubTrial = onSnapshot(doc(db, 'platformConfig', 'trialPolicy'), (snap) => {
       if (snap.exists()) {
-        const data = snap.data();
+        const data = docData(snap);
         const hasDays = typeof data.defaultTrialDays === 'number';
         const hasDiscount = typeof data.annualDiscountPercent === 'number';
         if (hasDays || hasDiscount) {
@@ -447,19 +448,19 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubProps = onSnapshot(collection(db, 'properties'), (snap) => {
       const items: MobileProperty[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileProperty));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileProperty));
       setState((prev) => ({ ...prev, properties: items }));
     }, (err) => handleSyncError('properties', err));
 
     const unsubUnits = onSnapshot(collection(db, 'units'), (snap) => {
       const items: MobileUnit[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileUnit));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileUnit));
       setState((prev) => ({ ...prev, units: items }));
     }, (err) => handleSyncError('units', err));
 
     const unsubTenants = onSnapshot(collection(db, 'tenants'), (snap) => {
       const items: MobileTenantRecord[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileTenantRecord));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileTenantRecord));
       // Deduplicate by email and unit
       const seenTenantKeys = new Set<string>();
       const dedupedTenants: MobileTenantRecord[] = [];
@@ -481,7 +482,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const unsubAgreements = onSnapshot(collection(db, 'agreements'), (snap) => {
       const items: MobileAgreement[] = [];
       snap.forEach((d) => {
-        const item = { id: d.id, ...d.data() } as MobileAgreement;
+        const item = { id: d.id, ...docData(d) } as MobileAgreement;
         if ((item as any).status === 'awaiting_owner_signature') {
           item.status = 'pending_approval';
           if (isFirebaseConfigured) {
@@ -517,19 +518,19 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubTemplates = onSnapshot(collection(db, 'agreementTemplates'), (snap) => {
       const items: MobileAgreementTemplate[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileAgreementTemplate));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileAgreementTemplate));
       setState((prev) => ({ ...prev, agreementTemplates: items }));
     }, (err) => handleSyncError('agreementTemplates', err));
 
     const unsubInvoices = onSnapshot(collection(db, 'invoices'), (snap) => {
       const items: MobileInvoice[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileInvoice));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileInvoice));
       setState((prev) => ({ ...prev, invoices: items }));
     }, (err) => handleSyncError('invoices', err));
 
     const unsubPayments = onSnapshot(collection(db, 'payments'), (snap) => {
       const items: MobilePaymentTransaction[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePaymentTransaction));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobilePaymentTransaction));
       // Deduplicate by invoiceId and id
       const invoicePayMap = new Map<string, string>();
       const payMap = new Map<string, MobilePaymentTransaction>();
@@ -548,19 +549,19 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubTickets = onSnapshot(collection(db, 'tickets'), (snap) => {
       const items: MobileTicket[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileTicket));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileTicket));
       setState((prev) => ({ ...prev, tickets: items }));
     }, (err) => handleSyncError('tickets', err));
 
     const unsubStaff = onSnapshot(collection(db, 'staff'), (snap) => {
       const items: MobileStaffMember[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileStaffMember));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileStaffMember));
       setState((prev) => ({ ...prev, staff: items }));
     }, (err) => handleSyncError('staff', err));
 
     const unsubAnnouncements = onSnapshot(collection(db, 'announcements'), (snap) => {
       const items: MobileAnnouncement[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileAnnouncement));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileAnnouncement));
       setState((prev) => {
         const prevAnnMap = new Map((prev.announcements || []).map((a) => [a.id, a]));
         const merged = items.map((fbA) => {
@@ -576,7 +577,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const unsubAcks = onSnapshot(collection(db, 'announcementAcknowledgments'), (snap) => {
       const acksByAnnId = new Map<string, string[]>();
       snap.forEach((d) => {
-        const data = d.data();
+        const data = docData(d);
         if (data && data.announcementId && (data.tenantId || data.tenantEmail)) {
           const list = acksByAnnId.get(data.announcementId) || [];
           if (data.tenantId) list.push(data.tenantId);
@@ -610,7 +611,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubTenancyRequests = onSnapshot(collection(db, 'tenancyRequests'), (snap) => {
       const items: MobileTenancyRequest[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileTenancyRequest));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileTenancyRequest));
       setState((prev) => ({
         ...prev,
         tenancyRequests: items
@@ -619,7 +620,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubEnquiries = onSnapshot(collection(db, 'enquiries'), (snap) => {
       const items: MobilePropertyEnquiry[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePropertyEnquiry));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobilePropertyEnquiry));
       setState((prev) => ({
         ...prev,
         enquiries: items,
@@ -628,7 +629,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubRenewals = onSnapshot(collection(db, 'renewals'), (snap) => {
       const items: MobileRenewalItem[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileRenewalItem));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileRenewalItem));
       const getRenewalTs = (item: MobileRenewalItem) => {
         const t = (item as any).offeredAt || (item as any).ownerApprovedAt || (item as any).tenantSignedAt || (item as any).respondedAt || (item as any).requestedAt;
         return t ? new Date(t).getTime() : 0;
@@ -646,7 +647,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const unsubMoveouts = onSnapshot(collection(db, 'moveouts'), (snap) => {
       const items: MobileMoveOut[] = [];
       snap.forEach((d) => {
-        const data = d.data() as any;
+        const data = docData(d) as any;
         const normalizedStatus =
           data.status === 'awaiting_tenant_approval' || data.status === 'settlement_pending'
             ? 'refund_scheduled'
@@ -659,7 +660,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const unsubSettlements = onSnapshot(collection(db, 'depositSettlements'), (snap) => {
       const items: MobileDepositSettlement[] = [];
       snap.forEach((d) => {
-        const data = d.data() as any;
+        const data = docData(d) as any;
         items.push({ id: d.id, ...data } as MobileDepositSettlement);
       });
       setState((prev) => ({ ...prev, depositSettlements: items }));
@@ -667,57 +668,57 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubManagers = onSnapshot(collection(db, 'propertyManagers'), (snap) => {
       const items: MobilePropertyManager[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePropertyManager));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobilePropertyManager));
       setState((prev) => ({ ...prev, propertyManagers: items }));
     }, (err) => handleSyncError('propertyManagers', err));
 
     const unsubManagerPayouts = onSnapshot(collection(db, 'managerPayouts'), (snap) => {
       const items: MobileManagerPayout[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileManagerPayout));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileManagerPayout));
       setState((prev) => ({ ...prev, managerPayouts: items }));
     }, (err) => handleSyncError('managerPayouts', err));
 
     const unsubStaffSchedules = onSnapshot(collection(db, 'staffSchedules'), (snap) => {
       const items: MobileStaffScheduleItem[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as unknown as MobileStaffScheduleItem));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as unknown as MobileStaffScheduleItem));
       setState((prev) => ({ ...prev, staffSchedules: items }));
     }, (err) => handleSyncError('staffSchedules', err));
 
     const unsubCashClaims = onSnapshot(collection(db, 'cashClaims'), (snap) => {
       const items: MobileCashHandoverClaim[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileCashHandoverClaim));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileCashHandoverClaim));
       setState((prev) => ({ ...prev, cashClaims: items }));
     }, (err) => handleSyncError('cashClaims', err));
 
 
     const unsubNotifications = onSnapshot(collection(db, 'notifications'), (snap) => {
       const items: MobileInAppNotification[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileInAppNotification));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileInAppNotification));
       setState((prev) => ({ ...prev, notifications: items }));
     }, (err) => handleSyncError('notifications', err));
 
     const unsubPlatformSupport = onSnapshot(collection(db, 'platformSupport'), (snap) => {
       const items: MobilePlatformSupportTicket[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePlatformSupportTicket));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobilePlatformSupportTicket));
       setState((prev) => ({ ...prev, platformSupport: items }));
     }, (err) => handleSyncError('platformSupport', err));
 
     const unsubPlatformInvoices = onSnapshot(collection(db, 'platformInvoices'), (snap) => {
       const items: MobilePlatformInvoice[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobilePlatformInvoice));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobilePlatformInvoice));
       setState((prev) => ({ ...prev, platformInvoices: items }));
     }, (err) => handleSyncError('platformInvoices', err));
 
     const unsubPlatformTemplate = onSnapshot(doc(db, 'platformConfig', 'invoiceTemplate'), (snap) => {
       if (snap.exists()) {
-        setState((prev) => ({ ...prev, platformInvoiceTemplate: snap.data() as MobilePlatformInvoiceTemplateConfig }));
+        setState((prev) => ({ ...prev, platformInvoiceTemplate: docData(snap) as MobilePlatformInvoiceTemplateConfig }));
       }
     }, (err) => handleSyncError('platformInvoiceTemplate', err));
 
     const unsubOwners = onSnapshot(collection(db, 'owners'), (snap) => {
       const ownerMap: Record<string, MobileOwnerSettings> = {};
       snap.forEach((d) => {
-        const data = d.data();
+        const data = docData(d);
         ownerMap[d.id] = { id: d.id, ...data } as unknown as MobileOwnerSettings;
         // paymentMethods field on the owner doc (written by web app) is captured here
         if (data.paymentMethods) {
@@ -737,13 +738,13 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
       const items: MobileUserProfile[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileUserProfile));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileUserProfile));
       setState((prev) => ({ ...prev, users: items }));
     }, (err) => handleSyncError('users', err));
 
     const unsubCommLogs = onSnapshot(collection(db, 'communicationLogs'), (snap) => {
       const items: MobileCommunicationLog[] = [];
-      snap.forEach((d) => items.push({ id: d.id, ...d.data() } as MobileCommunicationLog));
+      snap.forEach((d) => items.push({ id: d.id, ...docData(d) } as MobileCommunicationLog));
       if (items.length > 0) {
         setState((prev) => ({ ...prev, communicationLogs: items }));
       }
@@ -751,7 +752,7 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubComms = onSnapshot(doc(db, 'platformConfig', 'comms'), (snap) => {
       if (snap.exists()) {
-        const data = snap.data();
+        const data = docData(snap);
         if (data && data.commsConfig) {
           setState((prev) => ({
             ...prev,

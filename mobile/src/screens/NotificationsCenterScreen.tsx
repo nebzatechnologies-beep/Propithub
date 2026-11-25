@@ -45,6 +45,20 @@ const resolveMobileScreenFromLink = (link: string, role?: string): string | null
   return null;
 };
 
+/** Dates can arrive as ISO strings, Firestore Timestamps or be missing; never throw while rendering. */
+const formatNotifDate = (value: any): string => {
+  try {
+    if (!value) return '';
+    if (typeof value === 'string') return value.split('T')[0];
+    const d = typeof value?.toDate === 'function' ? value.toDate() : new Date(value);
+    return Number.isFinite(d.getTime()) ? d.toISOString().split('T')[0] : '';
+  } catch {
+    return '';
+  }
+};
+
+const asText = (value: any): string => (typeof value === 'string' ? value : value == null ? '' : String(value));
+
 interface NotificationsCenterScreenProps {
   onBack?: () => void;
   onNavigate?: (screenKey: string) => void;
@@ -254,11 +268,11 @@ export const NotificationsCenterScreen: React.FC<NotificationsCenterScreenProps>
                       style={[styles.notifTitle, { color: colors.navy, flex: 1, paddingRight: 8 }, !notif.isRead && styles.notifTitleBold]}
                       numberOfLines={2}
                     >
-                      {notif.title}
+                      {asText(notif.title)}
                     </Text>
                     {!notif.isRead && <View style={styles.unreadDot} />}
                   </View>
-                  <Text style={[styles.notifBody, { color: colors.inkSoft }]}>{notif.body}</Text>
+                  <Text style={[styles.notifBody, { color: colors.inkSoft }]}>{asText(notif.body)}</Text>
 
                   {showCashClaimActions && (
                     <View style={styles.claimActionsRow}>
@@ -286,7 +300,7 @@ export const NotificationsCenterScreen: React.FC<NotificationsCenterScreenProps>
                     </View>
                   )}
 
-                  <Text style={[styles.notifTime, { color: colors.inkSoft }]}>{notif.createdAt.split('T')[0]}</Text>
+                  <Text style={[styles.notifTime, { color: colors.inkSoft }]}>{formatNotifDate(notif.createdAt)}</Text>
                 </View>
               </TouchableOpacity>
             );

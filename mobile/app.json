@@ -3,7 +3,7 @@
     "name": "Propithub",
     "slug": "propithub-mobile",
     "owner": "nebzas-team",
-    "version": "2.4.0",
+    "version": "2.5.0",
     "scheme": "propithub",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

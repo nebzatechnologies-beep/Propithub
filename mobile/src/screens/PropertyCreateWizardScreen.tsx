@@ -2151,13 +2151,13 @@ export const PropertyCreateWizardScreen: React.FC<PropertyCreateWizardScreenProp
               {propStructure === 'single_unit' ? (
                 <View style={styles.singleUnitReviewSpecs}>
                   <Text style={styles.singleUnitReviewLine}>
-                    <b>Identifier:</b> {singleUnitLabel || 'Entire House'} • <b>Type:</b> {singleUnitType}
+                    <Text style={{ fontWeight: '700' }}>Identifier:</Text> {singleUnitLabel || 'Entire House'} • <Text style={{ fontWeight: '700' }}>Type:</Text> {singleUnitType}
                   </Text>
                   <Text style={styles.singleUnitReviewLine}>
-                    <b>Monthly Rent:</b> {getSymbol(propCurrency)}{singleUnitRent.toLocaleString()}/mo • <b>Deposit:</b> {getSymbol(propCurrency)}{singleUnitDeposit.toLocaleString()}
+                    <Text style={{ fontWeight: '700' }}>Monthly Rent:</Text> {getSymbol(propCurrency)}{singleUnitRent.toLocaleString()}/mo • <Text style={{ fontWeight: '700' }}>Deposit:</Text> {getSymbol(propCurrency)}{singleUnitDeposit.toLocaleString()}
                   </Text>
                   <Text style={styles.singleUnitReviewLine}>
-                    <b>Area:</b> {singleUnitAreaSqFt} sq.ft • <b>Furnishing:</b> {singleUnitFurnishing}
+                    <Text style={{ fontWeight: '700' }}>Area:</Text> {singleUnitAreaSqFt} sq.ft • <Text style={{ fontWeight: '700' }}>Furnishing:</Text> {singleUnitFurnishing}
                   </Text>
                 </View>
               ) : (
