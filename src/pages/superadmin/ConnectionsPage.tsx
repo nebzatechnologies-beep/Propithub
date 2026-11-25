@@ -24,6 +24,7 @@ export const ConnectionsPage: React.FC = () => {
   const [razorpaySecret, setRazorpaySecret] = useState('');
   const [paypalClient, setPaypalClient] = useState(state.platformGateways.paypal?.clientId || '');
   const [paypalSecret, setPaypalSecret] = useState('');
+  const [paypalMode, setPaypalMode] = useState<'live' | 'test'>(state.platformGateways.paypal?.mode === 'test' ? 'test' : 'live');
   const [easebuzzKey, setEasebuzzKey] = useState(state.platformGateways.easebuzz?.merchantKey || '');
   const [easebuzzSalt, setEasebuzzSalt] = useState('');
   const [easebuzzSubMerchant, setEasebuzzSubMerchant] = useState(state.platformGateways.easebuzz?.subMerchantId || '');
@@ -100,6 +101,7 @@ export const ConnectionsPage: React.FC = () => {
       }
       if (state.platformGateways.paypal) {
         setPaypalClient(state.platformGateways.paypal.clientId || '');
+        setPaypalMode(state.platformGateways.paypal.mode === 'test' ? 'test' : 'live');
       }
       if (state.platformGateways.easebuzz) {
         setEasebuzzKey(state.platformGateways.easebuzz.merchantKey || '');
@@ -281,6 +283,7 @@ export const ConnectionsPage: React.FC = () => {
           ...state.platformGateways.paypal,
           clientId: paypalClient.trim(),
           secret: paypalSecret.trim(),
+          mode: paypalMode,
           connected: Boolean(paypalClient.trim() && paypalSecret.trim()),
           enabled: state.platformGateways.paypal?.enabled ?? true,
         },
@@ -790,9 +793,33 @@ export const ConnectionsPage: React.FC = () => {
                             placeholder="Client secret"
                           />
                         </div>
+                        <div className="field">
+                          <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Mode</label>
+                          <select value={paypalMode} onChange={(e) => setPaypalMode(e.target.value === 'test' ? 'test' : 'live')}>
+                            <option value="live">Live (real payments)</option>
+                            <option value="test">Sandbox (testing only)</option>
+                          </select>
+                        </div>
                       </div>
-                      <button type="button" className="btn brass small" onClick={savePayPalKeys}>
-                        Save
+                      <div style={{ fontSize: '12px', color: 'var(--ink-soft)', marginBottom: '10px' }}>
+                        Use the Client ID and Secret from the same app in the PayPal Developer dashboard, on the tab that matches the mode. PayPal takes USD, EUR, GBP and most other currencies, but not INR.
+                      </div>
+                      <button
+                        type="button"
+                        className={`btn brass small ${savingKey === 'paypal' ? 'btn-processing' : ''}`}
+                        onClick={savePayPalKeys}
+                        disabled={savingKey === 'paypal'}
+                      >
+                        {savingKey === 'paypal' ? 'Saving...' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        style={{ marginLeft: '8px' }}
+                        onClick={() => checkStoredKeys('paypal')}
+                        disabled={savingKey === 'check-paypal'}
+                      >
+                        {savingKey === 'check-paypal' ? 'Checking...' : 'Check stored keys'}
                       </button>
                     </div>
                   )}

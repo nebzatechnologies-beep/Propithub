@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Pay with Razorpay</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#111827;color:#fff;display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;margin:0;padding:24px}
+  button,a.btn{background:#10b981;color:#052e1b;border:0;border-radius:10px;padding:12px 22px;font-size:16px;font-weight:700;margin-top:14px;cursor:pointer;display:inline-block;text-decoration:none}
+  a.quiet{color:#9ca3af;display:block;margin-top:16px;font-size:14px}
+  .amt{font-size:28px;font-weight:800;margin:6px 0}
+</style>
+</head>
+<body>
+<div>
+  <p id="title">Opening secure Razorpay checkout…</p>
+  <div class="amt" id="amt"></div>
+  <p id="msg" style="color:#9ca3af;font-size:14px"></p>
+  <button id="pay" style="display:none">Pay now</button>
+  <a class="quiet" id="back" href="propithub://payment-callback?gateway=razorpay&status=cancel">Cancel and return to the app</a>
+</div>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+  var q = new URLSearchParams(location.search);
+  var APP = 'propithub://payment-callback';
+  function backToApp(params) {
+    var url = APP + '?' + new URLSearchParams(params).toString();
+    document.getElementById('back').setAttribute('href', url);
+    location.replace(url);
+  }
+  var key = q.get('key'), order = q.get('order');
+  var amount = parseInt(q.get('amount') || '0', 10), currency = (q.get('currency') || 'INR').toUpperCase();
+  document.getElementById('amt').textContent = (amount / 100).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' ' + currency;
+  function open() {
+    if (!window.Razorpay) { document.getElementById('msg').textContent = 'Could not load Razorpay. Check your connection and tap Pay now.'; document.getElementById('pay').style.display = 'inline-block'; return; }
+    var rzp = new window.Razorpay({
+      key: key, order_id: order, amount: amount, currency: currency,
+      name: q.get('name') || 'Propithub', description: q.get('desc') || '',
+      prefill: { email: q.get('email') || '', contact: q.get('contact') || '' },
+      theme: { color: '#10b981' },
+      handler: function (r) {
+        document.getElementById('title').textContent = 'Payment received. Returning to Propithub…';
+        backToApp({ gateway: 'razorpay', status: 'success', order_id: r.razorpay_order_id || order, payment_id: r.razorpay_payment_id, signature: r.razorpay_signature });
+      },
+      modal: { ondismiss: function () { document.getElementById('title').textContent = 'Checkout closed'; document.getElementById('pay').style.display = 'inline-block'; } }
+    });
+    rzp.on('payment.failed', function (r) {
+      document.getElementById('msg').textContent = (r && r.error && r.error.description) || 'The payment failed. You can try again.';
+    });
+    rzp.open();
+  }
+  document.getElementById('pay').onclick = open;
+  if (!key || !order) { document.getElementById('title').textContent = 'This payment link is incomplete.'; } else { window.addEventListener('load', open); }
+</script>
+</body>
+</html>

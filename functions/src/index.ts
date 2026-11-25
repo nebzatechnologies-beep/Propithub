@@ -194,8 +194,8 @@ async function verifyRazorpayKeys(keyId: string, keySecret: string): Promise<{ o
 /** Checks PayPal client credentials by asking PayPal for an access token. Never throws. */
 async function verifyPaypalKeys(clientId: string, secret: string, mode: string): Promise<{ ok: boolean; message: string; rejected?: boolean }> {
   if (!clientId || !secret) return { ok: false, message: 'Client ID and Client Secret are both required.' };
-  try {
-    const host = mode === 'test' || mode === 'sandbox' ? 'api-m.sandbox.paypal.com' : 'api-m.paypal.com';
+  const tryMode = async (m: string) => {
+    const host = m === 'test' || m === 'sandbox' ? 'api-m.sandbox.paypal.com' : 'api-m.paypal.com';
     const res = await fetch(`https://${host}/v1/oauth2/token`, {
       method: 'POST',
       headers: {
@@ -204,14 +204,23 @@ async function verifyPaypalKeys(clientId: string, secret: string, mode: string):
       },
       body: 'grant_type=client_credentials',
     });
-    if (res.ok) return { ok: true, message: 'PayPal accepted the credentials.' };
-    return {
-      ok: false,
-      rejected: res.status === 401,
-      message: res.status === 401
-        ? `PayPal rejected the credentials for ${host.includes('sandbox') ? 'Sandbox' : 'Live'} mode. Check the Client ID and Secret are from that same mode.`
-        : `PayPal returned status ${res.status}.`,
-    };
+    return res.status;
+  };
+  try {
+    const isSandbox = mode === 'test' || mode === 'sandbox';
+    const status = await tryMode(mode);
+    if (status >= 200 && status < 300) return { ok: true, message: `PayPal accepted the credentials (${isSandbox ? 'Sandbox' : 'Live'} mode).` };
+    if (status === 401) {
+      const otherOk = await tryMode(isSandbox ? 'live' : 'sandbox').then((s2) => s2 >= 200 && s2 < 300).catch(() => false);
+      return {
+        ok: false,
+        rejected: true,
+        message: otherOk
+          ? `These are ${isSandbox ? 'Live' : 'Sandbox'} credentials, but the mode is set to ${isSandbox ? 'Sandbox' : 'Live'}. Switch the Mode and save again.`
+          : `PayPal rejected the credentials. Copy the Client ID and Secret together from the same app in the PayPal Developer dashboard (${isSandbox ? 'Sandbox' : 'Live'} tab).`,
+      };
+    }
+    return { ok: false, message: `PayPal returned status ${status}.` };
   } catch (err: any) {
     return { ok: false, message: `Could not reach PayPal: ${err?.message || err}` };
   }
@@ -4494,7 +4503,7 @@ export const createRazorpayOrder = functions.https.onCall(async (data, context) 
     throw new functions.https.HttpsError('invalid-argument', 'Valid payment amount is required.');
   }
 
-  const isOwnerTxn = role === 'owner' || receipt?.startsWith('sub_') || receipt?.startsWith('PINV-') || notes?.purpose === 'platform_subscription';
+  const isOwnerTxn = isPlatformPayment(role, receipt, notes);
   const effectiveRole = isOwnerTxn ? 'owner' : role;
 
   // Anti-duplicate active plan subscription safeguard
@@ -4787,7 +4796,7 @@ export const verifyRazorpayPayment = functions.https.onCall(async (data, context
     throw new functions.https.HttpsError('invalid-argument', 'Missing Razorpay signature verification parameters.');
   }
 
-  const isOwnerTxn = role === 'owner' || paymentRecordId?.startsWith('SUB-') || paymentRecordId?.startsWith('PINV-');
+  const isOwnerTxn = isPlatformPayment(role, paymentRecordId, null);
   const effectiveRole = isOwnerTxn ? 'owner' : role;
   const rzpCfg = isOwnerTxn
     ? ((await getPlatformGatewaysConfig())?.razorpay || {})
@@ -4884,100 +4893,328 @@ export const verifyRazorpayPayment = functions.https.onCall(async (data, context
 });
 
 /**
+ * 15d. getRazorpayOrderStatus (Callable)
+ * For the mobile app: after the hosted checkout closes (paid, cancelled or the window was just dismissed), the
+ * app asks the server to check the order with Razorpay. Only a genuinely paid order for THIS payment record
+ * is settled; nothing the app says is trusted.
+ */
+export const getRazorpayOrderStatus = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+  const { orderId, paymentRecordId, ownerId, role } = data || {};
+  const rec = String(paymentRecordId || '').trim();
+  if (!orderId || typeof orderId !== 'string' || !rec) {
+    throw new functions.https.HttpsError('invalid-argument', 'orderId and paymentRecordId are required.');
+  }
+
+  const platform = isPlatformPayment(role, rec, null);
+  const rzpCfg = platform
+    ? ((await getPlatformGatewaysConfig())?.razorpay || {})
+    : await resolveGatewayConfig('razorpay', ownerId, role);
+  const keyId = rzpCfg?.keyId || process.env.RAZORPAY_KEY_ID;
+  const keySecret = rzpCfg?.keySecret || process.env.RAZORPAY_KEY_SECRET;
+  if (!keyId || !keySecret || keySecret.includes('•••')) {
+    throw new functions.https.HttpsError('failed-precondition', 'Razorpay API keys are not configured.');
+  }
+
+  try {
+    const instance: any = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    const order = await instance.orders.fetch(orderId);
+    if (String(order?.receipt || '') !== rec.substring(0, 40)) {
+      throw new functions.https.HttpsError('permission-denied', 'This order does not belong to this invoice.');
+    }
+    const paid = order?.status === 'paid' || (Number(order?.amount || 0) > 0 && Number(order?.amount_paid || 0) >= Number(order?.amount || 0));
+    if (!paid) {
+      return { paid: false, status: String(order?.status || ''), paymentId: '' };
+    }
+    const payments = await instance.orders.fetchPayments(orderId);
+    const good = (payments?.items || []).find((p: any) => p.status === 'captured') || (payments?.items || [])[0];
+    const paymentId = String(good?.id || '');
+
+    const recDoc = await db.collection('payments').doc(rec).get();
+    const recAmount = Number(recDoc.data()?.amount || 0);
+    const recCur = String(recDoc.data()?.currency || '').toUpperCase();
+    if (recDoc.exists && recAmount > 0 && recCur && recCur === String(order?.currency || '').toUpperCase()
+        && Number(order?.amount || 0) < Math.round(recAmount * 100)) {
+      throw new functions.https.HttpsError('permission-denied', 'The amount paid is lower than the amount due.');
+    }
+
+    await reconcilePaidRecord(rec, 'RAZORPAY', paymentId, orderId);
+    return { paid: true, status: 'paid', paymentId };
+  } catch (err: any) {
+    if (err instanceof functions.https.HttpsError) throw err;
+    functions.logger.error('Razorpay order status check failed:', err?.error?.description || err?.message || err);
+    throw new functions.https.HttpsError('unavailable', 'Could not confirm the payment with Razorpay. Please retry.');
+  }
+});
+
+/**
+ * PayPal Orders v2 (real). The browser/app never decides that a payment succeeded: the server creates the order
+ * with PayPal, the customer approves it on PayPal, and the server captures it and checks status, amount and
+ * currency before any invoice is marked paid.
+ */
+const PAYPAL_CURRENCIES = new Set([
+  'AUD', 'BRL', 'CAD', 'CNY', 'CZK', 'DKK', 'EUR', 'HKD', 'HUF', 'ILS', 'JPY', 'MYR', 'MXN', 'TWD', 'NZD',
+  'NOK', 'PHP', 'PLN', 'GBP', 'RUB', 'SGD', 'SEK', 'CHF', 'THB', 'USD',
+]);
+const PAYPAL_ZERO_DECIMAL = new Set(['JPY', 'HUF', 'TWD']);
+
+const paypalHost = (mode?: string) =>
+  mode === 'test' || mode === 'sandbox' ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
+
+async function paypalAccessToken(clientId: string, secret: string, mode?: string): Promise<string> {
+  const res = await fetch(`${paypalHost(mode)}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${clientId}:${secret}`).toString('base64')}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  });
+  if (!res.ok) {
+    functions.logger.error(`PayPal token request failed (HTTP ${res.status}, ${mode || 'live'})`);
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      res.status === 401
+        ? 'PayPal rejected the saved credentials. The platform admin needs to re-enter the PayPal Client ID and Secret (same mode: Live or Sandbox) in Connections.'
+        : `PayPal is not reachable right now (status ${res.status}). Please try again.`
+    );
+  }
+  const json: any = await res.json();
+  return String(json.access_token || '');
+}
+
+async function paypalCall(method: string, path: string, token: string, body?: any, requestId?: string, mode?: string) {
+  const res = await fetch(`${paypalHost(mode)}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(requestId ? { 'PayPal-Request-Id': requestId } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data: any = null;
+  try { data = await res.json(); } catch { data = null; }
+  return { status: res.status, data };
+}
+
+const paypalIssue = (data: any): string =>
+  String(data?.details?.[0]?.issue || data?.name || '') + (data?.details?.[0]?.description ? `: ${data.details[0].description}` : data?.message ? `: ${data.message}` : '');
+
+const isPlatformPayment = (role?: string, rec?: string, notes?: any) =>
+  String(role || '').toLowerCase() === 'owner' || /^(sub[-_]|pinv-)/i.test(String(rec || '')) || notes?.purpose === 'platform_subscription';
+
+/** Marks the payment record and the matching rental / platform invoice as paid. Safe to run twice. */
+async function reconcilePaidRecord(paymentRecordId: string, method: string, txnRef: string, orderRef: string) {
+  const ts = admin.firestore.FieldValue.serverTimestamp();
+  const payRef = db.collection('payments').doc(paymentRecordId);
+  const payDoc = await payRef.get();
+  if (payDoc.exists) {
+    await payRef.update({ status: 'paid', method, [`${method.toLowerCase()}PaymentId`]: txnRef, [`${method.toLowerCase()}OrderId`]: orderRef, paidAt: ts });
+  }
+  const cleanInvId = paymentRecordId.replace('PAY-', '');
+  const invRef = db.collection('invoices').doc(cleanInvId);
+  if ((await invRef.get()).exists) {
+    await invRef.set({ status: 'paid', paidAt: ts, paymentMethodUsed: method, receiptNumber: txnRef }, { merge: true });
+  }
+  const pInvRef = db.collection('platformInvoices').doc(cleanInvId);
+  if ((await pInvRef.get()).exists) {
+    await pInvRef.set({ status: 'paid', paidAt: ts, paymentMethod: method, transactionRef: txnRef }, { merge: true });
+  }
+}
+
+/**
  * 16ba. createPayPalOrder (Callable)
- * Generates an official PayPal Hosted Checkout / Approval URL (Option A PCI-DSS SAQ A compliant).
+ * Creates a real PayPal order and returns its id and approval link.
  */
 export const createPayPalOrder = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const { amount, currency, paymentRecordId, ownerId, role, description } = data;
+  const { amount, currency, paymentRecordId, ownerId, role, description, notes } = data || {};
+  const rec = String(paymentRecordId || '').trim();
   if (!amount || Number(amount) <= 0) {
     throw new functions.https.HttpsError('invalid-argument', 'Valid payment amount is required.');
   }
-
-  const isOwnerTxn = role === 'owner' || paymentRecordId?.startsWith('SUB-') || paymentRecordId?.startsWith('PINV-');
-  const effectiveRole = isOwnerTxn ? 'owner' : role;
-  const ppCfg = isOwnerTxn
-    ? ((await getPlatformGatewaysConfig())?.paypal || {})
-    : await resolveGatewayConfig('paypal', ownerId, effectiveRole);
-
-  const clientId = ppCfg?.clientId || process.env.PAYPAL_CLIENT_ID;
-  if (!clientId || clientId.includes('•••')) {
-    throw new functions.https.HttpsError('failed-precondition', 'PayPal Client ID is not configured.');
+  if (!rec) {
+    throw new functions.https.HttpsError('invalid-argument', 'paymentRecordId is required.');
   }
 
-  const orderId = `PAYPAL_ORD_${Date.now()}_${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-  const curr = (currency || 'USD').toUpperCase();
-  const returnUrl = 'propithub://payment-callback?status=success';
-  const cancelUrl = 'propithub://payment-callback?status=cancel';
+  const curr = String(currency || 'USD').toUpperCase();
+  if (!PAYPAL_CURRENCIES.has(curr)) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      `PayPal cannot take payments in ${curr}. Please pay with another method, or ask the owner to bill in a PayPal-supported currency such as USD, EUR or GBP.`
+    );
+  }
 
-  const approvalUrl = `https://www.paypal.com/checkoutnow?token=${encodeURIComponent(orderId)}&return_url=${encodeURIComponent(returnUrl)}&cancel_url=${encodeURIComponent(cancelUrl)}`;
+  const platform = isPlatformPayment(role, rec, notes);
+  const ppCfg = platform
+    ? ((await getPlatformGatewaysConfig())?.paypal || {})
+    : await resolveGatewayConfig('paypal', ownerId, role);
+  const clientId = String(ppCfg?.clientId || process.env.PAYPAL_CLIENT_ID || '');
+  const secret = String(ppCfg?.secret || process.env.PAYPAL_CLIENT_SECRET || '');
+  const mode = String(ppCfg?.mode || 'live');
+  if (!clientId || !secret || secret.includes('•••')) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      platform
+        ? 'PayPal is not set up yet. The platform admin must save the PayPal Client ID and Secret in Connections.'
+        : 'This owner has not set up PayPal yet. Please choose another payment method.'
+    );
+  }
 
-  return {
-    success: true,
-    orderId,
-    approvalUrl,
-    clientId,
-    amount,
+  // Never accept less than the invoice says is due.
+  const recDoc = await db.collection('payments').doc(rec).get();
+  const dueAmount = Number(recDoc.data()?.amount || 0);
+  const dueCur = String(recDoc.data()?.currency || '').toUpperCase();
+  if (recDoc.exists && dueAmount > 0 && dueCur === curr && Number(amount) + 0.005 < dueAmount) {
+    throw new functions.https.HttpsError('invalid-argument', 'The amount is lower than the amount due for this invoice.');
+  }
+
+  const value = PAYPAL_ZERO_DECIMAL.has(curr) ? String(Math.round(Number(amount))) : Number(amount).toFixed(2);
+  const token = await paypalAccessToken(clientId, secret, mode);
+  const requestId = `${rec}-${crypto.randomBytes(6).toString('hex')}`.slice(0, 100);
+  const created = await paypalCall('POST', '/v2/checkout/orders', token, {
+    intent: 'CAPTURE',
+    purchase_units: [{
+      reference_id: rec.slice(0, 256),
+      custom_id: rec.slice(0, 127),
+      description: String(description || `Payment ${rec}`).slice(0, 127),
+      amount: { currency_code: curr, value },
+    }],
+    application_context: {
+      brand_name: 'Propithub',
+      user_action: 'PAY_NOW',
+      shipping_preference: 'NO_SHIPPING',
+      return_url: 'https://propithub.web.app/payment-callback.html?gateway=paypal&status=success',
+      cancel_url: 'https://propithub.web.app/payment-callback.html?gateway=paypal&status=cancel',
+    },
+  }, requestId, mode);
+
+  if (created.status >= 300 || !created.data?.id) {
+    functions.logger.error(`PayPal order creation failed (HTTP ${created.status}): ${paypalIssue(created.data)}`, { rec, curr, mode });
+    throw new functions.https.HttpsError('internal', `PayPal could not start this payment (${paypalIssue(created.data) || `status ${created.status}`}).`);
+  }
+
+  const links: any[] = created.data.links || [];
+  const approvalUrl = String((links.find((l) => l.rel === 'payer-action') || links.find((l) => l.rel === 'approve'))?.href || '');
+
+  await db.collection('paypalOrders').doc(String(created.data.id)).set({
+    uid: context.auth.uid,
+    paymentRecordId: rec,
+    ownerId: ownerId || null,
+    role: platform ? 'owner' : (role || null),
+    platform,
+    amount: value,
     currency: curr,
-  };
+    mode,
+    status: 'CREATED',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { success: true, orderId: String(created.data.id), approvalUrl, clientId, mode, amount: Number(value), currency: curr };
 });
 
 /**
- * 16b. verifyPayPalPayment (Callable)
- * Reconciles PayPal Smart Button payments into Firestore invoices and payments.
+ * Captures an approved PayPal order and settles the invoice. Idempotent: calling it again for a paid order just
+ * confirms it. Shared by capturePayPalOrder and verifyPayPalPayment.
+ */
+async function settlePayPalOrder(orderId: string, callerUid: string) {
+  const ref = db.collection('paypalOrders').doc(orderId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new functions.https.HttpsError('not-found', 'This PayPal order was not created by Propithub.');
+  }
+  const o: any = snap.data();
+  if (o.uid !== callerUid) {
+    throw new functions.https.HttpsError('permission-denied', 'This PayPal order belongs to a different account.');
+  }
+  if (o.status === 'COMPLETED') {
+    return { paid: true, status: 'COMPLETED', paymentId: String(o.captureId || ''), orderId };
+  }
+
+  const ppCfg = o.platform
+    ? ((await getPlatformGatewaysConfig())?.paypal || {})
+    : await resolveGatewayConfig('paypal', o.ownerId, o.role);
+  const clientId = String(ppCfg?.clientId || process.env.PAYPAL_CLIENT_ID || '');
+  const secret = String(ppCfg?.secret || process.env.PAYPAL_CLIENT_SECRET || '');
+  if (!clientId || !secret) {
+    throw new functions.https.HttpsError('failed-precondition', 'PayPal credentials are not configured.');
+  }
+  const token = await paypalAccessToken(clientId, secret, o.mode);
+
+  let res = await paypalCall('POST', `/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, token, {}, `cap-${orderId}`, o.mode);
+  const issue = String(res.data?.details?.[0]?.issue || '');
+  if (res.status === 422 && issue === 'ORDER_NOT_APPROVED') {
+    return { paid: false, status: 'NOT_APPROVED', paymentId: '', orderId };
+  }
+  if (res.status === 422 && issue === 'ORDER_ALREADY_CAPTURED') {
+    res = await paypalCall('GET', `/v2/checkout/orders/${encodeURIComponent(orderId)}`, token, undefined, undefined, o.mode);
+  }
+  if (res.status >= 300 || !res.data) {
+    functions.logger.error(`PayPal capture failed (HTTP ${res.status}): ${paypalIssue(res.data)}`, { orderId, rec: o.paymentRecordId });
+    throw new functions.https.HttpsError('internal', `PayPal could not complete this payment (${paypalIssue(res.data) || `status ${res.status}`}).`);
+  }
+
+  const capture = res.data?.purchase_units?.[0]?.payments?.captures?.[0];
+  const status = String(capture?.status || res.data?.status || '');
+  if (status === 'PENDING') {
+    return { paid: false, status: 'PENDING', paymentId: String(capture?.id || ''), orderId };
+  }
+  if (res.data?.status !== 'COMPLETED' || status !== 'COMPLETED') {
+    return { paid: false, status: status || String(res.data?.status || ''), paymentId: '', orderId };
+  }
+
+  const paidValue = String(capture?.amount?.value || '');
+  const paidCur = String(capture?.amount?.currency_code || '').toUpperCase();
+  if (paidCur !== o.currency || Number(paidValue) + 0.005 < Number(o.amount)) {
+    functions.logger.error(`PayPal capture amount mismatch for ${orderId}: got ${paidValue} ${paidCur}, expected ${o.amount} ${o.currency}`);
+    throw new functions.https.HttpsError('permission-denied', 'The amount PayPal captured does not match this invoice.');
+  }
+
+  const captureId = String(capture?.id || orderId);
+  await reconcilePaidRecord(o.paymentRecordId, 'PAYPAL', captureId, orderId);
+  await ref.set({ status: 'COMPLETED', captureId, capturedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  functions.logger.info(`PayPal order ${orderId} captured (${captureId}) for ${o.paymentRecordId}`);
+  return { paid: true, status: 'COMPLETED', paymentId: captureId, orderId };
+}
+
+/**
+ * 16b. capturePayPalOrder (Callable)
+ * Called after the customer approves the order on PayPal (web buttons or the app's browser return).
+ */
+export const capturePayPalOrder = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+  const orderId = String(data?.orderId || '').trim();
+  if (!orderId) {
+    throw new functions.https.HttpsError('invalid-argument', 'PayPal orderId is required.');
+  }
+  return settlePayPalOrder(orderId, context.auth.uid);
+});
+
+/**
+ * 16b2. verifyPayPalPayment (Callable)
+ * Kept for older app versions. It now asks PayPal instead of trusting the caller.
  */
 export const verifyPayPalPayment = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
-
-  const { orderId, paymentId, paymentRecordId } = data;
-  if (!orderId && !paymentId) {
-    throw new functions.https.HttpsError('invalid-argument', 'PayPal orderId or paymentId is required.');
+  const orderId = String(data?.orderId || '').trim();
+  if (!orderId) {
+    throw new functions.https.HttpsError('invalid-argument', 'PayPal orderId is required.');
   }
-
-  if (paymentRecordId) {
-    const payRef = db.collection('payments').doc(paymentRecordId);
-    const payDoc = await payRef.get();
-    if (payDoc.exists) {
-      await payRef.update({
-        status: 'paid',
-        method: 'PAYPAL',
-        paypalPaymentId: paymentId || orderId,
-        paypalOrderId: orderId || paymentId,
-        paidAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    }
-
-    const cleanInvId = paymentRecordId.replace('PAY-', '');
-    const invRef = db.collection('invoices').doc(cleanInvId);
-    const invDoc = await invRef.get();
-    if (invDoc.exists) {
-      await invRef.set({
-        status: 'paid',
-        paidAt: admin.firestore.FieldValue.serverTimestamp(),
-        paymentMethodUsed: 'PAYPAL',
-        receiptNumber: paymentId || orderId,
-      }, { merge: true });
-    }
-
-    const pInvRef = db.collection('platformInvoices').doc(cleanInvId);
-    const pInvDoc = await pInvRef.get();
-    if (pInvDoc.exists) {
-      await pInvRef.set({
-        status: 'paid',
-        paidAt: admin.firestore.FieldValue.serverTimestamp(),
-        paymentMethod: 'PAYPAL',
-        transactionRef: paymentId || orderId,
-      }, { merge: true });
-    }
+  const r = await settlePayPalOrder(orderId, context.auth.uid);
+  if (!r.paid) {
+    throw new functions.https.HttpsError('failed-precondition', 'PayPal has not confirmed this payment.');
   }
-
-  functions.logger.info(`PayPal payment ${paymentId || orderId} reconciled for ${paymentRecordId}`);
-  return { success: true, verified: true, paymentId: paymentId || orderId };
+  return { success: true, verified: true, paymentId: r.paymentId };
 });
 
 /**

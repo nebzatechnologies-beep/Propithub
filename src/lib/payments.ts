@@ -714,18 +714,41 @@ export const launchPayPalPayment = async (params: {
   paymentRecordId: string;
   customerEmail?: string;
   ownerId?: string;
+  role?: string;
   onSuccess: (result: { paymentId: string; orderId: string }) => void;
   onError: (error: string) => void;
 }) => {
   if (!params.clientId || params.clientId.trim() === '') {
-    params.onError('PayPal Client ID is not configured. Please save your PayPal Client ID in settings.');
+    params.onError('PayPal is not set up yet. Please save your PayPal Client ID and Secret in Connections.');
     return;
   }
 
-  // PayPal REST API standard accounts mandate international currencies (USD/EUR/GBP/etc.)
-  const rawCurr = (params.currency || 'USD').toUpperCase();
-  const currency = rawCurr === 'INR' ? 'USD' : rawCurr;
-  const isLoaded = await loadPayPalScript(params.clientId.trim(), currency);
+  // The server creates the real PayPal order (and rejects currencies PayPal cannot take, such as INR).
+  const currency = (params.currency || 'USD').toUpperCase();
+  let serverOrderId = '';
+  let sdkClientId = params.clientId.trim();
+  try {
+    const createFn = httpsCallable<any, any>(functions, 'createPayPalOrder');
+    const created = await createFn({
+      paymentRecordId: params.paymentRecordId,
+      amount: params.amount,
+      currency,
+      ownerId: params.ownerId,
+      role: params.role,
+      description: params.description || `Payment for ${params.paymentRecordId}`,
+    });
+    serverOrderId = created.data?.orderId || '';
+    sdkClientId = created.data?.clientId || sdkClientId;
+  } catch (err: any) {
+    params.onError(err?.message || 'PayPal could not start this payment. Please try again.');
+    return;
+  }
+  if (!serverOrderId) {
+    params.onError('PayPal could not start this payment. Please try again or use another method.');
+    return;
+  }
+
+  const isLoaded = await loadPayPalScript(sdkClientId, currency);
   if (!isLoaded) {
     params.onError('Unable to connect to PayPal checkout servers. Please verify your Client ID or connection.');
     return;
@@ -753,7 +776,7 @@ export const launchPayPalPayment = async (params: {
       <div style="background:#F8FAFC; border-bottom:1px solid #E2E8F0; padding:16px 22px; display:flex; justify-content:space-between; align-items:center;">
         <div>
           <div style="font-size:11.5px; color:#64748B; font-weight:500;">Total Amount</div>
-          <div style="font-size:24px; font-weight:800; color:#0F172A; margin-top:2px;">$${params.amount.toLocaleString()} ${currency}</div>
+          <div style="font-size:24px; font-weight:800; color:#0F172A; margin-top:2px;">${params.amount.toLocaleString()} ${currency}</div>
         </div>
         <div style="text-align:right; font-size:11px; color:#64748B;">
           <div>${params.description || 'Payment'}</div>
@@ -792,41 +815,20 @@ export const launchPayPalPayment = async (params: {
     }
 
     paypal.Buttons({
-      createOrder: (_data: any, actions: any) => {
-        return actions.order.create({
-          purchase_units: [
-            {
-              description: params.description || `Payment for ${params.paymentRecordId}`,
-              amount: {
-                currency_code: currency,
-                value: params.amount.toString(),
-              },
-            },
-          ],
-        });
-      },
-      onApprove: async (_data: any, actions: any) => {
+      createOrder: () => serverOrderId,
+      onApprove: async () => {
         try {
-          const details = await actions.order.capture();
-          const pId = details.id || `PAYPAL-${Date.now()}`;
-
-          // Server-side verification and invoice reconciliation
-          try {
-            const verifyFn = httpsCallable<any, any>(functions, 'verifyPayPalPayment');
-            await verifyFn({
-              orderId: details.id,
-              paymentId: pId,
-              paymentRecordId: params.paymentRecordId,
-            });
-          } catch (verErr) {
-            console.warn('Backend PayPal reconciliation note:', verErr);
-          }
-
+          // The server captures the order with PayPal and checks status, amount and currency before settling.
+          const captureFn = httpsCallable<any, any>(functions, 'capturePayPalOrder');
+          const res = await captureFn({ orderId: serverOrderId });
           cleanup();
-          params.onSuccess({
-            paymentId: pId,
-            orderId: details.id || params.paymentRecordId,
-          });
+          if (res.data?.paid) {
+            params.onSuccess({ paymentId: res.data.paymentId || serverOrderId, orderId: serverOrderId });
+          } else if (res.data?.status === 'PENDING') {
+            params.onError('PayPal is still reviewing this payment. It will be recorded once PayPal completes it.');
+          } else {
+            params.onError('PayPal did not complete this payment, so it was not recorded.');
+          }
         } catch (err: any) {
           cleanup();
           params.onError(err?.message || 'PayPal capture failed.');

@@ -15,7 +15,7 @@ import { httpsCallable } from 'firebase/functions';
 import { functions, isFirebaseConfigured } from '../lib/firebase';
 import { useMobileTheme } from '../context/MobileThemeContext';
 import { getCurrencySymbol } from '../lib/currencyService';
-import { confirmRazorpayLinkPaid } from '../lib/payments';
+import { runRazorpayHostedCheckout, runPayPalApproval } from '../lib/payments';
 
 export interface PaymentSheetRequest {
   gateway: 'stripe' | 'razorpay' | 'easebuzz' | 'paypal';
@@ -187,7 +187,7 @@ export const MobilePaymentSheetModal: React.FC<MobilePaymentSheetModalProps> = (
     }
   };
 
-  // ─── 2. RAZORPAY HOSTED CHECKOUT (OPTION A) ─────────────────────────────────
+  // ─── 2. RAZORPAY HOSTED CHECKOUT ────────────────────────────────────────────
   const handleRazorpayPayment = async () => {
     if (!request) return;
     setIsSubmitting(true);
@@ -195,11 +195,10 @@ export const MobilePaymentSheetModal: React.FC<MobilePaymentSheetModalProps> = (
     setStatusMessage('Connecting to Razorpay secure portal...');
 
     try {
-      let checkoutUrl = request.checkoutUrl || '';
       let orderId = request.orderId || '';
-      let paymentLinkId = request.paymentLinkId || '';
+      let keyId = request.keyId || '';
 
-      if ((!checkoutUrl || !paymentLinkId) && isFirebaseConfigured) {
+      if (!orderId && isFirebaseConfigured) {
         const createOrderFn = httpsCallable<any, any>(functions, 'createRazorpayOrder');
         const res = await createOrderFn({
           amount: request.amount,
@@ -216,49 +215,36 @@ export const MobilePaymentSheetModal: React.FC<MobilePaymentSheetModalProps> = (
             role: request.role || '',
           },
         });
-        orderId = res.data?.orderId || orderId;
-        checkoutUrl = res.data?.paymentUrl || '';
-        paymentLinkId = res.data?.paymentLinkId || '';
-        if (!checkoutUrl || !paymentLinkId) {
-          throw new Error(res.data?.paymentLinkError || 'Could not start a secure Razorpay checkout. Please try again.');
-        }
+        orderId = res.data?.orderId || '';
+        keyId = res.data?.keyId || keyId;
       }
-
-      // A payment is only real if Razorpay says so. Without a server-created link we cannot check it, so we stop here.
-      if (!checkoutUrl || !paymentLinkId) {
+      if (!orderId || !keyId) {
         throw new Error('Could not start a secure Razorpay checkout. Please try again, or contact support.');
       }
 
       setStatusMessage('Waiting for Razorpay completion...');
-      const browserRes = await WebBrowser.openAuthSessionAsync(
-        checkoutUrl,
-        'propithub://payment-callback'
-      );
-
-      setStatusMessage('Confirming your payment with Razorpay...');
-      const confirmed = await confirmRazorpayLinkPaid(
-        {
-          paymentLinkId,
-          paymentRecordId: request.paymentRecordId,
-          ownerId: request.ownerId,
-          role: request.role,
-        },
-        browserRes.type === 'success' ? 5 : 2
-      );
+      const r = await runRazorpayHostedCheckout({
+        keyId,
+        orderId,
+        amount: request.amount,
+        currency: request.currency,
+        name: request.name,
+        description: request.description,
+        customerEmail: request.customerEmail,
+        customerPhone: request.customerPhone,
+        paymentRecordId: request.paymentRecordId,
+        ownerId: request.ownerId,
+        role: request.role,
+      });
 
       setIsSubmitting(false);
       setStatusMessage('');
 
-      if (confirmed.paid) {
+      if (r.paid) {
         onClose();
-        request.onSuccess({
-          paymentId: confirmed.paymentId || paymentLinkId,
-          orderId: confirmed.orderId || orderId || request.orderId,
-        });
+        request.onSuccess({ paymentId: r.paymentId, orderId: r.orderId || orderId });
       } else {
-        setErrorMessage(
-          'Razorpay has not confirmed this payment, so it was not recorded. If money was deducted, contact support with your payment reference.'
-        );
+        setErrorMessage(r.message || 'Razorpay has not confirmed this payment, so it was not recorded.');
       }
     } catch (err: any) {
       setIsSubmitting(false);
@@ -328,53 +314,45 @@ export const MobilePaymentSheetModal: React.FC<MobilePaymentSheetModalProps> = (
     }
   };
 
-  // ─── 4. PAYPAL HOSTED CHECKOUT (OPTION A) ───────────────────────────────────
+  // ─── 4. PAYPAL (server-created order, approved on PayPal, captured and verified by the server) ───
   const handlePayPalPayment = async () => {
     if (!request) return;
     setIsSubmitting(true);
     setErrorMessage('');
-    setStatusMessage('Connecting to PayPal Express Checkout...');
+    setStatusMessage('Connecting to PayPal...');
 
     try {
       let approvalUrl = request.checkoutUrl || '';
-      let orderId = request.orderId || `PAYPAL-${Date.now().toString(36).toUpperCase()}`;
+      let orderId = request.orderId || '';
 
-      if (!approvalUrl && isFirebaseConfigured) {
+      if ((!approvalUrl || !orderId) && isFirebaseConfigured) {
         const createOrderFn = httpsCallable<any, any>(functions, 'createPayPalOrder');
         const res = await createOrderFn({
           amount: request.amount,
           currency: (request.currency || 'USD').toUpperCase(),
           paymentRecordId: request.paymentRecordId,
           ownerId: request.ownerId,
+          role: request.role,
           description: request.description,
         });
-        if (res.data?.approvalUrl) {
-          approvalUrl = res.data.approvalUrl;
-          orderId = res.data.orderId || orderId;
-        }
+        approvalUrl = res.data?.approvalUrl || '';
+        orderId = res.data?.orderId || '';
       }
-
-      if (!approvalUrl) {
-        approvalUrl = `https://www.paypal.com/checkoutnow?token=EC-${Date.now().toString(36).toUpperCase()}`;
+      if (!approvalUrl || !orderId) {
+        throw new Error('PayPal could not start this payment. Please try again or use another method.');
       }
 
       setStatusMessage('Waiting for PayPal authorization...');
-      const browserRes = await WebBrowser.openAuthSessionAsync(
-        approvalUrl,
-        'propithub://payment-callback'
-      );
+      const r = await runPayPalApproval({ orderId, approvalUrl });
 
       setIsSubmitting(false);
       setStatusMessage('');
 
-      if (browserRes.type === 'success' || browserRes.type === 'dismiss') {
+      if (r.paid) {
         onClose();
-        request.onSuccess({
-          paymentId: `PAYPAL-${Date.now().toString(36).toUpperCase()}`,
-          orderId,
-        });
+        request.onSuccess({ paymentId: r.paymentId, orderId });
       } else {
-        setErrorMessage('PayPal checkout was closed.');
+        setErrorMessage(r.message || 'PayPal did not complete this payment.');
       }
     } catch (err: any) {
       setIsSubmitting(false);

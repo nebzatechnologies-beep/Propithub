@@ -520,6 +520,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
         customerEmail: user?.email || '',
         customerPhone: user?.phone || '',
         ownerId,
+        role: 'owner',
         onSuccess: (res) => {
           finalizeSubscription(res.paymentId, 'Razorpay');
         },
@@ -587,6 +588,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
         paymentRecordId: invoiceId,
         customerEmail: user?.email || '',
         ownerId,
+        role: 'owner',
         onSuccess: (res) => {
           finalizeSubscription(res.paymentId, 'PayPal');
         },
@@ -735,6 +737,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
           paymentRecordId: boostTxnId,
           customerName: user?.displayName || 'Owner',
           customerEmail: user?.email || '',
+          ownerId: ownerId || '',
           onSuccess: () => applyBoostActivation(),
           onError: (err) => {
             setIsProcessingBoost(false);
@@ -823,6 +826,8 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
           description: `${boostPlan.days}-Day Popular Spotlight`,
           paymentRecordId: boostTxnId,
           customerEmail: user?.email || '',
+          ownerId: ownerId || '',
+          role: 'owner',
           onSuccess: () => applyBoostActivation(),
           onError: (err) => {
             setIsProcessingBoost(false);
@@ -995,6 +1000,7 @@ export const OwnerPlanSubscriptionScreen: React.FC<Props> = ({
         paymentRecordId: mandateTxnId,
         customerEmail: ppEmail,
         ownerId,
+        role: 'owner',
         onSuccess: (res) => finalizeMandate(res.paymentId, ppEmail ? `PayPal (${ppEmail})` : 'PayPal Verified Account'),
         onError: (err) => {
           setIsProcessing(false);
