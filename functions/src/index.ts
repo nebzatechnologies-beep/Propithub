@@ -177,6 +177,27 @@ function razorpayErrorDetail(err: any): { status: number; description: string } 
 const RAZORPAY_BAD_KEYS_MESSAGE =
   'Razorpay rejected the API keys (authentication failed). In Connections, re-enter the Key ID and Key Secret copied together from the same Razorpay mode (Test or Live), then save again.';
 
+/**
+ * Works out what to store for a secret the admin screen sent. Blank, or the masked preview the screen shows
+ * (12 bullets + last 4 characters), means "keep what is stored". If someone typed or pasted after the masked
+ * preview instead of replacing it, the extra text is the new secret. Anything else is the new secret, with
+ * stray whitespace and zero-width characters removed (none of these keys contain spaces).
+ */
+const MASK_PREFIX = '\u2022'.repeat(12);
+function resolveSecretInput(newVal: any, oldVal: any): string {
+  const raw = String(newVal ?? '');
+  if (!raw.trim()) return oldVal || '';
+  let v = raw;
+  if (v.startsWith(MASK_PREFIX)) {
+    const rest = v.slice(MASK_PREFIX.length);
+    if (rest.length <= 4) return oldVal || '';
+    v = rest.slice(4);
+  } else if (v.includes('\u2022\u2022\u2022')) {
+    return oldVal || '';
+  }
+  return v.replace(/[\s\u200B-\u200D\uFEFF]/g, '');
+}
+
 /** Checks a Razorpay key pair against Razorpay itself. Never throws. */
 async function verifyRazorpayKeys(keyId: string, keySecret: string): Promise<{ ok: boolean; message: string; rejected?: boolean }> {
   if (!keyId || !keySecret) return { ok: false, message: 'Key ID and Key Secret are both required.' };
@@ -3629,12 +3650,7 @@ export const savePlatformCommsAndEvents = functions.https.onCall(async (data, co
   const { commsConfig, notificationToggles } = data;
   const currentComms = await getPlatformCommsConfig();
 
-  const preserveSecret = (newVal: any, oldVal: any) => {
-    if (!newVal || String(newVal).includes('•••') || String(newVal).includes('••••')) {
-      return oldVal || '';
-    }
-    return String(newVal).trim();
-  };
+  const preserveSecret = resolveSecretInput;
 
   const cleanTwilioAuth = preserveSecret(commsConfig?.twilioAuthToken, currentComms?.twilioAuthToken);
   const cleanSendgridKey = preserveSecret(commsConfig?.sendgridKey, currentComms?.sendgridKey);
@@ -3740,12 +3756,7 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
   const { platformGateways, activeBillingGateway } = data;
   const currentSecrets = await getPlatformGatewaysConfig();
 
-  const preserveSecret = (newVal: any, oldVal: any) => {
-    if (!newVal || String(newVal).includes('•••') || String(newVal).includes('••••')) {
-      return oldVal || '';
-    }
-    return String(newVal).trim();
-  };
+  const preserveSecret = resolveSecretInput;
 
   const cleanStripeSecret = preserveSecret(platformGateways?.stripe?.secretKey, currentSecrets?.stripe?.secretKey);
   const cleanStripeWebhook = preserveSecret(platformGateways?.stripe?.webhookSecret, currentSecrets?.stripe?.webhookSecret);
@@ -3755,7 +3766,19 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
   const cleanEasebuzzSalt = preserveSecret(platformGateways?.easebuzz?.salt, currentSecrets?.easebuzz?.salt);
 
   const stripePub = (platformGateways?.stripe?.pubKey || '').trim();
-  const rzpKeyId = (platformGateways?.razorpay?.keyId || '').trim();
+  const rzpKeyId = (platformGateways?.razorpay?.keyId || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '');
+
+  // Catch the common paste mistakes here, with a precise message, instead of failing later at checkout.
+  if (rzpKeyId && !/^rzp_(live|test)_[A-Za-z0-9]{8,24}$/.test(rzpKeyId)) {
+    throw new functions.https.HttpsError('invalid-argument', 'The Razorpay Key ID should look like rzp_live_XXXXXXXXXXXXXX or rzp_test_XXXXXXXXXXXXXX. Paste only the Key ID.');
+  }
+  if (cleanRazorpaySecret && cleanRazorpaySecret !== (currentSecrets?.razorpay?.keySecret || '')
+      && (cleanRazorpaySecret.length < 20 || cleanRazorpaySecret.length > 32)) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      `The Razorpay Key Secret you entered is ${cleanRazorpaySecret.length} characters long, but Razorpay secrets are 24 characters. Clear the Key Secret box completely, then paste only the secret.`
+    );
+  }
   const paypalClientId = (platformGateways?.paypal?.clientId || '').trim();
   const ebMerchantKey = (platformGateways?.easebuzz?.merchantKey || '').trim();
 
@@ -3774,7 +3797,7 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
       keyId: rzpKeyId,
       keySecret: cleanRazorpaySecret,
       webhookSecret: cleanRazorpayWebhook,
-      mode: platformGateways?.razorpay?.mode || 'live',
+      mode: rzpKeyId.startsWith('rzp_test_') ? 'test' : rzpKeyId.startsWith('rzp_live_') ? 'live' : (platformGateways?.razorpay?.mode || 'live'),
     },
     paypal: {
       enabled: Boolean(platformGateways?.paypal?.enabled),
@@ -3807,6 +3830,8 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
       fullSecrets.razorpay.keySecret = prev.keySecret || '';
       fullSecrets.razorpay.connected = Boolean(prev.keyId && prev.keySecret);
       verification.razorpay.saved = false;
+      const secretEntered = cleanRazorpaySecret !== (prev.keySecret || '');
+      verification.razorpay.message += ` (Key ID ${rzpKeyId.slice(0, 9)}…${rzpKeyId.slice(-4)}; ${secretEntered ? 'the secret you entered' : 'the secret already stored, because the Key Secret box was left blank,'} is ${cleanRazorpaySecret.length} characters.)`;
       verification.razorpay.message += prev.keyId ? ' Your previously stored keys were left unchanged.' : ' Nothing was stored.';
     }
   }
@@ -3983,12 +4008,14 @@ export const getPlatformSecretsStatus = functions.https.onCall(async (data, cont
       razorpay: {
         configured: Boolean(gateways?.razorpay?.keySecret),
         maskedSecret: mask(gateways?.razorpay?.keySecret),
+        secretLength: String(gateways?.razorpay?.keySecret || '').length,
         keyId: gateways?.razorpay?.keyId || '',
         connected: Boolean(gateways?.razorpay?.connected),
       },
       paypal: {
         configured: Boolean(gateways?.paypal?.secret),
         maskedSecret: mask(gateways?.paypal?.secret),
+        secretLength: String(gateways?.paypal?.secret || '').length,
         clientId: gateways?.paypal?.clientId || '',
         connected: Boolean(gateways?.paypal?.connected),
       },
