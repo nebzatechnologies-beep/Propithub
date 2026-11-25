@@ -3872,6 +3872,62 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
 });
 
 /**
+ * changeAdminEmail (Callable)
+ * Lets the superadmin change their own sign-in email. Done on the server because the browser-side
+ * updateEmail() is refused by Firebase Auth when email enumeration protection is on (the default), which
+ * is why the change used to fail. The caller must be a superadmin who signed in within the last 5 minutes
+ * (the app re-asks for the password first), and the new address must not belong to another account.
+ */
+export const changeAdminEmail = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+  const uid = context.auth.uid;
+  const userDoc = await db.collection('users').doc(uid).get();
+  const isSuper = context.auth.token?.role === 'superadmin' || userDoc.data()?.role === 'superadmin';
+  if (!isSuper) {
+    throw new functions.https.HttpsError('permission-denied', 'Only the superadmin can change the administrator email.');
+  }
+
+  const newEmail = String(data?.newEmail || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Please enter a valid email address.');
+  }
+
+  const authTime = Number(context.auth.token?.auth_time || 0);
+  if (!authTime || Date.now() / 1000 - authTime > 300) {
+    throw new functions.https.HttpsError('failed-precondition', 'Please confirm your password again, then retry.');
+  }
+
+  const current = await auth.getUser(uid);
+  if ((current.email || '').toLowerCase() === newEmail) {
+    throw new functions.https.HttpsError('invalid-argument', 'That is already the administrator email.');
+  }
+  try {
+    const existing = await auth.getUserByEmail(newEmail);
+    if (existing && existing.uid !== uid) {
+      throw new functions.https.HttpsError('already-exists', 'This email is already registered to another account.');
+    }
+  } catch (err: any) {
+    if (err instanceof functions.https.HttpsError) throw err;
+    if (err?.code !== 'auth/user-not-found') {
+      functions.logger.error('changeAdminEmail lookup failed:', err?.message || err);
+      throw new functions.https.HttpsError('internal', 'Could not check the new email address. Please try again.');
+    }
+  }
+
+  try {
+    await auth.updateUser(uid, { email: newEmail, emailVerified: true });
+    await db.collection('users').doc(uid).set({ email: newEmail }, { merge: true });
+  } catch (err: any) {
+    functions.logger.error('changeAdminEmail update failed:', err?.message || err);
+    throw new functions.https.HttpsError('internal', err?.message || 'Could not update the administrator email.');
+  }
+  functions.logger.info(`Superadmin ${uid} changed sign-in email from ${current.email} to ${newEmail}`);
+  return { success: true, email: newEmail };
+});
+
+/**
  * 14. getPlatformSecretsStatus (Callable)
  * Executed by Superadmin to see connection status and masked key previews
  * without exposing raw secrets to the browser.

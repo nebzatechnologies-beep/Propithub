@@ -1107,7 +1107,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const credential = EmailAuthProvider.credential(auth.currentUser.email || currentUser.email, currentPassword);
         await reauthenticateWithCredential(auth.currentUser, credential);
-        await updateEmail(auth.currentUser, cleanNewEmail);
+        await auth.currentUser.getIdToken(true); // fresh sign-in time for the server check
+        // The server changes the sign-in email (the browser-side updateEmail is refused by Firebase Auth).
+        await httpsCallable<any, any>(functions, 'changeAdminEmail')({ newEmail: cleanNewEmail });
+        await auth.currentUser.reload();
+        await auth.currentUser.getIdToken(true);
       } catch (err: any) {
         console.error('Firebase updateEmail error:', err);
         if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
@@ -1121,6 +1125,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         if (err.code === 'auth/requires-recent-login') {
           return { success: false, error: 'For security reasons, please log out and log back in before changing your email.' };
+        }
+        if (err.code === 'functions/already-exists') {
+          return { success: false, error: 'This email is already registered to another account.' };
         }
         return { success: false, error: err.message || 'Failed to update email with authentication service.' };
       }
