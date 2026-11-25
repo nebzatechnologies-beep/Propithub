@@ -784,6 +784,7 @@ export const PlanSubscriptionPage: React.FC = () => {
         description: `${isAnnual ? 'Annual' : 'Monthly'} subscription fee for ${selectedPlanName} plan`,
         paymentRecordId: subId,
         customerEmail: user?.email || '',
+        role: 'owner',
         onSuccess: () => {
           applyPlanUpgrade();
         },
@@ -1038,6 +1039,7 @@ export const PlanSubscriptionPage: React.FC = () => {
         description: `${boostPlan.days}-Day Popular Listing Spotlight`,
         paymentRecordId: boostTxnId,
         customerEmail: user?.email || '',
+        role: 'owner',
         onSuccess: () => {
           applyBoostActivation();
         },

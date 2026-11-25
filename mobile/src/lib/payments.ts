@@ -83,6 +83,114 @@ export const confirmRazorpayLinkPaid = async (
   return last;
 };
 
+// ─── Hosted checkout helpers (shared by the payment sheet and direct launches) ──────────────────────────
+
+export interface HostedCheckoutResult {
+  paid: boolean;
+  paymentId: string;
+  orderId: string;
+  message?: string;
+}
+
+const parseReturnUrl = (url?: string): Record<string, string> => {
+  const out: Record<string, string> = {};
+  if (!url) return out;
+  const i = url.indexOf('?');
+  if (i < 0) return out;
+  url.slice(i + 1).split('#')[0].split('&').forEach((kv) => {
+    if (!kv) return;
+    const [k, v = ''] = kv.split('=');
+    try { out[decodeURIComponent(k)] = decodeURIComponent(v.replace(/\+/g, ' ')); } catch { out[k] = v; }
+  });
+  return out;
+};
+
+/** Opens Razorpay Standard Checkout in the in-app browser and returns only a server-verified result. */
+export const runRazorpayHostedCheckout = async (a: {
+  keyId: string;
+  orderId: string;
+  amount: number;
+  currency?: string;
+  name?: string;
+  description?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  paymentRecordId: string;
+  ownerId?: string;
+  role?: string;
+}): Promise<HostedCheckoutResult> => {
+  const enc = encodeURIComponent;
+  const url =
+    'https://propithub.web.app/razorpay-checkout.html' +
+    `?key=${enc(a.keyId)}&order=${enc(a.orderId)}&amount=${Math.round(a.amount * 100)}` +
+    `&currency=${enc((a.currency || 'INR').toUpperCase())}&name=${enc(a.name || 'Propithub')}` +
+    `&desc=${enc(a.description || '')}&email=${enc(a.customerEmail || '')}&contact=${enc(a.customerPhone || '')}`;
+
+  const browserRes: any = await WebBrowser.openAuthSessionAsync(url, 'propithub://payment-callback');
+  const ret = parseReturnUrl(browserRes?.url);
+
+  // Fast path: Razorpay handed back a signed payment, which the server checks cryptographically.
+  if (browserRes?.type === 'success' && ret.payment_id && ret.signature) {
+    try {
+      const verifyFn = httpsCallable<any, any>(functions, 'verifyRazorpayPayment');
+      await verifyFn({
+        orderId: ret.order_id || a.orderId,
+        paymentId: ret.payment_id,
+        signature: ret.signature,
+        paymentRecordId: a.paymentRecordId,
+        ownerId: a.ownerId,
+        role: a.role,
+      });
+      return { paid: true, paymentId: ret.payment_id, orderId: ret.order_id || a.orderId };
+    } catch (e: any) {
+      console.warn('[Razorpay] Signature verification failed, falling back to order check:', e?.message);
+    }
+  }
+
+  // Otherwise (window closed, return link blocked) ask the server whether the order was paid.
+  const statusFn = httpsCallable<any, any>(functions, 'getRazorpayOrderStatus');
+  const attempts = browserRes?.type === 'success' ? 4 : 2;
+  for (let i = 0; i < attempts; i++) {
+    const res = await statusFn({ orderId: a.orderId, paymentRecordId: a.paymentRecordId, ownerId: a.ownerId, role: a.role });
+    if (res.data?.paid) {
+      return { paid: true, paymentId: String(res.data.paymentId || ''), orderId: a.orderId };
+    }
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 2000));
+  }
+  return {
+    paid: false,
+    paymentId: '',
+    orderId: a.orderId,
+    message: ret.status === 'cancel'
+      ? 'Payment cancelled.'
+      : 'Razorpay has not confirmed this payment, so it was not recorded. If money was deducted, contact support with your payment reference.',
+  };
+};
+
+/** Sends the customer to PayPal to approve the order, then has the server capture and verify it. */
+export const runPayPalApproval = async (a: { orderId: string; approvalUrl: string }): Promise<HostedCheckoutResult> => {
+  const browserRes: any = await WebBrowser.openAuthSessionAsync(a.approvalUrl, 'propithub://payment-callback');
+  const ret = parseReturnUrl(browserRes?.url);
+  if (ret.status === 'cancel') {
+    return { paid: false, paymentId: '', orderId: a.orderId, message: 'PayPal payment was cancelled.' };
+  }
+  const capFn = httpsCallable<any, any>(functions, 'capturePayPalOrder');
+  const res = await capFn({ orderId: a.orderId });
+  const d = res.data || {};
+  if (d.paid) return { paid: true, paymentId: String(d.paymentId || ''), orderId: a.orderId };
+  return {
+    paid: false,
+    paymentId: '',
+    orderId: a.orderId,
+    message:
+      d.status === 'PENDING'
+        ? 'PayPal is still reviewing this payment. It will be recorded once PayPal completes it.'
+        : d.status === 'NOT_APPROVED'
+          ? 'The PayPal payment was not approved, so you have not been charged.'
+          : 'PayPal did not complete this payment.',
+  };
+};
+
 export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Promise<void> => {
   if (!params.keyId || params.keyId.trim() === '') {
     params.onError('Razorpay Key ID is not configured. Please save your Razorpay keys in settings.');
@@ -91,6 +199,7 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
 
   // 1. If Cloud Functions active, create server-side order first for signature verification
   let serverOrderId = '';
+  let serverKeyId = '';
   let serverPaymentUrl = '';
   let serverPaymentLinkId = '';
   let serverLinkError = '';
@@ -118,6 +227,7 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
         },
       });
       serverOrderId = res.data?.orderId || '';
+      serverKeyId = res.data?.keyId || '';
       serverPaymentUrl = res.data?.paymentUrl || '';
       serverPaymentLinkId = res.data?.paymentLinkId || '';
       serverLinkError = res.data?.paymentLinkError || '';
@@ -198,18 +308,18 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
     return;
   }
 
-  // On the Android/iOS app a payment can only be trusted if the server created a Razorpay payment link,
-  // because that is the only thing we can later check with Razorpay. Never fall back to an unverifiable checkout.
-  if (Platform.OS !== 'web' && (!serverPaymentUrl || !serverPaymentLinkId)) {
+  // On the Android/iOS app the payment runs in Razorpay's own hosted checkout page (the same Standard Checkout the
+  // website uses) against an order the server created. It only counts as paid once the server has verified it
+  // with Razorpay, never because a window closed.
+  if (Platform.OS !== 'web' && !serverOrderId) {
     params.onError(
       serverCallError ||
-        serverLinkError ||
         'Could not start a secure Razorpay checkout. Please try again, or contact support.'
     );
     return;
   }
 
-  // 3. In-App Mobile Sheet Mode: Open native sheet directly in React Native
+  // In-app mobile sheet mode
   if (globalPaymentSheetLauncher) {
     globalPaymentSheetLauncher({
       gateway: 'razorpay',
@@ -217,7 +327,7 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
       currency: params.currency,
       name: params.name,
       description: params.description,
-      keyId: params.keyId,
+      keyId: serverKeyId || params.keyId,
       orderId: serverOrderId,
       checkoutUrl: serverPaymentUrl,
       paymentLinkId: serverPaymentLinkId,
@@ -233,32 +343,27 @@ export const launchRazorpayPayment = async (params: RazorpayPaymentParams): Prom
     return;
   }
 
-  // 4. Native mobile mode: Razorpay hosted payment link in the in-app browser
   try {
-    const browserRes = await WebBrowser.openAuthSessionAsync(
-      serverPaymentUrl,
-      'propithub://payment-callback'
-    );
-    const confirmed = await confirmRazorpayLinkPaid(
-      {
-        paymentLinkId: serverPaymentLinkId,
-        paymentRecordId: params.paymentRecordId,
-        ownerId: params.ownerId,
-        role: params.role,
-      },
-      browserRes.type === 'success' ? 5 : 2
-    );
-    if (confirmed.paid) {
-      params.onSuccess({
-        paymentId: confirmed.paymentId || serverPaymentLinkId,
-        orderId: confirmed.orderId || serverOrderId,
-      });
+    const r = await runRazorpayHostedCheckout({
+      keyId: serverKeyId || params.keyId,
+      orderId: serverOrderId,
+      amount: params.amount,
+      currency: params.currency,
+      name: params.name,
+      description: params.description,
+      customerEmail: params.customerEmail,
+      customerPhone: params.customerPhone,
+      paymentRecordId: params.paymentRecordId,
+      ownerId: params.ownerId,
+      role: params.role,
+    });
+    if (r.paid) {
+      params.onSuccess({ paymentId: r.paymentId, orderId: r.orderId || serverOrderId });
     } else {
-      params.onError('Razorpay has not confirmed this payment, so it was not recorded. If money was deducted, contact support with your payment reference.');
+      params.onError(r.message || 'Razorpay has not confirmed this payment, so it was not recorded.');
     }
-    return;
   } catch (err: any) {
-    console.warn('[Razorpay] Native browser checkout note:', err?.message);
+    console.warn('[Razorpay] Native checkout note:', err?.message);
     params.onError(`Razorpay error: ${err?.message || 'Could not launch checkout'}`);
   }
 };
@@ -449,81 +554,72 @@ export interface PayPalPaymentParams {
   paymentRecordId: string;
   customerEmail?: string;
   ownerId?: string;
+  role?: string;
   onSuccess: (result: { paymentId: string; orderId?: string }) => void;
   onError: (error: string) => void;
 }
 
 export const launchPayPalPayment = async (params: PayPalPaymentParams): Promise<void> => {
   if (!params.clientId || params.clientId.trim() === '') {
-    params.onError('PayPal Client ID is not configured. Please save your PayPal keys in settings.');
+    params.onError('PayPal is not set up yet. Please ask the platform admin to save the PayPal keys.');
+    return;
+  }
+  if (!isFirebaseConfigured) {
+    params.onError('Payments are unavailable while the app is offline.');
     return;
   }
 
   const code = (params.currency || 'USD').toUpperCase();
 
-  // If Cloud Functions active, perform server-side order reconciliation
-  let serverOrderId = '';
-  let serverApprovalUrl = '';
-  if (isFirebaseConfigured) {
-    try {
-      const createOrderFn = httpsCallable<any, any>(functions, 'createPayPalOrder');
-      const res = await createOrderFn({
-        paymentRecordId: params.paymentRecordId,
-        amount: params.amount,
-        currency: code,
-        ownerId: params.ownerId,
-        description: params.description || `Payment for ${params.paymentRecordId}`,
-      });
-      serverOrderId = res.data?.orderId || '';
-      serverApprovalUrl = res.data?.approvalUrl || '';
-
-      if (serverApprovalUrl) {
-        if (Platform.OS === 'web' && typeof window !== 'undefined') {
-          window.location.href = serverApprovalUrl;
-          return;
-        } else if (!globalPaymentSheetLauncher) {
-          const browserRes = await WebBrowser.openAuthSessionAsync(
-            serverApprovalUrl,
-            'propithub://payment-callback'
-          );
-          if (browserRes.type === 'success' || browserRes.type === 'dismiss') {
-            params.onSuccess({
-              paymentId: `PAYPAL-${Date.now().toString(36).toUpperCase()}`,
-              orderId: serverOrderId,
-            });
-            return;
-          } else {
-            params.onError('PayPal checkout session closed.');
-            return;
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn('[PayPal] Cloud Function createPayPalOrder note:', err?.message);
-    }
+  // The server creates a real PayPal order. If it cannot, show why; never pretend the payment went through.
+  let orderId = '';
+  let approvalUrl = '';
+  try {
+    const createOrderFn = httpsCallable<any, any>(functions, 'createPayPalOrder');
+    const res = await createOrderFn({
+      paymentRecordId: params.paymentRecordId,
+      amount: params.amount,
+      currency: code,
+      ownerId: params.ownerId,
+      role: params.role,
+      description: params.description || `Payment for ${params.paymentRecordId}`,
+    });
+    orderId = res.data?.orderId || '';
+    approvalUrl = res.data?.approvalUrl || '';
+  } catch (err: any) {
+    params.onError(err?.message || 'PayPal could not start this payment. Please try again.');
+    return;
+  }
+  if (!orderId || !approvalUrl) {
+    params.onError('PayPal could not start this payment. Please try again or use another method.');
+    return;
   }
 
-  // In-App Mobile Sheet Mode for PayPal
   if (globalPaymentSheetLauncher) {
     globalPaymentSheetLauncher({
       gateway: 'paypal',
       amount: params.amount,
       currency: params.currency,
       clientId: params.clientId,
-      orderId: serverOrderId,
-      checkoutUrl: serverApprovalUrl,
+      orderId,
+      checkoutUrl: approvalUrl,
       paymentRecordId: params.paymentRecordId,
       customerEmail: params.customerEmail,
       ownerId: params.ownerId,
+      role: params.role,
       onSuccess: params.onSuccess,
       onError: params.onError,
     });
     return;
   }
 
-  params.onError(
-    'Unable to initialize PayPal checkout session. Please verify your PayPal Client ID and Cloud Functions status in Platform Settings.'
-  );
+  try {
+    const r = await runPayPalApproval({ orderId, approvalUrl });
+    if (r.paid) params.onSuccess({ paymentId: r.paymentId, orderId });
+    else params.onError(r.message || 'PayPal did not complete this payment.');
+  } catch (err: any) {
+    params.onError(err?.message || 'PayPal could not complete this payment.');
+  }
 };
 
 // ─── Easebuzz Live Production Gateway ────────────────────────────────────────
