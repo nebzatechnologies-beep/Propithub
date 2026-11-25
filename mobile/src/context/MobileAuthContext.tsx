@@ -11,6 +11,7 @@ import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocs } fr
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions, isFirebaseConfigured } from '../lib/firebase';
 import { registerForPushNotificationsAsync } from '../lib/notifications';
+import { normalizeFirestoreData } from '../lib/firestoreData';
 import { MobileUserProfile, UserRole } from '../types';
 
 export interface LoginResult {
@@ -69,7 +70,7 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           // Listen to real-time updates on users collection
           unsubUserDoc = onSnapshot(doc(db, 'users', fbUser.uid), (snap) => {
             if (snap.exists()) {
-              const uData = snap.data();
+              const uData = normalizeFirestoreData(snap.data());
               const userRole = (uData.role as UserRole) || 'owner';
               const isOwner = userRole === 'owner';
               const resolvedOwnerId = isOwner
@@ -109,7 +110,7 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           // Initial getDoc
           const userDoc = await getDoc(doc(db, 'users', fbUser.uid));
           if (userDoc.exists()) {
-            const uData = userDoc.data();
+            const uData = normalizeFirestoreData(userDoc.data());
             const userRole = (uData.role as UserRole) || 'owner';
             const isOwner = userRole === 'owner';
             const resolvedOwnerId = isOwner
@@ -230,7 +231,7 @@ export const MobileAuthProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       let userRole: UserRole = 'owner';
 
       if (userDoc.exists()) {
-        const uData = userDoc.data();
+        const uData = normalizeFirestoreData(userDoc.data());
         userRole = (uData.role as UserRole) || 'owner';
         const isOwner = userRole === 'owner';
         const resolvedOwnerId = isOwner

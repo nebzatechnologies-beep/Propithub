@@ -7,6 +7,7 @@ import {
   ScrollView,
   Image,
   Dimensions,
+  Platform,
 } from 'react-native';
 import { Modal } from './Modal';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -54,7 +55,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   };
 
   const handleOpenExternal = () => {
-    if (activeFileUrl && typeof window !== 'undefined') {
+    if (activeFileUrl && Platform.OS === 'web' && typeof window !== 'undefined') {
       window.open(activeFileUrl, '_blank');
     } else {
       handleDownload();
@@ -129,7 +130,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     resizeMode="contain"
                   />
                 </View>
-              ) : typeof window !== 'undefined' ? (
+              ) : Platform.OS === 'web' ? (
                 /* Real PDF in browser native PDF iframe (zoom, print, pagination) */
                 <View style={styles.iframeBox}>
                   <iframe

@@ -637,7 +637,7 @@ export const MobileGuidedTourOverlay: React.FC = () => {
             )}
 
             {/* Pro-Tip Box (Web Parity) */}
-            {currentStep.proTip && (
+            {Boolean(currentStep.proTip) && (
               <View
                 style={[
                   styles.proTipBox,
