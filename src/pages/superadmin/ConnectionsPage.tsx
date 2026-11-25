@@ -20,6 +20,8 @@ export const ConnectionsPage: React.FC = () => {
   // Form states for editable keys
   const [stripePub, setStripePub] = useState(state.platformGateways.stripe.pubKey || '');
   const [stripeSecret, setStripeSecret] = useState('');
+  // Masked previews of secrets already stored on the server. Shown as placeholders only, never put in the input.
+  const [secretHints, setSecretHints] = useState<Record<string, string>>({});
   const [razorpayKey, setRazorpayKey] = useState(state.platformGateways.razorpay.keyId || '');
   const [razorpaySecret, setRazorpaySecret] = useState('');
   const [paypalClient, setPaypalClient] = useState(state.platformGateways.paypal?.clientId || '');
@@ -70,10 +72,12 @@ export const ConnectionsPage: React.FC = () => {
       if (res.data) {
         const gw = res.data.gateways;
         const cm = res.data.comms;
-        if (gw?.stripe?.configured) setStripeSecret((prev) => prev || gw.stripe.maskedSecret);
-        if (gw?.razorpay?.configured) setRazorpaySecret((prev) => prev || gw.razorpay.maskedSecret);
-        if (gw?.paypal?.configured) setPaypalSecret((prev) => prev || gw.paypal.maskedSecret);
-        if (gw?.easebuzz?.configured) setEasebuzzSalt((prev) => prev || gw.easebuzz.maskedSecret);
+        setSecretHints({
+          stripe: gw?.stripe?.configured ? gw.stripe.maskedSecret : '',
+          razorpay: gw?.razorpay?.configured ? gw.razorpay.maskedSecret : '',
+          paypal: gw?.paypal?.configured ? gw.paypal.maskedSecret : '',
+          easebuzz: gw?.easebuzz?.configured ? gw.easebuzz.maskedSecret : '',
+        });
 
         if (cm?.twilio?.configured) setTwAuth((prev) => prev || cm.twilio.maskedSecret);
         if (cm?.sendgrid?.configured) setSgKey((prev) => prev || cm.sendgrid.maskedSecret);
@@ -243,7 +247,9 @@ export const ConnectionsPage: React.FC = () => {
       const res = await httpsCallable<any, any>(functions, 'getPlatformSecretsStatus')({ verify: true });
       const v = res.data?.verification?.[gw];
       const label = gw === 'razorpay' ? 'Razorpay' : 'PayPal';
-      showToast(!v ? `No ${label} keys are stored yet.` : v.ok ? `✓ The ${label} keys stored right now work.` : `The ${label} keys stored right now do NOT work: ${v.message}`);
+      const len = res.data?.gateways?.[gw]?.secretLength;
+      const detail = gw === 'razorpay' && typeof len === 'number' ? ` The stored secret is ${len} characters (Razorpay secrets are 24).` : '';
+      showToast(!v ? `No ${label} keys are stored yet.` : v.ok ? `✓ The ${label} keys stored right now work.` : `The ${label} keys stored right now do NOT work: ${v.message}${detail}`);
     } catch (e: any) {
       showToast(`Could not check the stored keys: ${e?.message || 'failed'}`);
     } finally {
@@ -252,20 +258,31 @@ export const ConnectionsPage: React.FC = () => {
   };
 
   const saveRazorpayKeys = async () => {
+    const cleanId = razorpayKey.replace(/\s/g, '');
+    const cleanSecret = razorpaySecret.replace(/\s/g, '');
+    if (!/^rzp_(live|test)_[A-Za-z0-9]{8,24}$/.test(cleanId)) {
+      showToast('Razorpay keys NOT saved: the Key ID should look like rzp_live_XXXXXXXXXXXXXX. Paste only the Key ID.');
+      return;
+    }
+    if (cleanSecret && (cleanSecret.length < 20 || cleanSecret.length > 32)) {
+      showToast(`Razorpay keys NOT saved: the Key Secret box has ${cleanSecret.length} characters, but a Razorpay secret is 24. Clear the box and paste only the secret.`);
+      return;
+    }
     setSavingKey('razorpay');
     try {
       const updated = {
         ...state.platformGateways,
         razorpay: {
           ...state.platformGateways.razorpay,
-          keyId: razorpayKey.trim(),
-          keySecret: razorpaySecret.trim(),
+          keyId: cleanId,
+          keySecret: cleanSecret,
           connected: Boolean(razorpayKey.trim() && razorpaySecret.trim()),
         },
       };
       const res = await savePlatformGateways(updated);
       await fetchSecretsStatus();
       const v = res.verification.razorpay;
+      if (!v || v.saved) setRazorpaySecret('');
       showToast(v && !v.saved ? `Razorpay keys NOT saved: ${v.message}` : v && !v.ok ? `Razorpay keys saved, but could not be verified: ${v.message}` : '✓ Razorpay keys saved and verified with Razorpay.');
     } catch (e: any) {
       showToast(`Razorpay keys NOT saved: ${e?.message || 'save failed'}`);
@@ -587,7 +604,7 @@ export const ConnectionsPage: React.FC = () => {
                             type="password"
                             value={stripeSecret}
                             onChange={(e) => setStripeSecret(e.target.value)}
-                            placeholder="sk_live_..."
+                            placeholder={secretHints.stripe ? `Saved (${secretHints.stripe}). Leave blank to keep it, or paste a new one to replace it` : 'sk_live_...'}
                           />
                         </div>
                       </div>
@@ -684,7 +701,7 @@ export const ConnectionsPage: React.FC = () => {
                             type="password"
                             value={razorpaySecret}
                             onChange={(e) => setRazorpaySecret(e.target.value)}
-                            placeholder="Key secret"
+                            placeholder={secretHints.razorpay ? `Saved (${secretHints.razorpay}). Leave blank to keep it, or paste a new one to replace it` : 'Key secret'}
                           />
                         </div>
                       </div>
@@ -790,7 +807,7 @@ export const ConnectionsPage: React.FC = () => {
                             type="password"
                             value={paypalSecret}
                             onChange={(e) => setPaypalSecret(e.target.value)}
-                            placeholder="Client secret"
+                            placeholder={secretHints.paypal ? `Saved (${secretHints.paypal}). Leave blank to keep it, or paste a new one to replace it` : 'Client secret'}
                           />
                         </div>
                         <div className="field">
@@ -902,7 +919,7 @@ export const ConnectionsPage: React.FC = () => {
                             type="password"
                             value={easebuzzSalt}
                             onChange={(e) => setEasebuzzSalt(e.target.value)}
-                            placeholder="e.g. DA95CD24ED..."
+                            placeholder={secretHints.easebuzz ? `Saved (${secretHints.easebuzz}). Leave blank to keep it, or paste a new one to replace it` : 'e.g. DA95CD24ED...'}
                           />
                         </div>
                       </div>
