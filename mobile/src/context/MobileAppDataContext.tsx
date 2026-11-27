@@ -5939,7 +5939,14 @@ export const MobileAppDataProvider: React.FC<{ children: React.ReactNode }> = ({
       },
     }));
     if (isFirebaseConfigured) {
-      await setDoc(doc(db, 'platformConfig', 'comms'), { commsConfig: config }, { merge: true }).catch(console.warn);
+      // Secrets must go through the server: platformConfig/comms is readable by every signed-in user.
+      try {
+        await httpsCallable<any, any>(functions, 'savePlatformCommsAndEvents')({ commsConfig: config });
+      } catch (err) {
+        console.warn('savePlatformCommsAndEvents failed, saving non-secret settings only:', err);
+        const { twilioAuthToken, sendgridKey, birdApiKey, whatsappAccessToken, whatsappWebhookVerifyToken, geminiApiKey, ...safe } = config as any;
+        await setDoc(doc(db, 'platformConfig', 'comms'), { commsConfig: safe }, { merge: true }).catch(console.warn);
+      }
     }
   };
 

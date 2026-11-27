@@ -17,10 +17,92 @@ db.settings({ ignoreUndefinedProperties: true });
  * 2. If not migrated yet, migrate from legacy /platformConfig/gateways, copy to /platformSecrets,
  *    and purge raw secret keys from the world-readable /platformConfig document.
  */
+/**
+ * /platformConfig/gateways is readable by anyone on the internet (the checkout needs the public flags), and
+ * /platformConfig/comms is readable by every signed-in user. Older versions of the app stored raw API secrets
+ * in them, and writing the sanitised copy with { merge: true } never removed those old fields. This helper
+ * moves any such leftover secret into /platformSecrets (only if it is not already there) and then deletes it
+ * from the readable document. It runs once per function instance and never throws.
+ */
+const PUBLIC_GATEWAY_SECRET_FIELDS: Array<[string, string]> = [
+  ['stripe', 'secretKey'],
+  ['stripe', 'webhookSecret'],
+  ['razorpay', 'keySecret'],
+  ['paypal', 'secret'],
+  ['easebuzz', 'salt'],
+];
+const PUBLIC_COMMS_SECRET_FIELDS = [
+  'twilioAuthToken',
+  'sendgridKey',
+  'birdApiKey',
+  'whatsappAccessToken',
+  'whatsappWebhookVerifyToken',
+  'geminiApiKey',
+];
+let publicConfigScrubbed = false;
+
+async function scrubPublicPlatformConfig(): Promise<void> {
+  if (publicConfigScrubbed) return;
+  try {
+    const isUsable = (v: any) => typeof v === 'string' && v.length > 0 && !v.includes('\u2022');
+
+    // Gateways
+    const gPub = db.collection('platformConfig').doc('gateways');
+    const gSec = db.collection('platformSecrets').doc('gateways');
+    const [gPubSnap, gSecSnap] = await Promise.all([gPub.get(), gSec.get()]);
+    if (gPubSnap.exists && gSecSnap.exists) {
+      const pubG = gPubSnap.data()?.platformGateways || {};
+      const secG = gSecSnap.data()?.platformGateways || {};
+      const backfill: Record<string, Record<string, string>> = {};
+      const deletes: Record<string, any> = {};
+      for (const [gw, field] of PUBLIC_GATEWAY_SECRET_FIELDS) {
+        const leaked = pubG?.[gw]?.[field];
+        if (leaked === undefined) continue;
+        deletes[`platformGateways.${gw}.${field}`] = admin.firestore.FieldValue.delete();
+        if (isUsable(leaked) && !secG?.[gw]?.[field]) {
+          backfill[gw] = { ...(backfill[gw] || {}), [field]: leaked };
+        }
+      }
+      if (Object.keys(backfill).length) await gSec.set({ platformGateways: backfill }, { merge: true });
+      if (Object.keys(deletes).length) {
+        await gPub.update(deletes);
+        functions.logger.warn('[scrubPublicPlatformConfig] Removed leftover gateway secrets from /platformConfig/gateways', { fields: Object.keys(deletes) });
+      }
+    }
+
+    // Comms
+    const cPub = db.collection('platformConfig').doc('comms');
+    const cSec = db.collection('platformSecrets').doc('comms');
+    const [cPubSnap, cSecSnap] = await Promise.all([cPub.get(), cSec.get()]);
+    if (cPubSnap.exists && cSecSnap.exists) {
+      const pubData = cPubSnap.data() || {};
+      const secData = cSecSnap.data() || {};
+      const backfill: Record<string, string> = {};
+      const deletes: Record<string, any> = {};
+      for (const field of PUBLIC_COMMS_SECRET_FIELDS) {
+        for (const [path, val] of [[`commsConfig.${field}`, pubData.commsConfig?.[field]], [field, pubData[field]]] as Array<[string, any]>) {
+          if (val === undefined) continue;
+          deletes[path] = admin.firestore.FieldValue.delete();
+          if (isUsable(val) && !secData.commsConfig?.[field] && !secData[field]) backfill[field] = val;
+        }
+      }
+      if (Object.keys(backfill).length) await cSec.set({ commsConfig: backfill }, { merge: true });
+      if (Object.keys(deletes).length) {
+        await cPub.update(deletes);
+        functions.logger.warn('[scrubPublicPlatformConfig] Removed leftover comms secrets from /platformConfig/comms', { fields: Object.keys(deletes) });
+      }
+    }
+    publicConfigScrubbed = true;
+  } catch (err: any) {
+    functions.logger.warn('[scrubPublicPlatformConfig] failed:', err?.message);
+  }
+}
+
 async function getPlatformGatewaysConfig() {
   try {
     const secDoc = await db.collection('platformSecrets').doc('gateways').get();
     if (secDoc.exists) {
+      await scrubPublicPlatformConfig();
       return secDoc.data()?.platformGateways || secDoc.data() || {};
     }
 
@@ -78,7 +160,7 @@ async function getPlatformGatewaysConfig() {
         await db.collection('platformConfig').doc('gateways').set({
           platformGateways: sanitized,
           activeBillingGateway: data.activeBillingGateway || 'stripe',
-        }, { merge: true });
+        });
 
         functions.logger.info('[getPlatformGatewaysConfig] Successfully migrated platform gateway secrets to /platformSecrets/gateways and sanitized /platformConfig/gateways');
       }
@@ -101,6 +183,7 @@ async function getPlatformCommsConfig() {
   try {
     const secDoc = await db.collection('platformSecrets').doc('comms').get();
     if (secDoc.exists) {
+      await scrubPublicPlatformConfig();
       const data = secDoc.data() || {};
       return {
         ...(data.commsConfig || {}),
@@ -2281,6 +2364,7 @@ async function executePlatformSubscriptionDebit(
 export const checkSubscriptionExpiry = functions.pubsub
   .schedule('every 24 hours')
   .onRun(async () => {
+    await scrubPublicPlatformConfig();
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
     let defaultTrialDays = 14;
@@ -3887,11 +3971,12 @@ export const savePlatformGateways = functions.https.onCall(async (data, context)
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
+  // Replace (not merge) the world-readable document so no old secret field can survive in it.
   await db.collection('platformConfig').doc('gateways').set({
     platformGateways: sanitizedPublic,
     activeBillingGateway: activeBillingGateway || 'stripe',
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
+  });
 
   return { success: true, message: 'Platform gateway configurations securely saved.', verification };
 });
