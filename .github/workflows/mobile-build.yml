@@ -80,13 +80,48 @@ jobs:
           npx --yes eas-cli@latest build --platform android --profile "${{ inputs.profile }}" --local --non-interactive --output "$GITHUB_WORKSPACE/build-output/propithub.$EXT"
           ls -la "$GITHUB_WORKSPACE/build-output"
 
-      - name: Upload the built app
+      - name: Inspect the bundle and make an installable APK
+        id: inspect
+        if: ${{ inputs.where == 'local' && inputs.profile == 'production' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          curl -fsSL -o bundletool.jar https://github.com/google/bundletool/releases/download/1.18.1/bundletool-all-1.18.1.jar
+          AAB=build-output/propithub.aab
+          java -jar bundletool.jar validate --bundle="$AAB"
+          java -jar bundletool.jar dump manifest --bundle="$AAB" > manifest.xml
+          PKG=$(grep -o ' package="[^"]*"' manifest.xml | head -1 | cut -d'"' -f2)
+          VC=$(grep -o 'android:versionCode="[0-9]*"' manifest.xml | head -1 | grep -o '[0-9]*')
+          VN=$(grep -o 'android:versionName="[^"]*"' manifest.xml | head -1 | cut -d'"' -f2)
+          echo "package=$PKG versionCode=$VC versionName=$VN"
+          [ "$PKG" = "com.propithub.rentalhub" ] || { echo "::error::Unexpected package $PKG"; exit 1; }
+          echo "--- permissions ---"; grep -o 'uses-permission[^/]*android:name="[^"]*"' manifest.xml | grep -o 'android.*' | sort -u
+          echo "--- mapping file (deobfuscation) ---"
+          unzip -l "$AAB" | grep -i "proguard.map" || { echo "::warning::No R8 mapping file inside the bundle"; }
+          keytool -genkeypair -keystore debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
+          java -jar bundletool.jar build-apks --bundle="$AAB" --output=app.apks --mode=universal --ks=debug.keystore --ks-pass=pass:android --ks-key-alias=androiddebugkey --key-pass=pass:android
+          unzip -p app.apks universal.apk > "build-output/propithub-v${VN}-code${VC}-sideload.apk"
+          mv "$AAB" "build-output/propithub-v${VN}-code${VC}.aab"
+          ls -la build-output
+          echo "vc=$VC" >> "$GITHUB_OUTPUT"; echo "vn=$VN" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the Google Play bundle
         if: ${{ inputs.where == 'local' }}
         uses: actions/upload-artifact@v4
         with:
-          name: propithub-android-${{ inputs.profile }}
-          path: build-output/*
-          retention-days: 14
+          name: propithub-play-bundle-${{ steps.inspect.outputs.vn || 'build' }}-code${{ steps.inspect.outputs.vc || '' }}
+          path: |
+            build-output/*.aab
+            build-output/propithub.apk
+          retention-days: 30
+
+      - name: Upload the installable APK
+        if: ${{ inputs.where == 'local' && inputs.profile == 'production' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: propithub-installable-apk-${{ steps.inspect.outputs.vn }}-code${{ steps.inspect.outputs.vc }}
+          path: build-output/*-sideload.apk
+          retention-days: 30
 
       - name: Build on EAS
         if: ${{ inputs.where != 'local' }}
@@ -94,3 +129,42 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_NO_VCS: '0'
         run: npx --yes eas-cli@latest build --platform android --profile "${{ inputs.profile }}" --non-interactive --wait
+
+  smoke-test:
+    name: Smoke test on an Android emulator
+    needs: build
+    if: ${{ inputs.where == 'local' && inputs.profile == 'production' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: propithub-installable-apk-*
+          merge-multiple: true
+          path: apk
+
+      - name: Enable hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start emulator and run the smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          script: bash mobile/scripts/smoke-test.sh "$(ls apk/*.apk | head -1)" smoke-output
+
+      - name: Upload smoke test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-evidence
+          path: smoke-output
+          retention-days: 14
