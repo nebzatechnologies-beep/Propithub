@@ -8,7 +8,20 @@ import { FlaskConical, MessageSquare, Sparkles, Copy, Check, Eye, EyeOff, Shield
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { SMS_EVENT_DEFAULTS } from '../../lib/smsEvents';
 
-export const ConnectionsPage: React.FC = () => {
+export /** A pasted key replaces whatever is in the box (a password manager may have auto-filled an old value into it). */
+const pastedKey = (text: string): string => text.replace(/\s/g, '');
+
+/** If the same secret was entered twice (e.g. autofill + paste), the box holds it doubled: keep one copy. */
+const collapseDoubled = (value: string): string => {
+  if (value.length >= 40 && value.length % 2 === 0) {
+    const half = value.length / 2;
+    if (value.slice(0, half) === value.slice(half)) return value.slice(0, half);
+  }
+  return value;
+};
+
+
+const ConnectionsPage: React.FC = () => {
   const { state, savePlatformGateways, saveCommsConfig, saveNotificationToggles, showToast } = useAppData();
   const { user } = useAuth();
   const [subTab, setSubTab] = useState<'gateways' | 'comms' | 'whatsapp' | 'ai'>('gateways');
@@ -259,7 +272,7 @@ export const ConnectionsPage: React.FC = () => {
 
   const saveRazorpayKeys = async () => {
     const cleanId = razorpayKey.replace(/\s/g, '');
-    const cleanSecret = razorpaySecret.replace(/\s/g, '');
+    const cleanSecret = collapseDoubled(razorpaySecret.replace(/\s/g, ''));
     if (!/^rzp_(live|test)_[A-Za-z0-9]{8,24}$/.test(cleanId)) {
       showToast('Razorpay keys NOT saved: the Key ID should look like rzp_live_XXXXXXXXXXXXXX. Paste only the Key ID.');
       return;
@@ -602,8 +615,14 @@ export const ConnectionsPage: React.FC = () => {
                           <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Secret key</label>
                           <input
                             type="password"
+                            name="gateway-secret-stripeSecret"
+                            autoComplete="new-password"
+                            data-1p-ignore
+                            data-lpignore="true"
+                            spellCheck={false}
                             value={stripeSecret}
                             onChange={(e) => setStripeSecret(e.target.value)}
+                            onPaste={(e) => { e.preventDefault(); setStripeSecret(pastedKey(e.clipboardData.getData('text'))); }}
                             placeholder={secretHints.stripe ? `Saved (${secretHints.stripe}). Leave blank to keep it, or paste a new one to replace it` : 'sk_live_...'}
                           />
                         </div>
@@ -699,10 +718,22 @@ export const ConnectionsPage: React.FC = () => {
                           <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Key secret</label>
                           <input
                             type="password"
+                            name="gateway-secret-razorpaySecret"
+                            autoComplete="new-password"
+                            data-1p-ignore
+                            data-lpignore="true"
+                            spellCheck={false}
                             value={razorpaySecret}
                             onChange={(e) => setRazorpaySecret(e.target.value)}
+                            onPaste={(e) => { e.preventDefault(); setRazorpaySecret(pastedKey(e.clipboardData.getData('text'))); }}
                             placeholder={secretHints.razorpay ? `Saved (${secretHints.razorpay}). Leave blank to keep it, or paste a new one to replace it` : 'Key secret'}
                           />
+                          {razorpaySecret && (
+                            <div style={{ fontSize: '11px', marginTop: '4px', color: razorpaySecret.replace(/\s/g, '').length === 24 ? 'var(--moss, #2e7d32)' : 'var(--brick, #c62828)' }}>
+                              {razorpaySecret.replace(/\s/g, '').length} characters. A Razorpay secret is exactly 24.
+                              {razorpaySecret.replace(/\s/g, '').length !== 24 && ' Clear the box (select all, delete) and paste only the secret.'}
+                            </div>
+                          )}
                         </div>
                       </div>
                       <button
@@ -805,8 +836,14 @@ export const ConnectionsPage: React.FC = () => {
                           <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Client secret</label>
                           <input
                             type="password"
+                            name="gateway-secret-paypalSecret"
+                            autoComplete="new-password"
+                            data-1p-ignore
+                            data-lpignore="true"
+                            spellCheck={false}
                             value={paypalSecret}
                             onChange={(e) => setPaypalSecret(e.target.value)}
+                            onPaste={(e) => { e.preventDefault(); setPaypalSecret(pastedKey(e.clipboardData.getData('text'))); }}
                             placeholder={secretHints.paypal ? `Saved (${secretHints.paypal}). Leave blank to keep it, or paste a new one to replace it` : 'Client secret'}
                           />
                         </div>
@@ -917,8 +954,14 @@ export const ConnectionsPage: React.FC = () => {
                           <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>Merchant Salt</label>
                           <input
                             type="password"
+                            name="gateway-secret-easebuzzSalt"
+                            autoComplete="new-password"
+                            data-1p-ignore
+                            data-lpignore="true"
+                            spellCheck={false}
                             value={easebuzzSalt}
                             onChange={(e) => setEasebuzzSalt(e.target.value)}
+                            onPaste={(e) => { e.preventDefault(); setEasebuzzSalt(pastedKey(e.clipboardData.getData('text'))); }}
                             placeholder={secretHints.easebuzz ? `Saved (${secretHints.easebuzz}). Leave blank to keep it, or paste a new one to replace it` : 'e.g. DA95CD24ED...'}
                           />
                         </div>

@@ -98,12 +98,44 @@ async function scrubPublicPlatformConfig(): Promise<void> {
   }
 }
 
+/**
+ * A Razorpay secret is exactly 24 characters. Older versions of the settings page could store a longer value
+ * (the secret entered twice, or a stale value with the new one pasted after it), which makes every Razorpay
+ * call fail with 401. When the stored secret is longer than 24, try each 24-character end of it against
+ * Razorpay; if one is accepted, store it and use it. Tried once per instance per stored value.
+ */
+const razorpayHealAttempted = new Set<string>();
+async function healRazorpaySecret(gateways: any): Promise<any> {
+  try {
+    const rz = gateways?.razorpay;
+    const keyId = typeof rz?.keyId === 'string' ? rz.keyId.trim() : '';
+    const secret = typeof rz?.keySecret === 'string' ? rz.keySecret.replace(/\s/g, '') : '';
+    if (!keyId || secret.length <= 24 || secret.length > 64 || secret.includes('\u2022')) return gateways;
+    const attemptKey = `${keyId}|${secret.length}|${secret.slice(0, 3)}|${secret.slice(-3)}`;
+    if (razorpayHealAttempted.has(attemptKey)) return gateways;
+    razorpayHealAttempted.add(attemptKey);
+    const candidates = Array.from(new Set([secret.slice(-24), secret.slice(0, 24)]));
+    for (const candidate of candidates) {
+      const check = await verifyRazorpayKeys(keyId, candidate);
+      if (check.ok) {
+        await db.collection('platformSecrets').doc('gateways').set({ platformGateways: { razorpay: { keySecret: candidate } } }, { merge: true });
+        functions.logger.warn('[healRazorpaySecret] Stored Razorpay secret had the wrong length; repaired it with the valid 24-character part.', { storedLength: secret.length });
+        return { ...gateways, razorpay: { ...rz, keySecret: candidate } };
+      }
+    }
+    functions.logger.warn('[healRazorpaySecret] Stored Razorpay secret is not 24 characters and neither end is accepted by Razorpay.', { storedLength: secret.length });
+  } catch (err: any) {
+    functions.logger.warn('[healRazorpaySecret] failed:', err?.message);
+  }
+  return gateways;
+}
+
 async function getPlatformGatewaysConfig() {
   try {
     const secDoc = await db.collection('platformSecrets').doc('gateways').get();
     if (secDoc.exists) {
       await scrubPublicPlatformConfig();
-      return secDoc.data()?.platformGateways || secDoc.data() || {};
+      return await healRazorpaySecret(secDoc.data()?.platformGateways || secDoc.data() || {});
     }
 
     // Auto-migration from legacy platformConfig/gateways
