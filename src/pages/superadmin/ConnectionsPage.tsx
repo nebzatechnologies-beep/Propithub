@@ -8,7 +8,7 @@ import { FlaskConical, MessageSquare, Sparkles, Copy, Check, Eye, EyeOff, Shield
 import { ButtonProcessing } from '../../components/common/Spinner';
 import { SMS_EVENT_DEFAULTS } from '../../lib/smsEvents';
 
-export /** A pasted key replaces whatever is in the box (a password manager may have auto-filled an old value into it). */
+/** A pasted key replaces whatever is in the box (a password manager may have auto-filled an old value into it). */
 const pastedKey = (text: string): string => text.replace(/\s/g, '');
 
 /** If the same secret was entered twice (e.g. autofill + paste), the box holds it doubled: keep one copy. */
@@ -21,7 +21,7 @@ const collapseDoubled = (value: string): string => {
 };
 
 
-const ConnectionsPage: React.FC = () => {
+export const ConnectionsPage: React.FC = () => {
   const { state, savePlatformGateways, saveCommsConfig, saveNotificationToggles, showToast } = useAppData();
   const { user } = useAuth();
   const [subTab, setSubTab] = useState<'gateways' | 'comms' | 'whatsapp' | 'ai'>('gateways');
